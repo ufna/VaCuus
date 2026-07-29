@@ -1,0 +1,22 @@
+# Unreal build artifacts
+Binaries/
+Build/
+Intermediate/
+Saved/
+DerivedDataCache/
+
+# IDE / toolchain
+.vs/
+.vscode/
+.idea/
+*.sln
+*.suo
+*.sdf
+*.opensdf
+*.VC.db
+*.VC.opendb
+compile_commands.json
+
+# OS junk
+.DS_Store
+Thumbs.db
