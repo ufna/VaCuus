@@ -8,6 +8,7 @@
 
 IMPLEMENT_GLOBAL_SHADER(FVaCuusUIVS, "/Plugin/VaCuus/Private/VaCuusUI.usf", "MainVS", SF_Vertex);
 IMPLEMENT_GLOBAL_SHADER(FVaCuusUIPS, "/Plugin/VaCuus/Private/VaCuusUI.usf", "MainPS", SF_Pixel);
+IMPLEMENT_GLOBAL_SHADER(FVaCuusCompositePS, "/Plugin/VaCuus/Private/VaCuusUI.usf", "MainCompositePS", SF_Pixel);
 
 TGlobalResource<FVaCuusVertexDeclaration> GVaCuusVertexDeclaration;
 

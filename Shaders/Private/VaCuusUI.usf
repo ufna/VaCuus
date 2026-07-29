@@ -30,3 +30,19 @@ void MainPS(
 	float4 Tex = bUseTexture ? UITexture.Sample(UISampler, UV) : float4(1.0f, 1.0f, 1.0f, 1.0f);
 	OutColor = Color * Tex; // premultiplied * premultiplied
 }
+
+Texture2D CompositeTexture;
+SamplerState CompositeSampler;
+
+/**
+ * Slate composite: paired with the engine's FScreenPassVS (which outputs
+ * noperspective float4 UVAndScreenPos, .xy = input-viewport UV). Passes the
+ * premultiplied UI RT through untouched; the premultiplied-over blend state
+ * on the pipeline does the actual compositing.
+ */
+void MainCompositePS(
+	in noperspective float4 UVAndScreenPos : TEXCOORD0,
+	out float4 OutColor : SV_Target0)
+{
+	OutColor = CompositeTexture.Sample(CompositeSampler, UVAndScreenPos.xy);
+}

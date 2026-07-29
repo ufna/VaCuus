@@ -39,12 +39,19 @@ public:
 	/** Latest replayed UI frame (PF_B8G8R8A8, premultiplied alpha, SRV state); null before the first replay. */
 	FTextureRHIRef GetOutputRT() const { return OutputRT; }
 
+	/**
+	 * (Re)creates OutputRT when missing or when ViewSize changed; no-op for a
+	 * degenerate size. Public for the Slate element: the RT must exist at RDG
+	 * graph-build time so it can be registered for the composite pass, while
+	 * Replay() itself only runs later inside the pass lambda (Replay calls
+	 * this internally, so the second call is a no-op).
+	 */
+	void EnsureOutputRT(FRHICommandList& RHICmdList, FIntPoint ViewSize);
+
 	/** Render-thread teardown: drops all RHI resources and resets replay state. */
 	void ReleaseResources();
 
 private:
-	/** (Re)creates OutputRT when missing or when ViewSize changed. */
-	void EnsureOutputRT(FRHICommandList& RHICmdList, FIntPoint ViewSize);
 
 	/** Creates RHI resources for the buffer's NewGeometry/NewTextures. */
 	void UploadNewResources(FRHICommandList& RHICmdList, const FVaCuusCommandBuffer& Buffer);

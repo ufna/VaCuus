@@ -40,6 +40,25 @@ public:
 };
 
 /**
+ * Composites the replayer's premultiplied UI RT into the Slate elements
+ * texture. Paired with the engine's FScreenPassVS via AddDrawScreenPass and a
+ * premultiplied One/InvSrcAlpha blend state — none of the AddDrawTexturePass
+ * variants take a blend state (they copy/overwrite), hence this trivial PS.
+ */
+class FVaCuusCompositePS : public FGlobalShader
+{
+public:
+	DECLARE_GLOBAL_SHADER(FVaCuusCompositePS);
+	SHADER_USE_PARAMETER_STRUCT(FVaCuusCompositePS, FGlobalShader);
+
+	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, CompositeTexture)
+		SHADER_PARAMETER_SAMPLER(SamplerState, CompositeSampler)
+		RENDER_TARGET_BINDING_SLOTS()
+	END_SHADER_PARAMETER_STRUCT()
+};
+
+/**
  * Vertex declaration matching FVaCuusVertex (bit-identical to Rml::Vertex,
  * 20 bytes): Position float2 @0, Color 4 bytes @8, UV float2 @12.
  *

@@ -93,6 +93,12 @@ void FVaCuusReplayRenderer::ReleaseResources()
 
 void FVaCuusReplayRenderer::EnsureOutputRT(FRHICommandList& RHICmdList, FIntPoint ViewSize)
 {
+	// Degenerate view (minimized window etc.): keep whatever RT exists.
+	if (ViewSize.X <= 0 || ViewSize.Y <= 0)
+	{
+		return;
+	}
+
 	if (OutputRT.IsValid() && OutputRT->GetSizeXY() == ViewSize)
 	{
 		return;
