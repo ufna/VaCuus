@@ -3,8 +3,10 @@
 #include "Misc/AutomationTest.h"
 
 #include "VaCuusCommandBuffer.h"
+#include "VaCuusEngine.h"
 #include "VaCuusRecordingRenderInterface.h"
 
+#include <RmlUi/Core.h>
 #include <RmlUi/Core/Types.h>
 #include <RmlUi/Core/Vertex.h>
 
@@ -146,6 +148,73 @@ bool FVaCuusRecorderPublishTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("No stale commands"), Second->Commands.Num(), 0);
 	TestEqual(TEXT("No stale geometry"), Second->NewGeometry.Num(), 0);
 
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusRecorderIntegrationTest, "VaCuus.Render.Recorder.Integration",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusRecorderIntegrationTest::RunTest(const FString& Parameters)
+{
+	FVaCuusRecordingRenderInterface Recorder;
+
+	FVaCuusEngine& Engine = FVaCuusEngine::Get();
+	Engine.SetRenderInterface(&Recorder); // Must land before the first Initialize().
+	if (!TestTrue(TEXT("Initialized"), Engine.Initialize()))
+	{
+		Engine.SetRenderInterface(nullptr);
+		return false;
+	}
+
+	// Restores the engine to its pre-test state on every exit path below.
+	ON_SCOPE_EXIT
+	{
+		Engine.Shutdown();
+		Engine.SetRenderInterface(nullptr);
+	};
+
+	Rml::Context* Context = Rml::CreateContext("recorder_test", Rml::Vector2i(800, 600));
+	if (!TestNotNull(TEXT("Context"), Context))
+	{
+		return false;
+	}
+
+	// ~20 elements of styled text; explicit font-family/display so the default
+	// style sheet gap does not spam warnings.
+	Rml::String DocumentSource =
+		"<rml><head><style>"
+		"body { font-family: LatoLatin; display: block; width: 800px; height: 600px; background-color: #202020; }"
+		"div { display: block; font-size: 16px; color: #e0e0e0; margin: 2px; padding: 2px; background-color: #303030; }"
+		"</style></head><body>";
+	for (int32 Index = 0; Index < 20; ++Index)
+	{
+		DocumentSource += "<div>Row " + Rml::ToString(Index) + "</div>";
+	}
+	DocumentSource += "</body></rml>";
+
+	Rml::ElementDocument* Document = Context->LoadDocumentFromMemory(DocumentSource);
+	if (!TestNotNull(TEXT("Document"), Document))
+	{
+		Rml::RemoveContext("recorder_test");
+		return false;
+	}
+	Document->Show();
+
+	Recorder.BeginFrame(FIntPoint(800, 600));
+	Context->Update();
+	Context->Render();
+	const TUniquePtr<FVaCuusCommandBuffer> Buffer = Recorder.EndFrameAndPublish();
+
+	if (TestNotNull(TEXT("Published buffer"), Buffer.Get()))
+	{
+		TestTrue(TEXT("Frame recorded draw commands"), Buffer->Commands.Num() > 0);
+		TestTrue(TEXT("Font atlas texture recorded"), Buffer->NewTextures.Num() >= 1);
+	}
+
+	// Full teardown with the recorder still installed: RmlUi releases geometry
+	// and textures outside any frame here, which must not trip the recorder.
+	Document->Close();
+	Rml::RemoveContext("recorder_test");
 	return true;
 }
 
