@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "VaCuus",
+  "project_id": "4067fc7b-84fe-4a3e-b2c6-2606a0c13b8b"
+}
