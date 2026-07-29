@@ -14,6 +14,8 @@ public class VaCuus : ModuleRules
 			"Engine"
 		});
 
-		PrivateDependencyModuleNames.AddRange(new string[] { });
+		PrivateDependencyModuleNames.AddRange(new string[] {
+			"VaCuusRml"
+		});
 	}
 }

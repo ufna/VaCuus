@@ -17,8 +17,20 @@ public class VaCuusRml : ModuleRules
 
 		string RmlRoot = Path.Combine(ModuleDirectory, "../ThirdParty/RmlUi");
 		PublicIncludePaths.Add(Path.Combine(RmlRoot, "Include"));
-		PublicDefinitions.Add("RMLUI_STATIC_LIB=1");
 		PublicDefinitions.Add("RMLUI_CUSTOM_RTTI=1");
+
+		if (Target.LinkType == TargetLinkType.Monolithic)
+		{
+			PublicDefinitions.Add("RMLUI_STATIC_LIB=1");
+		}
+		else
+		{
+			// Shared-library decorations (see Include/RmlUi/Core/Header.h): without
+			// RMLUI_STATIC_LIB, RMLUICORE_API is visibility("default") on non-Windows,
+			// and on Win32 RMLUI_CORE_EXPORTS flips dllexport (compiling this module)
+			// vs dllimport (consumers), so Rml symbols cross the module boundary.
+			PrivateDefinitions.Add("RMLUI_CORE_EXPORTS=1");
+		}
 
 		// Compile-time switch in Core.cpp that installs FontEngineInterfaceDefault
 		// (FreeType) as the default font engine; only read by .cpp files, so Private.
