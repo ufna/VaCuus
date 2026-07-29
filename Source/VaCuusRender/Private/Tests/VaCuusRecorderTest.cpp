@@ -6,6 +6,13 @@
 #include "VaCuusEngine.h"
 #include "VaCuusRecordingRenderInterface.h"
 
+#include "HAL/FileManager.h"
+#include "IImageWrapper.h"
+#include "IImageWrapperModule.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Paths.h"
+#include "Modules/ModuleManager.h"
+
 #include <RmlUi/Core.h>
 #include <RmlUi/Core/Types.h>
 #include <RmlUi/Core/Vertex.h>
@@ -151,6 +158,96 @@ bool FVaCuusRecorderPublishTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusRecorderLoadTextureTest, "VaCuus.Render.Recorder.LoadTexture",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusRecorderLoadTextureTest::RunTest(const FString& Parameters)
+{
+	// LoadTexture resolves sources through Rml::GetFileInterface(), so the
+	// library must be booted (installs FVaCuusFileInterface; absolute paths
+	// pass through). The null-file-interface early-out stays untested: it can
+	// only occur pre-boot and would require poking RmlUi globals directly.
+	FVaCuusEngine& Engine = FVaCuusEngine::Get();
+	if (!TestTrue(TEXT("Initialized"), Engine.Initialize()))
+	{
+		return false;
+	}
+	ON_SCOPE_EXIT
+	{
+		Engine.Shutdown();
+	};
+
+	const FString TestDir = FPaths::ConvertRelativePathToFull(FPaths::ProjectSavedDir() / TEXT("VaCuusTest"));
+	const FString PngPath = TestDir / TEXT("recorder_probe.png");
+	const FString FakePngPath = TestDir / TEXT("recorder_fake.png");
+	ON_SCOPE_EXIT
+	{
+		IFileManager::Get().Delete(*PngPath);
+		IFileManager::Get().Delete(*FakePngPath);
+		IFileManager::Get().DeleteDirectory(*TestDir);
+	};
+
+	// 4x2 RGBA probe with distinct byte values.
+	const FIntPoint ProbeSize(4, 2);
+	TArray<uint8> Pixels;
+	Pixels.SetNumUninitialized(ProbeSize.X * ProbeSize.Y * 4);
+	for (int32 Index = 0; Index < Pixels.Num(); ++Index)
+	{
+		Pixels[Index] = uint8(Index * 7 + 3);
+	}
+
+	IImageWrapperModule& ImageWrapperModule = FModuleManager::LoadModuleChecked<IImageWrapperModule>("ImageWrapper");
+	const TSharedPtr<IImageWrapper> Encoder = ImageWrapperModule.CreateImageWrapper(EImageFormat::PNG);
+	if (!TestTrue(TEXT("PNG encoder ready"),
+			Encoder.IsValid() && Encoder->SetRaw(Pixels.GetData(), Pixels.Num(), ProbeSize.X, ProbeSize.Y, ERGBFormat::RGBA, 8)))
+	{
+		return false;
+	}
+	if (!TestTrue(TEXT("Probe PNG saved"), FFileHelper::SaveArrayToFile(Encoder->GetCompressed(), *PngPath)))
+	{
+		return false;
+	}
+
+	FVaCuusRecordingRenderInterface Recorder;
+	Recorder.BeginFrame(FIntPoint(64, 64));
+
+	// Happy path: absolute path decodes; dimensions and pixels round-trip.
+	Rml::Vector2i Dimensions(0, 0);
+	const Rml::TextureHandle Handle = Recorder.LoadTexture(Dimensions, Rml::String(TCHAR_TO_UTF8(*PngPath)));
+	TestTrue(TEXT("LoadTexture returns non-zero handle"), Handle != Rml::TextureHandle(0));
+	TestTrue(TEXT("Decoded dimensions are 4x2"), Dimensions.x == 4 && Dimensions.y == 2);
+
+	// Failure: missing file.
+	Rml::Vector2i MissingDimensions(0, 0);
+	TestTrue(TEXT("Missing file yields zero handle"),
+		Recorder.LoadTexture(MissingDimensions, Rml::String(TCHAR_TO_UTF8(*(TestDir / TEXT("does_not_exist.png"))))) == Rml::TextureHandle(0));
+
+	// Failure: extension lies, content is plain text -> format detection fails.
+	if (TestTrue(TEXT("Fake PNG saved"), FFileHelper::SaveStringToFile(TEXT("this is not a png"), *FakePngPath)))
+	{
+		Rml::Vector2i FakeDimensions(0, 0);
+		TestTrue(TEXT("Non-image content yields zero handle"),
+			Recorder.LoadTexture(FakeDimensions, Rml::String(TCHAR_TO_UTF8(*FakePngPath))) == Rml::TextureHandle(0));
+	}
+
+	const TUniquePtr<FVaCuusCommandBuffer> Buffer = Recorder.EndFrameAndPublish();
+	if (!TestNotNull(TEXT("Published buffer"), Buffer.Get()))
+	{
+		return false;
+	}
+
+	TestEqual(TEXT("Exactly one texture recorded"), Buffer->NewTextures.Num(), 1);
+	const FVaCuusTextureData* Data = Buffer->NewTextures.Find(FVaCuusTextureHandle(Handle));
+	if (TestNotNull(TEXT("Loaded texture stored under its handle"), Data))
+	{
+		TestTrue(TEXT("Texture size is 4x2"), Data->Size == FIntPoint(4, 2));
+		TestEqual(TEXT("RGBA payload is 32 bytes"), Data->RGBA.Num(), 32);
+		TestTrue(TEXT("PNG decode round-trips losslessly"), Data->RGBA == Pixels);
+	}
+
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusRecorderIntegrationTest, "VaCuus.Render.Recorder.Integration",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
@@ -159,6 +256,10 @@ bool FVaCuusRecorderIntegrationTest::RunTest(const FString& Parameters)
 	FVaCuusRecordingRenderInterface Recorder;
 
 	FVaCuusEngine& Engine = FVaCuusEngine::Get();
+	if (!TestFalse(TEXT("Engine must be down before the recorder is installed"), Engine.IsInitialized()))
+	{
+		return false;
+	}
 	Engine.SetRenderInterface(&Recorder); // Must land before the first Initialize().
 	if (!TestTrue(TEXT("Initialized"), Engine.Initialize()))
 	{

@@ -4,6 +4,7 @@
 
 #include "VaCuusDefines.h"
 
+#include "HAL/PlatformTLS.h"
 #include "IImageWrapper.h"
 #include "IImageWrapperModule.h"
 #include "Modules/ModuleManager.h"
@@ -25,9 +26,36 @@ static_assert(offsetof(Rml::Vertex, tex_coord) == offsetof(FVaCuusVertex, UV), "
 // Index stream is memcpy'd as well.
 static_assert(sizeof(int) == sizeof(int32), "Rml index type must be 32-bit");
 
+// Recorder handles round-trip through Rml handles (uintptr_t) unchanged.
+static_assert(sizeof(Rml::CompiledGeometryHandle) == sizeof(FVaCuusGeometryHandle), "Rml geometry handle must be 64-bit");
+static_assert(sizeof(Rml::TextureHandle) == sizeof(FVaCuusTextureHandle), "Rml texture handle must be 64-bit");
+
+FVaCuusRecordingRenderInterface::~FVaCuusRecordingRenderInterface()
+{
+	// Tripwire for the drop-on-teardown assumption: an unpublished pending
+	// buffer here is expected only for the M1 pattern where RmlUi Release*
+	// traffic lands after the last published frame and recorder + replayer
+	// are torn down together. Logged (not ensured) because that legitimate
+	// path would otherwise trip on every shutdown.
+	if (Pending &&
+		(Pending->NewGeometry.Num() > 0 || Pending->NewTextures.Num() > 0 ||
+			Pending->ReleasedGeometry.Num() > 0 || Pending->ReleasedTextures.Num() > 0))
+	{
+		UE_LOG(LogVaCuus, Log,
+			TEXT("Recorder destroyed with unpublished resource traffic (new: %d geometry, %d textures; released: %d geometry, %d textures) — dropped"),
+			Pending->NewGeometry.Num(), Pending->NewTextures.Num(),
+			Pending->ReleasedGeometry.Num(), Pending->ReleasedTextures.Num());
+	}
+}
+
 Rml::CompiledGeometryHandle FVaCuusRecordingRenderInterface::CompileGeometry(Rml::Span<const Rml::Vertex> Vertices, Rml::Span<const int> Indices)
 {
+	CheckOwnerThread();
+	check(Vertices.size() <= size_t(MAX_int32));
+	check(Indices.size() <= size_t(MAX_int32));
+
 	const FVaCuusGeometryHandle Handle = NextGeometryHandle++;
+	ensureMsgf(Handle != 0, TEXT("Geometry handle counter wrapped to the invalid sentinel"));
 
 	FVaCuusGeometryData& Data = GetPending().NewGeometry.Add(Handle);
 	Data.Vertices.SetNumUninitialized(int32(Vertices.size()));
@@ -46,6 +74,7 @@ Rml::CompiledGeometryHandle FVaCuusRecordingRenderInterface::CompileGeometry(Rml
 
 void FVaCuusRecordingRenderInterface::RenderGeometry(Rml::CompiledGeometryHandle Handle, Rml::Vector2f Translation, Rml::TextureHandle Texture)
 {
+	CheckOwnerThread();
 	if (!ensureMsgf(bInFrame, TEXT("RenderGeometry() outside BeginFrame/EndFrameAndPublish; call dropped")))
 	{
 		return;
@@ -60,6 +89,8 @@ void FVaCuusRecordingRenderInterface::RenderGeometry(Rml::CompiledGeometryHandle
 
 void FVaCuusRecordingRenderInterface::ReleaseGeometry(Rml::CompiledGeometryHandle Handle)
 {
+	CheckOwnerThread();
+
 	// Same-frame create+release keeps both the NewGeometry entry and this
 	// released handle: commands recorded before the release may still draw the
 	// geometry, so the replayer creates it, plays the buffer, then retires it.
@@ -68,6 +99,8 @@ void FVaCuusRecordingRenderInterface::ReleaseGeometry(Rml::CompiledGeometryHandl
 
 Rml::TextureHandle FVaCuusRecordingRenderInterface::LoadTexture(Rml::Vector2i& OutDimensions, const Rml::String& Source)
 {
+	CheckOwnerThread();
+
 	// M1 deviation from spec §5 (async decode with placeholder texture and a
 	// generation bump on arrival): decode synchronously on the game thread.
 	// Good enough for the render spike; recorded as tech debt.
@@ -105,6 +138,8 @@ Rml::TextureHandle FVaCuusRecordingRenderInterface::LoadTexture(Rml::Vector2i& O
 	OutDimensions = Rml::Vector2i(Size.X, Size.Y);
 
 	const FVaCuusTextureHandle Handle = NextTextureHandle++;
+	ensureMsgf(Handle != 0, TEXT("Texture handle counter wrapped to the invalid sentinel"));
+
 	FVaCuusTextureData& Data = GetPending().NewTextures.Add(Handle);
 	Data.Size = Size;
 	// Straight (non-premultiplied) alpha as decoded; premultiplication is the
@@ -116,8 +151,12 @@ Rml::TextureHandle FVaCuusRecordingRenderInterface::LoadTexture(Rml::Vector2i& O
 
 Rml::TextureHandle FVaCuusRecordingRenderInterface::GenerateTexture(Rml::Span<const Rml::byte> SourceData, Rml::Vector2i Dimensions)
 {
+	CheckOwnerThread();
+	check(SourceData.size() <= size_t(MAX_int32));
+
 	// Font glyph atlas path: RGBA8 with premultiplied alpha, per Rml contract.
 	const FVaCuusTextureHandle Handle = NextTextureHandle++;
+	ensureMsgf(Handle != 0, TEXT("Texture handle counter wrapped to the invalid sentinel"));
 
 	FVaCuusTextureData& Data = GetPending().NewTextures.Add(Handle);
 	Data.Size = FIntPoint(Dimensions.x, Dimensions.y);
@@ -132,11 +171,14 @@ Rml::TextureHandle FVaCuusRecordingRenderInterface::GenerateTexture(Rml::Span<co
 
 void FVaCuusRecordingRenderInterface::ReleaseTexture(Rml::TextureHandle Handle)
 {
+	CheckOwnerThread();
 	GetPending().ReleasedTextures.Add(FVaCuusTextureHandle(Handle));
 }
 
 void FVaCuusRecordingRenderInterface::EnableScissorRegion(bool bEnable)
 {
+	CheckOwnerThread();
+
 	// RmlUi only calls EnableScissorRegion(true) right before handing the rect
 	// to SetScissorRegion() (see RenderManager::SetScissorRegion), so the
 	// enable edge carries no information of its own: SetScissor implies
@@ -157,6 +199,7 @@ void FVaCuusRecordingRenderInterface::EnableScissorRegion(bool bEnable)
 
 void FVaCuusRecordingRenderInterface::SetScissorRegion(Rml::Rectanglei Region)
 {
+	CheckOwnerThread();
 	if (!ensureMsgf(bInFrame, TEXT("SetScissorRegion() outside BeginFrame/EndFrameAndPublish; call dropped")))
 	{
 		return;
@@ -169,6 +212,7 @@ void FVaCuusRecordingRenderInterface::SetScissorRegion(Rml::Rectanglei Region)
 
 void FVaCuusRecordingRenderInterface::SetTransform(const Rml::Matrix4f* Transform)
 {
+	CheckOwnerThread();
 	if (!ensureMsgf(bInFrame, TEXT("SetTransform() outside BeginFrame/EndFrameAndPublish; call dropped")))
 	{
 		return;
@@ -195,11 +239,13 @@ void FVaCuusRecordingRenderInterface::BeginFrame(FIntPoint ViewSize)
 	// Keep the existing pending buffer: it may already hold resource traffic
 	// recorded between frames (see class comment), which belongs to this frame.
 	GetPending().ViewSize = ViewSize;
+	OwnerThreadId = FPlatformTLS::GetCurrentThreadId();
 	bInFrame = true;
 }
 
 TUniquePtr<FVaCuusCommandBuffer> FVaCuusRecordingRenderInterface::EndFrameAndPublish()
 {
+	CheckOwnerThread();
 	ensureMsgf(bInFrame, TEXT("EndFrameAndPublish() without a matching BeginFrame()"));
 	bInFrame = false;
 
@@ -219,4 +265,14 @@ FVaCuusCommandBuffer& FVaCuusRecordingRenderInterface::GetPending()
 		Pending = MakeUnique<FVaCuusCommandBuffer>();
 	}
 	return *Pending;
+}
+
+void FVaCuusRecordingRenderInterface::CheckOwnerThread() const
+{
+	// Single-writer contract: while a frame is open, every recorder call must
+	// come from the thread that called BeginFrame(). Out-of-frame calls are
+	// not pinned (single-writer is still assumed, just not verifiable here).
+	ensureMsgf(!bInFrame || FPlatformTLS::GetCurrentThreadId() == OwnerThreadId,
+		TEXT("Recorder called from thread %u while the open frame is owned by thread %u"),
+		FPlatformTLS::GetCurrentThreadId(), OwnerThreadId);
 }

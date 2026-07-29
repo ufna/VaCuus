@@ -5,13 +5,14 @@
 #include "CoreMinimal.h"
 
 /**
- * Dense 1-based ids minted by the recorder (index+1); 0 = invalid/none.
+ * Dense 1-based ids minted by the recorder; 0 = invalid/none.
  * Handles are shared with RmlUi verbatim: the recorder returns them as
- * Rml::CompiledGeometryHandle / Rml::TextureHandle and gets them back in
- * draw and release calls.
+ * Rml::CompiledGeometryHandle / Rml::TextureHandle (uintptr_t, 64-bit on all
+ * target platforms) and gets them back in draw and release calls, so the
+ * full 64-bit range round-trips without truncation.
  */
-using FVaCuusGeometryHandle = uint32;
-using FVaCuusTextureHandle = uint32;
+using FVaCuusGeometryHandle = uint64;
+using FVaCuusTextureHandle = uint64;
 
 enum class EVaCuusCommandType : uint8
 {

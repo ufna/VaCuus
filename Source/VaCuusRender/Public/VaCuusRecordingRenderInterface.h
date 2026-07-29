@@ -10,9 +10,12 @@
 
 /**
  * Rml::RenderInterface implementation that records the frame into an
- * FVaCuusCommandBuffer instead of touching any RHI. The game thread drives it
- * with BeginFrame() / Context::Render() / EndFrameAndPublish(); the published
- * buffer is handed to the render-thread replayer.
+ * FVaCuusCommandBuffer instead of touching any RHI. Thread-agnostic
+ * single-writer contract: any one thread may drive the recorder
+ * (BeginFrame() / Context::Render() / EndFrameAndPublish()), but calls must
+ * never race. While a frame is open, the recorder is pinned to the thread
+ * that called BeginFrame() — enforced with an ensure. Published buffers may
+ * be consumed on any thread.
  *
  * Resource calls (Compile/Generate/Load/Release*) are legal outside a
  * Begin/End pair: RmlUi releases geometry and textures during document
@@ -24,6 +27,8 @@
 class VACUUSRENDER_API FVaCuusRecordingRenderInterface : public Rml::RenderInterface
 {
 public:
+	virtual ~FVaCuusRecordingRenderInterface();
+
 	//~ Begin Rml::RenderInterface
 	virtual Rml::CompiledGeometryHandle CompileGeometry(Rml::Span<const Rml::Vertex> Vertices, Rml::Span<const int> Indices) override;
 	virtual void RenderGeometry(Rml::CompiledGeometryHandle Handle, Rml::Vector2f Translation, Rml::TextureHandle Texture) override;
@@ -41,7 +46,9 @@ public:
 
 	/**
 	 * Closes the frame and hands out the pending buffer with a strictly
-	 * increasing Generation. The next BeginFrame() starts from a fresh buffer.
+	 * increasing Generation. The next frame starts from a fresh buffer,
+	 * though out-of-frame resource traffic arriving before the next
+	 * BeginFrame() may pre-populate it (see class comment).
 	 */
 	TUniquePtr<FVaCuusCommandBuffer> EndFrameAndPublish();
 
@@ -49,9 +56,16 @@ private:
 	/** Lazily creates the pending buffer; see class comment for out-of-frame semantics. */
 	FVaCuusCommandBuffer& GetPending();
 
-	uint32 NextGeometryHandle = 1;
-	uint32 NextTextureHandle = 1;
+	/** Ensures the caller is the frame-owning thread while a frame is open. */
+	void CheckOwnerThread() const;
+
+	uint64 NextGeometryHandle = 1;
+	uint64 NextTextureHandle = 1;
 	uint64 Generation = 0;
 	bool bInFrame = false;
+
+	/** Thread that called BeginFrame(); only meaningful while bInFrame. */
+	uint32 OwnerThreadId = 0;
+
 	TUniquePtr<FVaCuusCommandBuffer> Pending;
 };
