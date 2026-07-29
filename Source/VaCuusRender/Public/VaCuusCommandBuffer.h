@@ -65,7 +65,11 @@ struct FVaCuusGeometryData
 	TArray<int32> Indices;
 };
 
-/** Raw RGBA8 pixels (RmlUi byte order, premultiplied alpha for generated textures). */
+/**
+ * Raw RGBA8 pixels, RmlUi byte order, ALWAYS premultiplied alpha: generated
+ * textures (fonts) per the Rml contract, loaded images premultiplied at decode
+ * by the recorder. Upload as PF_R8G8B8A8 and blend One/InverseSourceAlpha.
+ */
 struct FVaCuusTextureData
 {
 	FIntPoint Size = FIntPoint::ZeroValue;

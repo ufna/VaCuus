@@ -14,13 +14,15 @@ public class VaCuusRender : ModuleRules
 			"Engine",
 
 			// Public: VaCuusRecordingRenderInterface.h derives from Rml::RenderInterface.
-			"VaCuusRml"
+			"VaCuusRml",
+
+			// Public: VaCuusReplayRenderer.h exposes FTextureRHIRef/FBufferRHIRef.
+			"RHI"
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[] {
-			// RHI/Slate side of the render backend (replayer, widget) lands in later
+			// Slate side of the render backend (widget, composite) lands in later
 			// tasks; declared up front so the module shape is final.
-			"RHI",
 			"RenderCore",
 			"Renderer",
 			"SlateCore",

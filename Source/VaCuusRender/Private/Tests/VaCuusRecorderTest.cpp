@@ -187,13 +187,15 @@ bool FVaCuusRecorderLoadTextureTest::RunTest(const FString& Parameters)
 		IFileManager::Get().DeleteDirectory(*TestDir);
 	};
 
-	// 4x2 RGBA probe with distinct byte values.
+	// 4x2 RGBA probe with distinct byte values. Alpha bytes are forced opaque:
+	// LoadTexture premultiplies alpha at decode, and A=255 keeps that a no-op
+	// so the lossless round-trip assertion below stays byte-exact.
 	const FIntPoint ProbeSize(4, 2);
 	TArray<uint8> Pixels;
 	Pixels.SetNumUninitialized(ProbeSize.X * ProbeSize.Y * 4);
 	for (int32 Index = 0; Index < Pixels.Num(); ++Index)
 	{
-		Pixels[Index] = uint8(Index * 7 + 3);
+		Pixels[Index] = (Index % 4 == 3) ? uint8(255) : uint8(Index * 7 + 3);
 	}
 
 	IImageWrapperModule& ImageWrapperModule = FModuleManager::LoadModuleChecked<IImageWrapperModule>("ImageWrapper");

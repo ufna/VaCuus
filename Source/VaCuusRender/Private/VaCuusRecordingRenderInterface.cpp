@@ -137,13 +137,31 @@ Rml::TextureHandle FVaCuusRecordingRenderInterface::LoadTexture(Rml::Vector2i& O
 	const FIntPoint Size(ImageWrapper->GetWidth(), ImageWrapper->GetHeight());
 	OutDimensions = Rml::Vector2i(Size.X, Size.Y);
 
+	// Alpha is premultiplied here at the decode boundary so ALL recorded
+	// texture payloads share one contract: RGBA memory order, premultiplied
+	// alpha. GenerateTexture (fonts) already arrives premultiplied per the Rml
+	// ColourbPremultiplied contract, and the replayer blends with
+	// One/InverseSourceAlpha, which assumes premultiplied sources.
+	{
+		uint8* Pixel = RawRGBA.GetData();
+		uint8* const End = Pixel + RawRGBA.Num();
+		for (; Pixel < End; Pixel += 4)
+		{
+			const uint32 Alpha = Pixel[3];
+			if (Alpha < 255)
+			{
+				Pixel[0] = uint8((Pixel[0] * Alpha) / 255u);
+				Pixel[1] = uint8((Pixel[1] * Alpha) / 255u);
+				Pixel[2] = uint8((Pixel[2] * Alpha) / 255u);
+			}
+		}
+	}
+
 	const FVaCuusTextureHandle Handle = NextTextureHandle++;
 	ensureMsgf(Handle != 0, TEXT("Texture handle counter wrapped to the invalid sentinel"));
 
 	FVaCuusTextureData& Data = GetPending().NewTextures.Add(Handle);
 	Data.Size = Size;
-	// Straight (non-premultiplied) alpha as decoded; premultiplication is the
-	// replayer's blend-state decision (Task 6+).
 	Data.RGBA = MoveTemp(RawRGBA);
 
 	return Rml::TextureHandle(Handle);
