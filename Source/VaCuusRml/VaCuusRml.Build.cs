@@ -19,6 +19,12 @@ public class VaCuusRml : ModuleRules
 		PublicIncludePaths.Add(Path.Combine(RmlRoot, "Include"));
 		PublicDefinitions.Add("RMLUI_CUSTOM_RTTI=1");
 
+		// itlib (vendored inside RmlUi) throws in a few container paths; monolithic/non-editor
+		// targets compile with exceptions disabled and UBT only lets a module turn exceptions ON
+		// (bEnableExceptions |= ...), so the library's no-throw mode is the only option.
+		// Public because Config.h pulls flat_map.hpp into every consumer of the RmlUi headers.
+		PublicDefinitions.Add("ITLIB_FLAT_MAP_NO_THROW=1");
+
 		if (Target.LinkType == TargetLinkType.Monolithic)
 		{
 			PublicDefinitions.Add("RMLUI_STATIC_LIB=1");
