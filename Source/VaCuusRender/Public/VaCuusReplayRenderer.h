@@ -24,7 +24,7 @@ class FRHICommandList;
  *    resource created and drawn in the same buffer works.
  *  - Released* lists are processed AFTER the commands run (deferred release:
  *    the buffer carrying a release may still draw with that handle).
- *  - A buffer whose Generation was already replayed is skipped (idempotent).
+ *  - A buffer whose Generation was already consumed is skipped (idempotent).
  */
 class VACUUSRENDER_API FVaCuusReplayRenderer
 {
@@ -35,6 +35,19 @@ public:
 	 * buffer's released handles.
 	 */
 	void Replay(FRHICommandList& RHICmdList, const FVaCuusCommandBuffer& Buffer);
+
+	/**
+	 * Consumes only the buffer's resource traffic: uploads NewGeometry/
+	 * NewTextures, retires the Released* handles and advances the generation —
+	 * no RT access, no draw pass. For draining a buffer backlog where only the
+	 * newest buffer gets drawn (each buffer repaints the whole frame, so the
+	 * older draws are worthless, but their resource DELTAS are not).
+	 *
+	 * Ordering safety: buffer N+1 was recorded after buffer N's releases were
+	 * issued, so N+1 never references a handle that N released — consuming
+	 * N's releases before N+1 draws is sound.
+	 */
+	void ConsumeResources(FRHICommandList& RHICmdList, const FVaCuusCommandBuffer& Buffer);
 
 	/** Latest replayed UI frame (PF_B8G8R8A8, premultiplied alpha, SRV state); null before the first replay. */
 	FTextureRHIRef GetOutputRT() const { return OutputRT; }
@@ -53,11 +66,17 @@ public:
 
 private:
 
+	/** Idempotence/order guard shared by Replay and ConsumeResources; false = already consumed, skip. */
+	bool ShouldConsume(const FVaCuusCommandBuffer& Buffer) const;
+
 	/** Creates RHI resources for the buffer's NewGeometry/NewTextures. */
 	void UploadNewResources(FRHICommandList& RHICmdList, const FVaCuusCommandBuffer& Buffer);
 
 	/** Replays Buffer.Commands into OutputRT (assumes OutputRT matches Buffer.ViewSize). */
 	void ReplayCommands(FRHICommandList& RHICmdList, const FVaCuusCommandBuffer& Buffer);
+
+	/** Retires the buffer's Released* handles and marks its generation consumed. */
+	void RetireBufferResources(const FVaCuusCommandBuffer& Buffer);
 
 	struct FGeometry
 	{
@@ -70,5 +89,7 @@ private:
 	TMap<FVaCuusGeometryHandle, FGeometry> Geometry;
 	TMap<FVaCuusTextureHandle, FTextureRHIRef> Textures;
 	FTextureRHIRef OutputRT;
-	uint64 LastReplayedGeneration = 0;
+
+	/** Newest buffer generation consumed so far (drawn via Replay or resource-only via ConsumeResources). */
+	uint64 LastConsumedGeneration = 0;
 };

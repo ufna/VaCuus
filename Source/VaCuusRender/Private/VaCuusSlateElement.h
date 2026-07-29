@@ -31,8 +31,10 @@ public:
 	/**
 	 * Takes ownership of the next recorded frame. Buffers queue up (instead of
 	 * replacing) because each one carries the resource DELTA since the last:
-	 * skipping a buffer would lose geometry/texture creations and releases.
-	 * In steady state Tick and paint alternate 1:1 and the queue holds one entry.
+	 * dropping a buffer would lose geometry/texture creations and releases.
+	 * The drain draws only the newest buffer; older ones are consumed for
+	 * their resources alone (FVaCuusReplayRenderer::ConsumeResources). In
+	 * steady state Tick and paint alternate 1:1 and the queue holds one entry.
 	 */
 	void SetPendingBuffer_RenderThread(TUniquePtr<FVaCuusCommandBuffer> InBuffer);
 

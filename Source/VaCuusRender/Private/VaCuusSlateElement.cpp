@@ -51,10 +51,17 @@ void FVaCuusSlateElement::Draw_RenderThread(FRDGBuilder& GraphBuilder, const FDr
 		GraphBuilder.AddPass(RDG_EVENT_NAME("VaCuusReplay"), ERDGPassFlags::NeverCull,
 			[this, Buffers = MoveTemp(PendingBuffers)](FRHICommandListImmediate& RHICmdList)
 			{
-				for (const TUniquePtr<FVaCuusCommandBuffer>& Buffer : Buffers)
+				// Only the NEWEST buffer is drawn — each buffer repaints the
+				// whole frame, so older draws are worthless. Older buffers
+				// surrender just their resource deltas: fully replaying them
+				// could recreate the RT mid-pass on a ViewSize change and
+				// orphan the texture the composite registered at graph-build
+				// time (one-frame stale/blank composite after a resize).
+				for (int32 Index = 0; Index < Buffers.Num() - 1; ++Index)
 				{
-					Replayer.Replay(RHICmdList, *Buffer);
+					Replayer.ConsumeResources(RHICmdList, *Buffers[Index]);
 				}
+				Replayer.Replay(RHICmdList, *Buffers.Last());
 			});
 
 		// MoveTemp above leaves the member in a valid-but-unspecified state;

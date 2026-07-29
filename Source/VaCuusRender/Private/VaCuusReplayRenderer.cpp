@@ -38,16 +38,10 @@ FMatrix44f MakePixelToClipMatrix(FIntPoint ViewSize)
 void FVaCuusReplayRenderer::Replay(FRHICommandList& RHICmdList, const FVaCuusCommandBuffer& Buffer)
 {
 	check(IsInRenderingThread());
-
-	// Idempotence guard: replaying the same published buffer twice (e.g. two
-	// paints of one UI frame) must not re-run resource creation or releases.
-	if (Buffer.Generation == LastReplayedGeneration)
+	if (!ShouldConsume(Buffer))
 	{
 		return;
 	}
-	ensureMsgf(Buffer.Generation > LastReplayedGeneration,
-		TEXT("Replay generation went backwards (%llu after %llu) — buffers must arrive in publish order"),
-		Buffer.Generation, LastReplayedGeneration);
 
 	// Resources first: a buffer may create geometry/textures and draw with
 	// them in the same frame.
@@ -55,6 +49,16 @@ void FVaCuusReplayRenderer::Replay(FRHICommandList& RHICmdList, const FVaCuusCom
 
 	if (Buffer.ViewSize.X > 0 && Buffer.ViewSize.Y > 0)
 	{
+		// Tripwire for the drain contract: the Slate element ensured the RT at
+		// graph-build time from this same buffer's ViewSize and registered it
+		// for the composite; if EnsureOutputRT would recreate the RT HERE (mid
+		// pass), the composite is sampling a stale texture this frame.
+		ensureMsgf(!OutputRT.IsValid() || OutputRT->GetSizeXY() == Buffer.ViewSize,
+			TEXT("Replay is recreating the RT mid-pass (%dx%d -> %dx%d) — a registered composite would sample a stale texture. ")
+			TEXT("Only the newest queued buffer may be drawn; drain older ones via ConsumeResources"),
+			OutputRT.IsValid() ? OutputRT->GetSizeXY().X : 0, OutputRT.IsValid() ? OutputRT->GetSizeXY().Y : 0,
+			Buffer.ViewSize.X, Buffer.ViewSize.Y);
+
 		EnsureOutputRT(RHICmdList, Buffer.ViewSize);
 		ReplayCommands(RHICmdList, Buffer);
 	}
@@ -66,8 +70,43 @@ void FVaCuusReplayRenderer::Replay(FRHICommandList& RHICmdList, const FVaCuusCom
 			Buffer.ViewSize.X, Buffer.ViewSize.Y);
 	}
 
-	// Deferred release AFTER this buffer's replay: commands above were the
-	// last legal users of these handles. RHI refs die with the map entries.
+	RetireBufferResources(Buffer);
+}
+
+void FVaCuusReplayRenderer::ConsumeResources(FRHICommandList& RHICmdList, const FVaCuusCommandBuffer& Buffer)
+{
+	check(IsInRenderingThread());
+	if (!ShouldConsume(Buffer))
+	{
+		return;
+	}
+
+	// Resource traffic only — no RT, no draws. See the header for why
+	// consuming releases of a skipped buffer before the next one draws is
+	// sound (the next buffer was recorded after these releases were issued).
+	UploadNewResources(RHICmdList, Buffer);
+	RetireBufferResources(Buffer);
+}
+
+bool FVaCuusReplayRenderer::ShouldConsume(const FVaCuusCommandBuffer& Buffer) const
+{
+	// Idempotence guard: consuming the same published buffer twice (e.g. two
+	// paints of one UI frame) must not re-run resource creation or releases.
+	if (Buffer.Generation == LastConsumedGeneration)
+	{
+		return false;
+	}
+	ensureMsgf(Buffer.Generation > LastConsumedGeneration,
+		TEXT("Buffer generation went backwards (%llu after %llu) — buffers must arrive in publish order"),
+		Buffer.Generation, LastConsumedGeneration);
+	return true;
+}
+
+void FVaCuusReplayRenderer::RetireBufferResources(const FVaCuusCommandBuffer& Buffer)
+{
+	// Deferred release AFTER the buffer's commands ran (or were legitimately
+	// skipped): that buffer was the last legal user of these handles. RHI refs
+	// die with the map entries.
 	for (const FVaCuusGeometryHandle Handle : Buffer.ReleasedGeometry)
 	{
 		Geometry.Remove(Handle);
@@ -77,7 +116,7 @@ void FVaCuusReplayRenderer::Replay(FRHICommandList& RHICmdList, const FVaCuusCom
 		Textures.Remove(Handle);
 	}
 
-	LastReplayedGeneration = Buffer.Generation;
+	LastConsumedGeneration = Buffer.Generation;
 }
 
 void FVaCuusReplayRenderer::ReleaseResources()
@@ -88,7 +127,7 @@ void FVaCuusReplayRenderer::ReleaseResources()
 	OutputRT.SafeRelease();
 	// Reset the guard: after teardown this replayer can only be paired with a
 	// fresh recorder, whose generations restart from 1.
-	LastReplayedGeneration = 0;
+	LastConsumedGeneration = 0;
 }
 
 void FVaCuusReplayRenderer::EnsureOutputRT(FRHICommandList& RHICmdList, FIntPoint ViewSize)
