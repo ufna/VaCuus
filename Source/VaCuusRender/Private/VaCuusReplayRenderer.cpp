@@ -3,6 +3,7 @@
 #include "VaCuusReplayRenderer.h"
 
 #include "VaCuusDefines.h"
+#include "VaCuusStats.h"
 #include "VaCuusUIShaders.h"
 
 #include "GlobalRenderResources.h"
@@ -38,6 +39,8 @@ FMatrix44f MakePixelToClipMatrix(FIntPoint ViewSize)
 void FVaCuusReplayRenderer::Replay(FRHICommandList& RHICmdList, const FVaCuusCommandBuffer& Buffer)
 {
 	check(IsInRenderingThread());
+	VACUUS_PERF_SCOPE(Replay);
+
 	if (!ShouldConsume(Buffer))
 	{
 		return;
@@ -212,6 +215,7 @@ void FVaCuusReplayRenderer::ReplayCommands(FRHICommandList& RHICmdList, const FV
 {
 	const FIntPoint RTSize = Buffer.ViewSize;
 	const FMatrix44f Projection = VaCuusReplay::MakePixelToClipMatrix(RTSize);
+	int32 NumDrawCalls = 0;
 
 	FGlobalShaderMap* ShaderMap = GetGlobalShaderMap(GMaxRHIFeatureLevel);
 	TShaderMapRef<FVaCuusUIVS> VertexShader(ShaderMap);
@@ -310,6 +314,7 @@ void FVaCuusReplayRenderer::ReplayCommands(FRHICommandList& RHICmdList, const FV
 					RHICmdList.DrawIndexedPrimitive(Geo->IB,
 						/*BaseVertexIndex=*/0, /*FirstInstance=*/0, uint32(Geo->NumVertices),
 						/*StartIndex=*/0, uint32(Geo->NumIndices / 3), /*NumInstances=*/1);
+					++NumDrawCalls;
 					break;
 				}
 
@@ -344,4 +349,9 @@ void FVaCuusReplayRenderer::ReplayCommands(FRHICommandList& RHICmdList, const FV
 	RHICmdList.EndRenderPass();
 
 	RHICmdList.Transition(FRHITransitionInfo(OutputRT, ERHIAccess::RTV, ERHIAccess::SRVMask));
+
+	// One replay per frame, so per-replay counts read as per-frame in `stat vacuus`.
+	SET_DWORD_STAT(STAT_VaCuusDrawCalls, NumDrawCalls);
+	SET_DWORD_STAT(STAT_VaCuusCommands, Buffer.Commands.Num());
+	FVaCuusPerfLog::AddDraws(NumDrawCalls);
 }

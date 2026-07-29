@@ -3,6 +3,7 @@
 #include "VaCuusSlateElement.h"
 
 #include "VaCuusCommandBuffer.h"
+#include "VaCuusStats.h"
 #include "VaCuusUIShaders.h"
 
 #include "RHIStaticStates.h"
@@ -93,6 +94,11 @@ void FVaCuusSlateElement::Draw_RenderThread(FRDGBuilder& GraphBuilder, const FDr
 		// Nothing replayed yet (or torn down): draw nothing this frame.
 		return;
 	}
+
+	// Composite scope: graph-build cost of the composite section (registration,
+	// parameters, AddDrawScreenPass). The pass's own execution shows up under
+	// the RDG event VaCuusComposite.
+	VACUUS_PERF_SCOPE(Composite);
 
 	// 3. Composite. Registration is consistent by construction: RDG assumes
 	// external textures sit in SRVMask (kDefaultAccess), which is exactly the

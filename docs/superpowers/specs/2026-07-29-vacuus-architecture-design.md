@@ -315,8 +315,8 @@ budgets are asserted from M3.
 |---|---|---|
 | Game-thread cost (input+snapshots) | ≤0.10 ms/frame | gate |
 | UI-thread Update + command record (reference HUD) | ≤0.50 ms/frame | gate |
-| Render-thread replay (re-replay frames) | ≤0.50 ms @1080p | **provisional — re-baselined from M1 measurement** (only prior datum, ~1 ms, is the GL3 demo's `Context::Render` incl. GL submission — a different metric) |
-| Composite-only frames (idle UI) | ≤0.05 ms | gate |
+| Render-thread replay (re-replay frames) | ≤0.50 ms @1080p | gate — **measured M1: 0.03 ms avg / 0.07 ms p99 @1080p, 97 draws (2026-07-29)**. M1 static HUD subset, 100 s `-RenderOffscreen` soak, 15,324 replays, Linux Vulkan; steady-state max ≤0.37 ms, single 1.48 ms outlier on the first replay (font-atlas + image upload). Budget kept at 0.50 ms: ~7x p99 headroom for the full reference HUD (~10x the M1 element count, animated) |
+| Composite-only frames (idle UI) | ≤0.05 ms | gate — measured M1 composite section: 0.004 ms avg / 0.008 ms p99 (2026-07-29; render-thread graph-build cost of the composite pass — true idle frames need M2 dirty-detection, M1 re-records every frame) |
 | Added RAM (reference HUD, incl. JS heap ≤16 MB cap) | ≤32 MB | gate |
 | Added disk (Win64 shipping) | ≤10 MB | gate |
 | Frame-drop on document load (async path) | 0 hitches >1 ms on game thread | gate |

@@ -6,6 +6,7 @@
 #include "VaCuusEngine.h"
 #include "VaCuusRecordingRenderInterface.h"
 #include "VaCuusSlateElement.h"
+#include "VaCuusStats.h"
 
 #include "HAL/IConsoleManager.h"
 #include "RenderingThread.h"
@@ -95,11 +96,28 @@ void FVaCuusM1Harness::DrawFrame(FIntPoint ViewSize)
 		return;
 	}
 
+	if (ViewSize != LastLoggedViewSize)
+	{
+		// Measurement evidence (Task 10): the size every recorded frame is laid
+		// out and replayed at, straight from the widget geometry.
+		LastLoggedViewSize = ViewSize;
+		UE_LOG(LogVaCuus, Log, TEXT("M1 HUD view size now %dx%d"), ViewSize.X, ViewSize.Y);
+	}
+
 	Recorder->BeginFrame(ViewSize);
 	Context->SetDimensions(Rml::Vector2i(ViewSize.X, ViewSize.Y));
-	Context->Update();
-	Context->Render();
-	TUniquePtr<FVaCuusCommandBuffer> Buffer = Recorder->EndFrameAndPublish();
+
+	{
+		VACUUS_PERF_SCOPE(Update);
+		Context->Update();
+	}
+
+	TUniquePtr<FVaCuusCommandBuffer> Buffer;
+	{
+		VACUUS_PERF_SCOPE(Record);
+		Context->Render();
+		Buffer = Recorder->EndFrameAndPublish();
+	}
 
 	ENQUEUE_RENDER_COMMAND(VaCuusPublishUIFrame)(
 		[LocalElement = Element, Buf = MoveTemp(Buffer)](FRHICommandListImmediate& RHICmdList) mutable
@@ -115,6 +133,8 @@ void FVaCuusM1Harness::DrawFrame(FIntPoint ViewSize)
 		UE_LOG(LogVaCuus, Log, TEXT("M1 HUD auto-screenshot after %d frames"), FrameCount);
 		FScreenshotRequest::RequestScreenshot(/*bInShowUI=*/true);
 	}
+
+	FVaCuusPerfLog::TickLog();
 }
 
 void FVaCuusM1Harness::Shutdown()

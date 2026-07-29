@@ -85,4 +85,7 @@ private:
 	/** Frames drawn since boot; drives vacuus.M1HUD.AutoShot. */
 	int32 FrameCount = 0;
 	bool bAutoShotDone = false;
+
+	/** Last view size reported to the log (measurement evidence, Task 10). */
+	FIntPoint LastLoggedViewSize = FIntPoint::ZeroValue;
 };

@@ -582,18 +582,18 @@ second call removes it and tears down (shutdown order per spec §4: document →
 **Files:** Create: `Source/VaCuusRender/Private/VcStats.h`; Modify: recorder/replayer/widget
 to instrument. Modify: `docs/superpowers/specs/2026-07-29-vacuus-architecture-design.md` (§11).
 
-- [ ] **Step 10.1: Counters** via `DECLARE_CYCLE_STAT` group `STATGROUP_VaCuus`:
+- [x] **Step 10.1: Counters** via `DECLARE_CYCLE_STAT` group `STATGROUP_VaCuus`:
   `VaCuus Update (GT)`, `VaCuus Record (GT)`, `VaCuus Replay (RT)`, `VaCuus Composite (RT)`.
   `stat vacuus` shows them.
-- [ ] **Step 10.2: Measure:** PIE at 1920×1080 (`r.SetRes 1920x1080`), HUD on, 60s soak;
+- [x] **Step 10.2: Measure:** PIE at 1920×1080 (`r.SetRes 1920x1080`), HUD on, 60s soak;
   record the four stats (median + p99 from `stat unit`-style observation or a 60 s
   `-trace=cpu` capture opened in Unreal Insights). Also capture one Insights trace
   proving: no `FlushRenderingCommands` from VaCuus code and no render-thread wait on any
   VaCuus lock (search the trace for the VaCuus stat scopes' parents).
-- [ ] **Step 10.3: Re-baseline:** update spec §11 replay row with the measured number
+- [x] **Step 10.3: Re-baseline:** update spec §11 replay row with the measured number
   (replace "provisional" annotation with `measured M1: X.XX ms @1080p, N draws`), and
   paste the measurement block into `bd update VaCuus-akj.2 --notes="..."`.
-- [ ] **Step 10.4: Commit spec change:** `git commit -am "docs: re-baseline §11 replay budget from M1 measurement"`
+- [x] **Step 10.4: Commit spec change:** `git commit -am "docs: re-baseline §11 replay budget from M1 measurement"`
 
 ---
 
