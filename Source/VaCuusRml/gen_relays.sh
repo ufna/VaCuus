@@ -7,7 +7,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"; RML="$ROOT/../ThirdParty/RmlUi/Source"
 [ -d "$RML/Core" ] || { echo "gen_relays.sh: $RML/Core not found" >&2; exit 1; }
-git -C "$ROOT/.." status --porcelain -- Source/ThirdParty/RmlUi/Source/Core | grep -q . && echo 'warning: dirty vendor tree' >&2 || true
+git -C "$ROOT/../.." status --porcelain -- Source/ThirdParty/RmlUi/Source/Core | grep -q . && echo 'warning: dirty vendor tree' >&2 || true
 OUT="$ROOT/Private/Gen"; rm -rf "$OUT"; mkdir -p "$OUT"
 find "$RML/Core" -name '*.cpp' | sort | while read -r f; do
   rel="$(realpath --relative-to="$OUT" "$f")"
