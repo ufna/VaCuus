@@ -21,6 +21,11 @@
 			"LoadingPhase": "Default"
 		},
 		{
+			"Name": "VaCuusRml",
+			"Type": "Runtime",
+			"LoadingPhase": "PreDefault"
+		},
+		{
 			"Name": "VaCuusEditor",
 			"Type": "Editor",
 			"LoadingPhase": "PostEngineInit"
