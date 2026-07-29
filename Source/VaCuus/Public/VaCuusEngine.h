@@ -71,6 +71,14 @@ public:
 	bool IsInitialized() const { return RefCount.load(std::memory_order_acquire) > 0; }
 
 	/**
+	 * True when this thread may call Initialize()/Shutdown(): either nobody owns
+	 * the library yet, or this thread already does. Lets a caller that can cope
+	 * with "somebody else owns RmlUi" (the UI thread's Init(), which then refuses
+	 * to boot) test the contract instead of tripping the check() inside it.
+	 */
+	bool IsClaimableOnThisThread() const;
+
+	/**
 	 * Overrides the render interface used at boot. Must be called before the
 	 * first Initialize(); ignored (with an error) while the library is up.
 	 * When never called, a null render stub is installed for headless use.
@@ -79,11 +87,18 @@ public:
 	void SetRenderInterface(Rml::RenderInterface* InRenderInterface);
 
 	/**
-	 * Last-resort teardown for FVaCuusModule::ShutdownModule(): balances every
-	 * outstanding reference regardless of which thread owns them, because leaving
-	 * RmlUi up past module unload is worse than tearing it down from the wrong
-	 * thread. Always an error path -- the caller logs it. Never call this to
-	 * balance your own Initialize().
+	 * Last resort only, and no longer part of any expected path.
+	 *
+	 * The ordinary teardown is thread-stop-then-library-teardown: FVaCuusModule
+	 * owns the process-wide UI thread as well as this engine, so ShutdownModule()
+	 * stops the thread first, its Exit() runs the paired Shutdown() on the owner
+	 * thread, and the library is already down by the time the engine is destroyed.
+	 * This function exists for the case where that did not happen anyway (some
+	 * other holder never paired its Initialize()): it balances every outstanding
+	 * reference regardless of which thread owns them, because leaving RmlUi up past
+	 * module unload is worse than tearing it down from the wrong thread. Always an
+	 * error path -- the caller logs it. Never call this to balance your own
+	 * Initialize().
 	 */
 	void ForceShutdownAll();
 

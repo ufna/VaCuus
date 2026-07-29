@@ -5,7 +5,7 @@
 #include "VaCuusDefines.h"
 #include "VaCuusSlateElement.h"
 #include "VaCuusStats.h"
-#include "VaCuusUIThread.h"
+#include "VaCuusView.h"
 
 #include "HAL/IConsoleManager.h"
 #include "RenderingThread.h"
@@ -13,18 +13,18 @@
 #include "UnrealClient.h"
 
 // Debug helper for headless verification: request a UI-inclusive screenshot
-// once the UI thread has published N frames (0 = off). Set BEFORE toggling
+// once the view has published N frames (0 = off). Set BEFORE toggling
 // vacuus.M1HUD on, e.g. -ExecCmds="vacuus.M1HUD.AutoShot 10, vacuus.M1HUD".
 static TAutoConsoleVariable<int32> CVarVaCuusM1HUDAutoShot(
 	TEXT("vacuus.M1HUD.AutoShot"),
 	0,
-	TEXT("If > 0, request a screenshot (with UI) once the UI thread has completed this many frames."));
+	TEXT("If > 0, request a screenshot (with UI) once the view has published this many frames."));
 
 void SVaCuusHUDWidget::Construct(const FArguments& InArgs,
-	FVaCuusUIThread* InUIThread,
+	UVaCuusView* InView,
 	const TSharedRef<FVaCuusSlateElement>& InElement)
 {
-	UIThread = InUIThread;
+	View = InView;
 	Element = InElement;
 
 	SetCanTick(true);
@@ -39,31 +39,28 @@ void SVaCuusHUDWidget::Construct(const FArguments& InArgs,
 	SetVisibility(EVisibility::HitTestInvisible);
 }
 
-void SVaCuusHUDWidget::DetachUIThread()
+void SVaCuusHUDWidget::DetachView()
 {
 	check(IsInGameThread());
-	UIThread = nullptr;
+	View.Reset();
 }
 
 void SVaCuusHUDWidget::Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime)
 {
-	if (UIThread == nullptr)
+	UVaCuusView* ViewPtr = View.Get();
+	if (ViewPtr == nullptr)
 	{
 		return;
 	}
 
 	// Resize is a command, not a direct call: Context::SetDimensions belongs to the
-	// UI thread. Only sent on change, so the steady state costs nothing.
-	const FIntPoint ViewSize = ComputeWindowRect(AllottedGeometry).Size();
-	if (ViewSize != LastViewSize && ViewSize.X > 0 && ViewSize.Y > 0)
-	{
-		LastViewSize = ViewSize;
-		UIThread->EnqueueResize(ViewSize);
-	}
+	// UI thread. The view itself drops unchanged sizes, so the steady state costs
+	// nothing and a burst of resizes coalesces into one relayout.
+	ViewPtr->Resize(ComputeWindowRect(AllottedGeometry).Size());
 
-	// One coalescing pulse per game frame; never blocks. Task 4 moves this to
-	// UVaCuusSubsystem::Tick, which is a better slot than a widget's Tick.
-	UIThread->Trigger();
+	// No trigger here: UVaCuusSubsystem::Tick is the once-per-frame pulse, which is
+	// a better slot than a widget's Tick (and the only one that works for views
+	// without a widget).
 
 	TickAutoShot();
 	FVaCuusPerfLog::TickLog();
@@ -77,16 +74,18 @@ void SVaCuusHUDWidget::TickAutoShot()
 		return;
 	}
 
-	// Counted in UI-thread frames, not game frames: that is what guarantees the
-	// document has actually been recorded and published by the time we shoot.
-	const uint64 UIFrames = UIThread->GetFrameCount();
-	if (UIFrames < uint64(AutoShotFrame))
+	// Counted in published UI frames for THIS view, not game frames: that is what
+	// guarantees the document has actually been recorded and handed to the render
+	// thread by the time we shoot.
+	const UVaCuusView* ViewPtr = View.Get();
+	const uint64 PublishedFrames = ViewPtr ? ViewPtr->GetFramesPublished() : 0;
+	if (PublishedFrames < uint64(AutoShotFrame))
 	{
 		return;
 	}
 
 	bAutoShotDone = true;
-	UE_LOG(LogVaCuus, Log, TEXT("M1 HUD auto-screenshot after %llu UI frames"), UIFrames);
+	UE_LOG(LogVaCuus, Log, TEXT("M1 HUD auto-screenshot after %llu published UI frames"), PublishedFrames);
 	FScreenshotRequest::RequestScreenshot(/*bInShowUI=*/true);
 }
 

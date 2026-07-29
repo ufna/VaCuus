@@ -83,12 +83,21 @@ formalized in v1.x.
 
 ## 4. Threading model
 
-**Ownership.** One `FVaCuusUIThread` (FRunnable) per `UVaCuusSubsystem`
-(UGameInstanceSubsystem — one per PIE instance / game instance). The UI thread exclusively
-owns: all `Rml::Context`s, all documents, the QuickJS `JSRuntime/JSContext`, font engine,
-and the data-model registry. **No RmlUi or QuickJS API is ever called from any other
-thread** (both libraries are single-thread-affine; enforced by `check(IsInUIThread())`
-wrappers in debug).
+**Ownership.** One `FVaCuusUIThread` (FRunnable) **per process**, owned by `FVaCuusModule`
+alongside the RmlUi library wrapper; the per-instance unit is the **view**
+(`UVaCuusView` — one `Rml::Context` each), and a `UVaCuusSubsystem`
+(UGameInstanceSubsystem — one per PIE instance / game instance) owns its instance's views
+and triggers the shared thread once per tick. This is forced by RmlUi's design: its
+system/file/render interfaces, its `initialised` flag and its whole `CoreData` (including
+the context registry) are process-global statics (`Core/Core.cpp`), so two UI threads would
+both have to own the same library state; contexts, by contrast, are per-view objects inside
+that global state and `Rml::CreateContext()` accepts a per-context render interface. The UI
+thread exclusively owns: all `Rml::Context`s, all documents, the QuickJS
+`JSRuntime/JSContext`, font engine, and the data-model registry. **No RmlUi or QuickJS API
+is ever called from any other thread** (both libraries are single-thread-affine; enforced by
+`check(IsInUIThread())` wrappers in debug). Where the platform reports no multithreading
+support (commandlets, `-nothreading`), the same frame body runs inline on the game thread,
+which is recorded as the RmlUi owner for the duration of each call.
 
 **Game thread → UI thread** (all non-blocking):
 - Input event ring buffer (mouse/key/touch/gamepad/IME composition events, timestamped).
@@ -345,7 +354,7 @@ budgets are asserted from M3.
 | RCSS gotchas surprise web devs (no UA stylesheet — `div` is inline; box-shadow not animatable; tween parse strictness; positioned-ancestor rules) | `@vacuus/cli` ships a base stylesheet + linter rules + "web-dev gotchas" docs page (seeded from demo findings) |
 | TAA/TSR ghosting on world-space UI | responsive-AA material presets; docs recommend post-AA compositing/FXAA (same guidance class as Gameface's) |
 | JS debugging expectations (breakpoints) | honest docs; CDP bridge on v2 roadmap; error overlay + inspector in v1 |
-| PIE multi-instance | one subsystem+UI thread per GameInstance by construction; automation test with 2 PIE clients |
+| PIE multi-instance | structural, per §4: one subsystem per GameInstance owning its own views, all sharing the one process-wide UI thread (N subsystems, 1 thread, N contexts — a view id on every command does the routing), so instances cannot collide over RmlUi's global state; covered headlessly by `VaCuus.Threading.MultiView` (two contexts on one thread, one destroyed while the other keeps rendering) plus an automation test with 2 PIE clients |
 | Fab review friction | package per verified Fab rules; no-executables scan in M6; precedents documented in research |
 | Grid absence hurts adoption | flex-first templates in CLI; evaluate upstream Grid contribution post-v1 |
 | Win64/macOS validation hardware | required for M6 matrix — tracked as open item §15 |

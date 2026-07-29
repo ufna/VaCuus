@@ -1,0 +1,149 @@
+// Copyright 2026 Vladimir Alyamkin. All Rights Reserved.
+
+#include "VaCuusView.h"
+
+#include "VaCuusDefines.h"
+#include "VaCuusSubsystem.h"
+#include "VaCuusUIThread.h"
+#include "VaCuusViewStatus.h"
+
+void UVaCuusView::InitializeView(UVaCuusSubsystem* InSubsystem, uint32 InViewId,
+	const TSharedRef<FVaCuusViewStatus>& InStatus, FIntPoint InInitialViewSize)
+{
+	check(IsInGameThread());
+
+	OwningSubsystem = InSubsystem;
+	ViewId = InViewId;
+	Status = InStatus;
+	LastViewSize = InInitialViewSize;
+	bRegistered = true;
+}
+
+void UVaCuusView::Invalidate()
+{
+	check(IsInGameThread());
+
+	// The status object stays: the UI thread's host holds its own reference, and
+	// dropping ours would only make a late PollStatus() crash instead of no-op.
+	bRegistered = false;
+}
+
+FVaCuusUIThread* UVaCuusView::GetUIThread() const
+{
+	// Never cached: the thread belongs to FVaCuusModule, and going through the
+	// subsystem every time is what keeps this handle from holding a raw pointer
+	// across module or world teardown.
+	UVaCuusSubsystem* Subsystem = OwningSubsystem.Get();
+	return (bRegistered && Subsystem) ? Subsystem->GetUIThread() : nullptr;
+}
+
+void UVaCuusView::LoadDocument(const FString& VfsPath)
+{
+	check(IsInGameThread());
+
+	FVaCuusUIThread* UIThread = GetUIThread();
+	if (!UIThread)
+	{
+		UE_LOG(LogVaCuus, Warning, TEXT("LoadDocument('%s') on an invalid view is ignored"), *VfsPath);
+		return;
+	}
+
+	const uint64 Serial = NextLoadSerial++;
+	Status->LoadRequestSerial.store(Serial, std::memory_order_relaxed);
+	UIThread->EnqueueLoadDocumentFile(ViewId, VfsPath, Serial, LastViewSize);
+}
+
+void UVaCuusView::LoadDocumentFromMemory(const FString& RmlSource)
+{
+	check(IsInGameThread());
+
+	FVaCuusUIThread* UIThread = GetUIThread();
+	if (!UIThread)
+	{
+		UE_LOG(LogVaCuus, Warning, TEXT("LoadDocumentFromMemory() on an invalid view is ignored"));
+		return;
+	}
+
+	const uint64 Serial = NextLoadSerial++;
+	Status->LoadRequestSerial.store(Serial, std::memory_order_relaxed);
+	UIThread->EnqueueLoadDocumentFromMemory(ViewId, RmlSource, Serial, LastViewSize);
+}
+
+void UVaCuusView::Close()
+{
+	check(IsInGameThread());
+
+	if (FVaCuusUIThread* UIThread = GetUIThread())
+	{
+		UIThread->EnqueueCloseDocument(ViewId);
+	}
+}
+
+void UVaCuusView::SetVisible(bool bVisible)
+{
+	check(IsInGameThread());
+
+	if (FVaCuusUIThread* UIThread = GetUIThread())
+	{
+		UIThread->EnqueueSetVisible(ViewId, bVisible);
+	}
+}
+
+bool UVaCuusView::IsViewValid() const
+{
+	return GetUIThread() != nullptr;
+}
+
+void UVaCuusView::Resize(FIntPoint ViewSize)
+{
+	check(IsInGameThread());
+
+	if (ViewSize == LastViewSize || ViewSize.X <= 0 || ViewSize.Y <= 0)
+	{
+		return;
+	}
+
+	FVaCuusUIThread* UIThread = GetUIThread();
+	if (!UIThread)
+	{
+		return;
+	}
+
+	// Remembered even though the command may be dropped mid-teardown: the next
+	// load carries this size, so a view that comes back up lays out correctly.
+	LastViewSize = ViewSize;
+	UIThread->EnqueueResize(ViewId, ViewSize);
+
+	UE_LOG(LogVaCuus, Verbose, TEXT("View %u: queued resize to %dx%d"), ViewId, ViewSize.X, ViewSize.Y);
+}
+
+uint64 UVaCuusView::GetFramesPublished() const
+{
+	return Status.IsValid() ? Status->FramesPublished.load(std::memory_order_acquire) : 0;
+}
+
+void UVaCuusView::PollStatus()
+{
+	check(IsInGameThread());
+
+	if (!Status.IsValid())
+	{
+		return;
+	}
+
+	// Acquire pairs with the host's release store, so the result read below belongs
+	// to this serial and not to the load before it.
+	const uint64 Completed = Status->LoadCompletedSerial.load(std::memory_order_acquire);
+	if (Completed == LastBroadcastLoadSerial)
+	{
+		return;
+	}
+
+	// Advanced even with nothing bound, so a listener added later hears about the
+	// next load rather than replaying an old one.
+	LastBroadcastLoadSerial = Completed;
+
+	const bool bSuccess =
+		static_cast<EVaCuusLoadResult>(Status->LoadResult.load(std::memory_order_relaxed)) == EVaCuusLoadResult::Succeeded;
+	OnLoadCompleted.Broadcast(this, bSuccess);
+}

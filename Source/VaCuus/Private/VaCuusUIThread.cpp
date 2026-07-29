@@ -4,6 +4,7 @@
 
 #include "VaCuusDefines.h"
 #include "VaCuusDocumentHost.h"
+#include "VaCuusEngine.h"
 #include "VaCuusUIQueues.h"
 
 #include "HAL/PlatformProcess.h"
@@ -15,7 +16,8 @@ namespace
 /**
  * OS id of the live UI thread, or 0 when there is none. Mirrors the engine's own
  * GGameThreadId / GRenderThreadId so IsInUIThread() needs no instance and costs a
- * relaxed load. Deliberately a single global: VaCuus runs at most one UI thread.
+ * relaxed load. Deliberately a single global: VaCuus runs at most one UI thread
+ * per process (see the class comment for why RmlUi leaves no choice).
  */
 std::atomic<uint32> GVaCuusUIThreadId{0};
 
@@ -28,10 +30,31 @@ std::atomic<uint32> GVaCuusUIThreadId{0};
  * this value survives as given.
  */
 constexpr uint32 GVaCuusUIThreadStackSize = 512 * 1024;
+
+/**
+ * Makes the calling thread *be* the UI thread for the duration of the scope.
+ *
+ * Only used by the inline fallback: with no real worker thread, the frame runs on
+ * the game thread, and the check(IsInUIThread()) guards protecting RmlUi have to
+ * accept it. Scoped rather than latched so that outside these calls the game
+ * thread is still not the UI thread and the guards still catch mistakes.
+ */
+struct FVaCuusInlineUIThreadScope
+{
+	FVaCuusInlineUIThreadScope()
+		: Previous(GVaCuusUIThreadId.exchange(FPlatformTLS::GetCurrentThreadId(), std::memory_order_acq_rel))
+	{
+	}
+
+	~FVaCuusInlineUIThreadScope() { GVaCuusUIThreadId.store(Previous, std::memory_order_release); }
+
+	uint32 Previous = 0;
+};
 }	 // namespace
 
-FVaCuusUIThread::FVaCuusUIThread()
-	: Queues(MakeUnique<FVaCuusUIQueues>())
+FVaCuusUIThread::FVaCuusUIThread(FVaCuusEngine& InEngine)
+	: Engine(InEngine)
+	, Queues(MakeUnique<FVaCuusUIQueues>())
 {
 }
 
@@ -43,6 +66,16 @@ FVaCuusUIThread::~FVaCuusUIThread()
 	// and IsRunning() must not tempt anyone into using it.
 	bThreadLive.store(false, std::memory_order_release);
 
+	if (bInlineMode)
+	{
+		// No worker to join: the frames ran on this thread, so the teardown runs
+		// here too -- under the same scope that made the frames legal.
+		check(IsInGameThread());
+		FVaCuusInlineUIThreadScope InlineScope;
+		Exit();
+		return;
+	}
+
 	// The platform destructor does Kill(true), i.e. Stop() then join, so Run() and
 	// Exit() have both finished by the time this returns -- which is what makes it
 	// safe for Exit() to own the RmlUi teardown. Destroying the thread before any
@@ -50,21 +83,15 @@ FVaCuusUIThread::~FVaCuusUIThread()
 	delete Thread;
 	Thread = nullptr;
 
-	// Normally Exit() already dropped the host on the UI thread. It is still set
-	// only when the worker never ran (Start() not called, or thread creation
+	// Normally Exit() already dropped every host on the UI thread. Anything left
+	// here means the worker never ran (Start() not called, or thread creation
 	// failed), in which case nothing was ever booted and the game thread may
-	// destroy it safely.
-}
-
-void FVaCuusUIThread::SetDocumentHost(TUniquePtr<IVaCuusDocumentHost> InHost)
-{
-	checkf(Thread == nullptr, TEXT("SetDocumentHost() must be called before Start()"));
-	Host = MoveTemp(InHost);
+	// destroy the hosts safely.
 }
 
 bool FVaCuusUIThread::Start()
 {
-	if (Thread != nullptr)
+	if (Thread != nullptr || bInlineMode)
 	{
 		UE_LOG(LogVaCuus, Warning, TEXT("UI thread is already started"));
 		return true;
@@ -80,7 +107,7 @@ bool FVaCuusUIThread::Start()
 		// FRunnableThread::Create() returns nullptr *without logging anything* when
 		// FPlatformProcess::SupportsMultithreading() is false and the runnable has no
 		// FSingleThreadRunnable -- commandlets, -nothreading, some server configs.
-		// Say so loudly; the caller is expected to run UI frames inline instead.
+		// Say so loudly; the caller is expected to fall back to StartInline().
 		UE_LOG(LogVaCuus, Warning,
 			TEXT("Failed to create the VaCuus UI thread (SupportsMultithreading=%s); the caller must run UI frames inline"),
 			FPlatformProcess::SupportsMultithreading() ? TEXT("true") : TEXT("false"));
@@ -109,6 +136,46 @@ bool FVaCuusUIThread::Start()
 	return true;
 }
 
+bool FVaCuusUIThread::StartInline()
+{
+	check(IsInGameThread());
+	checkf(Thread == nullptr, TEXT("StartInline() must not follow a successful Start()"));
+
+	// Everything Init() does -- publishing the thread id, booting RmlUi -- happens
+	// on this thread, which therefore becomes the RmlUi owner for good.
+	FVaCuusInlineUIThreadScope InlineScope;
+	if (!Init())
+	{
+		return false;
+	}
+
+	bInlineMode = true;
+
+	UE_LOG(LogVaCuus, Warning,
+		TEXT("VaCuus UI frames run INLINE on the game thread (no multithreading support); expect game-thread UI cost"));
+	return true;
+}
+
+bool FVaCuusUIThread::IsInlineMode() const
+{
+	return bInlineMode;
+}
+
+void FVaCuusUIThread::RunFrameInline()
+{
+	check(IsInGameThread());
+	checkf(bInlineMode, TEXT("RunFrameInline() is only valid after StartInline()"));
+
+	if (bStopRequested.load(std::memory_order_acquire))
+	{
+		return;
+	}
+
+	FVaCuusInlineUIThreadScope InlineScope;
+	RunFrame();
+	FrameCount.fetch_add(1, std::memory_order_release);
+}
+
 void FVaCuusUIThread::Stop()
 {
 	// Called from the owner's thread, including from inside Kill(true). Both halves
@@ -124,33 +191,91 @@ void FVaCuusUIThread::Stop()
 void FVaCuusUIThread::Trigger()
 {
 	// The event is auto-reset, so it is a binary latch: N triggers arriving while a
-	// frame is in flight wake the worker exactly once.
+	// frame is in flight wake the worker exactly once. In inline mode nothing waits
+	// on it; the owner calls RunFrameInline() instead.
 	WakeEvent->Trigger();
 }
 
-void FVaCuusUIThread::EnqueueLoadDocumentFile(const FString& VfsPath, FIntPoint ViewSize)
+uint32 FVaCuusUIThread::AllocateViewId()
 {
-	Enqueue(FVaCuusUICommand{EVaCuusCommandKind::LoadDocumentFile, VfsPath, ViewSize});
+	// Ids are unique per process, not per subsystem: several game instances share
+	// this one thread and its view map.
+	return NextViewId.fetch_add(1, std::memory_order_relaxed);
 }
 
-void FVaCuusUIThread::EnqueueLoadDocumentFromMemory(const FString& RmlSource, FIntPoint ViewSize)
+void FVaCuusUIThread::EnqueueAddView(uint32 ViewId, TUniquePtr<IVaCuusDocumentHost> Host, FIntPoint ViewSize,
+	const TSharedRef<FVaCuusViewStatus>& Status)
 {
-	Enqueue(FVaCuusUICommand{EVaCuusCommandKind::LoadDocumentMemory, RmlSource, ViewSize});
+	FVaCuusUICommand Command;
+	Command.Kind = EVaCuusCommandKind::AddView;
+	Command.ViewId = ViewId;
+	Command.ViewSize = ViewSize;
+	Command.Host = MoveTemp(Host);
+	Command.Status = Status;
+	Enqueue(MoveTemp(Command));
 }
 
-void FVaCuusUIThread::EnqueueCloseDocument()
+void FVaCuusUIThread::EnqueueRemoveView(uint32 ViewId)
 {
-	Enqueue(FVaCuusUICommand{EVaCuusCommandKind::CloseDocument});
+	FVaCuusUICommand Command;
+	Command.Kind = EVaCuusCommandKind::RemoveView;
+	Command.ViewId = ViewId;
+	Enqueue(MoveTemp(Command));
 }
 
-void FVaCuusUIThread::EnqueueResize(FIntPoint ViewSize)
+void FVaCuusUIThread::EnqueueLoadDocumentFile(uint32 ViewId, const FString& VfsPath, uint64 LoadSerial, FIntPoint ViewSize)
 {
-	Enqueue(FVaCuusUICommand{EVaCuusCommandKind::Resize, FString(), ViewSize});
+	FVaCuusUICommand Command;
+	Command.Kind = EVaCuusCommandKind::LoadDocumentFile;
+	Command.ViewId = ViewId;
+	Command.Payload = VfsPath;
+	Command.ViewSize = ViewSize;
+	Command.LoadSerial = LoadSerial;
+	Enqueue(MoveTemp(Command));
+}
+
+void FVaCuusUIThread::EnqueueLoadDocumentFromMemory(uint32 ViewId, const FString& RmlSource, uint64 LoadSerial, FIntPoint ViewSize)
+{
+	FVaCuusUICommand Command;
+	Command.Kind = EVaCuusCommandKind::LoadDocumentMemory;
+	Command.ViewId = ViewId;
+	Command.Payload = RmlSource;
+	Command.ViewSize = ViewSize;
+	Command.LoadSerial = LoadSerial;
+	Enqueue(MoveTemp(Command));
+}
+
+void FVaCuusUIThread::EnqueueCloseDocument(uint32 ViewId)
+{
+	FVaCuusUICommand Command;
+	Command.Kind = EVaCuusCommandKind::CloseDocument;
+	Command.ViewId = ViewId;
+	Enqueue(MoveTemp(Command));
+}
+
+void FVaCuusUIThread::EnqueueResize(uint32 ViewId, FIntPoint ViewSize)
+{
+	FVaCuusUICommand Command;
+	Command.Kind = EVaCuusCommandKind::Resize;
+	Command.ViewId = ViewId;
+	Command.ViewSize = ViewSize;
+	Enqueue(MoveTemp(Command));
+}
+
+void FVaCuusUIThread::EnqueueSetVisible(uint32 ViewId, bool bVisible)
+{
+	FVaCuusUICommand Command;
+	Command.Kind = EVaCuusCommandKind::SetVisible;
+	Command.ViewId = ViewId;
+	Command.bVisible = bVisible;
+	Enqueue(MoveTemp(Command));
 }
 
 void FVaCuusUIThread::EnqueueShutdown()
 {
-	Enqueue(FVaCuusUICommand{EVaCuusCommandKind::Shutdown});
+	FVaCuusUICommand Command;
+	Command.Kind = EVaCuusCommandKind::Shutdown;
+	Enqueue(MoveTemp(Command));
 }
 
 void FVaCuusUIThread::Enqueue(FVaCuusUICommand&& Command)
@@ -189,6 +314,11 @@ uint64 FVaCuusUIThread::GetFrameCount() const
 	return FrameCount.load(std::memory_order_acquire);
 }
 
+int32 FVaCuusUIThread::GetNumViews() const
+{
+	return NumViews.load(std::memory_order_acquire);
+}
+
 bool FVaCuusUIThread::WaitForFrameCount(uint64 Target, double TimeoutSeconds)
 {
 	const double Deadline = FPlatformTime::Seconds() + TimeoutSeconds;
@@ -214,21 +344,25 @@ bool FVaCuusUIThread::IsInUIThread()
 
 bool FVaCuusUIThread::Init()
 {
-	// Runs on the worker thread. FRunnableThread::Create() waits for this to return,
-	// so everything published here is visible to the caller once Start() succeeds.
+	// Runs on the worker thread (or, in inline mode, on the game thread inside the
+	// inline scope). FRunnableThread::Create() waits for this to return, so
+	// everything published here is visible to the caller once Start() succeeds.
 	const uint32 CurrentThreadId = FPlatformTLS::GetCurrentThreadId();
 	ThreadId.store(CurrentThreadId, std::memory_order_release);
 	GVaCuusUIThreadId.store(CurrentThreadId, std::memory_order_release);
 
-	// UI-thread-affine subsystem boot: RmlUi (and, from M4, the script runtime)
-	// comes up here and nowhere else.
-	if (Host.IsValid() && !Host->Initialize())
+	// RmlUi is process-global, so it boots here once for every view that will ever
+	// exist -- and this thread becomes its owner. Refusing rather than asserting
+	// when somebody else already owns it keeps an automation test that holds RmlUi
+	// on its own thread from turning into a check() crash.
+	const bool bBooted = Engine.IsClaimableOnThisThread() && Engine.Initialize();
+	if (!bBooted)
 	{
+		UE_LOG(LogVaCuus, Error,
+			TEXT("The VaCuus UI thread could not boot RmlUi (already owned by another thread?); no UI frames will run"));
+
 		// Exit() will NOT run when Init() fails, so this is the only chance to
-		// unwind. Initialize() rolls its own partial state back; all that is left is
-		// to drop the host (on this thread, while it is still the UI thread) and to
-		// retract the thread-id publication.
-		Host.Reset();
+		// unwind. All there is to retract is the thread-id publication.
 		GVaCuusUIThreadId.store(0, std::memory_order_release);
 		ThreadId.store(0, std::memory_order_release);
 
@@ -266,14 +400,29 @@ void FVaCuusUIThread::Exit()
 	// FRunnable::Exit() header comment claiming "the aggregating thread" is wrong.
 	// This is the teardown hook for anything Init() booted; the destructor is not,
 	// because it runs on the owner's thread.
-	if (Host.IsValid())
+	check(IsInUIThread());
+
+	// 1. Every view lets go of its documents and its context (and releases its
+	// render-side resources), still on this thread.
+	for (TPair<uint32, TUniquePtr<IVaCuusDocumentHost>>& Pair : Hosts)
 	{
-		// Documents close, the context is removed and RmlUi shuts down here, on the
-		// thread that created all of it. Resetting rather than just shutting down
-		// also runs the host's destructor on this thread.
-		Host->Shutdown();
-		Host.Reset();
+		Pair.Value->Shutdown();
 	}
+	NumViews.store(0, std::memory_order_release);
+
+	// 2. RmlUi goes down, which destroys the RenderManagers it keyed on the hosts'
+	// render interfaces -- so every host, live or retired, must still exist here.
+	// Engine is held by reference for a reason: FVaCuusEngine::Get() would go
+	// through FModuleManager, which asserts on a non-game thread and doubly so while
+	// the module that owns us is being unloaded -- which is exactly when this runs.
+	if (Engine.IsInitialized())
+	{
+		Engine.Shutdown();
+	}
+
+	// 3. Only now may the hosts themselves die, on the thread that built them.
+	Hosts.Empty();
+	RetiredHosts.Empty();
 
 	GVaCuusUIThreadId.store(0, std::memory_order_release);
 	ThreadId.store(0, std::memory_order_release);
@@ -288,14 +437,15 @@ void FVaCuusUIThread::RunFrame()
 	DrainCommands();
 	// (input drain: Task 6; data snapshots: M3)
 
-	if (!Host.IsValid() || !Host->HasView())
+	// One recorded frame per view, each publishing its own command buffer straight
+	// to the render thread -- no game-thread hop. (Interactive snapshot: Task 5.)
+	for (TPair<uint32, TUniquePtr<IVaCuusDocumentHost>>& Pair : Hosts)
 	{
-		return;
+		if (Pair.Value->HasView())
+		{
+			Pair.Value->RecordAndPublishFrame();
+		}
 	}
-
-	// Records the frame and publishes the command buffer straight to the render
-	// thread -- no game-thread hop. (Interactive snapshot publish: Task 5.)
-	Host->RecordAndPublishFrame();
 }
 
 void FVaCuusUIThread::DrainCommands()
@@ -304,10 +454,55 @@ void FVaCuusUIThread::DrainCommands()
 
 	while (TOptional<FVaCuusUICommand> Command = Queues->Commands.Dequeue())
 	{
+		if (Command->Kind == EVaCuusCommandKind::Shutdown)
+		{
+			// In-band graceful stop: close every document now, then leave the loop
+			// after this frame. The owner still joins us through the destructor, and
+			// Exit() still runs the full teardown.
+			for (TPair<uint32, TUniquePtr<IVaCuusDocumentHost>>& Pair : Hosts)
+			{
+				Pair.Value->CloseDocument();
+			}
+			bStopRequested.store(true, std::memory_order_release);
+
+			// Anything queued behind a shutdown is dead by definition; drop it here
+			// and say how much, so the loss is as visible as Enqueue()'s.
+			int32 NumDropped = 0;
+			while (Queues->Commands.Dequeue())
+			{
+				++NumDropped;
+			}
+			UE_LOG(LogVaCuus, Verbose,
+				TEXT("UI thread stopping on an in-band shutdown command; dropped %d queued command(s) behind it"),
+				NumDropped);
+			return;
+		}
+
+		if (Command->Kind == EVaCuusCommandKind::AddView)
+		{
+			AddView(*Command);
+			continue;
+		}
+
+		if (Command->Kind == EVaCuusCommandKind::RemoveView)
+		{
+			RemoveView(Command->ViewId);
+			continue;
+		}
+
+		IVaCuusDocumentHost* Host = FindHost(Command->ViewId);
+		if (Host == nullptr)
+		{
+			// Ordinary during teardown: the view was removed while commands for it
+			// were still in flight.
+			UE_LOG(LogVaCuus, Verbose, TEXT("UI command for unknown view %u dropped"), Command->ViewId);
+			continue;
+		}
+
 		// Applied first and for every kind: a document then loads straight into the
 		// right layout size. SetViewSize() is idempotent, so a burst of resize
 		// commands costs exactly one relayout -- that is the coalescing.
-		if (Host.IsValid() && Command->ViewSize.X > 0 && Command->ViewSize.Y > 0)
+		if (Command->ViewSize.X > 0 && Command->ViewSize.Y > 0)
 		{
 			Host->SetViewSize(Command->ViewSize);
 		}
@@ -315,53 +510,93 @@ void FVaCuusUIThread::DrainCommands()
 		switch (Command->Kind)
 		{
 			case EVaCuusCommandKind::LoadDocumentFile:
-				if (Host.IsValid())
-				{
-					Host->LoadDocumentFromFile(Command->Payload);
-				}
+				Host->LoadDocumentFromFile(Command->Payload, Command->LoadSerial);
 				break;
 
 			case EVaCuusCommandKind::LoadDocumentMemory:
-				if (Host.IsValid())
-				{
-					Host->LoadDocumentFromMemory(Command->Payload);
-				}
+				Host->LoadDocumentFromMemory(Command->Payload, Command->LoadSerial);
 				break;
 
 			case EVaCuusCommandKind::CloseDocument:
-				if (Host.IsValid())
-				{
-					Host->CloseDocument();
-				}
+				Host->CloseDocument();
+				break;
+
+			case EVaCuusCommandKind::SetVisible:
+				Host->SetVisible(Command->bVisible);
 				break;
 
 			case EVaCuusCommandKind::Resize:
 				// Nothing left to do: the view size was applied above.
 				break;
 
-			case EVaCuusCommandKind::Shutdown:
-			{
-				// In-band graceful stop: close the document now, then leave the loop
-				// after this frame. The owner still joins us through the destructor,
-				// and Exit() still runs the full teardown.
-				if (Host.IsValid())
-				{
-					Host->CloseDocument();
-				}
-				bStopRequested.store(true, std::memory_order_release);
-
-				// Anything queued behind a shutdown is dead by definition; drop it
-				// here and say how much, so the loss is as visible as Enqueue()'s.
-				int32 NumDropped = 0;
-				while (Queues->Commands.Dequeue())
-				{
-					++NumDropped;
-				}
-				UE_LOG(LogVaCuus, Verbose,
-					TEXT("UI thread stopping on an in-band shutdown command; dropped %d queued command(s) behind it"),
-					NumDropped);
-				return;
-			}
+			default:
+				checkNoEntry();
+				break;
 		}
 	}
+}
+
+void FVaCuusUIThread::AddView(FVaCuusUICommand& Command)
+{
+	check(IsInUIThread());
+
+	if (!Command.Host.IsValid() || !Command.Status.IsValid())
+	{
+		UE_LOG(LogVaCuus, Error, TEXT("AddView for view %u carried no host"), Command.ViewId);
+		return;
+	}
+
+	if (Hosts.Contains(Command.ViewId))
+	{
+		UE_LOG(LogVaCuus, Error, TEXT("View %u is already registered; the AddView is ignored"), Command.ViewId);
+		return;
+	}
+
+	TUniquePtr<IVaCuusDocumentHost> Host = MoveTemp(Command.Host);
+	if (!Host->Initialize(Command.ViewId, Command.Status.ToSharedRef()))
+	{
+		// Contract: a host whose Initialize() failed has rolled itself back, so it
+		// can simply be dropped here (on this thread) with no Shutdown().
+		UE_LOG(LogVaCuus, Error, TEXT("View %u failed to boot; it will produce no frames"), Command.ViewId);
+		return;
+	}
+
+	if (Command.ViewSize.X > 0 && Command.ViewSize.Y > 0)
+	{
+		Host->SetViewSize(Command.ViewSize);
+	}
+
+	Hosts.Add(Command.ViewId, MoveTemp(Host));
+	NumViews.store(Hosts.Num(), std::memory_order_release);
+
+	UE_LOG(LogVaCuus, Log, TEXT("View %u registered on the UI thread (%d view(s) now)"),
+		Command.ViewId, Hosts.Num());
+}
+
+void FVaCuusUIThread::RemoveView(uint32 ViewId)
+{
+	check(IsInUIThread());
+
+	TUniquePtr<IVaCuusDocumentHost> Host;
+	if (!Hosts.RemoveAndCopyValue(ViewId, Host))
+	{
+		UE_LOG(LogVaCuus, Verbose, TEXT("RemoveView for unknown view %u ignored"), ViewId);
+		return;
+	}
+
+	NumViews.store(Hosts.Num(), std::memory_order_release);
+
+	// Drops the context and the render-side resources, but not the host: RmlUi
+	// still holds a RenderManager keyed on its render interface until
+	// Rml::Shutdown() (see RetiredHosts). Every other view keeps running.
+	Host->Shutdown();
+	RetiredHosts.Add(MoveTemp(Host));
+
+	UE_LOG(LogVaCuus, Log, TEXT("View %u removed from the UI thread (%d view(s) left)"), ViewId, Hosts.Num());
+}
+
+IVaCuusDocumentHost* FVaCuusUIThread::FindHost(uint32 ViewId) const
+{
+	const TUniquePtr<IVaCuusDocumentHost>* Found = Hosts.Find(ViewId);
+	return Found ? Found->Get() : nullptr;
 }

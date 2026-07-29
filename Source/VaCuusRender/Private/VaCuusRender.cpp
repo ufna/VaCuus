@@ -2,12 +2,13 @@
 
 #include "SVaCuusHUDWidget.h"
 #include "VaCuusDefines.h"
-#include "VaCuusEngine.h"
 #include "VaCuusRmlDocumentHost.h"
 #include "VaCuusSlateElement.h"
-#include "VaCuusUIThread.h"
+#include "VaCuusSubsystem.h"
+#include "VaCuusView.h"
 
 #include "Engine/Engine.h"
+#include "Engine/GameInstance.h"
 #include "Engine/GameViewportClient.h"
 #include "Engine/World.h"
 #include "HAL/IConsoleManager.h"
@@ -28,7 +29,9 @@ namespace VaCuusM1HUD
 static const TCHAR* GHudDocumentVfsPath = TEXT("m1_hud.rml");
 
 /**
- * Inline fallback document, used when Content/DevUI/m1_hud.rml is missing.
+ * Inline fallback document, used when Content/DevUI/m1_hud.rml is missing OR
+ * when it exists but fails to load (a broken RML/RCSS edit is exactly when a
+ * working fallback matters most).
  * The pure red and pure blue divs are the channel-order probe: if the left
  * div renders blue, an RGBA/BGRA swap crept into the vertex or texture path.
  */
@@ -62,16 +65,23 @@ div { display: block; position: absolute; }
 /**
  * Everything the HUD toggle owns while it is ON.
  *
- * The UI thread lives here for Task 3 only; Task 4 moves ownership to
- * UVaCuusSubsystem and this console command becomes a thin client of it.
+ * The view is owned by UVaCuusSubsystem and the UI thread by FVaCuusModule; this
+ * state is only the toggle's own bookkeeping.
  */
 struct FState
 {
-	TUniquePtr<FVaCuusUIThread> UIThread;
+	TWeakObjectPtr<UVaCuusSubsystem> Subsystem;
+	TWeakObjectPtr<UVaCuusView> View;
 	TSharedPtr<FVaCuusSlateElement> Element;
 	TSharedPtr<SVaCuusHUDWidget> Widget;
 	TWeakObjectPtr<UGameViewportClient> Viewport;
 	FDelegateHandle WorldTearDownHandle;
+
+	/** True while the pending load is the VFS document, i.e. while a fallback is possible. */
+	bool bLoadingFromFile = false;
+
+	/** One shot only: a failing inline fallback must not loop. */
+	bool bTriedInlineFallback = false;
 };
 
 static TUniquePtr<FState> GState;
@@ -88,31 +98,33 @@ static void TearDown()
 
 	// Spec §4 teardown order:
 	//
-	// 1. Stop accepting commands. Detaching first means no resize command and no
-	// trigger can land behind the drain below; pulling the widget out of the
-	// viewport then stops the paints. On PIE/world shutdown the viewport (or its
-	// widget tree) may already be gone — weak ptr guards that.
-	State->Widget->DetachUIThread();
-	if (UGameViewportClient* Viewport = State->Viewport.Get())
+	// 1. Stop accepting commands. Detaching first means no resize command can land
+	// behind the view removal below; pulling the widget out of the viewport then
+	// stops the paints. On PIE/world shutdown the viewport (or its widget tree) may
+	// already be gone — weak ptr guards that.
+	if (State->Widget.IsValid())
 	{
-		Viewport->RemoveViewportWidgetContent(State->Widget.ToSharedRef());
-	}
-	State->Widget.Reset();
-
-	// 2. Drain and stop the UI thread. The destructor requests the stop, joins, and
-	// the worker's Exit() closes the document, removes the context and shuts RmlUi
-	// down — all on the UI thread, which is the only thread allowed to.
-	State->UIThread.Reset();
-
-	// 3. Render-side teardown: release the replayer's RHI resources on the
-	// render thread, then let the element ref die with the lambda so its
-	// destruction happens after the release. Ordering against the UI thread's own
-	// publishes is guaranteed by step 2 having joined it.
-	ENQUEUE_RENDER_COMMAND(VaCuusM1HUDRelease)(
-		[Element = MoveTemp(State->Element)](FRHICommandListImmediate&)
+		State->Widget->DetachView();
+		if (UGameViewportClient* Viewport = State->Viewport.Get())
 		{
-			Element->ReleaseResources_RenderThread();
-		});
+			Viewport->RemoveViewportWidgetContent(State->Widget.ToSharedRef());
+		}
+		State->Widget.Reset();
+	}
+
+	// 2. Retire the view. The UI thread closes the document, drops the context and
+	// releases the view's render resources from its own thread (so that release is
+	// ordered after its last publish) — all without stopping the shared thread,
+	// which other views and other PIE clients may still be using. If the subsystem
+	// is already gone (world/engine teardown got here first) it has done that for us.
+	if (UVaCuusSubsystem* Subsystem = State->Subsystem.Get())
+	{
+		Subsystem->DestroyView(State->View.Get());
+	}
+
+	// 3. Drop our own element reference; the render-side release was enqueued by the
+	// UI thread in step 2, and the element dies with the last reference after it.
+	State->Element.Reset();
 
 	UE_LOG(LogVaCuus, Log, TEXT("M1 HUD off"));
 }
@@ -131,6 +143,40 @@ static void OnWorldBeginTearDown(UWorld* World)
 	}
 }
 
+/**
+ * The missing M1 fallback (VaCuus-akj.6.7): the toggle used to fall back to the
+ * inline document only when the VFS file was MISSING. Loading happens on the UI
+ * thread now, so a file that exists but fails to parse reports back here through
+ * UVaCuusView::OnLoadCompleted, and we retry with the inline document.
+ */
+static void OnViewLoadCompleted(UVaCuusView* View, bool bSuccess)
+{
+	if (!GState || GState->View.Get() != View)
+	{
+		return;
+	}
+
+	if (bSuccess)
+	{
+		GState->bLoadingFromFile = false;
+		return;
+	}
+
+	if (!GState->bLoadingFromFile || GState->bTriedInlineFallback)
+	{
+		UE_LOG(LogVaCuus, Error, TEXT("M1 HUD: document load failed and no fallback is left; the HUD stays empty"));
+		return;
+	}
+
+	GState->bLoadingFromFile = false;
+	GState->bTriedInlineFallback = true;
+
+	UE_LOG(LogVaCuus, Warning,
+		TEXT("M1 HUD: '%s' exists but failed to load; falling back to the inline document"),
+		GHudDocumentVfsPath);
+	View->LoadDocumentFromMemory(GTestDocumentRml);
+}
+
 static void Toggle()
 {
 	if (GState)
@@ -146,15 +192,16 @@ static void Toggle()
 		return;
 	}
 
-	if (FVaCuusEngine::Get().IsInitialized())
+	UGameViewportClient* Viewport = GEngine->GameViewport;
+	UWorld* World = Viewport->GetWorld();
+	UGameInstance* GameInstance = World ? World->GetGameInstance() : nullptr;
+	UVaCuusSubsystem* Subsystem = GameInstance ? GameInstance->GetSubsystem<UVaCuusSubsystem>() : nullptr;
+	if (!Subsystem)
 	{
-		UE_LOG(LogVaCuus, Error,
-			TEXT("vacuus.M1HUD: RmlUi is already initialized, but the recorder must be installed pre-init. ")
-			TEXT("Wait for the other user (e.g. a running test) to shut RmlUi down, then retry"));
+		UE_LOG(LogVaCuus, Error, TEXT("vacuus.M1HUD: no UVaCuusSubsystem on this game instance"));
 		return;
 	}
 
-	UGameViewportClient* Viewport = GEngine->GameViewport;
 	const FIntPoint InitialViewSize =
 		Viewport->Viewport ? Viewport->Viewport->GetSizeXY() : FIntPoint(1280, 720);
 
@@ -175,42 +222,47 @@ static void Toggle()
 
 	TSharedRef<FVaCuusSlateElement> Element = MakeShared<FVaCuusSlateElement>();
 
-	// The UI thread boots the document host inside its own Init(), so RmlUi comes up
-	// on that thread and never on this one. A failure there (RmlUi already
-	// initialized, context creation, no multithreading support) makes Start() return
-	// false with the thread already gone.
-	TUniquePtr<FVaCuusUIThread> UIThread = MakeUnique<FVaCuusUIThread>();
-	UIThread->SetDocumentHost(MakeUnique<FVaCuusRmlDocumentHost>(Element));
-	if (!UIThread->Start())
+	// The subsystem hands the host to the process-wide UI thread, which boots it
+	// (context creation and everything RmlUi-affine) on its own thread; the very
+	// first view in the process is also what starts that thread and RmlUi.
+	UVaCuusView* View = Subsystem->CreateView(MakeUnique<FVaCuusRmlDocumentHost>(Element), InitialViewSize);
+	if (!View)
 	{
-		// Logged inside Start(); the element never touched the RHI, so letting
-		// everything die here is safe.
-		UE_LOG(LogVaCuus, Error, TEXT("vacuus.M1HUD: the UI thread did not start; HUD not shown"));
+		// Logged in detail by the subsystem/module; the element never touched the RHI,
+		// so letting everything die here is safe.
+		UE_LOG(LogVaCuus, Error, TEXT("vacuus.M1HUD: no view could be created; HUD not shown"));
 		return;
 	}
+
+	GState = MakeUnique<FState>();
+	GState->Subsystem = Subsystem;
+	GState->View = View;
+	GState->Element = Element;
+	GState->Viewport = Viewport;
+	GState->bLoadingFromFile = bLoadFromFile;
+	GState->WorldTearDownHandle = FWorldDelegates::OnWorldBeginTearDown.AddStatic(&OnWorldBeginTearDown);
+
+	// Bound before the load is queued: the completion is polled from the
+	// subsystem's next tick, never earlier, but there is no reason to race it.
+	View->OnLoadCompleted.AddStatic(&OnViewLoadCompleted);
 
 	// Asynchronous by design: the document is loaded by the UI thread on its first
 	// frame. The view size rides along so the very first layout is at the right size.
 	if (bLoadFromFile)
 	{
-		UIThread->EnqueueLoadDocumentFile(GHudDocumentVfsPath, InitialViewSize);
+		View->LoadDocument(GHudDocumentVfsPath);
 	}
 	else
 	{
-		UIThread->EnqueueLoadDocumentFromMemory(GTestDocumentRml, InitialViewSize);
+		View->LoadDocumentFromMemory(GTestDocumentRml);
 	}
 
-	TSharedRef<SVaCuusHUDWidget> Widget = SNew(SVaCuusHUDWidget, UIThread.Get(), Element);
+	TSharedRef<SVaCuusHUDWidget> Widget = SNew(SVaCuusHUDWidget, View, Element);
 	Viewport->AddViewportWidgetContent(Widget, /*ZOrder=*/100);
-
-	GState = MakeUnique<FState>();
-	GState->UIThread = MoveTemp(UIThread);
-	GState->Element = Element;
 	GState->Widget = Widget;
-	GState->Viewport = Viewport;
-	GState->WorldTearDownHandle = FWorldDelegates::OnWorldBeginTearDown.AddStatic(&OnWorldBeginTearDown);
 
-	UE_LOG(LogVaCuus, Log, TEXT("M1 HUD on (initial view %dx%d)"), InitialViewSize.X, InitialViewSize.Y);
+	UE_LOG(LogVaCuus, Log, TEXT("M1 HUD on (view %u, initial view %dx%d)"),
+		View->GetViewId(), InitialViewSize.X, InitialViewSize.Y);
 }
 
 static FAutoConsoleCommand GToggleCommand(
@@ -236,8 +288,10 @@ public:
 
 	virtual void ShutdownModule() override
 	{
-		// Engine shutdown with the HUD still on: tear down while the RHI and
-		// render thread are alive rather than leaking RmlUi + replayer state.
+		// Engine shutdown with the HUD still on: drop the widget and our own
+		// references. The view itself is normally already gone (the game instance's
+		// subsystem deinitializes before modules unload), and the UI thread was
+		// stopped by VaCuus::ShutdownModule() ahead of this one.
 		VaCuusM1HUD::TearDown();
 	}
 	//~ End IModuleInterface

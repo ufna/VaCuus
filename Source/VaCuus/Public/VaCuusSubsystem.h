@@ -1,0 +1,84 @@
+// Copyright 2026 Vladimir Alyamkin. All Rights Reserved.
+
+#pragma once
+
+#include "Subsystems/GameInstanceSubsystem.h"
+#include "Tickable.h"
+#include "Templates/UniquePtr.h"
+
+#include "VaCuusSubsystem.generated.h"
+
+class FVaCuusUIThread;
+class IVaCuusDocumentHost;
+class UVaCuusView;
+
+/**
+ * Per-GameInstance owner of VaCuus views, and the once-per-frame pulse that
+ * drives the UI thread.
+ *
+ * WHAT IT OWNS (and what it does not): the views its game instance created --
+ * NOT the UI thread. That thread is process-wide and belongs to FVaCuusModule,
+ * because RmlUi's library state (interfaces, `initialised`, the context registry)
+ * is a set of process-global statics; contexts, by contrast, are per-view objects
+ * inside that global state. So multi-PIE is N subsystems, 1 UI thread, N views by
+ * construction, and Deinitialize() destroys only this instance's views while
+ * every other client keeps rendering. (This supersedes spec §4's original
+ * "one FVaCuusUIThread per UVaCuusSubsystem".)
+ *
+ * WHY FTickableGameObject: UGameInstanceSubsystem has no Tick of its own and 5.8
+ * has no UTickableGameInstanceSubsystem, so this copies the
+ * UTickableWorldSubsystem shape (construct with ETickableTickType::Never --
+ * UObjects can be constructed off the game thread -- and enable in Initialize()).
+ * FTSTicker is the wrong hook: it fires at the very end of FEngineLoop::Tick,
+ * after Slate has already drawn.
+ */
+UCLASS()
+class VACUUS_API UVaCuusSubsystem : public UGameInstanceSubsystem, public FTickableGameObject
+{
+	GENERATED_BODY()
+
+public:
+	UVaCuusSubsystem();
+
+	//~ Begin USubsystem
+	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
+	virtual void Deinitialize() override;
+	//~ End USubsystem
+
+	//~ Begin FTickableGameObject
+	/** Polls view status, then wakes the UI thread for exactly one frame. Never blocks. */
+	virtual void Tick(float DeltaTime) override;
+	virtual TStatId GetStatId() const override;
+	virtual ETickableTickType GetTickableTickType() const override;
+	virtual bool IsTickable() const override;
+	/** UI must keep animating while the game is paused. */
+	virtual bool IsTickableWhenPaused() const override { return true; }
+	/** This instance's world, so the engine ticks us exactly once per frame even with several PIE clients. */
+	virtual UWorld* GetTickableGameObjectWorld() const override;
+	//~ End FTickableGameObject
+
+	/**
+	 * Creates a view: allocates a process-unique id, hands the document host over to
+	 * the UI thread (starting it if this is the first view in the process) and
+	 * returns the handle to talk to it with.
+	 *
+	 * The host comes from the caller because building one needs the render-side
+	 * pieces (the Slate element), which live in VaCuusRender -- a module that
+	 * depends on this one. Returns null if the UI thread is unavailable.
+	 */
+	UVaCuusView* CreateView(TUniquePtr<IVaCuusDocumentHost> Host, FIntPoint InitialViewSize);
+
+	/** Retires the view on the UI thread and invalidates the handle. Safe with a stale handle. */
+	void DestroyView(UVaCuusView* View);
+
+	/** The process-wide UI thread, or null if none is running. Does not start one. */
+	FVaCuusUIThread* GetUIThread() const;
+
+private:
+	/** Views created by this game instance; dropped in Deinitialize(). */
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UVaCuusView>> Views;
+
+	/** Set in Initialize(); gates ticking exactly like UTickableWorldSubsystem's own flag. */
+	bool bInitialized = false;
+};

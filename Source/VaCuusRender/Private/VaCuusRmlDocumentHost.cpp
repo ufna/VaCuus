@@ -3,11 +3,11 @@
 #include "VaCuusRmlDocumentHost.h"
 
 #include "VaCuusDefines.h"
-#include "VaCuusEngine.h"
 #include "VaCuusRecordingRenderInterface.h"
 #include "VaCuusSlateElement.h"
 #include "VaCuusStats.h"
 #include "VaCuusUIThread.h"
+#include "VaCuusViewStatus.h"
 
 #include "CoreGlobals.h"
 #include "HAL/PlatformTLS.h"
@@ -17,9 +17,6 @@
 
 namespace VaCuusRmlDocumentHost
 {
-/** Context name; one context per host, and one host in M2. */
-static const char* GContextName = "VaCuusUI";
-
 /** Virtual source name for documents loaded from memory (used in RmlUi log messages). */
 static const char* GMemorySourceName = "vacuus://memory.rml";
 }	 // namespace VaCuusRmlDocumentHost
@@ -27,55 +24,49 @@ static const char* GMemorySourceName = "vacuus://memory.rml";
 FVaCuusRmlDocumentHost::FVaCuusRmlDocumentHost(const TSharedRef<FVaCuusSlateElement>& InElement)
 	: Element(InElement)
 {
-	// Runs on the owner's thread (the UI thread does not exist yet). Nothing
+	// Runs on the owner's thread (the UI thread may not even exist yet). Nothing
 	// RmlUi-affine may happen here -- that is Initialize()'s job.
 }
 
 FVaCuusRmlDocumentHost::~FVaCuusRmlDocumentHost()
 {
-	// Normal path: FVaCuusUIThread::Exit() already ran Shutdown() and dropped us, so
-	// there is nothing left. Anything still live means teardown was skipped, and it
-	// can only be finished on the thread that built it.
-	if (Context != nullptr || Recorder.IsValid())
+	// Normal path: the UI thread already ran Shutdown(), so the context is gone and
+	// only the retained recorder is left (which is why Recorder is not part of the
+	// test below). A live context means teardown was skipped, and it can only be
+	// finished on the thread that built it.
+	if (Context != nullptr)
 	{
 		check(FVaCuusUIThread::IsInUIThread());
 		Shutdown();
 	}
 }
 
-bool FVaCuusRmlDocumentHost::Initialize()
+bool FVaCuusRmlDocumentHost::Initialize(uint32 InViewId, const TSharedRef<FVaCuusViewStatus>& InStatus)
 {
 	check(FVaCuusUIThread::IsInUIThread());
 
-	FVaCuusEngine& Engine = FVaCuusEngine::Get();
-	if (Engine.IsInitialized())
-	{
-		UE_LOG(LogVaCuus, Error,
-			TEXT("The document host requires an uninitialized RmlUi: the recorder must be installed before Initialize()"));
-		return false;
-	}
+	ViewId = InViewId;
+	Status = InStatus;
 
+	// Per-view render interface: RmlUi gives each distinct interface its own
+	// RenderManager, which is what keeps this view's geometry, textures and command
+	// buffer separate from every other view's.
 	Recorder = MakeUnique<FVaCuusRecordingRenderInterface>();
-	Engine.SetRenderInterface(Recorder.Get());
-	if (!Engine.Initialize())
+
+	// The real size arrives with the first command (every command carries one) and
+	// is applied before the first Update(), so nothing is ever laid out at 1x1.
+	ContextName = FString::Printf(TEXT("VaCuusView%u"), ViewId);
+	Context = Rml::CreateContext(
+		Rml::String(TCHAR_TO_UTF8(*ContextName)), Rml::Vector2i(1, 1), Recorder.Get());
+	if (!Context)
 	{
-		Engine.SetRenderInterface(nullptr);
+		UE_LOG(LogVaCuus, Error, TEXT("View %u failed to create its Rml context"), ViewId);
 		Recorder.Reset();
 		return false;
 	}
 
-	// The real size arrives with the first command (every command carries one) and
-	// is applied before the first Update(), so nothing is ever laid out at 1x1.
-	Context = Rml::CreateContext(VaCuusRmlDocumentHost::GContextName, Rml::Vector2i(1, 1));
-	if (!Context)
-	{
-		UE_LOG(LogVaCuus, Error, TEXT("The document host failed to create the Rml context"));
-		Shutdown();
-		return false;
-	}
-
-	UE_LOG(LogVaCuus, Log, TEXT("Document host booted on the UI thread (id %u; game thread is %u)"),
-		FPlatformTLS::GetCurrentThreadId(), GGameThreadId);
+	UE_LOG(LogVaCuus, Log, TEXT("View %u booted on the UI thread (id %u; game thread is %u)"),
+		ViewId, FPlatformTLS::GetCurrentThreadId(), GGameThreadId);
 	return true;
 }
 
@@ -92,26 +83,24 @@ void FVaCuusRmlDocumentHost::Shutdown()
 
 	if (Context)
 	{
-		Rml::RemoveContext(VaCuusRmlDocumentHost::GContextName);
+		// Destroys this view's element tree, which releases its geometry and
+		// textures back through Recorder (still alive, and staying alive -- see the
+		// header: RmlUi keeps a RenderManager keyed on it until Rml::Shutdown()).
+		Rml::RemoveContext(Rml::String(TCHAR_TO_UTF8(*ContextName)));
 		Context = nullptr;
 	}
 
-	if (Recorder)
+	if (Element.IsValid())
 	{
-		FVaCuusEngine& Engine = FVaCuusEngine::Get();
-		if (Engine.IsInitialized())
-		{
-			// Rml::Shutdown() releases remaining geometry/textures through the
-			// recorder, so the recorder must still be alive here. That trailing
-			// release traffic lands in a pending buffer that is never published
-			// -- dropped with the recorder below, together with the replayer's
-			// mirror resources (the documented teardown pattern).
-			Engine.Shutdown();
-		}
-
-		// Don't leave FVaCuusEngine holding a raw pointer to the dead recorder.
-		Engine.SetRenderInterface(nullptr);
-		Recorder.Reset();
+		// Render-side teardown from THIS thread, so it is ordered after our own last
+		// publish (same-thread enqueues keep their order); the element ref rides
+		// along in the lambda and dies with it, after the release has run.
+		ENQUEUE_RENDER_COMMAND(VaCuusReleaseView)(
+			[LocalElement = MoveTemp(Element)](FRHICommandListImmediate&)
+			{
+				LocalElement->ReleaseResources_RenderThread();
+			});
+		Element.Reset();
 	}
 }
 
@@ -130,14 +119,18 @@ void FVaCuusRmlDocumentHost::SetViewSize(FIntPoint InViewSize)
 		Context->SetDimensions(Rml::Vector2i(ViewSize.X, ViewSize.Y));
 	}
 
-	UE_LOG(LogVaCuus, Log, TEXT("UI view size now %dx%d"), ViewSize.X, ViewSize.Y);
+	// The resize proof: this line only ever prints on the UI thread, in response to
+	// a queued Resize command, and means the context has been re-laid out.
+	UE_LOG(LogVaCuus, Log, TEXT("View %u size now %dx%d (UI thread %u)"),
+		ViewId, ViewSize.X, ViewSize.Y, FPlatformTLS::GetCurrentThreadId());
 }
 
-void FVaCuusRmlDocumentHost::LoadDocumentFromFile(const FString& VfsPath)
+void FVaCuusRmlDocumentHost::LoadDocumentFromFile(const FString& VfsPath, uint64 LoadSerial)
 {
 	check(FVaCuusUIThread::IsInUIThread());
 	if (!Context)
 	{
+		ReportLoadResult(LoadSerial, /*bSuccess=*/false);
 		return;
 	}
 
@@ -145,32 +138,35 @@ void FVaCuusRmlDocumentHost::LoadDocumentFromFile(const FString& VfsPath)
 	// including the document's own <link>/<img> references -- resolve against
 	// <Project>/Content/DevUI.
 	AdoptDocument(Context->LoadDocument(Rml::String(TCHAR_TO_UTF8(*VfsPath))),
-		FString::Printf(TEXT("VFS ('%s')"), *VfsPath));
+		FString::Printf(TEXT("VFS ('%s')"), *VfsPath), LoadSerial);
 }
 
-void FVaCuusRmlDocumentHost::LoadDocumentFromMemory(const FString& RmlSource)
+void FVaCuusRmlDocumentHost::LoadDocumentFromMemory(const FString& RmlSource, uint64 LoadSerial)
 {
 	check(FVaCuusUIThread::IsInUIThread());
 	if (!Context)
 	{
+		ReportLoadResult(LoadSerial, /*bSuccess=*/false);
 		return;
 	}
 
 	AdoptDocument(
 		Context->LoadDocumentFromMemory(
 			Rml::String(TCHAR_TO_UTF8(*RmlSource)), VaCuusRmlDocumentHost::GMemorySourceName),
-		TEXT("inline"));
+		TEXT("inline"), LoadSerial);
 }
 
-void FVaCuusRmlDocumentHost::AdoptDocument(Rml::ElementDocument* NewDocument, const FString& Description)
+void FVaCuusRmlDocumentHost::AdoptDocument(Rml::ElementDocument* NewDocument, const FString& Description, uint64 LoadSerial)
 {
 	check(FVaCuusUIThread::IsInUIThread());
 
 	if (!NewDocument)
 	{
 		// The previous document (if any) stays up: a failed load must not blank a
-		// working view.
-		UE_LOG(LogVaCuus, Error, TEXT("Failed to load the %s document"), *Description);
+		// working view. The game thread hears about it through the status and can
+		// decide on a fallback (vacuus.M1HUD does).
+		UE_LOG(LogVaCuus, Error, TEXT("View %u failed to load the %s document"), ViewId, *Description);
+		ReportLoadResult(LoadSerial, /*bSuccess=*/false);
 		return;
 	}
 
@@ -178,7 +174,24 @@ void FVaCuusRmlDocumentHost::AdoptDocument(Rml::ElementDocument* NewDocument, co
 	Document = NewDocument;
 	Document->Show();
 
-	UE_LOG(LogVaCuus, Log, TEXT("Loaded the %s document (%dx%d)"), *Description, ViewSize.X, ViewSize.Y);
+	UE_LOG(LogVaCuus, Log, TEXT("View %u loaded the %s document (%dx%d)"),
+		ViewId, *Description, ViewSize.X, ViewSize.Y);
+	ReportLoadResult(LoadSerial, /*bSuccess=*/true);
+}
+
+void FVaCuusRmlDocumentHost::ReportLoadResult(uint64 LoadSerial, bool bSuccess)
+{
+	if (!Status.IsValid() || LoadSerial == 0)
+	{
+		return;
+	}
+
+	// Result first, serial second (release): a game-thread reader that sees the new
+	// serial is guaranteed to see the matching result.
+	Status->LoadResult.store(
+		static_cast<uint8>(bSuccess ? EVaCuusLoadResult::Succeeded : EVaCuusLoadResult::Failed),
+		std::memory_order_relaxed);
+	Status->LoadCompletedSerial.store(LoadSerial, std::memory_order_release);
 }
 
 void FVaCuusRmlDocumentHost::CloseDocument()
@@ -191,6 +204,30 @@ void FVaCuusRmlDocumentHost::CloseDocument()
 		Document->Close();
 		Document = nullptr;
 	}
+}
+
+void FVaCuusRmlDocumentHost::SetVisible(bool bVisible)
+{
+	check(FVaCuusUIThread::IsInUIThread());
+
+	if (!Document)
+	{
+		return;
+	}
+
+	// Hide() rather than "stop recording": the view keeps publishing frames, they
+	// are simply empty, which is what actually clears the composite. Skipping the
+	// frame would leave the last published content in this view's render target.
+	if (bVisible)
+	{
+		Document->Show();
+	}
+	else
+	{
+		Document->Hide();
+	}
+
+	UE_LOG(LogVaCuus, Verbose, TEXT("View %u is now %s"), ViewId, bVisible ? TEXT("visible") : TEXT("hidden"));
 }
 
 bool FVaCuusRmlDocumentHost::HasView() const
@@ -210,8 +247,8 @@ void FVaCuusRmlDocumentHost::RecordAndPublishFrame()
 		// onto the game thread, this line (and the checks above) would say so.
 		bLoggedFirstFrame = true;
 		UE_LOG(LogVaCuus, Log,
-			TEXT("First UI frame recorded on thread %u (game thread is %u; IsInGameThread=%s)"),
-			FPlatformTLS::GetCurrentThreadId(), GGameThreadId,
+			TEXT("View %u recorded its first UI frame on thread %u (game thread is %u; IsInGameThread=%s)"),
+			ViewId, FPlatformTLS::GetCurrentThreadId(), GGameThreadId,
 			IsInGameThread() ? TEXT("true") : TEXT("false"));
 	}
 
@@ -238,4 +275,10 @@ void FVaCuusRmlDocumentHost::RecordAndPublishFrame()
 		{
 			LocalElement->SetPendingBuffer_RenderThread(RHICmdList, MoveTemp(Buf));
 		});
+
+	if (Status.IsValid())
+	{
+		// Per-view frame count: what a headless screenshot actually needs to wait on.
+		Status->FramesPublished.fetch_add(1, std::memory_order_release);
+	}
 }

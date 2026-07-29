@@ -166,12 +166,20 @@ void FVaCuusEngine::Shutdown()
 	UE_LOG(LogVaCuus, Log, TEXT("RmlUi shut down"));
 }
 
+bool FVaCuusEngine::IsClaimableOnThisThread() const
+{
+	const uint32 Owner = OwnerThreadId.load(std::memory_order_acquire);
+	return Owner == 0 || Owner == FPlatformTLS::GetCurrentThreadId();
+}
+
 void FVaCuusEngine::ForceShutdownAll()
 {
 	// Deliberately skips CheckOwnerThread(): this is the module-unload escape hatch
 	// for an unpaired Initialize(), and the owner may be a thread that is already
 	// gone. Tearing RmlUi down from the wrong thread beats leaking the library past
-	// the point where VaCuusRml is still loaded.
+	// the point where VaCuusRml is still loaded. Since FVaCuusModule stops the UI
+	// thread it owns before it gets here, reaching this function means some *other*
+	// holder went unpaired -- it is a diagnostic, not a step.
 	if (RefCount.load(std::memory_order_acquire) == 0)
 	{
 		return;

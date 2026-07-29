@@ -3,6 +3,7 @@
 #include "Misc/AutomationTest.h"
 
 #include "HAL/PlatformProcess.h"
+#include "VaCuusEngine.h"
 #include "VaCuusUIThread.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
@@ -12,7 +13,18 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusUIThreadLifecycleTest, "VaCuus.Threading
 
 bool FVaCuusUIThreadLifecycleTest::RunTest(const FString& Parameters)
 {
-	FVaCuusUIThread UIThread;
+	if (!FPlatformProcess::SupportsMultithreading())
+	{
+		// FRunnableThread::Create() cannot hand back a thread here (commandlets,
+		// -nothreading), and the production answer to that is the inline fallback,
+		// which is a different code path with nothing to assert about a worker.
+		AddInfo(TEXT("Skipped: this configuration has no multithreading support, so there is no worker thread to test"));
+		return true;
+	}
+
+	// Engine reference resolved here, on the game thread: the worker must never look
+	// the module up itself.
+	FVaCuusUIThread UIThread(FVaCuusEngine::Get());
 	if (!TestTrue(TEXT("Started"), UIThread.Start()))
 	{
 		return false;
