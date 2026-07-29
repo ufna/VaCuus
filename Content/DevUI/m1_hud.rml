@@ -1,0 +1,77 @@
+<rml>
+<head>
+	<title>VaCuus M1 HUD</title>
+	<link type="text/rcss" href="m1_hud.rcss"/>
+</head>
+<body>
+	<!-- top-left: player plate (img + text + bars; HP fill is the pure-RED
+	     channel probe, MP fill is the pure-BLUE one) -->
+	<div id="player-plate">
+		<img id="avatar" src="img/avatar.png" width="64" height="64"/>
+		<div id="level-badge">17</div>
+		<div id="plate-right">
+			<div id="player-name">UFNA-01</div>
+			<div class="bar-row"><span class="bar-label">HP</span><div class="bar-track"><div id="hp-fill"/></div><span class="bar-value">76</span></div>
+			<div class="bar-row"><span class="bar-label">MP</span><div class="bar-track"><div id="mp-fill"/></div><span class="bar-value">42</span></div>
+		</div>
+	</div>
+
+	<!-- top-center: compass. The window scissors a wider strip that is shifted
+	     with translateX; the needle below is rotated 15deg. -->
+	<div id="compass">
+		<div id="compass-window">
+			<div id="compass-strip"><span class="cdir">W</span><span class="cdir">NW</span><span class="cdir cn">N</span><span class="cdir">NE</span><span class="cdir">E</span><span class="cdir">SE</span><span class="cdir">S</span><span class="cdir">SW</span></div>
+		</div>
+		<div id="compass-needle"/>
+	</div>
+
+	<!-- right: scoreboard. 24 rows inside a fixed-height overflow:hidden clip
+	     container: the bottom rows MUST be cut off mid-row (scissor check). -->
+	<div id="scoreboard">
+		<div id="sb-header">SCOREBOARD // ALPHA</div>
+		<div id="sb-clip">
+			<div class="sb-row">     <span class="sb-name">01 RAVEN</span><span class="sb-score">2410</span></div>
+			<div class="sb-row alt"> <span class="sb-name">02 UFNA-01</span><span class="sb-score">2244</span></div>
+			<div class="sb-row">     <span class="sb-name">03 KESTREL</span><span class="sb-score">2101</span></div>
+			<div class="sb-row alt"> <span class="sb-name">04 MOSSBACK</span><span class="sb-score">1987</span></div>
+			<div class="sb-row">     <span class="sb-name">05 TALLOW</span><span class="sb-score">1902</span></div>
+			<div class="sb-row alt"> <span class="sb-name">06 VESPER</span><span class="sb-score">1877</span></div>
+			<div class="sb-row">     <span class="sb-name">07 GARNET</span><span class="sb-score">1740</span></div>
+			<div class="sb-row alt"> <span class="sb-name">08 OKAPI</span><span class="sb-score">1698</span></div>
+			<div class="sb-row">     <span class="sb-name">09 BRINE</span><span class="sb-score">1621</span></div>
+			<div class="sb-row alt"> <span class="sb-name">10 CINDER</span><span class="sb-score">1555</span></div>
+			<div class="sb-row">     <span class="sb-name">11 LUMEN</span><span class="sb-score">1512</span></div>
+			<div class="sb-row alt"> <span class="sb-name">12 FATHOM</span><span class="sb-score">1444</span></div>
+			<div class="sb-row">     <span class="sb-name">13 PIQUET</span><span class="sb-score">1391</span></div>
+			<div class="sb-row alt"> <span class="sb-name">14 SORREL</span><span class="sb-score">1310</span></div>
+			<div class="sb-row">     <span class="sb-name">15 WICK</span><span class="sb-score">1276</span></div>
+			<div class="sb-row alt"> <span class="sb-name">16 HALCYON</span><span class="sb-score">1204</span></div>
+			<div class="sb-row">     <span class="sb-name">17 BASALT</span><span class="sb-score">1170</span></div>
+			<div class="sb-row alt"> <span class="sb-name">18 QUINCE</span><span class="sb-score">1092</span></div>
+			<div class="sb-row">     <span class="sb-name">19 MARROW</span><span class="sb-score">1013</span></div>
+			<div class="sb-row alt"> <span class="sb-name">20 TIDE</span><span class="sb-score">0954</span></div>
+			<div class="sb-row">     <span class="sb-name">21 EMBER</span><span class="sb-score">0871</span></div>
+			<div class="sb-row alt"> <span class="sb-name">22 NADIR</span><span class="sb-score">0790</span></div>
+			<div class="sb-row">     <span class="sb-name">23 COPSE</span><span class="sb-score">0712</span></div>
+			<div class="sb-row alt"> <span class="sb-name">24 GLINT</span><span class="sb-score">0655</span></div>
+		</div>
+	</div>
+
+	<!-- right, under the scoreboard: static killfeed -->
+	<div id="killfeed">
+		<div class="kf-row"><span class="kf-killer">RAVEN</span> [AR-7] <span class="kf-victim">OKAPI</span></div>
+		<div class="kf-row"><span class="kf-killer">UFNA-01</span> [DMR] <span class="kf-victim">BRINE</span></div>
+		<div class="kf-row"><span class="kf-killer">VESPER</span> [SMG] <span class="kf-victim">TIDE</span></div>
+		<div class="kf-row"><span class="kf-killer">KESTREL</span> [LMG] <span class="kf-victim">WICK</span></div>
+	</div>
+
+	<!-- bottom-center: ability bar; slot 3 is on cooldown (darkened overlay
+	     covering the bottom 60% of the slot + remaining-time text) -->
+	<div id="ability-bar">
+		<div class="slot"><div class="slot-icon icon-1"/><div class="keycap">1</div></div>
+		<div class="slot"><div class="slot-icon icon-2"/><div class="keycap">2</div></div>
+		<div class="slot"><div class="slot-icon icon-3"/><div class="cd-shade"/><div class="cd-num">2.4</div><div class="keycap">3</div></div>
+		<div class="slot last"><div class="slot-icon icon-4"/><div class="keycap">4</div></div>
+	</div>
+</body>
+</rml>

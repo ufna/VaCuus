@@ -21,9 +21,15 @@
 namespace VaCuusM1HUD
 {
 /**
- * Inline placeholder document until Task 9 ships m1_hud.rml. The pure red and
- * pure blue divs are the channel-order probe: if the left div renders blue,
- * an RGBA/BGRA swap crept into the vertex or texture path.
+ * VFS path of the M1 HUD document; FVaCuusFileInterface resolves relative
+ * paths against <Project>/Content/DevUI.
+ */
+static const TCHAR* GHudDocumentVfsPath = TEXT("m1_hud.rml");
+
+/**
+ * Inline fallback document, used when Content/DevUI/m1_hud.rml is missing.
+ * The pure red and pure blue divs are the channel-order probe: if the left
+ * div renders blue, an RGBA/BGRA swap crept into the vertex or texture path.
  */
 static const TCHAR* GTestDocumentRml = TEXT(R"(<rml>
 <head>
@@ -141,9 +147,27 @@ static void Toggle()
 	const FIntPoint InitialViewSize =
 		Viewport->Viewport ? Viewport->Viewport->GetSizeXY() : FIntPoint(1280, 720);
 
+	// Prefer the real document from the project's DevUI content; fall back to
+	// the inline probe document so the toggle keeps working on a bare project.
+	const FString DocumentDiskPath = FPaths::ProjectContentDir() / TEXT("DevUI") / GHudDocumentVfsPath;
+	const bool bLoadFromFile = FPaths::FileExists(DocumentDiskPath);
+	if (bLoadFromFile)
+	{
+		UE_LOG(LogVaCuus, Log, TEXT("M1 HUD: loading document via VFS path '%s' ('%s')"),
+			GHudDocumentVfsPath, *DocumentDiskPath);
+	}
+	else
+	{
+		UE_LOG(LogVaCuus, Log, TEXT("M1 HUD: '%s' not found, using the inline fallback document"),
+			*DocumentDiskPath);
+	}
+
 	TSharedRef<FVaCuusSlateElement> Element = MakeShared<FVaCuusSlateElement>();
 	TSharedRef<FVaCuusM1Harness> Harness = MakeShared<FVaCuusM1Harness>(Element);
-	if (!Harness->Boot(InitialViewSize, FString(GTestDocumentRml)))
+	const bool bBooted = bLoadFromFile
+		? Harness->Boot(InitialViewSize, FVaCuusM1Harness::EDocumentSource::VfsPath, GHudDocumentVfsPath)
+		: Harness->Boot(InitialViewSize, FVaCuusM1Harness::EDocumentSource::InlineRml, GTestDocumentRml);
+	if (!bBooted)
 	{
 		// Boot logged and rolled back; the element never touched the RHI, so
 		// letting both die here is safe.
@@ -165,7 +189,8 @@ static void Toggle()
 
 static FAutoConsoleCommand GToggleCommand(
 	TEXT("vacuus.M1HUD"),
-	TEXT("Toggle the M1 render-spike HUD: records an inline RmlUi document each frame and composites it over the game viewport."),
+	TEXT("Toggle the M1 render-spike HUD: records an RmlUi document (Content/DevUI/m1_hud.rml, or an inline fallback) ")
+	TEXT("each frame and composites it over the game viewport."),
 	FConsoleCommandDelegate::CreateStatic(&Toggle));
 } // namespace VaCuusM1HUD
 

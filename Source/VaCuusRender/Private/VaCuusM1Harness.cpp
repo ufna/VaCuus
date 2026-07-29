@@ -31,7 +31,7 @@ FVaCuusM1Harness::~FVaCuusM1Harness()
 	Shutdown();
 }
 
-bool FVaCuusM1Harness::Boot(FIntPoint InitialViewSize, const FString& DocumentRml)
+bool FVaCuusM1Harness::Boot(FIntPoint InitialViewSize, EDocumentSource Source, const FString& InDocument)
 {
 	check(IsInGameThread());
 
@@ -61,10 +61,22 @@ bool FVaCuusM1Harness::Boot(FIntPoint InitialViewSize, const FString& DocumentRm
 		return false;
 	}
 
-	Document = Context->LoadDocumentFromMemory(Rml::String(TCHAR_TO_UTF8(*DocumentRml)), "m1://hud.rml");
+	if (Source == EDocumentSource::VfsPath)
+	{
+		// Goes through Rml::GetFileInterface() (FVaCuusFileInterface): relative
+		// paths — including the document's own <link>/<img> references — resolve
+		// against <Project>/Content/DevUI.
+		Document = Context->LoadDocument(Rml::String(TCHAR_TO_UTF8(*InDocument)));
+	}
+	else
+	{
+		Document = Context->LoadDocumentFromMemory(Rml::String(TCHAR_TO_UTF8(*InDocument)), "m1://hud.rml");
+	}
+
 	if (!Document)
 	{
-		UE_LOG(LogVaCuus, Error, TEXT("M1 harness failed to load the inline test document"));
+		UE_LOG(LogVaCuus, Error, TEXT("M1 harness failed to load the %s document"),
+			Source == EDocumentSource::VfsPath ? *FString::Printf(TEXT("VFS ('%s')"), *InDocument) : TEXT("inline test"));
 		Shutdown();
 		return false;
 	}

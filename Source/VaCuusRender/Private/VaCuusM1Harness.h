@@ -33,13 +33,26 @@ public:
 	FVaCuusM1Harness(const FVaCuusM1Harness&) = delete;
 	FVaCuusM1Harness& operator=(const FVaCuusM1Harness&) = delete;
 
+	/** How Boot() should interpret its Document argument. */
+	enum class EDocumentSource : uint8
+	{
+		/** Document is the RML source text itself, loaded from memory. */
+		InlineRml,
+
+		/**
+		 * Document is a path for the RmlUi file interface; relative paths
+		 * resolve against <Project>/Content/DevUI (FVaCuusFileInterface).
+		 */
+		VfsPath,
+	};
+
 	/**
 	 * Installs the recorder as the RmlUi render interface, boots the library,
-	 * creates the context and loads DocumentRml from memory. Fails (false,
-	 * fully rolled back) if RmlUi is already initialized — the recorder can
-	 * only be installed pre-init.
+	 * creates the context and loads the document (from memory or through the
+	 * VFS, per Source). Fails (false, fully rolled back) if RmlUi is already
+	 * initialized — the recorder can only be installed pre-init.
 	 */
-	bool Boot(FIntPoint InitialViewSize, const FString& DocumentRml);
+	bool Boot(FIntPoint InitialViewSize, EDocumentSource Source, const FString& Document);
 
 	/**
 	 * Records one UI frame at ViewSize (BeginFrame -> Update -> Render ->

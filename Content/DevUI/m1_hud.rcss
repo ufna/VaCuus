@@ -1,0 +1,304 @@
+/* VaCuus M1 HUD - renderer-subset stylesheet.
+   M1 features ONLY: solid fills (incl. alpha), 1px borders, border-radius
+   (plain geometry tessellation), text, one <img>, 2D transforms, scissor via
+   overflow:hidden. NO decorators/gradients, NO box-shadow, NO filter or
+   backdrop-filter, NO animations/transitions (all M5+).
+
+   IMPORTANT: clip containers (#sb-clip, #compass-window) must have NEITHER
+   border-radius NOR transform - either would push RmlUi from the scissor path
+   onto the clip-mask path, which the M1 recorder does not implement. */
+
+/* RmlUi ships no user-agent stylesheet: every element defaults to
+   display:inline, which ignores width/height. Blockify the basics first. */
+div { display: block; }
+img { display: inline-block; }
+span { display: inline; }
+
+body
+{
+	display: block;
+	width: 100%;
+	height: 100%;
+	font-family: LatoLatin;
+	font-size: 16px;
+	color: #D2E9F2;
+}
+
+/* ------------------------------------------------------------------ */
+/* Player plate (top-left)                                             */
+/* ------------------------------------------------------------------ */
+#player-plate
+{
+	position: absolute;
+	left: 16px;
+	top: 16px;
+	width: 260px;
+	padding: 10px;
+	background-color: #10202AE6;
+	border: 1px #3A5A6C;
+	border-radius: 8px;
+}
+#avatar
+{
+	vertical-align: top;
+}
+#level-badge
+{
+	position: absolute;
+	left: 58px;
+	top: 62px;
+	width: 22px;
+	height: 22px;
+	border-radius: 11px;
+	background-color: #0C161B;
+	border: 1px #FFC44D;
+	color: #FFC44D;
+	font-size: 11px;
+	text-align: center;
+	line-height: 21px;
+}
+#plate-right
+{
+	display: inline-block;
+	width: 178px;
+	margin-left: 8px;
+	vertical-align: top;
+}
+#player-name
+{
+	font-size: 15px;
+	color: #B9E8F7;
+	margin-bottom: 6px;
+}
+.bar-row { margin-bottom: 5px; }
+.bar-label
+{
+	display: inline-block;
+	width: 24px;
+	font-size: 11px;
+	color: #8FA9B5;
+	vertical-align: middle;
+}
+.bar-track
+{
+	display: inline-block;
+	width: 118px;
+	height: 12px;
+	background-color: #05090C;
+	border: 1px #223844;
+	vertical-align: middle;
+}
+/* Channel-order probes: HP must read PURE RED, MP PURE BLUE. If they come out
+   swapped, an RGBA/BGRA mixup crept into the vertex-color or texture path. */
+#hp-fill { width: 76%; height: 100%; background-color: #FF0000; }
+#mp-fill { width: 42%; height: 100%; background-color: #0000FF; }
+.bar-value
+{
+	display: inline-block;
+	width: 26px;
+	margin-left: 6px;
+	font-size: 12px;
+	color: #9FDCEF;
+	vertical-align: middle;
+	text-align: right;
+}
+
+/* ------------------------------------------------------------------ */
+/* Compass (top-center): scissored strip + transforms                  */
+/* ------------------------------------------------------------------ */
+#compass
+{
+	position: absolute;
+	left: 50%;
+	top: 10px;
+	width: 280px;
+	margin-left: -140px;
+}
+#compass-window
+{
+	width: 280px;
+	height: 26px;
+	overflow: hidden; /* scissor: strip below is wider and shifted */
+	background-color: #0A141AD9;
+	border: 1px #3A5A6C;
+}
+/* The strip must stay IN-FLOW: RmlUi only emits a scissor for an
+   overflow:hidden ancestor when its in-flow content actually overflows
+   (client < scroll size); an absolutely positioned child does not count as
+   clipping content and would render fully unclipped (verified against the
+   reference GL3 backend - core layout semantics, not a renderer bug). */
+#compass-strip
+{
+	width: 560px;
+	margin-top: 4px;
+	white-space: nowrap;
+	transform: translateX(-105px);
+}
+.cdir
+{
+	display: inline-block;
+	width: 70px;
+	text-align: center;
+	font-size: 13px;
+	color: #9FDCEF;
+}
+.cn { color: #FFFFFF; }
+#compass-needle
+{
+	position: absolute;
+	left: 50%;
+	top: 32px;
+	width: 4px;
+	height: 16px;
+	margin-left: -2px;
+	background-color: #00FF00; /* channel-neutral control swatch */
+	transform: rotate(15deg);
+}
+
+/* ------------------------------------------------------------------ */
+/* Scoreboard (right): 24 rows clipped by a fixed-height container     */
+/* ------------------------------------------------------------------ */
+#scoreboard
+{
+	position: absolute;
+	right: 16px;
+	top: 16px;
+	width: 250px;
+}
+#sb-header
+{
+	height: 24px;
+	padding-left: 8px;
+	line-height: 24px;
+	font-size: 13px;
+	color: #7DE6FF;
+	background-color: #16242EF0;
+	border: 1px #3A5A6C;
+}
+#sb-clip
+{
+	height: 260px;   /* 24 rows x 22px = 528px of content -> hard clip */
+	overflow: hidden;
+	background-color: #0A141AC8;
+	border: 1px #223844;
+}
+.sb-row
+{
+	height: 22px;
+	padding: 0 8px;
+	font-size: 13px;
+	line-height: 22px;
+}
+.sb-row.alt { background-color: #14222CB4; }
+.sb-name
+{
+	display: inline-block;
+	width: 160px;
+	color: #C4DEE9;
+}
+.sb-score
+{
+	display: inline-block;
+	width: 66px;
+	text-align: right;
+	color: #9FDCEF;
+}
+
+/* ------------------------------------------------------------------ */
+/* Killfeed (right, under the scoreboard)                              */
+/* ------------------------------------------------------------------ */
+#killfeed
+{
+	position: absolute;
+	right: 16px;
+	top: 320px;
+	width: 250px;
+}
+.kf-row
+{
+	margin-bottom: 4px;
+	padding: 3px 8px;
+	font-size: 12px;
+	text-align: right;
+	color: #8FA9B5;
+	background-color: #0A141AB4;
+	border: 1px #22384488;
+}
+.kf-killer { color: #FF2020; } /* red team accent (channel probe helper) */
+.kf-victim { color: #2020FF; } /* blue team accent */
+
+/* ------------------------------------------------------------------ */
+/* Ability bar (bottom-center); slot 3 on cooldown                     */
+/* ------------------------------------------------------------------ */
+#ability-bar
+{
+	position: absolute;
+	left: 50%;
+	bottom: 18px;
+	width: 240px;
+	margin-left: -130px;
+	padding: 8px 10px;
+	background-color: #0D1B22DC;
+	border: 1px #2B4A5A;
+	border-radius: 10px;
+}
+.slot
+{
+	display: inline-block;
+	position: relative;
+	width: 52px;
+	height: 52px;
+	margin-right: 8px;
+	border: 1px #2F5566;
+	border-radius: 6px;
+	background-color: #0A1519;
+	vertical-align: top;
+}
+.slot.last { margin-right: 0; }
+.slot-icon
+{
+	position: absolute;
+	left: 3px;
+	top: 3px;
+	width: 46px;
+	height: 46px;
+	border-radius: 4px;
+}
+.icon-1 { background-color: #2AA9D2; }
+.icon-2 { background-color: #2FBF71; }
+.icon-3 { background-color: #D9A441; }
+.icon-4 { background-color: #C94F6D; }
+.cd-shade
+{
+	position: absolute;
+	left: 0;
+	bottom: 0;
+	width: 100%;
+	height: 60%; /* 'on cooldown': darkened overlay at partial height */
+	background-color: #000000C8;
+}
+.cd-num
+{
+	position: absolute;
+	left: 0;
+	top: 16px;
+	width: 100%;
+	text-align: center;
+	font-size: 15px;
+	color: #FFFFFF;
+}
+.keycap
+{
+	position: absolute;
+	left: 2px;
+	top: 2px;
+	width: 14px;
+	height: 14px;
+	border-radius: 3px;
+	background-color: #04090B;
+	border: 1px #35667A;
+	color: #9FDCEF;
+	font-size: 9px;
+	text-align: center;
+	line-height: 13px;
+}
