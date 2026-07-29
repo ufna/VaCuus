@@ -78,9 +78,9 @@ VaCuus/  (plugin repo)
 
 **Files:** none in repo (environment setup).
 
-- [ ] **Step 0.1: Create the host project.** In UnrealEditor (source build), create a
+- [x] **Step 0.1: Create the host project.** In UnrealEditor (source build), create a
   **Blank C++** project named `VcHost` at `/w/Unreal/VcHost`. Close the editor.
-- [ ] **Step 0.2: Clone the plugin into the host (no symlinks!):**
+- [x] **Step 0.2: Clone the plugin into the host (no symlinks!):**
 
 ```bash
 mkdir -p /w/Unreal/VcHost/Plugins
@@ -93,7 +93,7 @@ All M1 work happens in this clone on branch `m1-render-spike`; push back with
 `git push origin m1-render-spike` (origin = `/w/Unreal/VaCuus`; pushing a non-checked-out
 branch is allowed).
 
-- [ ] **Step 0.3: Baseline build check:**
+- [x] **Step 0.3: Baseline build check:**
 
 ```bash
 cd /w/Unreal/UnrealEngine
@@ -109,7 +109,7 @@ Expected: builds clean, including existing `VaCuus`/`VaCuusEditor` modules.
 
 **Files:** Create: `Source/ThirdParty/RmlUi/**`
 
-- [ ] **Step 1.1:**
+- [x] **Step 1.1:**
 
 ```bash
 cd /tmp && git clone https://github.com/mikke89/RmlUi.git rmlui-vendor
@@ -123,7 +123,7 @@ echo "0ae381e00d7426762bb5ed897973366358b16642" > $DEST/VENDORED_SHA.txt
 
 (`Backends/` is kept as reference material only — never compiled.)
 
-- [ ] **Step 1.2: Commit:** `git add Source/ThirdParty && git commit -m "vendor: RmlUi @0ae381e (benchmarked baseline)"`
+- [x] **Step 1.2: Commit:** `git add Source/ThirdParty && git commit -m "vendor: RmlUi @0ae381e (benchmarked baseline)"`
 
 ---
 
@@ -132,7 +132,7 @@ echo "0ae381e00d7426762bb5ed897973366358b16642" > $DEST/VENDORED_SHA.txt
 **Files:** Create: `Source/VaCuusRml/VaCuusRml.Build.cs`,
 `Source/VaCuusRml/Private/VaCuusRmlModule.cpp`; Modify: `VaCuus.uplugin`.
 
-- [ ] **Step 2.1: Build.cs:**
+- [x] **Step 2.1: Build.cs:**
 
 ```csharp
 using UnrealBuildTool;
@@ -177,7 +177,7 @@ straightforward approach: create relay TUs — a small script generates
 `Source/VaCuusRml/Private/Gen/relay_<name>.cpp` files, each `#include`-ing one vendored
 RmlUi `.cpp`. Write the generator once:
 
-- [ ] **Step 2.2: Relay generator** `Source/VaCuusRml/gen_relays.sh`:
+- [x] **Step 2.2: Relay generator** `Source/VaCuusRml/gen_relays.sh`:
 
 ```bash
 #!/usr/bin/env bash
@@ -195,21 +195,21 @@ echo "generated $(ls "$OUT" | wc -l) relay TUs"
 Run it: `bash Source/VaCuusRml/gen_relays.sh`. Commit the generated files (they change
 only when the vendored SHA changes).
 
-- [ ] **Step 2.3: Module cpp** (`Private/VaCuusRmlModule.cpp`):
+- [x] **Step 2.3: Module cpp** (`Private/VaCuusRmlModule.cpp`):
 
 ```cpp
 #include "Modules/ModuleManager.h"
 IMPLEMENT_MODULE(FDefaultModuleImpl, VaCuusRml)
 ```
 
-- [ ] **Step 2.4:** Add `{"Name":"VaCuusRml","Type":"Runtime","LoadingPhase":"PreDefault"}`
+- [x] **Step 2.4:** Add `{"Name":"VaCuusRml","Type":"Runtime","LoadingPhase":"PreDefault"}`
   to `VaCuus.uplugin` Modules array.
-- [ ] **Step 2.5: Build.** Expected: RmlUi compiles. Likely friction to resolve here (this
+- [x] **Step 2.5: Build.** Expected: RmlUi compiles. Likely friction to resolve here (this
   is the task's real work): missing `<ft2build.h>` include path (check the engine's
   `FreeType2` public includes), `RMLUI_CUSTOM_RTTI` requiring `Rml::Detail` macro use in
   a couple of TUs, shadow/sign warnings (suppress via `bWarningsAsErrors = false` for
   this module only if needed).
-- [ ] **Step 2.6: Commit:** `git commit -am "feat: VaCuusRml module compiles vendored RmlUi Core"`
+- [x] **Step 2.6: Commit:** `git commit -am "feat: VaCuusRml module compiles vendored RmlUi Core"`
 
 ---
 
@@ -220,7 +220,7 @@ IMPLEMENT_MODULE(FDefaultModuleImpl, VaCuusRml)
 `Source/VaCuus/Private/VaCuusEngine.cpp`, `Source/VaCuus/Private/Tests/VaCuusBootTest.cpp`;
 Modify: `Source/VaCuus/VaCuus.Build.cs` (add `VaCuusRml` to PrivateDependencyModuleNames).
 
-- [ ] **Step 3.1: Write the failing test** (`VaCuusBootTest.cpp`):
+- [x] **Step 3.1: Write the failing test** (`VaCuusBootTest.cpp`):
 
 ```cpp
 #include "Misc/AutomationTest.h"
@@ -252,13 +252,13 @@ bool FVaCuusBootTest::RunTest(const FString& Parameters)
 }
 ```
 
-- [ ] **Step 3.2: Run to verify failure** (compile error: no `FVaCuusEngine`):
+- [x] **Step 3.2: Run to verify failure** (compile error: no `FVaCuusEngine`):
 
 ```bash
 ./Engine/Build/BatchFiles/Linux/Build.sh VcHostEditor Linux Development -project=/w/Unreal/VcHost/VcHost.uproject
 ```
 
-- [ ] **Step 3.3: Implement.** `VaCuusSystemInterface` (`Rml::SystemInterface`):
+- [x] **Step 3.3: Implement.** `VaCuusSystemInterface` (`Rml::SystemInterface`):
   `GetElapsedTime()` → `FPlatformTime::Seconds() - StartTime`; `LogMessage(type, msg)` →
   `UE_LOG(LogVaCuus, ...)` mapped by type, return true. `VaCuusFileInterface`
   (`Rml::FileInterface`): Open/Close/Read/Seek/Tell/Length over `IFileHandle*`
@@ -273,7 +273,7 @@ bool FVaCuusBootTest::RunTest(const FString& Parameters)
   `ThirdParty/RmlUi/Samples/assets` — wait, Samples were not vendored; copy the font from
   `/tmp/.../scratchpad/bench/RmlUi/Samples/assets/` or any TTF; commit it);
   `Shutdown()` = `Rml::Shutdown()`. Idempotent (ref-count Init calls).
-- [ ] **Step 3.4: Run test:**
+- [x] **Step 3.4: Run test:**
 
 ```bash
 /w/Unreal/UnrealEngine/Engine/Binaries/Linux/UnrealEditor-Cmd \
@@ -282,7 +282,7 @@ bool FVaCuusBootTest::RunTest(const FString& Parameters)
 ```
 
 Expected: `Test Completed. Result={Passed}`.
-- [ ] **Step 3.5: Commit:** `git commit -am "feat: Rml boot lifecycle + system/file interfaces (VaCuus.Core.Boot green)"`
+- [x] **Step 3.5: Commit:** `git commit -am "feat: Rml boot lifecycle + system/file interfaces (VaCuus.Core.Boot green)"`
 
 ---
 
@@ -294,7 +294,7 @@ Engine, RHI, RenderCore, Renderer, SlateCore, Slate, Projects, VaCuus, VaCuusRml
 `Source/VaCuusRender/Private/Tests/VcRecorderTest.cpp`. Modify: `VaCuus.uplugin`
 (add `VaCuusRender`, `LoadingPhase: PostConfigInit` for shader mapping).
 
-- [ ] **Step 4.1: Define the command model** (`VcCommandBuffer.h`):
+- [x] **Step 4.1: Define the command model** (`VcCommandBuffer.h`):
 
 ```cpp
 #pragma once
@@ -333,7 +333,7 @@ struct FVcCommandBuffer
 };
 ```
 
-- [ ] **Step 4.2: Failing tests** (`VcRecorderTest.cpp`) — three
+- [x] **Step 4.2: Failing tests** (`VcRecorderTest.cpp`) — three
   `IMPLEMENT_SIMPLE_AUTOMATION_TEST` cases under `VaCuus.Render.Recorder`:
   (a) `CompileGeometry` returns distinct non-zero handles and stashes vertex copies into
   `NewGeometry` of the *next published* buffer; (b) `ReleaseGeometry` before publish moves
@@ -342,8 +342,8 @@ struct FVcCommandBuffer
   command array (double publish without new commands → empty buffer, not stale copy).
   Write against the `FVcRecordingRenderInterface` API from Task 5 (it will not compile
   yet — that is the failing state).
-- [ ] **Step 4.3: Build → expect compile failure** (missing recorder class).
-- [ ] **Step 4.4: Commit the test + header:** `git commit -am "test: recorder contract (red)"`
+- [x] **Step 4.3: Build → expect compile failure** (missing recorder class).
+- [x] **Step 4.4: Commit the test + header:** `git commit -am "test: recorder contract (red)"`
 
 ---
 
@@ -352,7 +352,7 @@ struct FVcCommandBuffer
 **Files:** Create: `Source/VaCuusRender/Public/VcRecordingRenderInterface.h`,
 `Private/VcRecordingRenderInterface.cpp`.
 
-- [ ] **Step 5.1: Implement** (verify signatures against vendored `RenderInterface.h`;
+- [x] **Step 5.1: Implement** (verify signatures against vendored `RenderInterface.h`;
   the 6.x API is compiled-geometry based):
 
 ```cpp
@@ -398,18 +398,18 @@ RGBA span (font glyphs arrive this way). Rml vertex layout (`position: Vector2f`
 `colour: ColourbPremultiplied` = 4 bytes RGBA, `tex_coord: Vector2f`) is memcpy-compatible
 with `FVcVertex` — add `static_assert(sizeof(Rml::Vertex) == sizeof(FVcVertex))`.
 
-- [ ] **Step 5.2: Run recorder tests:**
+- [x] **Step 5.2: Run recorder tests:**
 
 ```bash
 UnrealEditor-Cmd VcHost.uproject -ExecCmds="Automation RunTests VaCuus.Render.Recorder; Quit" -unattended -nullrhi
 ```
 
 Expected: 3/3 pass.
-- [ ] **Step 5.3: Integration probe test** (add to VcRecorderTest.cpp): boot Rml with the
+- [x] **Step 5.3: Integration probe test** (add to VcRecorderTest.cpp): boot Rml with the
   recorder installed (replacing the null interface via `FVaCuusEngine::SetRenderInterface`
   — add that setter), load a 20-element document, `Update`+`Render`, assert
   `Commands.Num() > 0` and `NewTextures.Num() >= 1` (font atlas). Run; expect pass.
-- [ ] **Step 5.4: Commit:** `git commit -am "feat: recording RenderInterface (recorder tests green)"`
+- [x] **Step 5.4: Commit:** `git commit -am "feat: recording RenderInterface (recorder tests green)"`
 
 ---
 
@@ -419,7 +419,7 @@ Expected: 3/3 pass.
 `Source/VaCuusRender/Private/VcUIShaders.h/.cpp`,
 `Source/VaCuusRender/Private/VaCuusRenderModule.cpp`.
 
-- [ ] **Step 6.1: USF:**
+- [x] **Step 6.1: USF:**
 
 ```hlsl
 #include "/Engine/Public/Platform.ush"
@@ -446,12 +446,12 @@ void MainPS(in float4 SvPosition : SV_POSITION, in float4 Color : TEXCOORD1,
 }
 ```
 
-- [ ] **Step 6.2: Shader classes** (`VcUIShaders.h`): `FVcUIVS`/`FVcUIPS` :
+- [x] **Step 6.2: Shader classes** (`VcUIShaders.h`): `FVcUIVS`/`FVcUIPS` :
   `FGlobalShader` with `SHADER_PARAMETER` for Projection / texture / sampler /
   `bUseTexture`, `IMPLEMENT_GLOBAL_SHADER(FVcUIVS, "/Plugin/VaCuus/Private/VaCuusUI.usf", "MainVS", SF_Vertex)`
   (and PS). Vertex declaration `FVcVertexDeclaration`
   (`FVertexDeclarationElementList`: Float2 @0, Color @8, Float2 @12; stride 20).
-- [ ] **Step 6.3: Module startup** (`VaCuusRenderModule.cpp`):
+- [x] **Step 6.3: Module startup** (`VaCuusRenderModule.cpp`):
 
 ```cpp
 void FVaCuusRenderModule::StartupModule()
@@ -462,7 +462,7 @@ void FVaCuusRenderModule::StartupModule()
 }
 ```
 
-- [ ] **Step 6.4: Build; run editor once** — shader compiles at startup (watch log for
+- [x] **Step 6.4: Build; run editor once** — shader compiles at startup (watch log for
   `LogShaderCompilers` errors). **Commit.**
 
 ---
@@ -471,7 +471,7 @@ void FVaCuusRenderModule::StartupModule()
 
 **Files:** Create: `Source/VaCuusRender/Private/VcReplayRenderer.h/.cpp`.
 
-- [ ] **Step 7.1: Implement `FVcReplayRenderer`** (render-thread only):
+- [x] **Step 7.1: Implement `FVcReplayRenderer`** (render-thread only):
 
 ```cpp
 class FVcReplayRenderer
@@ -502,7 +502,7 @@ draw (`SetStreamSource` + `DrawIndexedPrimitive`). Geometry upload:
 Transform command: multiply into projection (Rml supplies column-major `Matrix4f` — add
 `static_assert` + transpose at the boundary; verify visually in Task 9).
 
-- [ ] **Step 7.2: Build clean. Commit** (no test yet — validated visually in Task 9 and
+- [x] **Step 7.2: Build clean. Commit** (no test yet — validated visually in Task 9 and
   by the golden capture in Task 10).
 
 ---
@@ -512,7 +512,7 @@ Transform command: multiply into projection (Rml supplies column-major `Matrix4f
 **Files:** Create: `Source/VaCuusRender/Private/VcSlateElement.h/.cpp`,
 `Private/SVaCuusHUDWidget.h/.cpp`; Modify: `Private/VaCuusRenderModule.cpp`.
 
-- [ ] **Step 8.1: `FVcSlateElement : ICustomSlateElement`.** Game thread stores per-paint
+- [x] **Step 8.1: `FVcSlateElement : ICustomSlateElement`.** Game thread stores per-paint
   params (widget rect in window space, latest buffer ptr) via a render-command-enqueued
   setter (Noesis pattern). Render thread:
 
@@ -533,11 +533,11 @@ check `/w/Unreal/UnrealEngine/Engine/Source/Runtime/Renderer/Public/ScreenPass.h
 the simplest fitting helper; if none blends premultiplied, add a tiny composite PS to
 `VaCuusUI.usf` (`MainCompositePS`) and a `GraphBuilder.AddPass` drawing a quad.)
 
-- [ ] **Step 8.2: `SVaCuusHUDWidget : SLeafWidget`.** `OnPaint`: push widget geometry to
+- [x] **Step 8.2: `SVaCuusHUDWidget : SLeafWidget`.** `OnPaint`: push widget geometry to
   the element, `FSlateDrawElement::MakeCustom(OutDrawElements, LayerId, Element)`;
   `ComputeDesiredSize` = fill. `Tick` (M1 only, game thread): `Context::Update()` +
   `Context::Render()` via recorder → `EndFrameAndPublish` → enqueue buffer to element.
-- [ ] **Step 8.3: Console command** in module cpp:
+- [x] **Step 8.3: Console command** in module cpp:
 
 ```cpp
 static FAutoConsoleCommand GVcM1HUD(TEXT("vacuus.M1HUD"),
@@ -548,7 +548,7 @@ static FAutoConsoleCommand GVcM1HUD(TEXT("vacuus.M1HUD"),
 load `Content/DevUI/m1_hud.rml`; `GEngine->GameViewport->AddViewportWidgetContent(SNew(SVaCuusHUDWidget, Ctx), 100)`;
 second call removes it and tears down (shutdown order per spec §4: document → context).
 
-- [ ] **Step 8.4: Build. Commit.**
+- [x] **Step 8.4: Build. Commit.**
 
 ---
 
@@ -557,7 +557,7 @@ second call removes it and tears down (shutdown order per spec §4: document →
 **Files:** Create: `Content/DevUI/m1_hud.rml`, `Content/DevUI/m1_hud.rcss`,
 `Content/DevUI/fonts/` (font TTF), `Content/DevUI/img/avatar.png`.
 
-- [ ] **Step 9.1: Author the M1 subset document** — port of the demo HUD *reduced to M1
+- [x] **Step 9.1: Author the M1 subset document** — port of the demo HUD *reduced to M1
   renderer scope* (solid fills, borders, text, one image, 2D transforms, scissor; NO
   gradients/box-shadow/filters — those are M5): player plate (name, level badge, solid
   HP/MP bars with % widths), 24-row scoreboard table, killfeed list, ability bar with
@@ -566,14 +566,14 @@ second call removes it and tears down (shutdown order per spec §4: document →
   stylesheet — demo gotcha #1). Reuse markup structure from
   `docs/research/hud-demo/data/hud.rml` as the starting point, stripping styles outside
   the M1 feature set.
-- [ ] **Step 9.2: PIE check:** launch VcHost in editor, PIE, `vacuus.M1HUD` in console.
+- [x] **Step 9.2: PIE check:** launch VcHost in editor, PIE, `vacuus.M1HUD` in console.
   Expected: HUD overlays the scene; text crisp; bars correctly sized; no alpha fringes
   (premultiplied path correct); toggling off cleans up with no crash; PIE stop with HUD
   visible also clean (subsystem-less M1 teardown hooked to viewport close — guard it).
-- [ ] **Step 9.3: Cross-check against GL3:** run the same document in the vendored GL3
+- [x] **Step 9.3: Cross-check against GL3:** run the same document in the vendored GL3
   sample loader (`Backends` reference build from research is fine) side by side; fix
   transform orientation / scissor origin mismatches now (classic y-flip class of bugs).
-- [ ] **Step 9.4: Commit:** `git commit -am "feat: M1 HUD renders in PIE via RDG slate element"`
+- [x] **Step 9.4: Commit:** `git commit -am "feat: M1 HUD renders in PIE via RDG slate element"`
 
 ---
 
