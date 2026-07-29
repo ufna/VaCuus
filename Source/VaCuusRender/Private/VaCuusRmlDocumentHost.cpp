@@ -3,6 +3,7 @@
 #include "VaCuusRmlDocumentHost.h"
 
 #include "VaCuusDefines.h"
+#include "VaCuusInteractiveSnapshot.h"
 #include "VaCuusRecordingRenderInterface.h"
 #include "VaCuusSlateElement.h"
 #include "VaCuusStats.h"
@@ -11,6 +12,7 @@
 
 #include "CoreGlobals.h"
 #include "HAL/PlatformTLS.h"
+#include "HAL/PlatformTime.h"
 #include "RenderingThread.h"
 
 #include <RmlUi/Core.h>
@@ -19,6 +21,13 @@ namespace VaCuusRmlDocumentHost
 {
 /** Virtual source name for documents loaded from memory (used in RmlUi log messages). */
 static const char* GMemorySourceName = "vacuus://memory.rml";
+
+/**
+ * How often the snapshot cost is logged (Verbose): the first frame, then every
+ * ~10 s at 60 Hz. The DFS is cheap enough that measuring it every frame would
+ * cost more than the walk, and one line per frame would be unreadable anyway.
+ */
+static constexpr uint64 GSnapshotLogInterval = 600;
 }	 // namespace VaCuusRmlDocumentHost
 
 FVaCuusRmlDocumentHost::FVaCuusRmlDocumentHost(const TSharedRef<FVaCuusSlateElement>& InElement)
@@ -79,6 +88,10 @@ void FVaCuusRmlDocumentHost::Shutdown()
 		// Queues the document unload; RmlUi processes it during RemoveContext.
 		Document->Close();
 		Document = nullptr;
+
+		// Same retraction as CloseDocument(): nothing is interactive any more, and no
+		// future frame will say so on our behalf.
+		PublishEmptyInteractiveSnapshot();
 	}
 
 	if (Context)
@@ -203,6 +216,11 @@ void FVaCuusRmlDocumentHost::CloseDocument()
 		// Queues the unload; RmlUi processes it in the context's next update.
 		Document->Close();
 		Document = nullptr;
+
+		// HasView() is false from here, so no frame will be recorded and no snapshot
+		// rebuilt -- the game thread would keep answering Handled from the closed
+		// document's geometry forever. This is the retraction.
+		PublishEmptyInteractiveSnapshot();
 	}
 }
 
@@ -259,6 +277,11 @@ void FVaCuusRmlDocumentHost::RecordAndPublishFrame()
 		Context->Update();
 	}
 
+	// Between Update() and Render(), and deliberately so: Update() is what leaves
+	// every element's absolute offset and box clean, which is the whole reason the
+	// walk is a field read per element rather than a layout pass.
+	PublishInteractiveSnapshot();
+
 	TUniquePtr<FVaCuusCommandBuffer> Buffer;
 	{
 		VACUUS_PERF_SCOPE(Record);
@@ -281,4 +304,62 @@ void FVaCuusRmlDocumentHost::RecordAndPublishFrame()
 		// Per-view frame count: what a headless screenshot actually needs to wait on.
 		Status->FramesPublished.fetch_add(1, std::memory_order_release);
 	}
+}
+
+void FVaCuusRmlDocumentHost::PublishInteractiveSnapshot()
+{
+	check(FVaCuusUIThread::IsInUIThread());
+
+	if (!Status.IsValid() || Context == nullptr)
+	{
+		return;
+	}
+
+	// Built straight into the triple buffer's write slot: the three buffers keep
+	// their rect-array capacity between publishes, so a steady-state UI frame does
+	// not allocate.
+	FVaCuusInteractiveSnapshot& Snapshot = Status->GetSnapshotWriteBuffer();
+
+	const double StartSeconds = FPlatformTime::Seconds();
+	const FVaCuusSnapshotBuildStats Stats =
+		BuildVaCuusInteractiveSnapshot(*Context, ViewSize, ++SnapshotGeneration, Snapshot);
+	const double ElapsedMs = (FPlatformTime::Seconds() - StartSeconds) * 1000.0;
+
+	// Copied out BEFORE the publish: the swap hands this buffer to the game thread,
+	// and reading it afterwards means reading a buffer somebody else now owns.
+	const int32 NumRects = Snapshot.InteractiveRects.Num();
+	const bool bWantsKeyboardFocus = Snapshot.bWantsKeyboardFocus;
+
+	Status->PublishSnapshot();
+
+	// First frame, then every ~10 s at 60 Hz. Verbose because on a healthy view this
+	// says nothing new; it is here so the DFS cost and the rect count are measurable
+	// on a real document without attaching a profiler
+	// (-LogCmds="LogVaCuus Verbose").
+	if (++NumSnapshotsPublished % VaCuusRmlDocumentHost::GSnapshotLogInterval == 1)
+	{
+		UE_LOG(LogVaCuus, Verbose,
+			TEXT("View %u snapshot %llu: %d interactive rect(s) from %d element(s) in %d document(s), %.4f ms (%dx%d, keyboard focus %s)"),
+			ViewId, SnapshotGeneration, NumRects, Stats.NumElementsVisited,
+			Stats.NumDocuments, ElapsedMs, ViewSize.X, ViewSize.Y,
+			bWantsKeyboardFocus ? TEXT("yes") : TEXT("no"));
+	}
+}
+
+void FVaCuusRmlDocumentHost::PublishEmptyInteractiveSnapshot()
+{
+	check(FVaCuusUIThread::IsInUIThread());
+
+	if (!Status.IsValid())
+	{
+		return;
+	}
+
+	// The generation still advances: an empty snapshot is a real publish that the
+	// game thread must notice, not an absence of one.
+	FVaCuusInteractiveSnapshot& Snapshot = Status->GetSnapshotWriteBuffer();
+	Snapshot.Reset();
+	Snapshot.Generation = ++SnapshotGeneration;
+	Snapshot.ViewSize = ViewSize;
+	Status->PublishSnapshot();
 }

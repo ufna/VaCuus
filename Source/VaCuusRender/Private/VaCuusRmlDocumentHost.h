@@ -32,9 +32,10 @@ class ElementDocument;
  * in the process happens on that one thread. The host does NOT boot or shut down
  * RmlUi itself -- the UI thread does that once for the process.
  *
- * RecordAndPublishFrame() publishes the recorded buffer to the Slate element
- * directly from the UI thread via ENQUEUE_RENDER_COMMAND; there is no
- * game-thread hop anywhere in the frame path.
+ * RecordAndPublishFrame() publishes two things per frame, both without a
+ * game-thread hop: the recorded command buffer to the Slate element via
+ * ENQUEUE_RENDER_COMMAND, and the interactive-region snapshot to the game thread
+ * through the shared FVaCuusViewStatus (see FVaCuusInteractiveSnapshot).
  */
 class FVaCuusRmlDocumentHost final : public IVaCuusDocumentHost
 {
@@ -66,6 +67,20 @@ private:
 
 	/** Publishes the outcome of a load back to the game thread (see FVaCuusViewStatus). */
 	void ReportLoadResult(uint64 LoadSerial, bool bSuccess);
+
+	/**
+	 * Walks the context and publishes this frame's interactive regions to the game
+	 * thread. Called after Context::Update() and before Context::Render().
+	 */
+	void PublishInteractiveSnapshot();
+
+	/**
+	 * Publishes an empty snapshot, so a view with no document stops claiming
+	 * coverage. Without it the game thread would keep answering Handled from the
+	 * geometry of a document that is already gone -- the snapshot is only refreshed
+	 * by a recorded frame, and a document-less view records none.
+	 */
+	void PublishEmptyInteractiveSnapshot();
 
 	/** Composite element the published buffers are enqueued to (thread-safe SP). Dropped by Shutdown(). */
 	TSharedPtr<FVaCuusSlateElement> Element;
@@ -100,4 +115,14 @@ private:
 
 	/** One-shot thread-attribution log: the evidence that RmlUi left the game thread. */
 	bool bLoggedFirstFrame = false;
+
+	/**
+	 * Strictly increasing snapshot id, stamped into every publish (including the
+	 * empty ones). It is the only way the game thread can tell a fresh snapshot from
+	 * the previous buffer handed back again, so it must never repeat or reset.
+	 */
+	uint64 SnapshotGeneration = 0;
+
+	/** Published snapshots, for the throttled perf log below. */
+	uint64 NumSnapshotsPublished = 0;
 };

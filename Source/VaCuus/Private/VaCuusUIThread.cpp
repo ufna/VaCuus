@@ -502,8 +502,9 @@ void FVaCuusUIThread::RunFrame()
 	DrainCommands();
 	// (input drain: Task 6; data snapshots: M3)
 
-	// One recorded frame per view, each publishing its own command buffer straight
-	// to the render thread -- no game-thread hop. (Interactive snapshot: Task 5.)
+	// One recorded frame per view, each publishing its own command buffer straight to
+	// the render thread and its own interactive-region snapshot straight to the game
+	// thread's view handle -- no game-thread hop in either direction.
 	for (TPair<uint32, TUniquePtr<IVaCuusDocumentHost>>& Pair : Hosts)
 	{
 		if (Pair.Value->HasView())

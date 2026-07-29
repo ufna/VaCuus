@@ -4,6 +4,10 @@
 
 #include "CoreMinimal.h"
 
+#include "VaCuusInteractiveSnapshot.h"
+
+#include "Containers/TripleBuffer.h"
+
 #include <atomic>
 
 /** Outcome of a document load, as reported back by the UI thread. */
@@ -16,8 +20,8 @@ enum class EVaCuusLoadResult : uint8
 };
 
 /**
- * The one piece of state a view shares between the game thread and the UI
- * thread: "what happened to the work I asked for".
+ * The state a view shares between the game thread and the UI thread: "what
+ * happened to the work I asked for", plus "where is this view interactive".
  *
  * WHY IT EXISTS: document loading is asynchronous now (the UI thread owns the
  * context, so it owns Context::LoadDocument too), but callers still need the
@@ -37,6 +41,14 @@ enum class EVaCuusLoadResult : uint8
  * are what make that observable rather than invisible -- a caller compares its
  * request against CompletedSerial (UVaCuusView::IsLoadPending() and the two
  * GetLast*LoadSerial() accessors), and the coalescing itself is logged.
+ *
+ * WHY THE SNAPSHOT LIVES HERE TOO (controller decision D7): the interactive-region
+ * snapshot is per-VIEW state, not per-thread. One UI thread serves N views, each
+ * with its own context, its own layout and therefore its own interactive
+ * geometry -- and each view's game-thread side (UVaCuusView, and the widget behind
+ * it) only ever wants its own. This object is already the one channel both sides
+ * of a view share, so the snapshot rides it rather than growing a second registry
+ * keyed by view id on FVaCuusUIThread.
  *
  * Held by a thread-safe TSharedRef so the UI thread's copy stays valid even if
  * the UObject view is garbage-collected first.
@@ -63,4 +75,50 @@ struct FVaCuusViewStatus
 	 * document made it to the render thread, not that the loop spun.
 	 */
 	std::atomic<uint64> FramesPublished{0};
+
+	//~ Interactive-region snapshot: UI thread produces, game thread consumes.
+	//~ See FVaCuusInteractiveSnapshot for what it means and how stale it is.
+
+	/**
+	 * UI thread: the buffer to build the next snapshot into.
+	 *
+	 * Handed out instead of taking a finished snapshot by value because the three
+	 * buffers keep their array capacity between publishes -- building in place is
+	 * what makes a steady-state UI frame allocation-free. (TTripleBuffer::Write()
+	 * would not do anyway: it takes `const BufferType` BY VALUE, TripleBuffer.h:199.)
+	 *
+	 * Valid until the matching PublishSnapshot(); do not hold it across frames.
+	 */
+	FVaCuusInteractiveSnapshot& GetSnapshotWriteBuffer() { return Snapshots.GetWriteBuffer(); }
+
+	/** UI thread: makes the buffer above the newest one the game thread can read. */
+	void PublishSnapshot() { Snapshots.SwapWriteBuffers(); }
+
+	/**
+	 * Game thread: the newest published snapshot.
+	 *
+	 * NEVER BLOCKS AND NEVER FAILS. If the UI thread published nothing since the
+	 * last call, the swap is a no-op (TripleBuffer.h:151) and this returns the same
+	 * buffer again -- which is why a caller must compare Generation rather than
+	 * assume freshness. Before the first publish it returns a default-constructed
+	 * snapshot: Generation 0, no rects, i.e. "nothing here is interactive", which is
+	 * the correct answer for a view whose document has not laid out yet.
+	 *
+	 * LIFETIME: the returned reference is invalidated by the NEXT call to this
+	 * method (the swap moves the read buffer). Nothing else invalidates it -- the UI
+	 * thread cannot pull a buffer out from under a reader. Callers that keep the
+	 * snapshot past their own statement must copy it; UVaCuusView does exactly that
+	 * and is the intended consumer, so game-thread code should go through
+	 * UVaCuusView::GetSnapshot() and leave this to it.
+	 */
+	const FVaCuusInteractiveSnapshot& AcquireSnapshot() { return Snapshots.SwapAndRead(); }
+
+private:
+	/**
+	 * Lock-free SPSC publish-swap: one producer (the UI thread), one consumer (the
+	 * game thread). Intermediate frames are dropped when the consumer is slower than
+	 * the producer, which is the desired coalescing -- the game thread wants the
+	 * newest geometry, never a backlog of old geometry.
+	 */
+	TTripleBuffer<FVaCuusInteractiveSnapshot> Snapshots;
 };

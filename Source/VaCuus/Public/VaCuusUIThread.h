@@ -41,8 +41,9 @@ struct FVaCuusViewStatus;
  * entirely between them.
  *
  * The frame body publishes each view's command buffer STRAIGHT to the render
- * thread (ENQUEUE_RENDER_COMMAND has no game-thread requirement), so a UI frame
- * never touches the game thread at all.
+ * thread (ENQUEUE_RENDER_COMMAND has no game-thread requirement) and its
+ * interactive-region snapshot into the view's shared FVaCuusViewStatus, so a UI
+ * frame never touches the game thread at all.
  *
  * INLINE FALLBACK: FRunnableThread::Create() returns nullptr, silently, when
  * FPlatformProcess::SupportsMultithreading() is false (commandlets,

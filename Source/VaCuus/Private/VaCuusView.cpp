@@ -137,6 +137,23 @@ bool UVaCuusView::IsLoadPending() const
 	return GetLastCompletedLoadSerial() < GetLastRequestedLoadSerial();
 }
 
+void UVaCuusView::RefreshSnapshot()
+{
+	check(IsInGameThread());
+
+	// SwapReadBuffers() inside here is a no-op when the UI thread published nothing,
+	// in which case the same buffer comes back and Generation has not moved -- so the
+	// comparison, not the swap, is what tells a fresh frame from a repeat. The
+	// reference dies at the next AcquireSnapshot(), which is why this copies.
+	const FVaCuusInteractiveSnapshot& Published = Status->AcquireSnapshot();
+	if (Published.Generation == CachedSnapshot.Generation)
+	{
+		return;
+	}
+
+	CachedSnapshot = Published;
+}
+
 void UVaCuusView::PollStatus()
 {
 	check(IsInGameThread());
@@ -145,6 +162,10 @@ void UVaCuusView::PollStatus()
 	{
 		return;
 	}
+
+	// First, and unconditionally: the snapshot is refreshed every frame whether or
+	// not a load completed, and the load-result path below returns early most frames.
+	RefreshSnapshot();
 
 	// Acquire pairs with the host's release store, so the result read below belongs
 	// to this serial and not to the load before it.

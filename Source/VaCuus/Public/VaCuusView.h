@@ -4,6 +4,8 @@
 
 #include "UObject/Object.h"
 
+#include "VaCuusInteractiveSnapshot.h"
+
 #include "Templates/SharedPointer.h"
 
 #include "VaCuusView.generated.h"
@@ -110,13 +112,39 @@ public:
 	bool IsLoadPending() const;
 
 	/**
-	 * Turns the UI thread's newest load result into an OnLoadCompleted broadcast.
-	 * Called once per game frame by UVaCuusSubsystem::Tick, which is what keeps every
-	 * callback on the game thread.
+	 * Where this view is interactive, as of the UI thread's newest published frame.
+	 *
+	 * THE CONTRACT SLATE NEEDS: this is a plain value type owned by this handle, so
+	 * `Snapshot.Contains(P)` is a synchronous, lock-free, never-failing answer to
+	 * "does the UI want this pointer event" -- which is what lets SVaCuusWidget
+	 * return Handled/Unhandled without ever asking the UI thread anything.
+	 *
+	 * LIFETIME: the reference is to this object's own cache and stays valid until
+	 * the NEXT PollStatus(), i.e. for the rest of the game frame. That is
+	 * deliberate: PollStatus() runs from UVaCuusSubsystem::Tick, inside the world
+	 * tick, and Slate ticks and dispatches input later in the same frame
+	 * (FSlateApplication::Tick runs after GEngine->Tick), so every input handler in
+	 * one frame tests against ONE stable geometry. The alternative -- reading the
+	 * triple buffer per event -- would let the answer change between a mouse-down
+	 * and the mouse-up that releases its capture.
+	 *
+	 * Before the first published frame this is the default snapshot: Generation 0,
+	 * no rects, nothing interactive.
+	 */
+	const FVaCuusInteractiveSnapshot& GetSnapshot() const { return CachedSnapshot; }
+
+	/**
+	 * Once per game frame, from UVaCuusSubsystem::Tick: refreshes the snapshot cache
+	 * and turns the UI thread's newest load result into an OnLoadCompleted
+	 * broadcast. Both halves exist to keep everything the UI thread publishes on the
+	 * game thread by the time anyone reads it.
 	 */
 	void PollStatus();
 
 private:
+	/** Copies the newest published snapshot into CachedSnapshot, if there is a newer one. */
+	void RefreshSnapshot();
+
 	/** The UI thread through the subsystem, or null once invalidated / after module shutdown. */
 	FVaCuusUIThread* GetUIThread() const;
 
@@ -126,6 +154,17 @@ private:
 
 	/** Shared with this view's document host on the UI thread. */
 	TSharedPtr<FVaCuusViewStatus> Status;
+
+	/**
+	 * Game-thread-owned copy of the newest snapshot the UI thread published.
+	 *
+	 * A COPY, not a reference into the triple buffer, for two reasons: the buffer's
+	 * read reference dies at the next swap (TripleBuffer.h's own warning), and a
+	 * per-frame snapshot must not change under Slate's feet mid-frame. Refreshed
+	 * only when Generation moved, so an idle UI costs one integer comparison per
+	 * frame and the TArray keeps its allocation.
+	 */
+	FVaCuusInteractiveSnapshot CachedSnapshot;
 
 	/** Process-unique; allocated by the UI thread and stamped into every command. */
 	uint32 ViewId = 0;
