@@ -293,6 +293,14 @@ void FVaCuusRecordingRenderInterface::CheckOwnerThread() const
 	// Single-writer contract: while a frame is open, every recorder call must
 	// come from the thread that called BeginFrame(). Out-of-frame calls are
 	// not pinned (single-writer is still assumed, just not verifiable here).
+	//
+	// DELIBERATELY an ensure, where every other M2 thread-affinity guard is a hard
+	// check(): those guard RmlUi itself, whose global state a wrong-thread call
+	// silently corrupts, so failing fast is the only safe answer. This one guards
+	// OUR buffer, and the worst case is a mis-recorded frame — recoverable, and the
+	// recorder is deliberately thread-agnostic (tests drive it straight from the
+	// test thread). An ensure reports the misuse once and keeps the editor session
+	// alive, which is the right trade here and nowhere else.
 	ensureMsgf(!bInFrame || FPlatformTLS::GetCurrentThreadId() == OwnerThreadId,
 		TEXT("Recorder called from thread %u while the open frame is owned by thread %u"),
 		FPlatformTLS::GetCurrentThreadId(), OwnerThreadId);

@@ -4,6 +4,8 @@
 
 #include "CoreMinimal.h"
 
+#include <atomic>
+
 namespace Rml
 {
 class RenderInterface;
@@ -27,6 +29,14 @@ class FVaCuusNullRenderInterface;
  * count from 0 to 1 becomes the owner and is recorded; every later
  * Initialize()/Shutdown()/SetRenderInterface() check()s that it is on that same
  * thread, and the record is cleared when the count returns to 0.
+ *
+ * Ownership is claimed with a compare-exchange on OwnerThreadId, not with a
+ * "is the refcount zero?" test: the test-then-set version would let two threads
+ * racing the very first Initialize() both pass the owner check and both call
+ * Rml::Initialise(). The CAS makes exactly one of them the owner and sends the
+ * other into the check() failure below, which is the whole point of recording an
+ * owner. It also gates the next boot behind the previous teardown, because the
+ * record is only released after Rml::Shutdown() has returned.
  *
  * In M2 the owner is normally the VaCuus UI thread, because
  * FVaCuusUIThread::Init() is what boots the library. Automation tests are the
@@ -58,7 +68,7 @@ public:
 	void Shutdown();
 
 	/** True while the library is booted. Safe from any thread. */
-	bool IsInitialized() const { return RefCount > 0; }
+	bool IsInitialized() const { return RefCount.load(std::memory_order_acquire) > 0; }
 
 	/**
 	 * Overrides the render interface used at boot. Must be called before the
@@ -84,11 +94,19 @@ private:
 	/** Rml::Shutdown() + interface release + owner reset; assumes RefCount already hit 0. */
 	void TearDownLibrary();
 
-	/** Number of live Initialize() references. */
-	int32 RefCount = 0;
+	/**
+	 * Number of live Initialize() references. Atomic because IsInitialized() is
+	 * documented as readable from any thread (std::atomic, not TAtomic: the latter
+	 * is documented "DEPRECATED ... use std::atomic" in 5.8).
+	 */
+	std::atomic<int32> RefCount{0};
 
-	/** Thread that took RefCount 0 -> 1, or 0 while the library is down. */
-	uint32 OwnerThreadId = 0;
+	/**
+	 * Thread that claimed the library, or 0 while nobody owns it. Atomic because the
+	 * claim itself is a compare-exchange (see the class comment) and because every
+	 * mutating call reads it to assert the contract.
+	 */
+	std::atomic<uint32> OwnerThreadId{0};
 
 	/** Render interface handed to Rml::SetRenderInterface (not owned unless it's the null stub). */
 	Rml::RenderInterface* RenderInterface = nullptr;

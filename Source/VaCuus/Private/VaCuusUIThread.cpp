@@ -340,6 +340,7 @@ void FVaCuusUIThread::DrainCommands()
 				break;
 
 			case EVaCuusCommandKind::Shutdown:
+			{
 				// In-band graceful stop: close the document now, then leave the loop
 				// after this frame. The owner still joins us through the destructor,
 				// and Exit() still runs the full teardown.
@@ -348,7 +349,19 @@ void FVaCuusUIThread::DrainCommands()
 					Host->CloseDocument();
 				}
 				bStopRequested.store(true, std::memory_order_release);
+
+				// Anything queued behind a shutdown is dead by definition; drop it
+				// here and say how much, so the loss is as visible as Enqueue()'s.
+				int32 NumDropped = 0;
+				while (Queues->Commands.Dequeue())
+				{
+					++NumDropped;
+				}
+				UE_LOG(LogVaCuus, Verbose,
+					TEXT("UI thread stopping on an in-band shutdown command; dropped %d queued command(s) behind it"),
+					NumDropped);
 				return;
+			}
 		}
 	}
 }

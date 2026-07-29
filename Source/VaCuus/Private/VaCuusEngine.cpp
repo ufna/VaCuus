@@ -63,11 +63,23 @@ FVaCuusEngine& FVaCuusEngine::Get()
 
 bool FVaCuusEngine::Initialize()
 {
-	CheckOwnerThread(TEXT("Initialize"));
+	// Claim ownership atomically: exactly one thread can move OwnerThreadId from 0
+	// to its own id, so only one thread ever reaches the boot below even if several
+	// race the first Initialize(). Testing "RefCount > 0" instead would be
+	// check-then-act: two threads could both see 0, both pass the owner check and
+	// both call Rml::Initialise().
+	uint32 ExpectedOwner = 0;
+	const bool bClaimedOwnership = OwnerThreadId.compare_exchange_strong(
+		ExpectedOwner, FPlatformTLS::GetCurrentThreadId(),
+		std::memory_order_acq_rel, std::memory_order_acquire);
 
-	if (RefCount > 0)
+	if (!bClaimedOwnership)
 	{
-		++RefCount;
+		// Somebody already owns the library. If it is us this is a nested
+		// Initialize() and just adds a reference; if it is another thread, this is
+		// the contract violation the owner record exists to catch.
+		CheckOwnerThread(TEXT("Initialize"));
+		RefCount.fetch_add(1, std::memory_order_acq_rel);
 		return true;
 	}
 
@@ -103,6 +115,10 @@ bool FVaCuusEngine::Initialize()
 		NullRenderInterface.Reset();
 		SystemInterface.Reset();
 		FileInterface.Reset();
+
+		// Release the claim so a later retry can boot: this thread owns the record
+		// but never took a reference, and RefCount is still 0.
+		OwnerThreadId.store(0, std::memory_order_release);
 		return false;
 	}
 
@@ -121,12 +137,11 @@ bool FVaCuusEngine::Initialize()
 		UE_LOG(LogVaCuus, Warning, TEXT("Default font not found at '%s'; text will not be rendered"), *FontDiskPath);
 	}
 
-	RefCount = 1;
+	// Published last: a reader that sees a non-zero refcount sees a booted library.
+	RefCount.store(1, std::memory_order_release);
 
-	// From here on this thread owns RmlUi (see the header's owner-thread contract).
-	OwnerThreadId = FPlatformTLS::GetCurrentThreadId();
-
-	UE_LOG(LogVaCuus, Log, TEXT("RmlUi initialized (owner thread %u)"), OwnerThreadId);
+	UE_LOG(LogVaCuus, Log, TEXT("RmlUi initialized (owner thread %u)"),
+		OwnerThreadId.load(std::memory_order_relaxed));
 	return true;
 }
 
@@ -134,13 +149,15 @@ void FVaCuusEngine::Shutdown()
 {
 	CheckOwnerThread(TEXT("Shutdown"));
 
-	if (RefCount == 0)
+	if (RefCount.load(std::memory_order_acquire) == 0)
 	{
 		UE_LOG(LogVaCuus, Warning, TEXT("Shutdown() called without a matching Initialize()"));
 		return;
 	}
 
-	if (--RefCount > 0)
+	// fetch_sub returns the value *before* the decrement, so >1 means somebody else
+	// still holds a reference.
+	if (RefCount.fetch_sub(1, std::memory_order_acq_rel) > 1)
 	{
 		return;
 	}
@@ -155,14 +172,14 @@ void FVaCuusEngine::ForceShutdownAll()
 	// for an unpaired Initialize(), and the owner may be a thread that is already
 	// gone. Tearing RmlUi down from the wrong thread beats leaking the library past
 	// the point where VaCuusRml is still loaded.
-	if (RefCount == 0)
+	if (RefCount.load(std::memory_order_acquire) == 0)
 	{
 		return;
 	}
 
 	// Drops every outstanding reference at once; a later Shutdown() from whoever
 	// held one will report the unpaired call, which is the truth.
-	RefCount = 0;
+	RefCount.store(0, std::memory_order_release);
 	TearDownLibrary();
 	UE_LOG(LogVaCuus, Log, TEXT("RmlUi shut down (forced)"));
 }
@@ -180,15 +197,17 @@ void FVaCuusEngine::TearDownLibrary()
 	SystemInterface.Reset();
 	FileInterface.Reset();
 
-	// Nobody owns the library any more: the next Initialize() picks a new owner.
-	OwnerThreadId = 0;
+	// Released last, and only now: the claim is what gates the next boot, so holding
+	// it until Rml::Shutdown() has returned is what stops a new owner from calling
+	// Rml::Initialise() while this teardown is still in flight.
+	OwnerThreadId.store(0, std::memory_order_release);
 }
 
 void FVaCuusEngine::SetRenderInterface(Rml::RenderInterface* InRenderInterface)
 {
 	CheckOwnerThread(TEXT("SetRenderInterface"));
 
-	if (RefCount > 0)
+	if (RefCount.load(std::memory_order_acquire) > 0)
 	{
 		UE_LOG(LogVaCuus, Error, TEXT("SetRenderInterface() must be called before Initialize(); ignored"));
 		return;
@@ -203,7 +222,8 @@ void FVaCuusEngine::CheckOwnerThread(const TCHAR* Operation) const
 	// Nobody owns the library between teardown and the next boot, which is exactly
 	// when SetRenderInterface() is supposed to be called -- so an unowned engine
 	// accepts calls from anywhere and the *next* Initialize() picks the owner.
-	checkf(OwnerThreadId == 0 || OwnerThreadId == FPlatformTLS::GetCurrentThreadId(),
+	const uint32 Owner = OwnerThreadId.load(std::memory_order_acquire);
+	checkf(Owner == 0 || Owner == FPlatformTLS::GetCurrentThreadId(),
 		TEXT("FVaCuusEngine::%s() called from thread %u, but RmlUi is owned by thread %u"),
-		Operation, FPlatformTLS::GetCurrentThreadId(), OwnerThreadId);
+		Operation, FPlatformTLS::GetCurrentThreadId(), Owner);
 }

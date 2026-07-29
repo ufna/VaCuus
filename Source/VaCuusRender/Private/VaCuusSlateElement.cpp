@@ -125,6 +125,15 @@ void FVaCuusSlateElement::Draw_RenderThread(FRDGBuilder& GraphBuilder, const FDr
 	FRHIBlendState* BlendState =
 		TStaticBlendState<CW_RGBA, BO_Add, BF_One, BF_InverseSourceAlpha, BO_Add, BF_One, BF_InverseSourceAlpha>::GetRHI();
 
+	// RESIZE BEHAVIOUR (deliberate): the RT is whatever size the newest replayed
+	// buffer was recorded at, and it is stretched (bilinear) into DestRect. Since
+	// M2 Task 3 the resize round-trip is asynchronous — the widget queues the new
+	// size, the UI thread relayouts, and the matching buffer lands a frame or two
+	// later — so during a resize the previous size is briefly scaled into the new
+	// rect. That is the accepted trade: the UI stays visible and self-heals on the
+	// first matching buffer. The alternatives (compositing at the RT's native size
+	// with letterboxing, or blanking until sizes agree) both look worse for a few
+	// frames and cost more than they buy.
 	AddDrawScreenPass(GraphBuilder, RDG_EVENT_NAME("VaCuusComposite"), FScreenPassViewInfo(),
 		/*OutputViewport=*/FScreenPassTextureViewport(Inputs.OutputTexture, OutputRect),
 		/*InputViewport=*/FScreenPassTextureViewport(UITexture),
