@@ -12,7 +12,18 @@ class FVaCuusUIThread;
 class UVaCuusSubsystem;
 struct FVaCuusViewStatus;
 
-/** Broadcast on the GAME thread once a queued document load has finished. */
+/**
+ * Broadcast on the GAME thread for the NEWEST completed document load.
+ *
+ * Latest completion wins. The UI thread can finish several queued loads inside one
+ * drain, and the status carries one (serial, result) pair, so the game thread's
+ * next poll sees only the last of them: intermediate completions are coalesced away
+ * and a superseded load is never reported. That is the honest semantic, and the
+ * right one for the only thing the result is used for -- "is the document that is
+ * up now the one I last asked for". Callers that need to know their own request was
+ * overtaken can compare UVaCuusView::GetLastRequestedLoadSerial() against
+ * GetLastCompletedLoadSerial(); coalescing is logged (Verbose) as it happens.
+ */
 DECLARE_MULTICAST_DELEGATE_TwoParams(FOnVaCuusViewLoadCompleted, UVaCuusView* /*View*/, bool /*bSuccess*/);
 
 /**
@@ -36,7 +47,7 @@ class VACUUS_API UVaCuusView : public UObject
 	GENERATED_BODY()
 
 public:
-	/** Fires once per completed load, in the order the loads were requested. */
+	/** Newest completed load only; see the delegate's own comment for the coalescing rule. */
 	FOnVaCuusViewLoadCompleted OnLoadCompleted;
 
 	/**
@@ -85,8 +96,22 @@ public:
 	uint64 GetFramesPublished() const;
 
 	/**
-	 * Turns the UI thread's load results into OnLoadCompleted broadcasts. Called
-	 * once per game frame by UVaCuusSubsystem::Tick, which is what keeps every
+	 * Serial of the newest load this view has ASKED for, and of the newest one the UI
+	 * thread has FINISHED. Equal means the view is showing the answer to the last
+	 * request; a completed serial above your own request's means yours was
+	 * superseded and its result was never reported (see the delegate comment).
+	 * Serials start at 1; 0 means "none yet".
+	 */
+	uint64 GetLastRequestedLoadSerial() const;
+	uint64 GetLastCompletedLoadSerial() const;
+
+	/** True while a queued load has not been answered yet. */
+	UFUNCTION(BlueprintCallable, Category = "VaCuus")
+	bool IsLoadPending() const;
+
+	/**
+	 * Turns the UI thread's newest load result into an OnLoadCompleted broadcast.
+	 * Called once per game frame by UVaCuusSubsystem::Tick, which is what keeps every
 	 * callback on the game thread.
 	 */
 	void PollStatus();

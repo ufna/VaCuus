@@ -176,6 +176,57 @@ void FVaCuusUIThread::RunFrameInline()
 	FrameCount.fetch_add(1, std::memory_order_release);
 }
 
+bool FVaCuusUIThread::RequestGracefulShutdown(double TimeoutSeconds)
+{
+	check(IsInGameThread());
+
+	if (bShutdownDrained.load(std::memory_order_acquire))
+	{
+		return true;
+	}
+
+	if (!bInlineMode && !bThreadLive.load(std::memory_order_acquire))
+	{
+		// The worker never ran (Start() failed or was never called), so there is
+		// nothing queued and nothing to close.
+		return true;
+	}
+
+	if (bStopRequested.load(std::memory_order_acquire))
+	{
+		// A hard stop already closed the queue; the Shutdown command could not even
+		// be pushed. Let the caller log the fallback.
+		return false;
+	}
+
+	EnqueueShutdown();
+
+	if (bInlineMode)
+	{
+		// No worker to wait for: the frame that drains the command is ours to run.
+		RunFrameInline();
+		return bShutdownDrained.load(std::memory_order_acquire);
+	}
+
+	const double Deadline = FPlatformTime::Seconds() + TimeoutSeconds;
+	while (!bShutdownDrained.load(std::memory_order_acquire))
+	{
+		if (FPlatformTime::Seconds() >= Deadline)
+		{
+			return false;
+		}
+
+		FPlatformProcess::Sleep(0.001f);
+	}
+
+	return true;
+}
+
+bool FVaCuusUIThread::IsStopping() const
+{
+	return bStopRequested.load(std::memory_order_acquire);
+}
+
 void FVaCuusUIThread::Stop()
 {
 	// Called from the owner's thread, including from inside Kill(true). Both halves
@@ -402,6 +453,20 @@ void FVaCuusUIThread::Exit()
 	// because it runs on the owner's thread.
 	check(IsInUIThread());
 
+	// 0. Last word on the queue. Normally empty: the graceful path drained it in
+	// DrainCommands() and Enqueue() has been closed ever since. Anything here got in
+	// through the narrow window between Enqueue()'s check and Stop()'s store, or was
+	// queued before a hard Stop() that skipped the in-band shutdown entirely --
+	// either way the work is lost, and losing it silently is what this reports.
+	// Done before the hosts die so a dropped AddView's host is destroyed here, on
+	// the thread that would have booted it.
+	if (const int32 NumDropped = DrainAndDiscardCommands(); NumDropped > 0)
+	{
+		UE_LOG(LogVaCuus, Warning,
+			TEXT("UI thread exited with %d command(s) still queued (no in-band shutdown drained them); dropped"),
+			NumDropped);
+	}
+
 	// 1. Every view lets go of its documents and its context (and releases its
 	// render-side resources), still on this thread.
 	for (TPair<uint32, TUniquePtr<IVaCuusDocumentHost>>& Pair : Hosts)
@@ -454,11 +519,21 @@ void FVaCuusUIThread::DrainCommands()
 
 	while (TOptional<FVaCuusUICommand> Command = Queues->Commands.Dequeue())
 	{
+		if (Command->Kind == EVaCuusCommandKind::None)
+		{
+			// Producer bug: Kind is the one field with no sensible default, so an
+			// unset one is reported rather than guessed at.
+			UE_LOG(LogVaCuus, Error,
+				TEXT("A UI command for view %u reached the drain with no kind set; dropped"), Command->ViewId);
+			continue;
+		}
+
 		if (Command->Kind == EVaCuusCommandKind::Shutdown)
 		{
-			// In-band graceful stop: close every document now, then leave the loop
-			// after this frame. The owner still joins us through the destructor, and
-			// Exit() still runs the full teardown.
+			// In-band graceful stop -- the path FVaCuusModule::StopUIThread() takes:
+			// close every document now, then leave the loop after this frame. The
+			// owner still joins us afterwards, and Exit() still runs the full
+			// teardown.
 			for (TPair<uint32, TUniquePtr<IVaCuusDocumentHost>>& Pair : Hosts)
 			{
 				Pair.Value->CloseDocument();
@@ -467,14 +542,14 @@ void FVaCuusUIThread::DrainCommands()
 
 			// Anything queued behind a shutdown is dead by definition; drop it here
 			// and say how much, so the loss is as visible as Enqueue()'s.
-			int32 NumDropped = 0;
-			while (Queues->Commands.Dequeue())
-			{
-				++NumDropped;
-			}
-			UE_LOG(LogVaCuus, Verbose,
-				TEXT("UI thread stopping on an in-band shutdown command; dropped %d queued command(s) behind it"),
-				NumDropped);
+			const int32 NumDropped = DrainAndDiscardCommands();
+			UE_LOG(LogVaCuus, Log,
+				TEXT("UI thread stopping on an in-band shutdown command (%d view(s) closed, %d queued command(s) dropped behind it)"),
+				Hosts.Num(), NumDropped);
+
+			// Published last: the owner is waiting on this to know the graceful path
+			// actually happened, and everything above must be visible when it does.
+			bShutdownDrained.store(true, std::memory_order_release);
 			return;
 		}
 
@@ -593,6 +668,22 @@ void FVaCuusUIThread::RemoveView(uint32 ViewId)
 	RetiredHosts.Add(MoveTemp(Host));
 
 	UE_LOG(LogVaCuus, Log, TEXT("View %u removed from the UI thread (%d view(s) left)"), ViewId, Hosts.Num());
+}
+
+int32 FVaCuusUIThread::DrainAndDiscardCommands()
+{
+	check(IsInUIThread());
+
+	int32 NumDropped = 0;
+	while (Queues->Commands.Dequeue())
+	{
+		// The dequeued command dies at the end of this iteration -- including, for an
+		// AddView, the host it carries, which was never booted and so holds nothing
+		// RmlUi-affine.
+		++NumDropped;
+	}
+
+	return NumDropped;
 }
 
 IVaCuusDocumentHost* FVaCuusUIThread::FindHost(uint32 ViewId) const

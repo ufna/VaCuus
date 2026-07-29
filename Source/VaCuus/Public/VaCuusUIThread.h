@@ -102,6 +102,21 @@ public:
 	 */
 	void RunFrameInline();
 
+	/**
+	 * The graceful half of teardown, and the path FVaCuusModule::StopUIThread()
+	 * takes: queues the in-band Shutdown command and waits (bounded) for the worker
+	 * to drain it, so every document is closed and anything still queued is dropped
+	 * *with a log* on the UI thread, before any join happens.
+	 *
+	 * Returns false when the worker did not get there in time (or the queue was
+	 * already closed by a hard Stop()); the caller then falls back to Stop()+join,
+	 * which is exactly what the destructor does anyway. Game thread only.
+	 */
+	bool RequestGracefulShutdown(double TimeoutSeconds);
+
+	/** True once a stop has been requested; the command queue is closed from then on. */
+	bool IsStopping() const;
+
 	/** Wakes the worker for one UI frame. Safe from any thread; coalescing. No-op inline. */
 	void Trigger();
 
@@ -166,6 +181,9 @@ private:
 	void AddView(FVaCuusUICommand& Command);
 	void RemoveView(uint32 ViewId);
 
+	/** Empties the command queue without applying anything; returns how much was lost. UI thread. */
+	int32 DrainAndDiscardCommands();
+
 	/** Host for ViewId, or null. UI thread. */
 	IVaCuusDocumentHost* FindHost(uint32 ViewId) const;
 
@@ -200,6 +218,13 @@ private:
 	FEventRef WakeEvent{EEventMode::AutoReset};
 
 	std::atomic<bool> bStopRequested{false};
+
+	/**
+	 * Set by the drain once the in-band Shutdown command has been processed. It is
+	 * what RequestGracefulShutdown() waits on, and what tells the difference between
+	 * "the worker closed everything itself" and "we had to hard-stop it".
+	 */
+	std::atomic<bool> bShutdownDrained{false};
 
 	/**
 	 * Published by Init() before it returns. FRunnableThread::Create() hands back

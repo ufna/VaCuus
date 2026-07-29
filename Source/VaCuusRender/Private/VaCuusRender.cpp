@@ -122,8 +122,13 @@ static void TearDown()
 		Subsystem->DestroyView(State->View.Get());
 	}
 
-	// 3. Drop our own element reference; the render-side release was enqueued by the
-	// UI thread in step 2, and the element dies with the last reference after it.
+	// 3. Drop our own element reference. Note what this does NOT establish: step 2 is
+	// asynchronous, so the host (and its own reference) lives on inside the UI
+	// thread's view map until it drains the RemoveView, and the release command it
+	// enqueues then may still be in flight. None of that needs ordering — the element
+	// is a thread-safe shared pointer, whichever of the game, UI or render thread
+	// happens to drop the last reference destroys it, and the render-side release is
+	// ordered after the view's last publish because the UI thread enqueues both.
 	State->Element.Reset();
 
 	UE_LOG(LogVaCuus, Log, TEXT("M1 HUD off"));

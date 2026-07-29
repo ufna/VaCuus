@@ -121,6 +121,14 @@ UVaCuusView* UVaCuusSubsystem::CreateView(TUniquePtr<IVaCuusDocumentHost> Host, 
 		return nullptr;
 	}
 
+	if (UIThread->IsStopping())
+	{
+		// The queue is closed, so the AddView would be dropped and the handle would
+		// never refer to anything. Say no instead of handing back a dead view.
+		UE_LOG(LogVaCuus, Warning, TEXT("CreateView() refused: the UI thread is shutting down"));
+		return nullptr;
+	}
+
 	const uint32 ViewId = UIThread->AllocateViewId();
 	const TSharedRef<FVaCuusViewStatus> Status = MakeShared<FVaCuusViewStatus>();
 

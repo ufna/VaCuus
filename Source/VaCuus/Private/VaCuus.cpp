@@ -12,6 +12,17 @@
 
 DEFINE_LOG_CATEGORY(LogVaCuus);
 
+namespace
+{
+/**
+ * How long StopUIThread() waits for the worker to drain the in-band shutdown
+ * before hard-stopping it. Generous next to a UI frame (fractions of a
+ * millisecond for the M1 HUD) and short enough to be invisible in engine
+ * shutdown; the fallback is correct either way, just louder and less tidy.
+ */
+constexpr double GVaCuusGracefulShutdownSeconds = 0.1;
+}	 // namespace
+
 FVaCuusModule::~FVaCuusModule() = default;
 
 void FVaCuusModule::StartupModule()
@@ -62,7 +73,15 @@ FVaCuusUIThread* FVaCuusModule::GetOrStartUIThread()
 		return UIThread.Get();
 	}
 
-	check(Engine.IsValid());
+	if (!Engine.IsValid())
+	{
+		// Only reachable after ShutdownModule(): the contract callers rely on is
+		// "null when the thread is unavailable", not an assert on a teardown race.
+		UE_LOG(LogVaCuus, Error,
+			TEXT("The VaCuus UI thread cannot start: the module has no engine (already shut down?)"));
+		return nullptr;
+	}
+
 	TUniquePtr<FVaCuusUIThread> NewThread = MakeUnique<FVaCuusUIThread>(*Engine);
 	if (NewThread->Start())
 	{
@@ -92,6 +111,18 @@ void FVaCuusModule::StopUIThread()
 	}
 
 	check(IsInGameThread());
+
+	// Graceful first (spec §4's "stop accepting commands -> drain UI thread -> close
+	// documents"): the in-band Shutdown command lets the worker close every document
+	// and account for anything still queued, on its own thread, before a join can cut
+	// it off. The wait is bounded — a worker wedged in a long frame must not hold up
+	// module shutdown — and the hard stop below is the fallback, not the plan.
+	if (!UIThread->RequestGracefulShutdown(GVaCuusGracefulShutdownSeconds))
+	{
+		UE_LOG(LogVaCuus, Warning,
+			TEXT("The VaCuus UI thread did not process the in-band shutdown within %.0f ms; falling back to a hard stop"),
+			GVaCuusGracefulShutdownSeconds * 1000.0);
+	}
 
 	// The destructor requests the stop, joins, and the worker's Exit() shuts every
 	// view and RmlUi itself down — all on the UI thread, which is the only thread

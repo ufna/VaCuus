@@ -16,6 +16,14 @@ class IVaCuusDocumentHost;
 enum class EVaCuusCommandKind : uint8
 {
 	/**
+	 * Unset. The default, deliberately: a command that reaches the drain still
+	 * carrying it is a producer that forgot to set Kind, and the drain says so
+	 * loudly instead of silently performing whichever kind happened to be first in
+	 * this enum.
+	 */
+	None,
+
+	/**
 	 * Registers a new view: boots the handed-over document host under ViewId and
 	 * adds it to the UI thread's view map. Carries the host and the shared status.
 	 */
@@ -51,16 +59,18 @@ enum class EVaCuusCommandKind : uint8
  * one process-wide UI thread serve N views (N game instances in PIE included)
  * while each view keeps its own Rml::Context.
  *
- * ViewSize is honoured on EVERY kind, not just Resize: a non-zero value is
+ * ViewSize is honoured on every ROUTED kind, not just Resize: a non-zero value is
  * applied to the routed view before the command itself runs, so a document loads
- * straight into the right layout size instead of being laid out twice.
+ * straight into the right layout size instead of being laid out twice. The kinds
+ * that bypass that -- AddView applies its size at boot instead, RemoveView and
+ * Shutdown ignore it -- are handled before the routing block.
  *
  * Move-only (it can carry a document host), which TSpscQueue's in-place
  * variadic Enqueue and TOptional-returning Dequeue both handle.
  */
 struct FVaCuusUICommand
 {
-	EVaCuusCommandKind Kind = EVaCuusCommandKind::Resize;
+	EVaCuusCommandKind Kind = EVaCuusCommandKind::None;
 
 	/** View this command applies to; 0 (and Shutdown) means "the whole thread". */
 	uint32 ViewId = 0;

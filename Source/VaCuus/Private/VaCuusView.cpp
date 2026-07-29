@@ -122,6 +122,21 @@ uint64 UVaCuusView::GetFramesPublished() const
 	return Status.IsValid() ? Status->FramesPublished.load(std::memory_order_acquire) : 0;
 }
 
+uint64 UVaCuusView::GetLastRequestedLoadSerial() const
+{
+	return Status.IsValid() ? Status->LoadRequestSerial.load(std::memory_order_relaxed) : 0;
+}
+
+uint64 UVaCuusView::GetLastCompletedLoadSerial() const
+{
+	return Status.IsValid() ? Status->LoadCompletedSerial.load(std::memory_order_acquire) : 0;
+}
+
+bool UVaCuusView::IsLoadPending() const
+{
+	return GetLastCompletedLoadSerial() < GetLastRequestedLoadSerial();
+}
+
 void UVaCuusView::PollStatus()
 {
 	check(IsInGameThread());
@@ -137,6 +152,18 @@ void UVaCuusView::PollStatus()
 	if (Completed == LastBroadcastLoadSerial)
 	{
 		return;
+	}
+
+	// Serials are consecutive per view, so the gap is exactly how many earlier
+	// results this one hid: the UI thread finished several loads inside one drain (or
+	// some were dropped during teardown) and only the last (serial, result) pair
+	// survives in the status. Coalescing is the contract, not a bug -- but a silent
+	// one would be, so it is named here.
+	if (const uint64 NumSuperseded = Completed - LastBroadcastLoadSerial - 1; NumSuperseded > 0)
+	{
+		UE_LOG(LogVaCuus, Verbose,
+			TEXT("View %u: load %llu completed; %llu earlier load result(s) superseded (coalesced or dropped). Last requested: %llu"),
+			ViewId, Completed, NumSuperseded, Status->LoadRequestSerial.load(std::memory_order_relaxed));
 	}
 
 	// Advanced even with nothing bound, so a listener added later hears about the
