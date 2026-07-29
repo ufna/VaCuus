@@ -7,6 +7,7 @@
 #include "VaCuusFileInterface.h"
 #include "VaCuusSystemInterface.h"
 
+#include "HAL/PlatformTLS.h"
 #include "Misc/Paths.h"
 
 #include <RmlUi/Core.h>
@@ -62,6 +63,8 @@ FVaCuusEngine& FVaCuusEngine::Get()
 
 bool FVaCuusEngine::Initialize()
 {
+	CheckOwnerThread(TEXT("Initialize"));
+
 	if (RefCount > 0)
 	{
 		++RefCount;
@@ -119,12 +122,18 @@ bool FVaCuusEngine::Initialize()
 	}
 
 	RefCount = 1;
-	UE_LOG(LogVaCuus, Log, TEXT("RmlUi initialized"));
+
+	// From here on this thread owns RmlUi (see the header's owner-thread contract).
+	OwnerThreadId = FPlatformTLS::GetCurrentThreadId();
+
+	UE_LOG(LogVaCuus, Log, TEXT("RmlUi initialized (owner thread %u)"), OwnerThreadId);
 	return true;
 }
 
 void FVaCuusEngine::Shutdown()
 {
+	CheckOwnerThread(TEXT("Shutdown"));
+
 	if (RefCount == 0)
 	{
 		UE_LOG(LogVaCuus, Warning, TEXT("Shutdown() called without a matching Initialize()"));
@@ -136,6 +145,30 @@ void FVaCuusEngine::Shutdown()
 		return;
 	}
 
+	TearDownLibrary();
+	UE_LOG(LogVaCuus, Log, TEXT("RmlUi shut down"));
+}
+
+void FVaCuusEngine::ForceShutdownAll()
+{
+	// Deliberately skips CheckOwnerThread(): this is the module-unload escape hatch
+	// for an unpaired Initialize(), and the owner may be a thread that is already
+	// gone. Tearing RmlUi down from the wrong thread beats leaking the library past
+	// the point where VaCuusRml is still loaded.
+	if (RefCount == 0)
+	{
+		return;
+	}
+
+	// Drops every outstanding reference at once; a later Shutdown() from whoever
+	// held one will report the unpaired call, which is the truth.
+	RefCount = 0;
+	TearDownLibrary();
+	UE_LOG(LogVaCuus, Log, TEXT("RmlUi shut down (forced)"));
+}
+
+void FVaCuusEngine::TearDownLibrary()
+{
 	Rml::Shutdown();
 
 	// Interfaces must outlive Rml::Shutdown(); safe to drop them now.
@@ -147,11 +180,14 @@ void FVaCuusEngine::Shutdown()
 	SystemInterface.Reset();
 	FileInterface.Reset();
 
-	UE_LOG(LogVaCuus, Log, TEXT("RmlUi shut down"));
+	// Nobody owns the library any more: the next Initialize() picks a new owner.
+	OwnerThreadId = 0;
 }
 
 void FVaCuusEngine::SetRenderInterface(Rml::RenderInterface* InRenderInterface)
 {
+	CheckOwnerThread(TEXT("SetRenderInterface"));
+
 	if (RefCount > 0)
 	{
 		UE_LOG(LogVaCuus, Error, TEXT("SetRenderInterface() must be called before Initialize(); ignored"));
@@ -160,4 +196,14 @@ void FVaCuusEngine::SetRenderInterface(Rml::RenderInterface* InRenderInterface)
 
 	RenderInterface = InRenderInterface;
 	NullRenderInterface.Reset();
+}
+
+void FVaCuusEngine::CheckOwnerThread(const TCHAR* Operation) const
+{
+	// Nobody owns the library between teardown and the next boot, which is exactly
+	// when SetRenderInterface() is supposed to be called -- so an unowned engine
+	// accepts calls from anywhere and the *next* Initialize() picks the owner.
+	checkf(OwnerThreadId == 0 || OwnerThreadId == FPlatformTLS::GetCurrentThreadId(),
+		TEXT("FVaCuusEngine::%s() called from thread %u, but RmlUi is owned by thread %u"),
+		Operation, FPlatformTLS::GetCurrentThreadId(), OwnerThreadId);
 }

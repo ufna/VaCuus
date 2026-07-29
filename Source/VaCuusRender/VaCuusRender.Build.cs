@@ -29,7 +29,7 @@ public class VaCuusRender : ModuleRules
 			"Slate",
 			"Projects",
 
-			// M1 LoadTexture: synchronous image decode on the game thread.
+			// LoadTexture: synchronous image decode on the UI thread.
 			"ImageWrapper",
 
 			"VaCuus"

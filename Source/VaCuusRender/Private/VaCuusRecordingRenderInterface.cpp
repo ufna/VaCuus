@@ -102,8 +102,9 @@ Rml::TextureHandle FVaCuusRecordingRenderInterface::LoadTexture(Rml::Vector2i& O
 	CheckOwnerThread();
 
 	// M1 deviation from spec §5 (async decode with placeholder texture and a
-	// generation bump on arrival): decode synchronously on the game thread.
-	// Good enough for the render spike; recorded as tech debt.
+	// generation bump on arrival): decode synchronously on the calling thread --
+	// the UI thread since M2 Task 3, so a document load no longer hitches the game
+	// thread, but it still hitches the UI. Recorded as tech debt (VaCuus-akj.6.2).
 	Rml::FileInterface* FileInterface = Rml::GetFileInterface();
 	if (FileInterface == nullptr)
 	{

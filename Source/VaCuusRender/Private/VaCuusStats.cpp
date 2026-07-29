@@ -24,8 +24,8 @@ namespace VaCuusPerfLogPrivate
 static constexpr double WindowSeconds = 5.0;
 
 static const TCHAR* GScopeNames[FVaCuusPerfLog::Num] = {
-	TEXT("Update    (GT)"),
-	TEXT("Record    (GT)"),
+	TEXT("Update    (UI)"),
+	TEXT("Record    (UI)"),
 	TEXT("Replay    (RT)"),
 	TEXT("Composite (RT)"),
 };

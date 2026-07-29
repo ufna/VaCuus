@@ -3,8 +3,9 @@
 #include "SVaCuusHUDWidget.h"
 #include "VaCuusDefines.h"
 #include "VaCuusEngine.h"
-#include "VaCuusM1Harness.h"
+#include "VaCuusRmlDocumentHost.h"
 #include "VaCuusSlateElement.h"
+#include "VaCuusUIThread.h"
 
 #include "Engine/Engine.h"
 #include "Engine/GameViewportClient.h"
@@ -58,10 +59,15 @@ div { display: block; position: absolute; }
 </body>
 </rml>)");
 
-/** Everything the HUD toggle owns while it is ON. */
+/**
+ * Everything the HUD toggle owns while it is ON.
+ *
+ * The UI thread lives here for Task 3 only; Task 4 moves ownership to
+ * UVaCuusSubsystem and this console command becomes a thin client of it.
+ */
 struct FState
 {
-	TSharedPtr<FVaCuusM1Harness> Harness;
+	TUniquePtr<FVaCuusUIThread> UIThread;
 	TSharedPtr<FVaCuusSlateElement> Element;
 	TSharedPtr<SVaCuusHUDWidget> Widget;
 	TWeakObjectPtr<UGameViewportClient> Viewport;
@@ -80,23 +86,28 @@ static void TearDown()
 
 	FWorldDelegates::OnWorldBeginTearDown.Remove(State->WorldTearDownHandle);
 
-	// 1. Pull the widget out of the viewport. On PIE/world shutdown the
-	// viewport (or its widget tree) may already be gone — weak ptr guards that.
+	// Spec §4 teardown order:
+	//
+	// 1. Stop accepting commands. Detaching first means no resize command and no
+	// trigger can land behind the drain below; pulling the widget out of the
+	// viewport then stops the paints. On PIE/world shutdown the viewport (or its
+	// widget tree) may already be gone — weak ptr guards that.
+	State->Widget->DetachUIThread();
 	if (UGameViewportClient* Viewport = State->Viewport.Get())
 	{
 		Viewport->RemoveViewportWidgetContent(State->Widget.ToSharedRef());
 	}
 	State->Widget.Reset();
 
-	// 2. Game-side teardown, spec §4 order: close document -> RemoveContext ->
-	// engine Shutdown() -> drop recorder (all inside the harness).
-	State->Harness->Shutdown();
-	State->Harness.Reset();
+	// 2. Drain and stop the UI thread. The destructor requests the stop, joins, and
+	// the worker's Exit() closes the document, removes the context and shuts RmlUi
+	// down — all on the UI thread, which is the only thread allowed to.
+	State->UIThread.Reset();
 
 	// 3. Render-side teardown: release the replayer's RHI resources on the
 	// render thread, then let the element ref die with the lambda so its
-	// destruction happens after the release. In-flight Slate batches may
-	// briefly co-own the element; Draw after release is a safe no-op.
+	// destruction happens after the release. Ordering against the UI thread's own
+	// publishes is guaranteed by step 2 having joined it.
 	ENQUEUE_RENDER_COMMAND(VaCuusM1HUDRelease)(
 		[Element = MoveTemp(State->Element)](FRHICommandListImmediate&)
 		{
@@ -163,22 +174,37 @@ static void Toggle()
 	}
 
 	TSharedRef<FVaCuusSlateElement> Element = MakeShared<FVaCuusSlateElement>();
-	TSharedRef<FVaCuusM1Harness> Harness = MakeShared<FVaCuusM1Harness>(Element);
-	const bool bBooted = bLoadFromFile
-		? Harness->Boot(InitialViewSize, FVaCuusM1Harness::EDocumentSource::VfsPath, GHudDocumentVfsPath)
-		: Harness->Boot(InitialViewSize, FVaCuusM1Harness::EDocumentSource::InlineRml, GTestDocumentRml);
-	if (!bBooted)
+
+	// The UI thread boots the document host inside its own Init(), so RmlUi comes up
+	// on that thread and never on this one. A failure there (RmlUi already
+	// initialized, context creation, no multithreading support) makes Start() return
+	// false with the thread already gone.
+	TUniquePtr<FVaCuusUIThread> UIThread = MakeUnique<FVaCuusUIThread>();
+	UIThread->SetDocumentHost(MakeUnique<FVaCuusRmlDocumentHost>(Element));
+	if (!UIThread->Start())
 	{
-		// Boot logged and rolled back; the element never touched the RHI, so
-		// letting both die here is safe.
+		// Logged inside Start(); the element never touched the RHI, so letting
+		// everything die here is safe.
+		UE_LOG(LogVaCuus, Error, TEXT("vacuus.M1HUD: the UI thread did not start; HUD not shown"));
 		return;
 	}
 
-	TSharedRef<SVaCuusHUDWidget> Widget = SNew(SVaCuusHUDWidget, Harness, Element);
+	// Asynchronous by design: the document is loaded by the UI thread on its first
+	// frame. The view size rides along so the very first layout is at the right size.
+	if (bLoadFromFile)
+	{
+		UIThread->EnqueueLoadDocumentFile(GHudDocumentVfsPath, InitialViewSize);
+	}
+	else
+	{
+		UIThread->EnqueueLoadDocumentFromMemory(GTestDocumentRml, InitialViewSize);
+	}
+
+	TSharedRef<SVaCuusHUDWidget> Widget = SNew(SVaCuusHUDWidget, UIThread.Get(), Element);
 	Viewport->AddViewportWidgetContent(Widget, /*ZOrder=*/100);
 
 	GState = MakeUnique<FState>();
-	GState->Harness = Harness;
+	GState->UIThread = MoveTemp(UIThread);
 	GState->Element = Element;
 	GState->Widget = Widget;
 	GState->Viewport = Viewport;

@@ -3,6 +3,8 @@
 #include "VaCuusUIThread.h"
 
 #include "VaCuusDefines.h"
+#include "VaCuusDocumentHost.h"
+#include "VaCuusUIQueues.h"
 
 #include "HAL/PlatformProcess.h"
 #include "HAL/PlatformTime.h"
@@ -16,19 +18,48 @@ namespace
  * relaxed load. Deliberately a single global: VaCuus runs at most one UI thread.
  */
 std::atomic<uint32> GVaCuusUIThreadId{0};
+
+/**
+ * Stack size for the UI thread, chosen rather than inherited: RmlUi's layout and
+ * style resolution recurse with the document tree and QuickJS lands on this
+ * thread in M4, so the platform default is not obviously enough -- while the
+ * default 8 MB per thread is far more than a UI tree needs. Unix clamps any
+ * non-zero request up to at least 128 KB (UnixPlatformRunnableThread.cpp), so
+ * this value survives as given.
+ */
+constexpr uint32 GVaCuusUIThreadStackSize = 512 * 1024;
 }	 // namespace
 
-FVaCuusUIThread::FVaCuusUIThread() = default;
+FVaCuusUIThread::FVaCuusUIThread()
+	: Queues(MakeUnique<FVaCuusUIQueues>())
+{
+}
 
 FVaCuusUIThread::~FVaCuusUIThread()
 {
 	Stop();
 
+	// Report "not live" before the join: from here on the object is going away,
+	// and IsRunning() must not tempt anyone into using it.
+	bThreadLive.store(false, std::memory_order_release);
+
 	// The platform destructor does Kill(true), i.e. Stop() then join, so Run() and
-	// Exit() have both finished by the time this returns. Destroying the thread
-	// before any member dies is what keeps WakeEvent alive for its last waiter.
+	// Exit() have both finished by the time this returns -- which is what makes it
+	// safe for Exit() to own the RmlUi teardown. Destroying the thread before any
+	// member dies is what keeps WakeEvent alive for its last waiter.
 	delete Thread;
 	Thread = nullptr;
+
+	// Normally Exit() already dropped the host on the UI thread. It is still set
+	// only when the worker never ran (Start() not called, or thread creation
+	// failed), in which case nothing was ever booted and the game thread may
+	// destroy it safely.
+}
+
+void FVaCuusUIThread::SetDocumentHost(TUniquePtr<IVaCuusDocumentHost> InHost)
+{
+	checkf(Thread == nullptr, TEXT("SetDocumentHost() must be called before Start()"));
+	Host = MoveTemp(InHost);
 }
 
 bool FVaCuusUIThread::Start()
@@ -40,9 +71,9 @@ bool FVaCuusUIThread::Start()
 	}
 
 	// Name stays within 15 characters: Linux truncates the OS thread name there.
-	// Stack size 0 == platform default; BelowNormal keeps us off the game and
-	// render threads' backs.
-	Thread = FRunnableThread::Create(this, TEXT("VaCuusUI"), 0, TPri_BelowNormal);
+	// BelowNormal keeps us off the game and render threads' backs.
+	Thread = FRunnableThread::Create(
+		this, TEXT("VaCuusUI"), GVaCuusUIThreadStackSize, TPri_BelowNormal);
 
 	if (Thread == nullptr)
 	{
@@ -56,7 +87,24 @@ bool FVaCuusUIThread::Start()
 		return false;
 	}
 
-	// Create() blocks until Init() has returned, so GetThreadId() is already valid.
+	// Create() blocks on the init sync event, which the platform thread proc
+	// triggers on BOTH branches of Init() -- so bInitSucceeded is readable here,
+	// and a false means the worker already exited without running Run() or
+	// Exit(). Without this check Start() would report success for a dead thread.
+	if (!bInitSucceeded.load(std::memory_order_acquire))
+	{
+		UE_LOG(LogVaCuus, Error,
+			TEXT("The VaCuus UI thread exited during Init(); no UI frames will run"));
+
+		// Kill(true) + join on a worker that has already returned; Init() unwound
+		// whatever it had built before failing, because Exit() never ran.
+		delete Thread;
+		Thread = nullptr;
+		return false;
+	}
+
+	bThreadLive.store(true, std::memory_order_release);
+
 	UE_LOG(LogVaCuus, Log, TEXT("UI thread started (id %u)"), GetThreadId());
 	return true;
 }
@@ -80,12 +128,55 @@ void FVaCuusUIThread::Trigger()
 	WakeEvent->Trigger();
 }
 
+void FVaCuusUIThread::EnqueueLoadDocumentFile(const FString& VfsPath, FIntPoint ViewSize)
+{
+	Enqueue(FVaCuusUICommand{EVaCuusCommandKind::LoadDocumentFile, VfsPath, ViewSize});
+}
+
+void FVaCuusUIThread::EnqueueLoadDocumentFromMemory(const FString& RmlSource, FIntPoint ViewSize)
+{
+	Enqueue(FVaCuusUICommand{EVaCuusCommandKind::LoadDocumentMemory, RmlSource, ViewSize});
+}
+
+void FVaCuusUIThread::EnqueueCloseDocument()
+{
+	Enqueue(FVaCuusUICommand{EVaCuusCommandKind::CloseDocument});
+}
+
+void FVaCuusUIThread::EnqueueResize(FIntPoint ViewSize)
+{
+	Enqueue(FVaCuusUICommand{EVaCuusCommandKind::Resize, FString(), ViewSize});
+}
+
+void FVaCuusUIThread::EnqueueShutdown()
+{
+	Enqueue(FVaCuusUICommand{EVaCuusCommandKind::Shutdown});
+}
+
+void FVaCuusUIThread::Enqueue(FVaCuusUICommand&& Command)
+{
+	// Spec §4 teardown order starts with "stop accepting commands": once a stop is
+	// requested the queue is closed, so nothing can be pushed behind the drain that
+	// the worker will never see (and, worse, that would keep a document alive past
+	// the close in Exit()).
+	if (bStopRequested.load(std::memory_order_acquire))
+	{
+		UE_LOG(LogVaCuus, Verbose, TEXT("UI command dropped: the UI thread is stopping"));
+		return;
+	}
+
+	Queues->Commands.Enqueue(MoveTemp(Command));
+	Trigger();
+}
+
 bool FVaCuusUIThread::IsRunning() const
 {
-	// Stop() asks the worker to leave; it does not join. Reporting "not running" from
-	// the moment the request lands is the only answer that does not race the worker's
-	// own teardown, and it is what callers actually want to gate work on.
-	return Thread != nullptr && !bStopRequested.load(std::memory_order_acquire);
+	// Both halves are atomic, so this answer is safe from any thread (the old
+	// version read the plain Thread pointer). Stop() asks the worker to leave; it
+	// does not join. Reporting "not running" from the moment the request lands is
+	// the only answer that does not race the worker's own teardown, and it is what
+	// callers actually want to gate work on.
+	return bThreadLive.load(std::memory_order_acquire) && !bStopRequested.load(std::memory_order_acquire);
 }
 
 uint32 FVaCuusUIThread::GetThreadId() const
@@ -129,7 +220,24 @@ bool FVaCuusUIThread::Init()
 	ThreadId.store(CurrentThreadId, std::memory_order_release);
 	GVaCuusUIThreadId.store(CurrentThreadId, std::memory_order_release);
 
-	// UI-thread-affine subsystem boot (RmlUi, script runtime) belongs here.
+	// UI-thread-affine subsystem boot: RmlUi (and, from M4, the script runtime)
+	// comes up here and nowhere else.
+	if (Host.IsValid() && !Host->Initialize())
+	{
+		// Exit() will NOT run when Init() fails, so this is the only chance to
+		// unwind. Initialize() rolls its own partial state back; all that is left is
+		// to drop the host (on this thread, while it is still the UI thread) and to
+		// retract the thread-id publication.
+		Host.Reset();
+		GVaCuusUIThreadId.store(0, std::memory_order_release);
+		ThreadId.store(0, std::memory_order_release);
+
+		bInitSucceeded.store(false, std::memory_order_release);
+		return false;
+	}
+
+	// Set last, and before returning: Start() reads it as soon as Create() returns.
+	bInitSucceeded.store(true, std::memory_order_release);
 	return true;
 }
 
@@ -158,13 +266,89 @@ void FVaCuusUIThread::Exit()
 	// FRunnable::Exit() header comment claiming "the aggregating thread" is wrong.
 	// This is the teardown hook for anything Init() booted; the destructor is not,
 	// because it runs on the owner's thread.
+	if (Host.IsValid())
+	{
+		// Documents close, the context is removed and RmlUi shuts down here, on the
+		// thread that created all of it. Resetting rather than just shutting down
+		// also runs the host's destructor on this thread.
+		Host->Shutdown();
+		Host.Reset();
+	}
+
 	GVaCuusUIThreadId.store(0, std::memory_order_release);
 	ThreadId.store(0, std::memory_order_release);
 }
 
 void FVaCuusUIThread::RunFrame()
 {
-	// Everything the frame body will touch is UI-thread-affine; assert it up front so
-	// the first accidental cross-thread call is caught here rather than inside RmlUi.
+	// Everything below is UI-thread-affine; assert it up front so the first
+	// accidental cross-thread call is caught here rather than inside RmlUi.
 	check(IsInUIThread());
+
+	DrainCommands();
+	// (input drain: Task 6; data snapshots: M3)
+
+	if (!Host.IsValid() || !Host->HasView())
+	{
+		return;
+	}
+
+	// Records the frame and publishes the command buffer straight to the render
+	// thread -- no game-thread hop. (Interactive snapshot publish: Task 5.)
+	Host->RecordAndPublishFrame();
+}
+
+void FVaCuusUIThread::DrainCommands()
+{
+	check(IsInUIThread());
+
+	while (TOptional<FVaCuusUICommand> Command = Queues->Commands.Dequeue())
+	{
+		// Applied first and for every kind: a document then loads straight into the
+		// right layout size. SetViewSize() is idempotent, so a burst of resize
+		// commands costs exactly one relayout -- that is the coalescing.
+		if (Host.IsValid() && Command->ViewSize.X > 0 && Command->ViewSize.Y > 0)
+		{
+			Host->SetViewSize(Command->ViewSize);
+		}
+
+		switch (Command->Kind)
+		{
+			case EVaCuusCommandKind::LoadDocumentFile:
+				if (Host.IsValid())
+				{
+					Host->LoadDocumentFromFile(Command->Payload);
+				}
+				break;
+
+			case EVaCuusCommandKind::LoadDocumentMemory:
+				if (Host.IsValid())
+				{
+					Host->LoadDocumentFromMemory(Command->Payload);
+				}
+				break;
+
+			case EVaCuusCommandKind::CloseDocument:
+				if (Host.IsValid())
+				{
+					Host->CloseDocument();
+				}
+				break;
+
+			case EVaCuusCommandKind::Resize:
+				// Nothing left to do: the view size was applied above.
+				break;
+
+			case EVaCuusCommandKind::Shutdown:
+				// In-band graceful stop: close the document now, then leave the loop
+				// after this frame. The owner still joins us through the destructor,
+				// and Exit() still runs the full teardown.
+				if (Host.IsValid())
+				{
+					Host->CloseDocument();
+				}
+				bStopRequested.store(true, std::memory_order_release);
+				return;
+		}
+	}
 }

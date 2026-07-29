@@ -32,12 +32,11 @@ void FVaCuusModule::ShutdownModule()
 		UE_LOG(LogVaCuus, Error,
 			TEXT("VaCuus module is shutting down while RmlUi is still initialized: an Initialize() went unpaired. Forcing teardown"));
 
-		// Balance every outstanding reference so Rml::Shutdown() actually runs
-		// and the interfaces are released while this module still exists.
-		while (Engine->IsInitialized())
-		{
-			Engine->Shutdown();
-		}
+		// Balance every outstanding reference so Rml::Shutdown() actually runs and
+		// the interfaces are released while this module still exists. Owner-agnostic
+		// on purpose: the thread that booted RmlUi (in M2 usually the UI thread) may
+		// already be gone, and this path is an error report either way.
+		Engine->ForceShutdownAll();
 	}
 
 	Engine.Reset();

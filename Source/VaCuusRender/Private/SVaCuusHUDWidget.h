@@ -6,17 +6,22 @@
 
 #include "Widgets/SLeafWidget.h"
 
-class FVaCuusM1Harness;
 class FVaCuusSlateElement;
+class FVaCuusUIThread;
 
 /**
- * Full-viewport overlay widget hosting the M1 HUD. Tick drives the harness
- * (records a UI frame at the widget's current pixel size); OnPaint pushes the
- * window-space composite rect to the Slate element and injects the element
- * into the draw list via FSlateDrawElement::MakeCustom.
+ * Full-viewport overlay widget hosting the M1 HUD. Tick drives the UI thread
+ * (pushes the widget's current pixel size as a resize command when it changed,
+ * then triggers one UI frame); OnPaint pushes the window-space composite rect to
+ * the Slate element and injects the element into the draw list via
+ * FSlateDrawElement::MakeCustom.
  *
- * Render-only in M1: hit-test invisible, zero desired size (it is added as a
- * viewport overlay that fills the screen).
+ * The UI thread produces its frames asynchronously and publishes them straight to
+ * the render thread, so Tick does no UI work of its own -- it is only the
+ * once-per-game-frame pulse (Task 4 moves that pulse to UVaCuusSubsystem).
+ *
+ * Render-only in M2 Task 3: hit-test invisible, zero desired size (it is added as
+ * a viewport overlay that fills the screen).
  */
 class SVaCuusHUDWidget : public SLeafWidget
 {
@@ -26,9 +31,16 @@ public:
 	}
 	SLATE_END_ARGS()
 
+	/**
+	 * InUIThread is borrowed, not owned: the console command's module state owns it
+	 * and calls DetachUIThread() before destroying it.
+	 */
 	void Construct(const FArguments& InArgs,
-		const TSharedRef<FVaCuusM1Harness>& InHarness,
+		FVaCuusUIThread* InUIThread,
 		const TSharedRef<FVaCuusSlateElement>& InElement);
+
+	/** Teardown step 1: stop pulsing/queueing so the UI thread can be joined. */
+	void DetachUIThread();
 
 	//~ Begin SWidget
 	virtual void Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime) override;
@@ -40,8 +52,8 @@ public:
 
 private:
 	/**
-	 * Single source of truth for the widget's window-space pixel rect: Tick
-	 * records the UI frame at this rect's SIZE and OnPaint composites into
+	 * Single source of truth for the widget's window-space pixel rect: Tick asks
+	 * the UI thread to lay out at this rect's SIZE and OnPaint composites into
 	 * this exact rect, so RmlUi lays out 1:1 with the pixels it composites
 	 * to. Corners are rounded individually — deriving the size separately
 	 * (e.g. rounding LocalSize * Scale) can disagree with the rounded corner
@@ -50,6 +62,16 @@ private:
 	 */
 	static FIntRect ComputeWindowRect(const FGeometry& Geometry);
 
-	TSharedPtr<FVaCuusM1Harness> Harness;
+	/** Services the vacuus.M1HUD.AutoShot debug screenshot on the game thread. */
+	void TickAutoShot();
+
+	/** Borrowed; nulled by DetachUIThread() so a late Tick is a no-op. */
+	FVaCuusUIThread* UIThread = nullptr;
+
 	TSharedPtr<FVaCuusSlateElement> Element;
+
+	/** Last size pushed to the UI thread; resize commands are only sent on change. */
+	FIntPoint LastViewSize = FIntPoint::ZeroValue;
+
+	bool bAutoShotDone = false;
 };

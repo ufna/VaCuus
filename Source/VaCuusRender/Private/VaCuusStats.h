@@ -7,8 +7,10 @@
 
 DECLARE_STATS_GROUP(TEXT("VaCuus"), STATGROUP_VaCuus, STATCAT_Advanced);
 
-DECLARE_CYCLE_STAT_EXTERN(TEXT("VaCuus Update (GT)"), STAT_VaCuusUpdate, STATGROUP_VaCuus, );
-DECLARE_CYCLE_STAT_EXTERN(TEXT("VaCuus Record (GT)"), STAT_VaCuusRecord, STATGROUP_VaCuus, );
+// (UI) == the dedicated VaCuus UI thread; these two used to be game-thread costs
+// and moved off it in M2 Task 3.
+DECLARE_CYCLE_STAT_EXTERN(TEXT("VaCuus Update (UI)"), STAT_VaCuusUpdate, STATGROUP_VaCuus, );
+DECLARE_CYCLE_STAT_EXTERN(TEXT("VaCuus Record (UI)"), STAT_VaCuusRecord, STATGROUP_VaCuus, );
 DECLARE_CYCLE_STAT_EXTERN(TEXT("VaCuus Replay (RT)"), STAT_VaCuusReplay, STATGROUP_VaCuus, );
 DECLARE_CYCLE_STAT_EXTERN(TEXT("VaCuus Composite (RT)"), STAT_VaCuusComposite, STATGROUP_VaCuus, );
 
