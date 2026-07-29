@@ -13,7 +13,9 @@ public:
 	{
 		// Map the plugin shader directory before global shader compilation kicks
 		// in — the module loads at PostConfigInit for exactly this reason.
-		const FString ShaderDir = FPaths::Combine(IPluginManager::Get().FindPlugin(TEXT("VaCuus"))->GetBaseDir(), TEXT("Shaders"));
+		TSharedPtr<IPlugin> Plugin = IPluginManager::Get().FindPlugin(TEXT("VaCuus"));
+		checkf(Plugin.IsValid(), TEXT("VaCuus plugin descriptor not found"));
+		const FString ShaderDir = FPaths::Combine(Plugin->GetBaseDir(), TEXT("Shaders"));
 		AddShaderSourceDirectoryMapping(TEXT("/Plugin/VaCuus"), ShaderDir);
 	}
 	//~ End IModuleInterface

@@ -23,7 +23,6 @@ SamplerState UISampler;
 uint bUseTexture;
 
 void MainPS(
-	in float4 SvPosition : SV_POSITION,
 	in float4 Color : TEXCOORD1,
 	in float2 UV : TEXCOORD0,
 	out float4 OutColor : SV_Target0)

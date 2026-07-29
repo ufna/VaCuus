@@ -150,9 +150,11 @@ Rml::TextureHandle FVaCuusRecordingRenderInterface::LoadTexture(Rml::Vector2i& O
 			const uint32 Alpha = Pixel[3];
 			if (Alpha < 255)
 			{
-				Pixel[0] = uint8((Pixel[0] * Alpha) / 255u);
-				Pixel[1] = uint8((Pixel[1] * Alpha) / 255u);
-				Pixel[2] = uint8((Pixel[2] * Alpha) / 255u);
+				// +127 before the divide = round-to-nearest, removes the
+				// downward bias a truncating x*a/255 would add to every texel.
+				Pixel[0] = uint8((Pixel[0] * Alpha + 127u) / 255u);
+				Pixel[1] = uint8((Pixel[1] * Alpha + 127u) / 255u);
+				Pixel[2] = uint8((Pixel[2] * Alpha + 127u) / 255u);
 			}
 		}
 	}
