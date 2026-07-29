@@ -26,6 +26,11 @@
 			"LoadingPhase": "Default"
 		},
 		{
+			"Name": "VaCuusRender",
+			"Type": "Runtime",
+			"LoadingPhase": "PostConfigInit"
+		},
+		{
 			"Name": "VaCuusEditor",
 			"Type": "Editor",
 			"LoadingPhase": "PostEngineInit"

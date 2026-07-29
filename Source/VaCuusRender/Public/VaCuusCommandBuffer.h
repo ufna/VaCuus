@@ -1,0 +1,100 @@
+// Copyright 2026 Vladimir Alyamkin. All Rights Reserved.
+
+#pragma once
+
+#include "CoreMinimal.h"
+
+/**
+ * Dense 1-based ids minted by the recorder (index+1); 0 = invalid/none.
+ * Handles are shared with RmlUi verbatim: the recorder returns them as
+ * Rml::CompiledGeometryHandle / Rml::TextureHandle and gets them back in
+ * draw and release calls.
+ */
+using FVaCuusGeometryHandle = uint32;
+using FVaCuusTextureHandle = uint32;
+
+enum class EVaCuusCommandType : uint8
+{
+	DrawGeometry,
+	SetScissor,
+	DisableScissor,
+	SetTransform
+};
+
+/** One recorded RmlUi render call. Fields beyond Type are per-command payload. */
+struct FVaCuusCommand
+{
+	EVaCuusCommandType Type = EVaCuusCommandType::DrawGeometry;
+
+	/** DrawGeometry: geometry created in this or an earlier buffer. */
+	FVaCuusGeometryHandle Geometry = 0;
+
+	/** DrawGeometry: texture to sample; 0 = untextured. */
+	FVaCuusTextureHandle Texture = 0;
+
+	/** DrawGeometry: pixel-space translation applied to the geometry. */
+	FVector2f Translation = FVector2f::ZeroVector;
+
+	/** SetScissor: clip rect in window coordinates (unaffected by SetTransform). */
+	FIntRect Scissor = FIntRect(0, 0, 0, 0);
+
+	/** SetTransform: vertex transform in UE row-vector convention (v' = v * M). */
+	FMatrix44f Transform = FMatrix44f::Identity;
+};
+
+/**
+ * Bit-identical mirror of Rml::Vertex (Vector2f position, ColourbPremultiplied
+ * colour, Vector2f tex_coord); the recorder memcpy's the vertex stream.
+ *
+ * Color keeps RmlUi's in-memory byte order: R,G,B,A with premultiplied alpha.
+ * On little-endian platforms FColor's named channels read those bytes as
+ * B,G,R,A, so R and B appear swapped through the FColor API — the replayer
+ * must upload as RGBA (e.g. PF_R8G8B8A8) or swizzle at upload time.
+ */
+struct FVaCuusVertex
+{
+	FVector2f Position;
+	FColor Color;
+	FVector2f UV;
+};
+
+struct FVaCuusGeometryData
+{
+	TArray<FVaCuusVertex> Vertices;
+	TArray<int32> Indices;
+};
+
+/** Raw RGBA8 pixels (RmlUi byte order, premultiplied alpha for generated textures). */
+struct FVaCuusTextureData
+{
+	FIntPoint Size = FIntPoint::ZeroValue;
+	TArray<uint8> RGBA;
+};
+
+/**
+ * One recorded UI frame: the command list plus the resource delta since the
+ * previous buffer. Produced on the game thread by FVaCuusRecordingRenderInterface,
+ * consumed by the render-thread replayer.
+ *
+ * A handle may appear in both NewGeometry/NewTextures and the Released* arrays
+ * of the same buffer (created and released within one frame): the replayer
+ * must create the resource, play the commands, then retire it.
+ */
+struct FVaCuusCommandBuffer
+{
+	/** Strictly increasing publish counter; newer buffers replace older ones. */
+	uint64 Generation = 0;
+
+	/** View size the frame was laid out for, in pixels. */
+	FIntPoint ViewSize = FIntPoint::ZeroValue;
+
+	TArray<FVaCuusCommand> Commands;
+
+	/** Resources first seen this frame, keyed by handle. */
+	TMap<FVaCuusGeometryHandle, FVaCuusGeometryData> NewGeometry;
+	TMap<FVaCuusTextureHandle, FVaCuusTextureData> NewTextures;
+
+	/** Handles to release AFTER this buffer retires (commands above may still use them). */
+	TArray<FVaCuusGeometryHandle> ReleasedGeometry;
+	TArray<FVaCuusTextureHandle> ReleasedTextures;
+};
