@@ -30,7 +30,7 @@ public class VaCuusRml : ModuleRules
 		foreach (string Dir in new[] { "Source/Core", "Source/Core/Elements", "Source/Core/Layout", "Source/Core/FontEngineDefault" })
 		{
 			string Abs = Path.Combine(RmlRoot, Dir);
-			if (Directory.Exists(Abs)) PrivateIncludePaths.Add(Abs);
+			PrivateIncludePaths.Add(Abs);
 		}
 	}
 }

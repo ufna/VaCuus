@@ -16,14 +16,14 @@
 	"Installed": false,
 	"Modules": [
 		{
-			"Name": "VaCuus",
+			"Name": "VaCuusRml",
 			"Type": "Runtime",
 			"LoadingPhase": "Default"
 		},
 		{
-			"Name": "VaCuusRml",
+			"Name": "VaCuus",
 			"Type": "Runtime",
-			"LoadingPhase": "PreDefault"
+			"LoadingPhase": "Default"
 		},
 		{
 			"Name": "VaCuusEditor",
