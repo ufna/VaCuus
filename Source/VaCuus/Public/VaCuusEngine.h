@@ -23,6 +23,13 @@ class FVaCuusNullRenderInterface;
 class VACUUS_API FVaCuusEngine
 {
 public:
+	/** Constructed and destroyed by FVaCuusModule; use Get() to reach the instance. */
+	FVaCuusEngine();
+	~FVaCuusEngine();
+
+	FVaCuusEngine(const FVaCuusEngine&) = delete;
+	FVaCuusEngine& operator=(const FVaCuusEngine&) = delete;
+
 	static FVaCuusEngine& Get();
 
 	/** Boots RmlUi if needed and adds a reference. Returns true if the library is up. */
@@ -42,12 +49,6 @@ public:
 	void SetRenderInterface(Rml::RenderInterface* InRenderInterface);
 
 private:
-	FVaCuusEngine();
-	~FVaCuusEngine();
-
-	FVaCuusEngine(const FVaCuusEngine&) = delete;
-	FVaCuusEngine& operator=(const FVaCuusEngine&) = delete;
-
 	/** Number of live Initialize() references. */
 	int32 RefCount = 0;
 

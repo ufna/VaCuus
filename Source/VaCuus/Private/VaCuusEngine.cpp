@@ -2,6 +2,7 @@
 
 #include "VaCuusEngine.h"
 
+#include "VaCuus.h"
 #include "VaCuusDefines.h"
 #include "VaCuusFileInterface.h"
 #include "VaCuusSystemInterface.h"
@@ -53,8 +54,10 @@ FVaCuusEngine::~FVaCuusEngine() = default;
 
 FVaCuusEngine& FVaCuusEngine::Get()
 {
-	static FVaCuusEngine Instance;
-	return Instance;
+	// Module-owned: torn down in FVaCuusModule::ShutdownModule(), i.e. before
+	// static destruction and before VaCuusRml unloads. Loading on demand keeps
+	// early callers (automation tests, other modules) working.
+	return FVaCuusModule::Get().GetEngine();
 }
 
 bool FVaCuusEngine::Initialize()
