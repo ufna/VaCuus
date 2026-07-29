@@ -39,6 +39,17 @@ public:
 	//~ End SWidget
 
 private:
+	/**
+	 * Single source of truth for the widget's window-space pixel rect: Tick
+	 * records the UI frame at this rect's SIZE and OnPaint composites into
+	 * this exact rect, so RmlUi lays out 1:1 with the pixels it composites
+	 * to. Corners are rounded individually — deriving the size separately
+	 * (e.g. rounding LocalSize * Scale) can disagree with the rounded corner
+	 * rect by a pixel when the widget origin is non-integer (PIE-in-viewport)
+	 * and stretch the UI.
+	 */
+	static FIntRect ComputeWindowRect(const FGeometry& Geometry);
+
 	TSharedPtr<FVaCuusM1Harness> Harness;
 	TSharedPtr<FVaCuusSlateElement> Element;
 };

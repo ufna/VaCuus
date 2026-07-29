@@ -90,9 +90,9 @@ void FVaCuusM1Harness::DrawFrame(FIntPoint ViewSize)
 	TUniquePtr<FVaCuusCommandBuffer> Buffer = Recorder->EndFrameAndPublish();
 
 	ENQUEUE_RENDER_COMMAND(VaCuusPublishUIFrame)(
-		[LocalElement = Element, Buf = MoveTemp(Buffer)](FRHICommandListImmediate&) mutable
+		[LocalElement = Element, Buf = MoveTemp(Buffer)](FRHICommandListImmediate& RHICmdList) mutable
 		{
-			LocalElement->SetPendingBuffer_RenderThread(MoveTemp(Buf));
+			LocalElement->SetPendingBuffer_RenderThread(RHICmdList, MoveTemp(Buf));
 		});
 
 	++FrameCount;

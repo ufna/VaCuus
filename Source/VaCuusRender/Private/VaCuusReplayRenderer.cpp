@@ -96,9 +96,17 @@ bool FVaCuusReplayRenderer::ShouldConsume(const FVaCuusCommandBuffer& Buffer) co
 	{
 		return false;
 	}
-	ensureMsgf(Buffer.Generation > LastConsumedGeneration,
-		TEXT("Buffer generation went backwards (%llu after %llu) — buffers must arrive in publish order"),
-		Buffer.Generation, LastConsumedGeneration);
+
+	// A backwards generation is a caller bug; refuse it rather than letting
+	// RetireBufferResources drag the monotonic guard backwards (which would
+	// defeat the idempotence check this ensure exists to protect).
+	if (!ensureMsgf(Buffer.Generation > LastConsumedGeneration,
+			TEXT("Buffer generation went backwards (%llu after %llu) — buffers must arrive in publish order"),
+			Buffer.Generation, LastConsumedGeneration))
+	{
+		return false;
+	}
+
 	return true;
 }
 

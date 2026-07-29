@@ -34,9 +34,12 @@ public:
 	 * dropping a buffer would lose geometry/texture creations and releases.
 	 * The drain draws only the newest buffer; older ones are consumed for
 	 * their resources alone (FVaCuusReplayRenderer::ConsumeResources). In
-	 * steady state Tick and paint alternate 1:1 and the queue holds one entry.
+	 * steady state Tick and paint alternate 1:1 (the widget is volatile) and
+	 * the queue holds one entry; past MaxPendingBuffers the backlog is
+	 * consumed inline so memory stays bounded even if some undiscovered
+	 * tick-without-paint path defeats the volatility guarantee.
 	 */
-	void SetPendingBuffer_RenderThread(TUniquePtr<FVaCuusCommandBuffer> InBuffer);
+	void SetPendingBuffer_RenderThread(FRHICommandList& RHICmdList, TUniquePtr<FVaCuusCommandBuffer> InBuffer);
 
 	/** Window-space pixel rect the UI RT is composited into (pre-ElementsOffset). */
 	void SetDestRect_RenderThread(const FIntRect& InDestRect);
@@ -49,6 +52,9 @@ public:
 	//~ End ICustomSlateElement
 
 private:
+	/** Queue length that triggers the inline backlog consume in SetPendingBuffer_RenderThread. */
+	static constexpr int32 MaxPendingBuffers = 4;
+
 	FVaCuusReplayRenderer Replayer;
 
 	/** Recorded frames awaiting replay, oldest first (see SetPendingBuffer_RenderThread). */

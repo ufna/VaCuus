@@ -10,13 +10,31 @@
 #include "RenderGraphUtils.h"
 #include "ScreenPass.h"
 
-void FVaCuusSlateElement::SetPendingBuffer_RenderThread(TUniquePtr<FVaCuusCommandBuffer> InBuffer)
+void FVaCuusSlateElement::SetPendingBuffer_RenderThread(FRHICommandList& RHICmdList, TUniquePtr<FVaCuusCommandBuffer> InBuffer)
 {
 	check(IsInRenderingThread());
-	if (InBuffer)
+	if (!InBuffer)
 	{
-		PendingBuffers.Add(MoveTemp(InBuffer));
+		return;
 	}
+
+	// Defensive bound: paints drain the queue and the volatile widget repaints
+	// every frame, so reaching MaxPendingBuffers means some undiscovered
+	// tick-without-paint path. Consume all but the newest queued buffer inline
+	// — resource deltas only, no RT access, legal outside the draw pass — so
+	// memory stays bounded either way.
+	if (PendingBuffers.Num() >= MaxPendingBuffers)
+	{
+		for (int32 Index = 0; Index < PendingBuffers.Num() - 1; ++Index)
+		{
+			Replayer.ConsumeResources(RHICmdList, *PendingBuffers[Index]);
+		}
+		TUniquePtr<FVaCuusCommandBuffer> Newest = MoveTemp(PendingBuffers.Last());
+		PendingBuffers.Reset();
+		PendingBuffers.Add(MoveTemp(Newest));
+	}
+
+	PendingBuffers.Add(MoveTemp(InBuffer));
 }
 
 void FVaCuusSlateElement::SetDestRect_RenderThread(const FIntRect& InDestRect)
