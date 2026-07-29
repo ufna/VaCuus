@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Game HUD workload</title>
+<style>
+  html,body{margin:0;width:100%;height:100%;overflow:hidden;background:transparent;font-family:sans-serif}
+  #root{position:absolute;inset:0}
+  .bar{position:absolute;height:18px;border-radius:9px;background:linear-gradient(90deg,#3c8,#2a6);box-shadow:0 0 8px rgba(0,255,128,.5)}
+  .hp{left:2%;bottom:4%;width:22%}
+  .mana{left:2%;bottom:8%;width:18%;background:linear-gradient(90deg,#38c,#26a)}
+  #minimap{position:absolute;right:2%;top:3%;width:240px;height:240px;border-radius:50%;border:3px solid #ccc;overflow:hidden;background:rgba(20,30,40,.6)}
+  .blip{position:absolute;width:8px;height:8px;border-radius:50%;background:#f55;will-change:transform}
+  #killfeed{position:absolute;right:2%;top:30%;width:320px}
+  .kf{padding:4px 10px;margin:3px;background:rgba(0,0,0,.55);color:#eee;border-left:3px solid #f80;font-size:13px}
+  #scoreboard{position:absolute;left:50%;top:8%;transform:translateX(-50%);width:60%;border-collapse:collapse;color:#fff;font-size:12px}
+  #scoreboard td,#scoreboard th{border:1px solid rgba(255,255,255,.2);padding:2px 8px;background:rgba(10,14,20,.55)}
+  .ammo{position:absolute;right:3%;bottom:4%;font-size:42px;color:#fff;text-shadow:0 0 12px #f80}
+  .buff{position:absolute;width:42px;height:42px;border-radius:8px;border:2px solid #fff4;background:radial-gradient(#548,#215);margin:2px}
+  #buffs{position:absolute;left:2%;top:3%;display:flex;flex-wrap:wrap;width:300px}
+  @keyframes pulse{0%{transform:scale(1);opacity:.9}50%{transform:scale(1.12);opacity:1}100%{transform:scale(1);opacity:.9}}
+  .buff{animation:pulse 1.2s infinite}
+</style>
+</head>
+<body>
+<div id="root">
+  <div class="bar hp"></div><div class="bar mana"></div>
+  <div id="minimap"></div>
+  <div id="killfeed"></div>
+  <table id="scoreboard"><thead><tr><th>Player</th><th>K</th><th>D</th><th>A</th><th>Ping</th><th>Score</th></tr></thead><tbody id="sb"></tbody></table>
+  <div class="ammo">30 / 120</div>
+  <div id="buffs"></div>
+</div>
+<script>
+  const mm = document.getElementById('minimap');
+  for (let i=0;i<64;i++){const b=document.createElement('div');b.className='blip';b.style.left=(Math.random()*230)+'px';b.style.top=(Math.random()*230)+'px';mm.appendChild(b);}
+  const kf = document.getElementById('killfeed');
+  for (let i=0;i<12;i++){const d=document.createElement('div');d.className='kf';d.textContent='Player'+i+'  [AK-47]  Victim'+(i*3%17);kf.appendChild(d);}
+  const sb = document.getElementById('sb');
+  for (let i=0;i<24;i++){const r=document.createElement('tr');r.innerHTML='<td>Player_'+i+'</td><td>'+(i*7%30)+'</td><td>'+(i*3%20)+'</td><td>'+(i*5%15)+'</td><td>'+(20+i)+'</td><td>'+(i*137%5000)+'</td>';sb.appendChild(r);}
+  const buffs = document.getElementById('buffs');
+  for (let i=0;i<18;i++){const d=document.createElement('div');d.className='buff';d.style.animationDelay=(i*97%1200)+'ms';buffs.appendChild(d);}
+  // animate blips + bars for a while
+  let t=0;
+  function tick(){
+    t+=0.016;
+    const blips=mm.children;
+    for(let i=0;i<blips.length;i++){const a=t+i;blips[i].style.transform='translate('+(Math.sin(a)*20)+'px,'+(Math.cos(a*1.3)*20)+'px)';}
+    document.querySelector('.hp').style.width=(15+8*Math.sin(t))+'%';
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+</script>
+</body>
+</html>

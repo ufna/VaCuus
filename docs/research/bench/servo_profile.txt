@@ -1,0 +1,31 @@
+_category_                          _incremental?_ _iframe?_             _url_                  _mean (ms)_   _median (ms)_      _min (ms)_      _max (ms)_       _events_ 
+Painting                                N/A          N/A                  N/A                        0.3964          0.3276          0.0068          8.6483             616
+Layout                                  yes          yes     file:///tmp/claude-1000/-w-Unr          0.5728          0.5509          0.4173          1.0375             614
+Layout                                  no           yes     file:///tmp/claude-1000/-w-Unr          5.4548          5.4548          5.4548          5.4548               1
+ScriptParseHTML                         no           yes     file:///tmp/claude-1000/-w-Unr          0.0295          0.0094          0.0000          0.4200              29
+TimeToFirstPaint                        no           yes     file:///tmp/claude-1000/-w-Unr          0.0000          0.0000          0.0000          0.0000               1
+TimeToFirstContentfulPaint              no           yes     file:///tmp/claude-1000/-w-Unr          0.0000          0.0000          0.0000          0.0000               1
+
+_url_	_blocked layout queries_
+
+_category_                          _incremental?_ _iframe?_             _url_                  _mean (ms)_   _median (ms)_      _min (ms)_      _max (ms)_       _events_ 
+Painting                                N/A          N/A                  N/A                        0.4329          0.3635          0.0068          8.6483            1234
+Layout                                  yes          yes     file:///tmp/claude-1000/-w-Unr          0.5737          0.5494          0.4173          1.1432            1233
+Layout                                  no           yes     file:///tmp/claude-1000/-w-Unr          5.4548          5.4548          5.4548          5.4548               1
+ScriptParseHTML                         no           yes     file:///tmp/claude-1000/-w-Unr          0.0295          0.0094          0.0000          0.4200              29
+TimeToFirstPaint                        no           yes     file:///tmp/claude-1000/-w-Unr          0.0000          0.0000          0.0000          0.0000               1
+TimeToFirstContentfulPaint              no           yes     file:///tmp/claude-1000/-w-Unr          0.0000          0.0000          0.0000          0.0000               1
+
+_url_	_blocked layout queries_
+
+_category_                          _incremental?_ _iframe?_             _url_                  _mean (ms)_   _median (ms)_      _min (ms)_      _max (ms)_       _events_ 
+Painting                                N/A          N/A                  N/A                        0.4437          0.3703          0.0068          8.6483            1853
+Layout                                  yes          yes     file:///tmp/claude-1000/-w-Unr          0.5744          0.5512          0.4173          1.1432            1852
+Layout                                  no           yes     file:///tmp/claude-1000/-w-Unr          5.4548          5.4548          5.4548          5.4548               1
+ScriptParseHTML                         no           yes     file:///tmp/claude-1000/-w-Unr          0.0295          0.0094          0.0000          0.4200              29
+TimeToFirstPaint                        no           yes     file:///tmp/claude-1000/-w-Unr          0.0000          0.0000          0.0000          0.0000               1
+TimeToFirstContentfulPaint              no           yes     file:///tmp/claude-1000/-w-Unr          0.0000          0.0000          0.0000          0.0000               1
+TimeToInteractive                       no           yes     file:///tmp/claude-1000/-w-Unr          0.0000          0.0000          0.0000          0.0000               1
+
+_url_	_blocked layout queries_
+

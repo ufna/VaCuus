@@ -1,0 +1,525 @@
+/* VaCuus HUD demo - dark sci-fi styling, exercising RCSS effects:
+   gradient decorators (linear/radial/conic), box-shadow, filter,
+   backdrop-filter, @keyframes animations, transitions, transforms,
+   border-radius, font-effects. */
+
+/* RmlUi ships no user-agent stylesheet: every element defaults to
+   display:inline, which ignores width/height. Blockify the basics. */
+div, h1, button { display: block; }
+
+body {
+	width: 100%;
+	height: 100%;
+	font-family: LatoLatin;
+	font-size: 15px;
+	color: #d2e9f2;
+	/* fake "game scene" backdrop so the HUD reads like an in-game overlay */
+	decorator:
+		radial-gradient(circle farthest-corner at 50% 38%, #16303b, #0b1418 55%, #05080c 100%),
+		linear-gradient(180deg, #0000 60%, #04121b66 100%);
+}
+
+/* ------------------------------------------------------------------ */
+/* Damage vignette                                                     */
+/* ------------------------------------------------------------------ */
+#vignette {
+	position: absolute;
+	left: 0; top: 0;
+	width: 100%; height: 100%;
+	pointer-events: none;
+	z-index: 40;
+	opacity: 0;
+	decorator: radial-gradient(circle farthest-corner at center, #0000 55%, #a1122488 82%, #d01530cc 100%);
+}
+@keyframes vignette-flash {
+	0%   { opacity: 0; }
+	18%  { opacity: 1; }
+	100% { opacity: 0; }
+}
+#vignette.hit { animation: vignette-flash 0.55s cubic-out 1; }
+
+/* ------------------------------------------------------------------ */
+/* Player plate (top-left)                                             */
+/* ------------------------------------------------------------------ */
+#player-plate {
+	position: absolute;
+	left: 26px; top: 24px;
+	width: 420px;
+	padding: 14px 16px;
+	border-radius: 10px;
+	border: 1px #2b4a5a;
+	decorator: linear-gradient(120deg, #0d1b22ee, #10262fd0 60%, #0d1b2288);
+	box-shadow: #000a 0px 6px 18px 0px;
+}
+#portrait {
+	display: inline-block;
+	position: relative;
+	width: 74px; height: 74px;
+	border-radius: 37px;
+	border: 2px #3ae0ff;
+	text-align: center;
+	line-height: 70px;
+	vertical-align: middle;
+	decorator: conic-gradient(from 220deg, #123340, #1d5468, #35e0ff44, #123340);
+	box-shadow: #35e0ff55 0px 0px 14px 2px;
+}
+.portrait-glyph {
+	font-size: 26px;
+	font-weight: bold;
+	color: #b9f3ff;
+	font-effect: glow(3px #35e0ff88);
+}
+#level-badge {
+	position: absolute;
+	right: -6px; bottom: -4px;
+	width: 26px; height: 26px;
+	border-radius: 13px;
+	background-color: #0c161b;
+	border: 1px #ffc44d;
+	color: #ffc44d;
+	font-size: 12px;
+	font-weight: bold;
+	text-align: center;
+	line-height: 24px;
+}
+#bars {
+	display: inline-block;
+	width: 296px;
+	margin-left: 14px;
+	vertical-align: middle;
+}
+.bar-row { margin-bottom: 8px; }
+.bar {
+	display: inline-block;
+	position: relative;
+	width: 240px;
+	height: 18px;
+	border-radius: 9px;
+	background-color: #060c0f;
+	border: 1px #223844;
+	vertical-align: middle;
+}
+.bar-value {
+	display: inline-block;
+	width: 44px;
+	margin-left: 8px;
+	font-family: "Roboto Mono";
+	font-size: 13px;
+	color: #9fdcef;
+	vertical-align: middle;
+}
+#hp-fill {
+	width: 100%;
+	height: 100%;
+	border-radius: 8px;
+	decorator: linear-gradient(90deg, #0a7a44, #2ee07f 60%, #8dffc0);
+	box-shadow: #2ee07f66 0px 0px 10px 1px;
+	transition: width 0.25s cubic-out;
+}
+#mp-fill {
+	width: 100%;
+	height: 100%;
+	border-radius: 8px;
+	decorator: linear-gradient(90deg, #14459e, #3fa9ff 65%, #a8dcff);
+	box-shadow: #3fa9ff66 0px 0px 10px 1px;
+	transition: width 0.3s cubic-out;
+}
+.bar-sheen {
+	position: absolute;
+	left: 0; top: 0;
+	width: 100%; height: 8px;
+	border-radius: 8px;
+	pointer-events: none;
+	decorator: linear-gradient(180deg, #ffffff2e, #ffffff05);
+}
+/* low-HP pulse (box-shadow is not animatable in RCSS -> pulse via filter) */
+@keyframes hp-pulse {
+	from { filter: brightness(0.9) drop-shadow(#ff355544 0px 0px 2px); }
+	to   { filter: brightness(1.5) drop-shadow(#ff3555ee 0px 0px 12px); }
+}
+.hp-track.low #hp-fill {
+	decorator: linear-gradient(90deg, #7a0a1c, #e02e4d 60%, #ff8da0);
+	animation: hp-pulse 0.5s cubic-in-out infinite alternate;
+}
+#status-row { margin-top: 2px; }
+.buff {
+	font-size: 11px;
+	font-weight: bold;
+	color: #7de6ff;
+	border: 1px #2b6a7a;
+	border-radius: 4px;
+	padding: 2px 6px;
+	margin-right: 6px;
+	background-color: #10262f;
+}
+.buff-haste { color: #ffd27d; border-color: #7a5f2b; }
+.buff.off { opacity: 0.25; }
+
+/* ------------------------------------------------------------------ */
+/* Killfeed (top-right)                                                */
+/* ------------------------------------------------------------------ */
+#killfeed {
+	position: absolute;
+	right: 26px; top: 24px;
+	width: 360px;
+	z-index: 20;
+}
+.kf-row {
+	display: block;
+	margin-bottom: 6px;
+	padding: 6px 10px;
+	border-radius: 6px;
+	text-align: right;
+	font-size: 14px;
+	border: 1px #22384488;
+	decorator: linear-gradient(270deg, #0d1b22e8, #0d1b2230);
+	transform: translateX(120%);
+	opacity: 0;
+	transition: transform opacity 0.35s cubic-out;
+}
+.kf-row.shown { transform: translateX(0%); opacity: 1; }
+.kf-row.fade  { transform: translateX(30%); opacity: 0; transition: transform opacity 0.5s cubic-in; }
+.kf-killer { color: #7de6ff; font-weight: bold; }
+.kf-victim { color: #ff8da0; font-weight: bold; }
+.kf-weapon { color: #8fa9b5; font-family: "Roboto Mono"; font-size: 12px; }
+.kf-row.kf-you { border: 1px #ffc44d88; }
+.kf-row.kf-you .kf-killer { color: #ffc44d; font-effect: glow(2px #ffc44d55); }
+
+/* ------------------------------------------------------------------ */
+/* Floating damage numbers                                             */
+/* ------------------------------------------------------------------ */
+#damage-layer {
+	position: absolute;
+	left: 0; top: 0;
+	width: 100%; height: 100%;
+	pointer-events: none;
+	z-index: 30;
+}
+@keyframes dmg-float {
+	0%   { transform: translateY(0px) scale(1.25); opacity: 0; }
+	12%  { transform: translateY(-8px) scale(1.0); opacity: 1; }
+	100% { transform: translateY(-74px) scale(0.85); opacity: 0; }
+}
+.dmg {
+	position: absolute;
+	font-family: "Roboto Mono";
+	font-weight: bold;
+	font-size: 21px;
+	color: #ffe9b0;
+	font-effect: outline(2px #000000aa);
+	animation: dmg-float 0.95s cubic-out 1;
+	opacity: 0;
+}
+.dmg.crit {
+	font-size: 30px;
+	color: #ff5d7e;
+	font-effect: glow(4px #ff2a5588), outline(2px #200008cc);
+}
+.dmg.heal { color: #8dffc0; }
+
+/* ------------------------------------------------------------------ */
+/* Crosshair + hit marker (center)                                     */
+/* ------------------------------------------------------------------ */
+#crosshair {
+	position: absolute;
+	left: 50%; top: 50%;
+	width: 0px; height: 0px;
+	pointer-events: none;
+	z-index: 25;
+}
+.ch-line { position: absolute; background-color: #d9f6ffcc; box-shadow: #35e0ff88 0px 0px 4px 0px; }
+.ch-n { left: -1px; top: -14px; width: 2px; height: 8px; }
+.ch-s { left: -1px; top: 6px;   width: 2px; height: 8px; }
+.ch-w { left: -14px; top: -1px; width: 8px; height: 2px; }
+.ch-e { left: 6px;   top: -1px; width: 8px; height: 2px; }
+.ch-dot {
+	position: absolute;
+	left: -2px; top: -2px;
+	width: 4px; height: 4px;
+	border-radius: 2px;
+	background-color: #ffffffdd;
+}
+#hitmarker { position: absolute; left: 0; top: 0; opacity: 0; }
+.hm-line {
+	position: absolute;
+	left: -13px; top: -1.5px;
+	width: 26px; height: 3px;
+	background-color: #ffffff;
+	box-shadow: #ff3555aa 0px 0px 6px 1px;
+}
+.hm-a { transform: rotate(45deg); }
+.hm-b { transform: rotate(-45deg); }
+@keyframes hit-pop {
+	0%   { opacity: 1; transform: scale(1.6) rotate(0deg); }
+	100% { opacity: 0; transform: scale(0.8) rotate(18deg); }
+}
+#hitmarker.show { animation: hit-pop 0.28s cubic-out 1; }
+
+/* ------------------------------------------------------------------ */
+/* Ability bar (bottom-center)                                         */
+/* ------------------------------------------------------------------ */
+#ability-bar {
+	position: absolute;
+	left: 50%; bottom: 30px;
+	width: 320px;
+	margin-left: -160px;
+	padding: 10px 12px;
+	border-radius: 12px;
+	border: 1px #2b4a5a;
+	decorator: linear-gradient(180deg, #0d1b22cc, #081014ee);
+	box-shadow: #000c 0px 8px 22px 0px;
+	display: flex;
+	flex-direction: row;
+	justify-content: space-between;
+	z-index: 20;
+}
+.slot {
+	position: relative;
+	width: 64px; height: 64px;
+	border-radius: 8px;
+	border: 1px #2f5566;
+	background-color: #0a1519;
+	box-shadow: #0008 0px 3px 8px 0px inset;
+	transition: transform 0.12s cubic-out, border-color 0.2s linear-in-out;
+}
+.slot:hover { transform: scale(1.07); border-color: #35e0ff; }
+.slot-icon {
+	position: absolute;
+	left: 4px; top: 4px;
+	width: 54px; height: 54px;
+	border-radius: 6px;
+	filter: none;
+	transition: filter 0.2s linear-in-out;
+}
+.icon-1 { decorator: conic-gradient(from 0deg,   #35e0ff, #1a6d8c, #35e0ff, #123340, #35e0ff); }
+.icon-2 { decorator: radial-gradient(circle farthest-side at 35% 35%, #8dffc0, #17a05c 60%, #073d24); }
+.icon-3 { decorator: linear-gradient(135deg, #ffd27d, #a06017 55%, #4a2a08); }
+.icon-4 { decorator: conic-gradient(from 90deg, #ff5d7e, #7a0a2c, #ff2a55, #40041a, #ff5d7e); }
+.slot.cooling .slot-icon { filter: grayscale(85%) brightness(0.55); }
+.cd-fill {
+	position: absolute;
+	left: 0px; bottom: 0px;
+	width: 100%; height: 0%;
+	border-radius: 8px;
+	background-color: #030a0dd8;
+	pointer-events: none;
+}
+.cd-text {
+	position: absolute;
+	left: 0; top: 20px;
+	width: 100%;
+	text-align: center;
+	font-family: "Roboto Mono";
+	font-size: 20px;
+	font-weight: bold;
+	color: #d2e9f2;
+	font-effect: outline(2px #000c);
+	pointer-events: none;
+}
+.keycap {
+	position: absolute;
+	left: 3px; top: 3px;
+	width: 16px; height: 16px;
+	border-radius: 3px;
+	background-color: #04090b;
+	border: 1px #35667a;
+	color: #9fdcef;
+	font-size: 10px;
+	text-align: center;
+	line-height: 15px;
+	z-index: 5;
+}
+@keyframes ready-pop {
+	0%   { opacity: 0.9; transform: scale(1.0); }
+	100% { opacity: 0;   transform: scale(1.7); }
+}
+.ready-flash {
+	position: absolute;
+	left: 0; top: 0;
+	width: 100%; height: 100%;
+	border-radius: 8px;
+	pointer-events: none;
+	opacity: 0;
+	decorator: radial-gradient(circle farthest-side at center, #b9f3ffcc, #35e0ff44 60%, #0000);
+}
+.ready-flash.on { animation: ready-pop 0.45s cubic-out 1; }
+@keyframes ult-glow {
+	from { filter: brightness(1.0) drop-shadow(#ff2a5522 0px 0px 3px); }
+	to   { filter: brightness(1.25) drop-shadow(#ff2a55cc 0px 0px 14px); }
+}
+.slot-ult.ready { border-color: #ff5d7e; animation: ult-glow 0.9s sine-in-out infinite alternate; }
+
+/* ------------------------------------------------------------------ */
+/* Minimap (bottom-right)                                              */
+/* ------------------------------------------------------------------ */
+#minimap {
+	position: absolute;
+	right: 30px; bottom: 30px;
+	width: 190px; height: 190px;
+	border-radius: 95px;
+	border: 2px #2f5566;
+	overflow: hidden;
+	decorator: radial-gradient(circle farthest-side at center, #0e2129f2, #081014f8 75%, #04090bfa);
+	box-shadow: #000c 0px 6px 20px 0px, #35e0ff22 0px 0px 24px 4px;
+	z-index: 20;
+}
+.mm-ring {
+	position: absolute;
+	left: 31px; top: 31px;
+	width: 128px; height: 128px;
+	border-radius: 64px;
+	border: 1px #1d3d4b;
+	pointer-events: none;
+}
+.mm-grid-h { position: absolute; left: 0; top: 94px; width: 190px; height: 1px; background-color: #1d3d4b66; }
+.mm-grid-v { position: absolute; left: 94px; top: 0; width: 1px; height: 190px; background-color: #1d3d4b66; }
+@keyframes mm-rotate {
+	from { transform: rotate(0deg); }
+	to   { transform: rotate(360deg); }
+}
+#mm-sweep {
+	position: absolute;
+	left: 0; top: 0;
+	width: 190px; height: 190px;
+	border-radius: 95px;
+	decorator: conic-gradient(from 0deg, #35e0ff3e, #35e0ff18 40deg, #0000 70deg, #0000);
+	animation: mm-rotate 4s linear-in-out infinite;
+	pointer-events: none;
+}
+#mm-player {
+	position: absolute;
+	left: 91px; top: 91px;
+	width: 8px; height: 8px;
+	border-radius: 4px;
+	background-color: #b9f3ff;
+	box-shadow: #35e0ffcc 0px 0px 8px 2px;
+}
+#mm-heading {
+	position: absolute;
+	left: 88px; top: 4px;
+	font-size: 11px;
+	color: #7de6ff;
+	font-weight: bold;
+}
+.blip {
+	position: absolute;
+	width: 7px; height: 7px;
+	border-radius: 4px;
+	pointer-events: none;
+}
+.blip-ally { background-color: #46ff9e; box-shadow: #46ff9e88 0px 0px 5px 1px; }
+@keyframes blip-pulse {
+	from { transform: scale(0.8); opacity: 1;   }
+	to   { transform: scale(1.9); opacity: 0.45; }
+}
+.blip-enemy {
+	background-color: #ff3d6e;
+	box-shadow: #ff3d6ecc 0px 0px 7px 2px;
+	animation: blip-pulse 0.7s cubic-in-out infinite alternate;
+}
+
+/* ------------------------------------------------------------------ */
+/* Perf overlay (bottom-left)                                          */
+/* ------------------------------------------------------------------ */
+#perf {
+	position: absolute;
+	left: 26px; bottom: 26px;
+	padding: 6px 12px;
+	border-radius: 6px;
+	background-color: #060c0fd0;
+	border: 1px #223844;
+	font-family: "Roboto Mono";
+	font-size: 12px;
+	color: #8fd8a8;
+	z-index: 20;
+}
+
+/* ------------------------------------------------------------------ */
+/* Settings panel (Esc)                                                */
+/* ------------------------------------------------------------------ */
+#settings-backdrop {
+	position: absolute;
+	left: 0; top: 0;
+	width: 100%; height: 100%;
+	z-index: 50;
+	background-color: #04080c66;
+	opacity: 0;
+	visibility: hidden;
+	pointer-events: none;
+	transition: opacity 0.25s linear-in-out;
+}
+/* NOTE: backdrop-filter blurs the scene even when the element has opacity 0,
+   so it must only exist in the open state. */
+#settings-backdrop.open { opacity: 1; visibility: visible; backdrop-filter: blur(6px); }
+#settings {
+	position: absolute;
+	left: 50%; top: 50%;
+	width: 460px;
+	margin-left: -230px;
+	margin-top: -220px;
+	padding: 26px 30px;
+	border-radius: 14px;
+	border: 1px #35e0ff66;
+	decorator: linear-gradient(160deg, #0f222bf2, #081014f6 70%);
+	box-shadow: #000d 0px 14px 40px 0px, #35e0ff2a 0px 0px 30px 2px;
+	z-index: 51;
+	transform: scale(0.82);
+	opacity: 0;
+	visibility: hidden;
+	transition: transform 0.28s back-out, opacity 0.22s linear-in-out, visibility 0.28s;
+}
+#settings.open { transform: scale(1.0); opacity: 1; visibility: visible; }
+#settings h1 {
+	display: block;
+	font-size: 20px;
+	font-weight: bold;
+	color: #7de6ff;
+	font-effect: glow(3px #35e0ff44);
+	margin-bottom: 20px;
+	letter-spacing: 2px;
+}
+.set-row {
+	display: flex;
+	flex-direction: row;
+	justify-content: space-between;
+	align-items: center;
+	margin-bottom: 16px;
+	font-size: 15px;
+	color: #b7ccd6;
+}
+.set-track {
+	width: 220px; height: 8px;
+	border-radius: 4px;
+	background-color: #060c0f;
+	border: 1px #223844;
+}
+.set-knob {
+	height: 8px;
+	border-radius: 4px;
+	decorator: linear-gradient(90deg, #1a6d8c, #35e0ff);
+}
+.k70 { width: 70%; }
+.k55 { width: 55%; }
+.k90 { width: 90%; }
+.toggle {
+	font-family: "Roboto Mono";
+	font-size: 13px;
+	padding: 3px 10px;
+	border-radius: 4px;
+	border: 1px #223844;
+}
+.toggle.on  { color: #46ff9e; border-color: #2c7a52; }
+.toggle.off { color: #6c8591; }
+button#settings-close {
+	display: block;
+	margin: 14px auto 0 auto;
+	padding: 8px 26px;
+	border-radius: 6px;
+	border: 1px #35e0ff88;
+	background-color: #10262f;
+	color: #b9f3ff;
+	font-size: 14px;
+	text-align: center;
+	transition: background-color 0.15s linear-in-out, transform 0.15s cubic-out;
+}
+button#settings-close:hover { background-color: #1a3d4c; transform: scale(1.05); }

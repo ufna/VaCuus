@@ -1,0 +1,78 @@
+<rml>
+<head>
+	<title>VaCuus HUD</title>
+	<link type="text/rcss" href="hud.rcss"/>
+</head>
+<body>
+	<!-- full-screen damage vignette (flashed by JS) -->
+	<div id="vignette"/>
+
+	<!-- top-left: player plate with health / mana -->
+	<div id="player-plate">
+		<div id="portrait"><span class="portrait-glyph">VC</span><div id="level-badge">17</div></div>
+		<div id="bars">
+			<div class="bar-row">
+				<div class="bar hp-track" id="hp-track"><div id="hp-fill"/><div class="bar-sheen"/></div>
+				<div class="bar-value" id="hp-text">100</div>
+			</div>
+			<div class="bar-row">
+				<div class="bar mp-track"><div id="mp-fill"/><div class="bar-sheen"/></div>
+				<div class="bar-value" id="mp-text">100</div>
+			</div>
+			<div id="status-row">
+				<span class="buff" id="buff-shield">SHIELD</span>
+				<span class="buff buff-haste" id="buff-haste">HASTE</span>
+			</div>
+		</div>
+	</div>
+
+	<!-- top-right: killfeed rows spawned by JS -->
+	<div id="killfeed"/>
+
+	<!-- floating damage numbers spawned by JS -->
+	<div id="damage-layer"/>
+
+	<!-- center: crosshair + hit marker -->
+	<div id="crosshair">
+		<div class="ch-line ch-n"/><div class="ch-line ch-s"/>
+		<div class="ch-line ch-w"/><div class="ch-line ch-e"/>
+		<div class="ch-dot"/>
+		<div id="hitmarker">
+			<div class="hm-line hm-a"/><div class="hm-line hm-b"/>
+		</div>
+	</div>
+
+	<!-- bottom-center: ability bar -->
+	<div id="ability-bar">
+		<div class="slot" id="slot-1"><div class="slot-icon icon-1"/><div class="cd-fill" id="cd-1"/><div class="cd-text" id="cdt-1"/><div class="ready-flash" id="flash-1"/><div class="keycap">1</div></div>
+		<div class="slot" id="slot-2"><div class="slot-icon icon-2"/><div class="cd-fill" id="cd-2"/><div class="cd-text" id="cdt-2"/><div class="ready-flash" id="flash-2"/><div class="keycap">2</div></div>
+		<div class="slot" id="slot-3"><div class="slot-icon icon-3"/><div class="cd-fill" id="cd-3"/><div class="cd-text" id="cdt-3"/><div class="ready-flash" id="flash-3"/><div class="keycap">3</div></div>
+		<div class="slot slot-ult" id="slot-4"><div class="slot-icon icon-4"/><div class="cd-fill" id="cd-4"/><div class="cd-text" id="cdt-4"/><div class="ready-flash" id="flash-4"/><div class="keycap">4</div></div>
+	</div>
+
+	<!-- bottom-right: minimap -->
+	<div id="minimap">
+		<div class="mm-ring"/>
+		<div class="mm-grid-h"/><div class="mm-grid-v"/>
+		<div id="mm-sweep"/>
+		<div id="mm-blips"/>
+		<div id="mm-player"/>
+		<div id="mm-heading">N</div>
+	</div>
+
+	<!-- bottom-left: perf overlay -->
+	<div id="perf">fps -- | update -- ms | render -- ms</div>
+
+	<!-- settings panel (Esc) -->
+	<div id="settings-backdrop"/>
+	<div id="settings">
+		<h1>SYSTEM // SETTINGS</h1>
+		<div class="set-row"><span>Master Volume</span><div class="set-track"><div class="set-knob k70"/></div></div>
+		<div class="set-row"><span>Field of View</span><div class="set-track"><div class="set-knob k55"/></div></div>
+		<div class="set-row"><span>HUD Opacity</span><div class="set-track"><div class="set-knob k90"/></div></div>
+		<div class="set-row set-toggle"><span>Motion Blur</span><span class="toggle off">OFF</span></div>
+		<div class="set-row set-toggle"><span>VaCuus Overlay</span><span class="toggle on">ON</span></div>
+		<button id="settings-close">RESUME [ESC]</button>
+	</div>
+</body>
+</rml>

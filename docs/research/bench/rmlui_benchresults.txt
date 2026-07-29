@@ -1,0 +1,480 @@
+Loaded font face 'LatoLatin' [regular] from 'assets/LatoLatin-Regular.ttf'.
+Loaded font face 'LatoLatin' [italic] from 'assets/LatoLatin-Italic.ttf'.
+Loaded font face 'LatoLatin' [bold] from 'assets/LatoLatin-Bold.ttf'.
+Loaded font face 'LatoLatin' [italic, bold] from 'assets/LatoLatin-BoldItalic.ttf'.
+Loaded font face 'Noto Emoji' [regular] from 'assets/NotoEmoji-Regular.ttf'.
+[doctest] doctest version is "2.4.11"
+[doctest] run with "--help" for options
+===============================================================================
+/tmp/claude-1000/-w-Unreal-VaCuus/00503194-0da6-4afd-80a7-cee3278ced44/scratchpad/bench/RmlUi/Tests/Source/Benchmarks/BackgroundBorder.cpp:12:
+TEST CASE:  background_border
+
+/tmp/claude-1000/-w-Unreal-VaCuus/00503194-0da6-4afd-80a7-cee3278ced44/scratchpad/bench/RmlUi/Tests/Source/Benchmarks/BackgroundBorder.cpp:62: MESSAGE: Context::Render() stats:
+  Compile geometry: 33
+  Render geometry: 33
+  Release geometry: 0
+  Texture load: 0
+  Texture generate: 0
+  Texture release: 0
+  Scissor enable: 2
+  Scissor set: 1
+  Clip mask enable: 0
+  Clip mask render: 0
+  Transform set: 0
+
+Warning, results might be unstable:
+* CPU frequency scaling enabled: CPU 0 between 2,985.8 and 5,763.4 MHz
+* CPU governor is 'powersave' but should be 'performance'
+* Turbo is enabled, CPU frequency will fluctuate
+
+Recommendations
+* Use 'pyperf system tune' before benchmarking. See https://github.com/psf/pyperf
+
+| relative |               ns/op |                op/s |    err% |          ins/op |          cyc/op |    IPC |         bra/op |   miss% |     total | Backgrounds and borders
+|---------:|--------------------:|--------------------:|--------:|----------------:|----------------:|-------:|---------------:|--------:|----------:|:------------------------
+|   100.0% |            3,646.10 |          274,265.33 |    1.0% |       61,748.09 |       15,150.44 |  4.076 |      15,154.01 |    0.0% |      0.00 | `Reference (update + render)`
+|    11.2% |           32,657.95 |           30,620.42 |    2.8% |      517,309.15 |      136,408.30 |  3.792 |      80,133.06 |    0.4% |      0.04 | `Background all`
+|    12.1% |           30,225.84 |           33,084.27 |    0.6% |      517,969.16 |      125,972.27 |  4.112 |      80,163.06 |    0.1% |      0.04 | `Border all`
+|    50.9% |            7,158.96 |          139,685.17 |    0.2% |      126,333.10 |       29,862.82 |  4.230 |      25,905.02 |    0.0% |      0.01 | `Border no-radius`
+|    36.0% |           10,135.45 |           98,663.62 |    0.1% |      173,477.11 |       42,325.40 |  4.099 |      32,331.02 |    0.1% |      0.01 | `Border small-radius`
+|    18.1% |           20,116.83 |           49,709.62 |    0.1% |      341,665.13 |       83,965.75 |  4.069 |      52,237.04 |    0.1% |      0.02 | `Border large-radius`
+
+| relative |               ns/op |                op/s |    err% |          ins/op |          cyc/op |    IPC |         bra/op |   miss% |     total | Empty vs bordered divs
+|---------:|--------------------:|--------------------:|--------:|----------------:|----------------:|-------:|---------------:|--------:|----------:|:-----------------------
+|   100.0% |           41,933.80 |           23,847.11 |    0.9% |      722,700.12 |      174,735.61 |  4.136 |     176,935.08 |    0.0% |      0.10 | `Render empty`
+|    98.9% |           42,400.24 |           23,584.77 |    1.5% |      786,200.13 |      175,740.80 |  4.474 |     188,935.09 |    0.0% |      0.10 | `Render borders`
+
+| relative |               ns/op |                op/s |    err% |          ins/op |          cyc/op |    IPC |         bra/op |   miss% |     total | Box-shadow
+|---------:|--------------------:|--------------------:|--------:|----------------:|----------------:|-------:|---------------:|--------:|----------:|:-----------
+|   100.0% |           28,673.00 |           34,876.02 |    0.2% |      499,851.00 |      120,162.00 |  4.160 |      76,693.00 |    0.0% |      0.00 | `Reference (update + render)`
+|    81.6% |           35,156.00 |           28,444.65 |    0.2% |      610,168.00 |      147,336.00 |  4.141 |      97,364.00 |    0.0% |      0.00 | `Box-shadow (repeated)`
+|    39.5% |           72,595.00 |           13,775.05 |    1.2% |    1,332,873.00 |      304,206.00 |  4.381 |     238,183.00 |    0.0% |      0.00 | `Box-shadow (unique)`
+
+| relative |               us/op |                op/s |    err% |          ins/op |          cyc/op |    IPC |         bra/op |   miss% |     total | Custom properties
+|---------:|--------------------:|--------------------:|--------:|----------------:|----------------:|-------:|---------------:|--------:|----------:|:------------------
+|   100.0% |              197.70 |            5,058.17 |    2.4% |    3,309,346.73 |      805,133.00 |  4.110 |     717,255.27 |    0.1% |      0.02 | `baseline: SetInnerRML + Update`
+|    70.1% |              281.85 |            3,547.97 |    1.1% |    4,770,184.45 |    1,165,437.00 |  4.093 |   1,039,496.64 |    0.1% |      0.03 | `with-vars: SetInnerRML + Update`
+| 2,406.5% |                8.22 |          121,724.10 |    0.0% |      175,295.00 |       34,431.60 |  5.091 |      34,544.50 |    0.0% |      0.00 | `theme-toggle baseline: SetProperty + Update`
+|   238.8% |               82.78 |           12,080.78 |    0.6% |    1,493,348.80 |      344,167.09 |  4.339 |     311,193.30 |    0.0% |      0.01 | `theme-toggle with-vars: SetProperty + Update`
+Loaded font face 'LatoLatin' [regular] from 'assets/LatoLatin-Regular.ttf'.
+Loaded font face 'LatoLatin' [italic] from 'assets/LatoLatin-Italic.ttf'.
+Loaded font face 'LatoLatin' [bold] from 'assets/LatoLatin-Bold.ttf'.
+Loaded font face 'LatoLatin' [italic, bold] from 'assets/LatoLatin-BoldItalic.ttf'.
+Loaded font face 'Noto Emoji' [regular] from 'assets/NotoEmoji-Regular.ttf'.
+
+| relative |               ns/op |                op/s |    err% |          ins/op |          cyc/op |    IPC |         bra/op |   miss% |     total | Data bindings: Dirty variables
+|---------:|--------------------:|--------------------:|--------:|----------------:|----------------:|-------:|---------------:|--------:|----------:|:-------------------------------
+|   100.0% |              574.94 |        1,739,298.48 |    0.2% |        9,981.21 |        2,410.33 |  4.141 |       2,356.00 |    0.1% |      0.00 | `Reference (Update)`
+|    83.5% |              688.27 |        1,452,925.22 |    0.5% |       11,618.31 |        2,884.00 |  4.029 |       2,704.00 |    0.1% |      0.00 | `Dirty one variable`
+|    14.8% |            3,895.40 |          256,713.05 |    0.7% |       62,747.00 |       16,321.20 |  3.845 |      14,220.00 |    0.0% |      0.00 | `Dirty big variable`
+|    12.3% |            4,686.25 |          213,390.24 |    0.7% |       75,634.60 |       19,635.00 |  3.852 |      16,981.00 |    0.1% |      0.00 | `Dirty all variables`
+Loaded font face 'LatoLatin' [regular] from 'assets/LatoLatin-Regular.ttf'.
+Loaded font face 'LatoLatin' [italic] from 'assets/LatoLatin-Italic.ttf'.
+Loaded font face 'LatoLatin' [bold] from 'assets/LatoLatin-Bold.ttf'.
+Loaded font face 'LatoLatin' [italic, bold] from 'assets/LatoLatin-BoldItalic.ttf'.
+Loaded font face 'Noto Emoji' [regular] from 'assets/NotoEmoji-Regular.ttf'.
+
+| relative |               ns/op |                op/s |    err% |          ins/op |          cyc/op |    IPC |         bra/op |   miss% |     total | Data bindings: Update
+|---------:|--------------------:|--------------------:|--------:|----------------:|----------------:|-------:|---------------:|--------:|----------:|:----------------------
+|   100.0% |           19,507.00 |           51,263.65 |    1.9% |      293,630.00 |       81,732.00 |  3.593 |      58,787.00 |    0.5% |      0.00 | `Reference (Integer)`
+|   103.0% |           18,946.00 |           52,781.59 |    0.5% |      291,292.00 |       79,380.00 |  3.670 |      58,324.00 |    0.4% |      0.00 | `Integer`
+|   100.5% |           19,406.00 |           51,530.45 |    1.0% |      298,374.00 |       81,354.00 |  3.668 |      59,782.00 |    0.3% |      0.00 | `Basic`
+|    90.1% |           21,660.00 |           46,168.05 |    1.1% |      327,508.00 |       90,216.00 |  3.630 |      66,465.00 |    0.3% |      0.00 | `Reference (Arrays)`
+|    85.4% |           22,852.00 |           43,759.85 |    1.6% |      347,345.00 |       95,760.00 |  3.627 |      70,803.00 |    0.3% |      0.00 | `Arrays`
+
+| relative |               ns/op |                op/s |    err% |          ins/op |          cyc/op |    IPC |         bra/op |   miss% |     total | Data expression
+|---------:|--------------------:|--------------------:|--------:|----------------:|----------------:|-------:|---------------:|--------:|----------:|:----------------
+|   100.0% |               80.88 |       12,363,290.54 |    1.3% |        1,787.04 |          338.94 |  5.272 |         381.00 |    0.0% |      0.00 | `Simple (parse)`
+|   248.2% |               32.59 |       30,688,158.71 |    0.0% |          537.02 |          136.52 |  3.934 |         106.00 |    0.0% |      0.00 | `Simple (execute)`
+|    15.1% |              535.00 |        1,869,158.88 |    5.9% |        9,652.40 |        2,234.40 |  4.320 |       2,164.00 |    0.0% |      0.00 | :wavy_dash: `Complex (parse)` (Unstable with ~6.9 iters. Increase `minEpochIterations` to e.g. 69)
+|    34.3% |              235.64 |        4,243,710.22 |    0.3% |        4,472.12 |          987.00 |  4.531 |         860.00 |    0.0% |      0.00 | `Complex (execute)`
+|    86.6% |               93.37 |       10,710,093.90 |    0.6% |        2,111.07 |          390.00 |  5.413 |         447.00 |    0.0% |      0.00 | `Simple assign (parse)`
+|   317.2% |               25.50 |       39,213,985.16 |    0.2% |          554.01 |          106.82 |  5.187 |         105.00 |    0.0% |      0.00 | `Simple assign (execute)`
+|    21.6% |              374.30 |        2,671,653.75 |    0.6% |        7,901.22 |        1,568.28 |  5.038 |       1,732.00 |    0.0% |      0.00 | `Complex assign (parse)`
+|    49.0% |              165.23 |        6,052,245.12 |    0.2% |        2,914.08 |          692.38 |  4.209 |         559.00 |    0.0% |      0.00 | `Complex assign (execute)`
+Loaded font face 'LatoLatin' [regular] from 'assets/LatoLatin-Regular.ttf'.
+Loaded font face 'LatoLatin' [italic] from 'assets/LatoLatin-Italic.ttf'.
+Loaded font face 'LatoLatin' [bold] from 'assets/LatoLatin-Bold.ttf'.
+Loaded font face 'LatoLatin' [italic, bold] from 'assets/LatoLatin-BoldItalic.ttf'.
+Loaded font face 'Noto Emoji' [regular] from 'assets/NotoEmoji-Regular.ttf'.
+===============================================================================
+/tmp/claude-1000/-w-Unreal-VaCuus/00503194-0da6-4afd-80a7-cee3278ced44/scratchpad/bench/RmlUi/Tests/Source/Benchmarks/Element.cpp:104:
+TEST CASE:  element.creation_and_destruction
+
+/tmp/claude-1000/-w-Unreal-VaCuus/00503194-0da6-4afd-80a7-cee3278ced44/scratchpad/bench/RmlUi/Tests/Source/Benchmarks/Element.cpp:125: MESSAGE: 
+Element construction and destruction of 1750 total elements.
+Context::Render() stats:
+  Compile geometry: 0
+  Render geometry: 479
+  Release geometry: 0
+  Texture load: 0
+  Texture generate: 0
+  Texture release: 0
+  Scissor enable: 2
+  Scissor set: 1
+  Clip mask enable: 0
+  Clip mask render: 0
+  Transform set: 0
+
+
+| relative |               us/op |                op/s |    err% |          ins/op |          cyc/op |    IPC |         bra/op |   miss% |     total | Element
+|---------:|--------------------:|--------------------:|--------:|----------------:|----------------:|-------:|---------------:|--------:|----------:|:--------
+|   100.0% |               18.98 |           52,700.92 |    1.5% |      242,948.00 |       79,548.00 |  3.054 |      57,899.00 |    0.1% |      0.00 | `Update (unmodified)`
+|    18.2% |              104.43 |            9,576.25 |    0.8% |    1,524,450.00 |      436,968.00 |  3.489 |     372,840.00 |    0.0% |      0.00 | `Update (hover child)`
+|    18.1% |              104.91 |            9,531.53 |    0.1% |    1,532,718.00 |      439,866.00 |  3.485 |     375,091.00 |    0.0% |      0.00 | `Update (hover)`
+|    13.4% |              141.42 |            7,070.99 |    1.8% |    2,237,016.00 |      591,108.00 |  3.784 |     556,603.00 |    0.0% |      0.00 | `Render`
+|     2.3% |              820.96 |            1,218.09 |    3.8% |   11,121,157.00 |    3,292,968.00 |  3.377 |   2,573,922.00 |    0.5% |      0.01 | `SetInnerRML`
+|     1.1% |            1,762.96 |              567.23 |    1.8% |   24,855,172.00 |    7,231,140.00 |  3.437 |   5,381,486.00 |    0.4% |      0.02 | `SetInnerRML + Update`
+|     0.8% |            2,254.41 |              443.57 |    0.6% |   31,980,483.00 |    9,240,546.00 |  3.461 |   6,798,382.00 |    0.4% |      0.02 | `SetInnerRML + Update + Render`
+===============================================================================
+/tmp/claude-1000/-w-Unreal-VaCuus/00503194-0da6-4afd-80a7-cee3278ced44/scratchpad/bench/RmlUi/Tests/Source/Benchmarks/Element.cpp:167:
+TEST CASE:  element.long_texts
+
+/tmp/claude-1000/-w-Unreal-VaCuus/00503194-0da6-4afd-80a7-cee3278ced44/scratchpad/bench/RmlUi/Tests/Source/Benchmarks/Element.cpp:188: MESSAGE: 
+Element construction and destruction of 1750 total very long elements.
+Context::Render() stats:
+  Compile geometry: 0
+  Render geometry: 469
+  Release geometry: 0
+  Texture load: 0
+  Texture generate: 0
+  Texture release: 0
+  Scissor enable: 2
+  Scissor set: 1
+  Clip mask enable: 0
+  Clip mask render: 0
+  Transform set: 0
+
+|   100.0% |               19.37 |           51,636.89 |    1.2% |      242,948.00 |       81,144.00 |  2.994 |      57,899.00 |    0.1% |      0.00 | `Update (unmodified)`
+|    18.4% |              105.34 |            9,493.43 |    0.5% |    1,526,050.00 |      440,832.00 |  3.462 |     373,040.00 |    0.0% |      0.00 | `Update (hover child)`
+|    18.3% |              106.08 |            9,427.03 |    0.2% |    1,534,362.00 |      444,654.00 |  3.451 |     375,300.00 |    0.0% |      0.00 | `Update (hover)`
+|    13.2% |              146.57 |            6,822.54 |    2.7% |    2,249,696.00 |      599,382.00 |  3.753 |     557,702.00 |    0.0% |      0.00 | `Render`
+|     1.6% |            1,203.53 |              830.89 |    1.1% |   19,176,437.00 |    5,019,378.00 |  3.820 |   4,833,935.00 |    0.3% |      0.01 | `SetInnerRML`
+|     0.5% |            4,165.85 |              240.05 |    1.8% |   75,580,981.00 |   17,163,090.00 |  4.404 |  16,190,503.00 |    0.2% |      0.05 | `SetInnerRML + Update`
+|     0.3% |            6,594.21 |              151.65 |    6.4% |  113,967,497.00 |   25,778,256.00 |  4.421 |  21,324,876.00 |    0.3% |      0.08 | :wavy_dash: `SetInnerRML + Update + Render` (Unstable with ~1.0 iters. Increase `minEpochIterations` to e.g. 10)
+
+| relative | complexityN |               us/op |                op/s |    err% |          ins/op |          cyc/op |    IPC |         bra/op |   miss% |     total | SetInnerRML
+|---------:|------------:|--------------------:|--------------------:|--------:|----------------:|----------------:|-------:|---------------:|--------:|----------:|:------------
+|   100.0% |           1 |               14.84 |           67,399.07 |    3.0% |      210,428.00 |       62,160.00 |  3.385 |      48,563.00 |    0.2% |      0.00 | `SetInnerRML`
+|    50.2% |           2 |               29.57 |           33,823.78 |    1.4% |      427,293.00 |      123,564.00 |  3.458 |      98,531.00 |    0.2% |      0.00 | `SetInnerRML`
+|    19.5% |           5 |               76.23 |           13,117.85 |    2.6% |    1,087,782.00 |      315,420.00 |  3.449 |     250,757.00 |    0.3% |      0.00 | `SetInnerRML`
+|     9.4% |          10 |              158.54 |            6,307.72 |    2.1% |    2,196,490.00 |      652,218.00 |  3.368 |     506,942.00 |    0.4% |      0.00 | `SetInnerRML`
+|     4.6% |          20 |              324.51 |            3,081.52 |    1.3% |    4,413,769.00 |    1,345,134.00 |  3.281 |   1,019,903.00 |    0.4% |      0.00 | `SetInnerRML`
+|     1.8% |          50 |              812.03 |            1,231.48 |    1.2% |   11,121,529.00 |    3,351,978.00 |  3.318 |   2,573,450.00 |    0.4% |      0.01 | `SetInnerRML`
+|     0.9% |         100 |            1,629.91 |              613.53 |    2.1% |   22,313,726.00 |    6,664,980.00 |  3.348 |   5,164,898.00 |    0.4% |      0.02 | `SetInnerRML`
+|     0.5% |         200 |            3,222.62 |              310.31 |    1.7% |   44,764,341.00 |   13,163,514.00 |  3.401 |  10,362,362.00 |    0.4% |      0.04 | `SetInnerRML`
+|     0.1% |         500 |           13,985.07 |               71.50 |    6.6% |  112,578,749.00 |   58,290,036.00 |  1.931 |  26,057,597.00 |    0.3% |      0.16 | :wavy_dash: `SetInnerRML` (Unstable with ~1.0 iters. Increase `minEpochIterations` to e.g. 10)
+
+| relative | complexityN |               us/op |                op/s |    err% |          ins/op |          cyc/op |    IPC |         bra/op |   miss% |     total | Update (unmodified)
+|---------:|------------:|--------------------:|--------------------:|--------:|----------------:|----------------:|-------:|---------------:|--------:|----------:|:--------------------
+|   100.0% |           1 |                0.46 |        2,168,021.68 |    0.5% |        7,375.17 |        1,932.00 |  3.817 |       1,762.00 |    0.1% |      0.00 | `Update (unmodified)`
+|    58.9% |           2 |                0.78 |        1,276,789.79 |    0.8% |       12,188.29 |        3,282.00 |  3.714 |       2,909.00 |    0.2% |      0.00 | `Update (unmodified)`
+|    26.9% |           5 |                1.71 |          584,243.40 |    0.1% |       26,627.62 |        7,172.31 |  3.713 |       6,350.00 |    0.1% |      0.00 | `Update (unmodified)`
+|    14.3% |          10 |                3.23 |          309,159.97 |    0.3% |       50,693.14 |       13,548.00 |  3.742 |      12,085.00 |    0.1% |      0.00 | `Update (unmodified)`
+|     7.3% |          20 |                6.33 |          158,094.44 |    0.6% |       98,824.67 |       26,516.00 |  3.727 |      23,555.00 |    0.1% |      0.00 | `Update (unmodified)`
+|     2.3% |          50 |               20.42 |           48,976.39 |    0.3% |      243,220.00 |       85,596.00 |  2.841 |      57,965.00 |    0.1% |      0.00 | `Update (unmodified)`
+|     0.9% |         100 |               53.18 |           18,804.06 |    5.0% |      483,870.00 |      223,020.00 |  2.170 |     115,315.00 |    0.0% |      0.00 | :wavy_dash: `Update (unmodified)` (Unstable with ~1.0 iters. Increase `minEpochIterations` to e.g. 10)
+|     0.5% |         200 |               99.93 |           10,007.41 |    0.1% |      965,170.00 |      418,950.00 |  2.304 |     230,015.00 |    0.0% |      0.00 | `Update (unmodified)`
+|     0.2% |         500 |              251.36 |            3,978.39 |    1.4% |    2,409,070.00 |    1,043,112.00 |  2.310 |     574,115.00 |    0.0% |      0.00 | `Update (unmodified)`
+
+| relative | complexityN |               us/op |                op/s |    err% |          ins/op |          cyc/op |    IPC |         bra/op |   miss% |     total | Render
+|---------:|------------:|--------------------:|--------------------:|--------:|----------------:|----------------:|-------:|---------------:|--------:|----------:|:-------
+|   100.0% |           1 |                2.88 |          346,740.64 |    0.6% |       44,529.14 |       12,090.00 |  3.683 |      12,936.00 |    0.0% |      0.00 | `Render`
+|    57.4% |           2 |                5.02 |          199,147.65 |    0.6% |       78,228.00 |       21,042.00 |  3.718 |      22,607.00 |    0.0% |      0.00 | `Render`
+|    18.4% |           5 |               15.66 |           63,861.04 |    0.4% |      243,182.00 |       65,646.00 |  3.704 |      60,901.00 |    0.0% |      0.00 | `Render`
+|     9.8% |          10 |               29.33 |           34,100.60 |    0.4% |      465,022.00 |      122,892.00 |  3.784 |     116,056.00 |    0.0% |      0.00 | `Render`
+|     5.1% |          20 |               57.01 |           17,542.01 |    0.2% |      908,702.00 |      238,938.00 |  3.803 |     226,366.00 |    0.0% |      0.00 | `Render`
+|     1.9% |          50 |              149.07 |            6,708.35 |    4.1% |    2,239,742.00 |      616,266.00 |  3.634 |     557,296.00 |    0.0% |      0.00 | `Render`
+|     1.0% |         100 |              294.80 |            3,392.14 |    1.2% |    4,458,142.00 |    1,219,596.00 |  3.655 |   1,108,846.00 |    0.0% |      0.00 | `Render`
+|     0.5% |         200 |              596.87 |            1,675.40 |    0.9% |    8,894,943.00 |    2,479,638.00 |  3.587 |   2,211,947.00 |    0.0% |      0.01 | `Render`
+|     0.2% |         500 |            1,664.84 |              600.66 |    2.7% |   22,205,344.00 |    6,955,620.00 |  3.192 |   5,521,248.00 |    0.0% |      0.02 | `Render`
+
+| relative | complexityN |               us/op |                op/s |    err% |          ins/op |          cyc/op |    IPC |         bra/op |   miss% |     total | SetInnerRML + Update
+|---------:|------------:|--------------------:|--------------------:|--------:|----------------:|----------------:|-------:|---------------:|--------:|----------:|:---------------------
+|   100.0% |           1 |               37.75 |           26,490.07 |    3.1% |      458,710.00 |      158,256.00 |  2.899 |      99,394.00 |    0.8% |      0.00 | `SetInnerRML + Update`
+|    57.0% |           2 |               66.27 |           15,088.87 |    3.3% |      868,808.00 |      277,830.00 |  3.127 |     189,154.00 |    0.5% |      0.00 | `SetInnerRML + Update`
+|    20.4% |           5 |              184.74 |            5,413.16 |    0.9% |    2,501,197.00 |      774,480.00 |  3.230 |     538,991.00 |    0.5% |      0.00 | `SetInnerRML + Update`
+|    10.3% |          10 |              364.75 |            2,741.61 |    1.2% |    4,989,755.00 |    1,521,576.00 |  3.279 |   1,077,619.00 |    0.5% |      0.00 | `SetInnerRML + Update`
+|     5.2% |          20 |              732.76 |            1,364.71 |    1.4% |    9,966,308.00 |    3,038,994.00 |  3.279 |   2,156,271.00 |    0.5% |      0.01 | `SetInnerRML + Update`
+|     2.1% |          50 |            1,788.75 |              559.05 |    0.5% |   24,889,735.00 |    7,451,178.00 |  3.340 |   5,389,384.00 |    0.4% |      0.02 | `SetInnerRML + Update`
+|     1.1% |         100 |            3,560.49 |              280.86 |    0.5% |   49,781,835.00 |   14,852,838.00 |  3.352 |  10,781,563.00 |    0.3% |      0.04 | `SetInnerRML + Update`
+|     0.5% |         200 |            7,505.20 |              133.24 |    1.8% |   99,632,271.00 |   31,275,552.00 |  3.186 |  21,579,751.00 |    0.3% |      0.08 | `SetInnerRML + Update`
+|     0.1% |         500 |           37,984.08 |               26.33 |    2.8% |  249,626,860.00 |  157,071,432.00 |  1.589 |  54,077,903.00 |    0.2% |      0.42 | `SetInnerRML + Update`
+
+| relative | complexityN |               us/op |                op/s |    err% |          ins/op |          cyc/op |    IPC |         bra/op |   miss% |     total | SetInnerRML + Update + Render
+|---------:|------------:|--------------------:|--------------------:|--------:|----------------:|----------------:|-------:|---------------:|--------:|----------:|:------------------------------
+|   100.0% |           1 |               52.36 |           19,099.28 |    2.7% |      597,868.00 |      219,576.00 |  2.723 |     128,286.00 |    0.8% |      0.00 | `SetInnerRML + Update + Render`
+|    56.4% |           2 |               92.80 |           10,775.51 |    2.7% |    1,136,737.00 |      389,046.00 |  2.922 |     244,273.00 |    0.8% |      0.00 | `SetInnerRML + Update + Render`
+|    21.0% |           5 |              249.34 |            4,010.52 |    1.3% |    3,224,398.00 |    1,033,830.00 |  3.119 |     683,362.00 |    0.6% |      0.00 | `SetInnerRML + Update + Render`
+|    10.6% |          10 |              492.09 |            2,032.16 |    1.3% |    6,421,619.00 |    2,039,646.00 |  3.148 |   1,363,132.00 |    0.6% |      0.01 | `SetInnerRML + Update + Render`
+|     5.4% |          20 |              971.65 |            1,029.18 |    1.4% |   12,828,441.00 |    4,038,510.00 |  3.177 |   2,727,176.00 |    0.6% |      0.01 | `SetInnerRML + Update + Render`
+|     2.2% |          50 |            2,416.25 |              413.86 |    1.4% |   32,032,341.00 |   10,076,514.00 |  3.179 |   6,810,549.00 |    0.5% |      0.03 | `SetInnerRML + Update + Render`
+|     1.0% |         100 |            5,237.88 |              190.92 |    9.5% |   64,097,056.00 |   21,694,470.00 |  2.955 |  13,627,910.00 |    0.4% |      0.07 | :wavy_dash: `SetInnerRML + Update + Render` (Unstable with ~1.0 iters. Increase `minEpochIterations` to e.g. 10)
+|     0.4% |         200 |           12,122.59 |               82.49 |    6.5% |  128,310,115.00 |   49,152,012.00 |  2.610 |  27,287,179.00 |    0.3% |      0.14 | :wavy_dash: `SetInnerRML + Update + Render` (Unstable with ~1.0 iters. Increase `minEpochIterations` to e.g. 10)
+|     0.1% |         500 |           43,396.68 |               23.04 |    8.3% |  321,585,380.00 |  178,104,906.00 |  1.806 |  68,396,141.00 |    0.2% |      0.52 | :wavy_dash: `SetInnerRML + Update + Render` (Unstable with ~1.0 iters. Increase `minEpochIterations` to e.g. 10)
+Loaded font face 'LatoLatin' [regular] from 'assets/LatoLatin-Regular.ttf'.
+Loaded font face 'LatoLatin' [italic] from 'assets/LatoLatin-Italic.ttf'.
+Loaded font face 'LatoLatin' [bold] from 'assets/LatoLatin-Bold.ttf'.
+Loaded font face 'LatoLatin' [italic, bold] from 'assets/LatoLatin-BoldItalic.ttf'.
+Loaded font face 'Noto Emoji' [regular] from 'assets/NotoEmoji-Regular.ttf'.
+===============================================================================
+/tmp/claude-1000/-w-Unreal-VaCuus/00503194-0da6-4afd-80a7-cee3278ced44/scratchpad/bench/RmlUi/Tests/Source/Benchmarks/ElementDocument.cpp:106:
+TEST CASE:  elementdocument.render_stats
+
+/tmp/claude-1000/-w-Unreal-VaCuus/00503194-0da6-4afd-80a7-cee3278ced44/scratchpad/bench/RmlUi/Tests/Source/Benchmarks/ElementDocument.cpp:113: MESSAGE: Context::Render() stats:
+  Compile geometry: 24
+  Render geometry: 24
+  Release geometry: 0
+  Texture load: 0
+  Texture generate: 0
+  Texture release: 0
+  Scissor enable: 2
+  Scissor set: 1
+  Clip mask enable: 0
+  Clip mask render: 0
+  Transform set: 0
+
+===============================================================================
+/tmp/claude-1000/-w-Unreal-VaCuus/00503194-0da6-4afd-80a7-cee3278ced44/scratchpad/bench/RmlUi/Tests/Source/Benchmarks/ElementDocument.cpp:211:
+TEST CASE:  elementdocument-baseline
+
+/tmp/claude-1000/-w-Unreal-VaCuus/00503194-0da6-4afd-80a7-cee3278ced44/scratchpad/bench/RmlUi/Tests/Source/Benchmarks/ElementDocument.cpp:123: MESSAGE: ElementDocument
+
+
+| relative |               us/op |                op/s |    err% |          ins/op |          cyc/op |    IPC |         bra/op |   miss% |     total | ElementDocument
+|---------:|--------------------:|--------------------:|--------:|----------------:|----------------:|-------:|---------------:|--------:|----------:|:----------------
+|   100.0% |              155.53 |            6,429.59 |    1.4% |    1,569,255.42 |      633,325.64 |  2.478 |     337,300.67 |    2.1% |      0.02 | `LoadDocument`
+|    98.3% |              158.19 |            6,321.50 |    1.3% |    1,622,575.55 |      652,050.00 |  2.488 |     350,435.73 |    2.0% |      0.02 | `LoadDocument + Show`
+|    92.5% |              168.20 |            5,945.15 |    3.7% |    1,669,370.50 |      683,175.82 |  2.444 |     362,010.10 |    2.0% |      0.02 | `LoadDocument + Show + Update`
+|    82.5% |              188.63 |            5,301.29 |    1.5% |    1,868,284.36 |      783,296.50 |  2.385 |     400,993.55 |    2.2% |      0.02 | `LoadDocument + Show + Update + Render`
+
+| relative |               us/op |                op/s |    err% |          ins/op |          cyc/op |    IPC |         bra/op |   miss% |     total | ElementDocument w/ClearStyleSheetCache
+|---------:|--------------------:|--------------------:|--------:|----------------:|----------------:|-------:|---------------:|--------:|----------:|:---------------------------------------
+|   100.0% |              552.11 |            1,811.22 |    1.1% |    5,856,342.17 |    2,201,076.71 |  2.661 |   1,333,043.17 |    2.2% |      0.10 | `Clear + LoadDocument`
+|   100.3% |              550.38 |            1,816.93 |    0.6% |    5,877,013.65 |    2,196,854.80 |  2.675 |   1,336,576.07 |    2.1% |      0.10 | `Clear + LoadDocument + Show`
+|   100.9% |              547.40 |            1,826.83 |    0.5% |    5,908,962.12 |    2,187,339.00 |  2.701 |   1,342,778.88 |    1.9% |      0.10 | `Clear + LoadDocument + Show + Update`
+|    96.2% |              573.80 |            1,742.77 |    0.8% |    6,111,076.67 |    2,286,885.18 |  2.672 |   1,381,999.83 |    2.0% |      0.10 | `Clear + LoadDocument + Show + Update + Render`
+===============================================================================
+/tmp/claude-1000/-w-Unreal-VaCuus/00503194-0da6-4afd-80a7-cee3278ced44/scratchpad/bench/RmlUi/Tests/Source/Benchmarks/ElementDocument.cpp:216:
+TEST CASE:  elementdocument-variables
+
+/tmp/claude-1000/-w-Unreal-VaCuus/00503194-0da6-4afd-80a7-cee3278ced44/scratchpad/bench/RmlUi/Tests/Source/Benchmarks/ElementDocument.cpp:123: MESSAGE: ElementDocument
+
+
+| relative |               us/op |                op/s |    err% |          ins/op |          cyc/op |    IPC |         bra/op |   miss% |     total | ElementDocument
+|---------:|--------------------:|--------------------:|--------:|----------------:|----------------:|-------:|---------------:|--------:|----------:|:----------------
+|   100.0% |              171.01 |            5,847.69 |    2.3% |    1,738,965.36 |      696,122.00 |  2.498 |     368,375.50 |    1.6% |      0.02 | `LoadDocument`
+|    96.4% |              177.42 |            5,636.38 |    2.1% |    1,806,674.25 |      732,196.50 |  2.467 |     384,384.18 |    1.8% |      0.02 | `LoadDocument + Show`
+|    92.3% |              185.31 |            5,396.42 |    1.0% |    1,853,070.30 |      763,708.91 |  2.426 |     395,883.20 |    1.7% |      0.02 | `LoadDocument + Show + Update`
+|    79.8% |              214.41 |            4,664.07 |    2.1% |    2,053,769.36 |      872,919.60 |  2.353 |     435,217.82 |    2.0% |      0.03 | `LoadDocument + Show + Update + Render`
+
+| relative |               us/op |                op/s |    err% |          ins/op |          cyc/op |    IPC |         bra/op |   miss% |     total | ElementDocument w/ClearStyleSheetCache
+|---------:|--------------------:|--------------------:|--------:|----------------:|----------------:|-------:|---------------:|--------:|----------:|:---------------------------------------
+|   100.0% |              562.25 |            1,778.56 |    0.6% |    6,021,929.11 |    2,241,603.00 |  2.686 |   1,360,016.56 |    1.9% |      0.10 | `Clear + LoadDocument`
+|    98.8% |              568.89 |            1,757.80 |    0.7% |    6,150,534.44 |    2,275,226.80 |  2.703 |   1,388,923.11 |    1.8% |      0.10 | `Clear + LoadDocument + Show`
+|    98.4% |              571.52 |            1,749.72 |    0.4% |    6,209,897.44 |    2,285,686.67 |  2.717 |   1,402,566.56 |    1.8% |      0.10 | `Clear + LoadDocument + Show + Update`
+|    93.1% |              604.07 |            1,655.44 |    0.7% |    6,411,484.39 |    2,428,282.50 |  2.640 |   1,441,831.87 |    1.9% |      0.11 | `Clear + LoadDocument + Show + Update + Render`
+
+| relative |               ns/op |                op/s |    err% |          ins/op |          cyc/op |    IPC |         bra/op |   miss% |     total | Flexbox basic layout
+|---------:|--------------------:|--------------------:|--------:|----------------:|----------------:|-------:|---------------:|--------:|----------:|:---------------------
+|   100.0% |              540.80 |        1,849,127.97 |    0.6% |        9,287.20 |        2,267.05 |  4.097 |       2,211.00 |    0.1% |      0.00 | `Update (unmodified)`
+|    10.9% |            4,939.25 |          202,459.89 |    0.5% |       79,394.00 |       20,706.00 |  3.834 |      22,451.00 |    0.0% |      0.00 | `Render`
+|     4.3% |           12,558.50 |           79,627.34 |    2.6% |      207,037.00 |       52,647.00 |  3.933 |      48,758.00 |    0.1% |      0.00 | `SetInnerRML`
+|     1.2% |           45,475.00 |           21,990.10 |    1.4% |      845,259.00 |      190,638.00 |  4.434 |     181,556.00 |    0.2% |      0.00 | `SetInnerRML + Update (float reference)`
+|     1.2% |           46,026.00 |           21,726.85 |    1.6% |      846,477.00 |      192,906.00 |  4.388 |     181,684.00 |    0.2% |      0.00 | `SetInnerRML + Update (fast version)`
+|     0.6% |           88,064.00 |           11,355.38 |    0.7% |    1,719,000.00 |      368,592.00 |  4.664 |     355,865.00 |    0.1% |      0.00 | `SetInnerRML + Update`
+|     0.7% |           80,329.00 |           12,448.80 |    2.7% |    1,478,673.00 |      333,438.00 |  4.435 |     274,459.00 |    0.3% |      0.00 | `SetInnerRML + Update + Render (float reference)`
+|     0.7% |           78,296.00 |           12,772.04 |    0.8% |    1,480,225.00 |      328,230.00 |  4.510 |     274,541.00 |    0.2% |      0.00 | `SetInnerRML + Update + Render (fast version)`
+|     0.4% |          127,317.00 |            7,854.41 |    4.5% |    2,355,675.00 |      510,720.00 |  4.612 |     449,533.00 |    0.2% |      0.00 | `SetInnerRML + Update + Render`
+
+| relative |               ns/op |                op/s |    err% |          ins/op |          cyc/op |    IPC |         bra/op |   miss% |     total | Flexbox mixed
+|---------:|--------------------:|--------------------:|--------:|----------------:|----------------:|-------:|---------------:|--------:|----------:|:--------------
+|   100.0% |              294.65 |        3,393,812.82 |    0.1% |        5,122.11 |        1,234.59 |  4.149 |       1,220.00 |    0.1% |      0.00 | `Update (unmodified)`
+|     9.7% |            3,040.00 |          328,947.37 |    0.2% |       53,488.14 |       12,732.00 |  4.201 |      13,278.00 |    0.0% |      0.00 | `Render`
+|     2.4% |           12,474.00 |           80,166.75 |    1.7% |      206,862.00 |       52,248.00 |  3.959 |      48,719.00 |    0.1% |      0.00 | `SetInnerRML`
+|     0.7% |           42,188.00 |           23,703.42 |    1.9% |      617,620.00 |      176,862.00 |  3.492 |     130,250.00 |    0.2% |      0.00 | `SetInnerRML + Update`
+|     0.6% |           52,848.00 |           18,922.19 |    1.1% |      773,252.00 |      221,550.00 |  3.490 |     160,898.00 |    0.2% |      0.00 | `SetInnerRML + Update + Render`
+
+| relative |               ns/op |                op/s |    err% |          ins/op |          cyc/op |    IPC |         bra/op |   miss% |     total | Flexbox scroll
+|---------:|--------------------:|--------------------:|--------:|----------------:|----------------:|-------:|---------------:|--------:|----------:|:---------------
+|   100.0% |              670.62 |        1,491,146.32 |    0.3% |       11,345.24 |        2,810.06 |  4.037 |       2,713.00 |    0.1% |      0.00 | `Update (unmodified)`
+|     9.0% |            7,477.33 |          133,737.52 |    0.1% |      134,386.67 |       31,332.00 |  4.289 |      32,229.00 |    0.0% |      0.00 | `Render`
+|     5.3% |           12,553.00 |           79,662.23 |    2.0% |      206,810.00 |       52,542.00 |  3.936 |      48,710.00 |    0.1% |      0.00 | `SetInnerRML`
+|     0.7% |           91,971.00 |           10,872.99 |    1.4% |    1,392,389.00 |      385,476.00 |  3.612 |     282,872.00 |    0.1% |      0.00 | `SetInnerRML + Update`
+|     0.5% |          129,381.00 |            7,729.11 |    5.7% |    1,857,267.00 |      525,588.00 |  3.534 |     365,888.00 |    0.4% |      0.00 | :wavy_dash: `SetInnerRML + Update + Render` (Unstable with ~1.0 iters. Increase `minEpochIterations` to e.g. 10)
+
+| relative |               ns/op |                op/s |    err% |          ins/op |          cyc/op |    IPC |         bra/op |   miss% |     total | Flexbox chat
+|---------:|--------------------:|--------------------:|--------:|----------------:|----------------:|-------:|---------------:|--------:|----------:|:-------------
+|   100.0% |          124,592.00 |            8,026.20 |    0.9% |    2,605,048.00 |      520,842.00 |  5.002 |     491,006.00 |    0.1% |      0.00 | `Short words`
+|     6.1% |        2,047,006.00 |              488.52 |    1.5% |   50,381,926.00 |    8,310,498.00 |  6.062 |   9,696,714.00 |    0.1% |      0.02 | `Long words`
+
+| relative |               ns/op |                op/s |    err% |          ins/op |          cyc/op |    IPC |         bra/op |   miss% |     total | Flexbox shrink-to-fit
+|---------:|--------------------:|--------------------:|--------:|----------------:|----------------:|-------:|---------------:|--------:|----------:|:----------------------
+|   100.0% |            1,151.06 |          868,767.80 |    0.3% |       16,316.47 |        4,820.67 |  3.385 |       3,289.05 |    0.4% |      0.00 | `Reference`
+|    12.7% |            9,031.50 |          110,723.58 |    1.3% |      135,254.50 |       37,842.00 |  3.574 |      26,981.50 |    0.1% |      0.00 | `Basic shrink-to-fit`
+|     0.1% |          835,868.00 |            1,196.36 |    0.7% |   11,948,660.00 |    3,478,860.00 |  3.435 |   2,377,294.00 |    0.1% |      0.01 | `Nested shrink-to-fit`
+
+| relative |               ns/op |                op/s |    err% |          ins/op |          cyc/op |    IPC |         bra/op |   miss% |     total | Font effect
+|---------:|--------------------:|--------------------:|--------:|----------------:|----------------:|-------:|---------------:|--------:|----------:|:------------
+|   100.0% |          573,088.00 |            1,744.93 |    2.8% |   10,055,301.00 |    2,367,120.00 |  4.248 |   1,755,145.00 |    1.6% |      0.01 | `shadow`
+|    15.4% |        3,731,004.00 |              268.02 |    1.2% |   96,273,720.00 |   15,553,692.00 |  6.190 |  17,301,310.00 |    0.2% |      0.04 | `blur`
+|     4.6% |       12,383,441.00 |               80.75 |    0.3% |  365,395,208.00 |   51,584,526.00 |  7.083 |  62,974,994.00 |    0.3% |      0.14 | `outline`
+|     1.8% |       32,478,646.00 |               30.79 |    0.9% |  896,377,830.00 |  133,938,168.00 |  6.692 | 157,547,941.00 |    0.2% |      0.36 | `glow`
+Loaded font face 'LatoLatin' [regular] from 'assets/LatoLatin-Regular.ttf'.
+Loaded font face 'LatoLatin' [italic] from 'assets/LatoLatin-Italic.ttf'.
+Loaded font face 'LatoLatin' [bold] from 'assets/LatoLatin-Bold.ttf'.
+Loaded font face 'LatoLatin' [italic, bold] from 'assets/LatoLatin-BoldItalic.ttf'.
+Loaded font face 'Noto Emoji' [regular] from 'assets/NotoEmoji-Regular.ttf'.
+===============================================================================
+/tmp/claude-1000/-w-Unreal-VaCuus/00503194-0da6-4afd-80a7-cee3278ced44/scratchpad/bench/RmlUi/Tests/Source/Benchmarks/Selectors.cpp:178:
+TEST CASE:  Selectors
+
+/tmp/claude-1000/-w-Unreal-VaCuus/00503194-0da6-4afd-80a7-cee3278ced44/scratchpad/bench/RmlUi/Tests/Source/Benchmarks/Selectors.cpp:245: MESSAGE: 
+Element update after pseudo class change with 1750 descendant elements and 260 unique RCSS rules.
+
+
+| relative |               us/op |                op/s |    err% |          ins/op |          cyc/op |    IPC |         bra/op |   miss% |     total | Selector (rule name)
+|---------:|--------------------:|--------------------:|--------:|----------------:|----------------:|-------:|---------------:|--------:|----------:|:---------------------
+|   100.0% |              129.82 |            7,702.85 |   11.9% |    1,209,546.00 |      505,932.00 |  2.391 |     269,859.00 |    1.8% |      0.00 | :wavy_dash: `Reference (load document)` (Unstable with ~1.0 iters. Increase `minEpochIterations` to e.g. 10)
+|   682.7% |               19.02 |           52,590.06 |    0.6% |      242,948.00 |       79,716.00 |  3.048 |      57,899.00 |    0.1% |      0.00 | `Reference (update unmodified)`
+|   119.2% |              108.87 |            9,185.01 |    1.3% |    1,545,242.00 |      455,154.00 |  3.395 |     376,745.00 |    0.0% |      0.00 | `Reference (no style rules)`
+|   108.2% |              120.01 |            8,332.36 |    0.6% |    1,711,073.00 |      501,648.00 |  3.411 |     418,885.00 |    0.0% |      0.00 | `a`
+|   108.4% |              119.72 |            8,352.61 |    2.5% |    1,696,161.00 |      494,466.00 |  3.430 |     415,131.00 |    0.0% |      0.00 | `#a`
+|   109.7% |              118.38 |            8,447.30 |    0.3% |    1,694,853.00 |      496,272.00 |  3.415 |     414,980.00 |    0.0% |      0.00 | `div#a`
+|   110.0% |              118.07 |            8,469.55 |    0.6% |    1,693,641.00 |      494,928.00 |  3.422 |     414,828.00 |    0.0% |      0.00 | `.a`
+|   104.6% |              124.13 |            8,055.94 |    3.3% |    1,699,471.00 |      503,538.00 |  3.375 |     415,582.00 |    0.0% |      0.00 | `div.a`
+|   108.8% |              119.27 |            8,384.20 |    0.2% |    1,696,981.00 |      500,052.00 |  3.394 |     415,284.00 |    0.0% |      0.00 | `#a.a`
+|   107.7% |              120.53 |            8,296.41 |    0.3% |    1,696,553.00 |      505,134.00 |  3.359 |     415,180.00 |    0.0% |      0.00 | `div#a.a`
+|    12.6% |            1,031.49 |              969.47 |    1.8% |   18,700,832.00 |    4,239,186.00 |  4.411 |   3,930,098.00 |    0.1% |      0.01 | `:a`
+|    32.9% |              394.09 |            2,537.47 |    1.2% |    6,472,462.00 |    1,638,882.00 |  3.949 |   1,403,405.00 |    0.1% |      0.00 | `div:a`
+|   108.6% |              119.55 |            8,364.49 |    0.6% |    1,692,561.00 |      501,186.00 |  3.377 |     414,681.00 |    0.0% |      0.00 | `#a:a`
+|   107.1% |              121.27 |            8,246.33 |    0.3% |    1,696,567.00 |      507,864.00 |  3.341 |     415,232.00 |    0.0% |      0.00 | `div#a:a`
+|   107.6% |              120.70 |            8,285.35 |    0.5% |    1,695,141.00 |      506,016.00 |  3.350 |     415,028.00 |    0.0% |      0.00 | `.a:a`
+|   106.9% |              121.44 |            8,234.79 |    1.1% |    1,693,341.00 |      507,822.00 |  3.335 |     414,778.00 |    0.0% |      0.00 | `div.a:a`
+|   106.7% |              121.64 |            8,221.25 |    0.7% |    1,695,661.00 |      509,964.00 |  3.325 |     415,081.00 |    0.0% |      0.00 | `#a.a:a`
+|   107.0% |              121.36 |            8,240.22 |    0.6% |    1,695,175.00 |      508,746.00 |  3.332 |     415,033.00 |    0.0% |      0.00 | `div#a.a:a`
+|     6.2% |            2,090.73 |              478.30 |    0.6% |   41,150,749.00 |    8,685,726.00 |  4.738 |   8,949,955.00 |    0.0% |      0.02 | `[a]`
+|    13.0% |              997.33 |            1,002.68 |    0.3% |   16,664,905.00 |    4,151,616.00 |  4.014 |   3,942,200.00 |    0.0% |      0.01 | `div[a]`
+|   106.2% |              122.28 |            8,178.09 |    0.5% |    1,693,345.00 |      511,434.00 |  3.311 |     414,779.00 |    0.0% |      0.00 | `#a[a]`
+|   107.7% |              120.58 |            8,293.59 |    0.4% |    1,692,945.00 |      505,008.00 |  3.352 |     414,729.00 |    0.0% |      0.00 | `div#a[a]`
+|   105.5% |              123.01 |            8,129.42 |    0.5% |    1,694,871.00 |      515,340.00 |  3.289 |     414,982.00 |    0.0% |      0.00 | `.a[a]`
+|   104.8% |              123.93 |            8,069.01 |    1.3% |    1,700,357.00 |      516,012.00 |  3.295 |     416,030.00 |    0.0% |      0.00 | `div.a[a]`
+|   106.5% |              121.90 |            8,203.65 |    0.3% |    1,702,559.00 |      510,972.00 |  3.332 |     416,131.00 |    0.0% |      0.00 | `#a.a[a]`
+|   108.1% |              120.09 |            8,326.81 |    0.2% |    1,695,167.00 |      503,454.00 |  3.367 |     415,032.00 |    0.0% |      0.00 | `div#a.a[a]`
+|    12.8% |            1,016.39 |              983.87 |    0.9% |   18,695,932.00 |    4,215,624.00 |  4.435 |   3,929,398.00 |    0.1% |      0.01 | `:a[a]`
+|    32.8% |              395.35 |            2,529.42 |    1.1% |    6,471,876.00 |    1,640,058.00 |  3.946 |   1,403,307.00 |    0.1% |      0.00 | `div:a[a]`
+|   106.2% |              122.27 |            8,178.75 |    0.4% |    1,695,753.00 |      512,568.00 |  3.308 |     415,080.00 |    0.0% |      0.00 | `#a:a[a]`
+|   106.4% |              121.96 |            8,199.61 |    0.4% |    1,700,397.00 |      510,678.00 |  3.330 |     415,739.00 |    0.0% |      0.00 | `div#a:a[a]`
+|   106.6% |              121.78 |            8,211.73 |    0.4% |    1,696,949.00 |      510,174.00 |  3.326 |     415,229.00 |    0.0% |      0.00 | `.a:a[a]`
+|   106.5% |              121.90 |            8,203.65 |    1.8% |    1,693,757.00 |      511,056.00 |  3.314 |     414,830.00 |    0.0% |      0.00 | `div.a:a[a]`
+|   108.1% |              120.07 |            8,328.20 |    0.4% |    1,693,389.00 |      503,370.00 |  3.364 |     414,788.00 |    0.0% |      0.00 | `#a.a:a[a]`
+|   108.4% |              119.75 |            8,350.52 |    0.8% |    1,694,553.00 |      499,674.00 |  3.391 |     414,930.00 |    0.0% |      0.00 | `div#a.a:a[a]`
+|   108.0% |              120.21 |            8,318.50 |    0.4% |    1,693,366.00 |      503,706.00 |  3.362 |     414,782.00 |    0.0% |      0.00 | `*`
+|   113.6% |              114.32 |            8,747.15 |    0.7% |    1,542,756.00 |      477,750.00 |  3.229 |     376,447.00 |    0.0% |      0.00 | `div`
+|   104.6% |              124.17 |            8,053.35 |    1.0% |    1,626,067.00 |      515,550.00 |  3.154 |     402,119.00 |    0.0% |      0.00 | `div div`
+|   106.2% |              122.19 |            8,184.11 |    0.8% |    1,633,095.00 |      511,560.00 |  3.192 |     403,173.00 |    0.0% |      0.00 | `div > div`
+|   106.2% |              122.19 |            8,184.11 |    1.4% |    1,656,748.00 |      511,854.00 |  3.237 |     411,188.00 |    0.1% |      0.00 | `div + div`
+|   104.8% |              123.88 |            8,072.26 |    1.0% |    1,663,619.00 |      518,868.00 |  3.206 |     413,591.00 |    0.1% |      0.00 | `div ~ div`
+|   103.2% |              125.74 |            7,952.67 |    1.2% |    1,739,881.00 |      526,302.00 |  3.306 |     434,812.00 |    0.0% |      0.00 | `:empty div`
+|   105.9% |              122.60 |            8,156.74 |    0.9% |    1,685,192.00 |      513,996.00 |  3.279 |     418,315.00 |    0.0% |      0.00 | `:only-child div`
+|   106.6% |              121.84 |            8,207.69 |    1.1% |    1,683,040.00 |      510,720.00 |  3.295 |     417,630.00 |    0.0% |      0.00 | `:first-child div`
+|    88.4% |              146.81 |            6,811.39 |    2.2% |    1,933,814.00 |      611,604.00 |  3.162 |     494,381.00 |    0.1% |      0.00 | `:nth-child(2n+3) div`
+|    77.3% |              167.98 |            5,952.98 |    1.2% |    2,181,042.00 |      702,618.00 |  3.104 |     587,675.00 |    0.1% |      0.00 | `:nth-of-type(2n+3) div`
+|    97.9% |              132.58 |            7,542.79 |    0.5% |    1,858,414.00 |      555,828.00 |  3.344 |     471,218.00 |    0.0% |      0.00 | `:not(div) div`
+|   102.8% |              126.27 |            7,919.85 |    2.5% |    1,693,649.00 |      518,280.00 |  3.268 |     416,831.00 |    0.0% |      0.00 | `[class] div`
+|    93.4% |              138.96 |            7,196.37 |    2.2% |    1,982,731.00 |      577,794.00 |  3.432 |     487,706.00 |    0.0% |      0.00 | `[class=col] div`
+|    90.6% |              143.30 |            6,978.51 |    3.4% |    2,014,857.00 |      582,666.00 |  3.458 |     494,964.00 |    0.0% |      0.00 | `[class~=col] div`
+|    93.3% |              139.11 |            7,188.61 |    1.8% |    1,993,595.00 |      583,212.00 |  3.418 |     489,761.00 |    0.0% |      0.00 | `[class|=col] div`
+|    93.6% |              138.67 |            7,211.42 |    0.4% |    1,992,200.00 |      580,944.00 |  3.429 |     489,261.00 |    0.0% |      0.00 | `[class^=col] div`
+|    93.8% |              138.43 |            7,223.97 |    2.0% |    1,984,121.00 |      572,838.00 |  3.464 |     488,107.00 |    0.0% |      0.00 | `[class$=col] div`
+|    97.9% |              132.61 |            7,541.08 |    0.9% |    1,897,987.00 |      555,912.00 |  3.414 |     466,215.00 |    0.0% |      0.00 | `[class*=col] div`
+===============================================================================
+/tmp/claude-1000/-w-Unreal-VaCuus/00503194-0da6-4afd-80a7-cee3278ced44/scratchpad/bench/RmlUi/Tests/Source/Benchmarks/Table.cpp:209:
+TEST CASE:  table_basic
+
+/tmp/claude-1000/-w-Unreal-VaCuus/00503194-0da6-4afd-80a7-cee3278ced44/scratchpad/bench/RmlUi/Tests/Source/Benchmarks/Table.cpp:228: MESSAGE: Context::Render() stats:
+  Compile geometry: 0
+  Render geometry: 20
+  Release geometry: 0
+  Texture load: 0
+  Texture generate: 0
+  Texture release: 0
+  Scissor enable: 0
+  Scissor set: 0
+  Clip mask enable: 0
+  Clip mask render: 0
+  Transform set: 0
+
+
+| relative |               ns/op |                op/s |    err% |          ins/op |          cyc/op |    IPC |         bra/op |   miss% |     total | Table basic
+|---------:|--------------------:|--------------------:|--------:|----------------:|----------------:|-------:|---------------:|--------:|----------:|:------------
+|   100.0% |              295.99 |        3,378,541.44 |    0.4% |        5,121.11 |        1,239.60 |  4.131 |       1,217.00 |    0.0% |      0.00 | `Update (unmodified)`
+|    11.7% |            2,527.57 |          395,636.69 |    0.2% |       41,736.00 |       10,584.00 |  3.943 |      11,882.00 |    0.0% |      0.00 | `Render`
+|     4.0% |            7,360.33 |          135,863.41 |    1.7% |      125,834.67 |       30,842.00 |  4.080 |      28,833.00 |    0.1% |      0.00 | `SetInnerRML`
+|     1.3% |           22,041.00 |           45,369.99 |    1.9% |      334,152.00 |       92,358.00 |  3.618 |      71,773.00 |    0.1% |      0.00 | `SetInnerRML + Update`
+|     1.0% |           31,068.00 |           32,187.46 |    3.1% |      470,510.00 |      130,200.00 |  3.614 |     100,203.00 |    0.2% |      0.00 | `SetInnerRML + Update + Render`
+===============================================================================
+/tmp/claude-1000/-w-Unreal-VaCuus/00503194-0da6-4afd-80a7-cee3278ced44/scratchpad/bench/RmlUi/Tests/Source/Benchmarks/Table.cpp:250:
+TEST CASE:  table_inline-block
+
+/tmp/claude-1000/-w-Unreal-VaCuus/00503194-0da6-4afd-80a7-cee3278ced44/scratchpad/bench/RmlUi/Tests/Source/Benchmarks/Table.cpp:269: MESSAGE: Context::Render() stats:
+  Compile geometry: 0
+  Render geometry: 29
+  Release geometry: 0
+  Texture load: 0
+  Texture generate: 0
+  Texture release: 0
+  Scissor enable: 0
+  Scissor set: 0
+  Clip mask enable: 0
+  Clip mask render: 0
+  Transform set: 0
+
+
+| relative |               ns/op |                op/s |    err% |          ins/op |          cyc/op |    IPC |         bra/op |   miss% |     total | Table inline-block
+|---------:|--------------------:|--------------------:|--------:|----------------:|----------------:|-------:|---------------:|--------:|----------:|:-------------------
+|   100.0% |              262.41 |        3,810,826.66 |    0.5% |        4,722.11 |        1,099.00 |  4.297 |       1,121.00 |    0.1% |      0.00 | `Update (unmodified)`
+|    10.6% |            2,484.67 |          402,468.47 |    0.3% |       41,421.89 |       10,411.33 |  3.979 |      11,702.00 |    0.0% |      0.00 | `Render`
+|     3.3% |            7,874.50 |          126,992.19 |    1.9% |      128,276.00 |       32,991.00 |  3.888 |      29,394.00 |    0.1% |      0.00 | `SetInnerRML`
+|     1.1% |           23,955.00 |           41,744.94 |    1.4% |      354,054.00 |      100,422.00 |  3.526 |      76,345.00 |    0.2% |      0.00 | `SetInnerRML + Update`
+|     0.8% |           32,431.00 |           30,834.70 |    1.5% |      494,909.00 |      135,954.00 |  3.640 |     105,150.00 |    0.1% |      0.00 | `SetInnerRML + Update + Render`
+
+| relative | complexityN |               us/op |                op/s |    err% |          ins/op |          cyc/op |    IPC |         bra/op |   miss% |     total | WidgetTextInput.FormatText
+|---------:|------------:|--------------------:|--------------------:|--------:|----------------:|----------------:|-------:|---------------:|--------:|----------:|:---------------------------
+|   100.0% |          10 |               17.43 |           57,362.47 |    0.0% |      134,443.00 |       73,290.00 |  1.834 |      33,546.00 |    3.7% |      0.00 | `ascii`
+| 6,437.3% |          20 |                0.27 |        3,692,591.74 |    0.0% |        4,936.12 |        1,135.31 |  4.348 |       1,134.00 |    0.0% |      0.00 | `ascii`
+| 5,959.7% |          50 |                0.29 |        3,418,626.33 |    0.0% |        5,546.12 |        1,225.64 |  4.525 |       1,268.00 |    0.0% |      0.00 | `ascii`
+| 1,999.2% |         100 |                0.87 |        1,146,788.99 |    0.0% |        6,662.00 |        3,612.00 |  1.844 |       1,505.00 |    1.1% |      0.00 | `ascii`
+| 2,123.4% |         200 |                0.82 |        1,218,026.80 |    0.0% |        8,823.00 |        3,402.00 |  2.593 |       1,961.00 |    1.6% |      0.00 | `ascii`
+| 6,051.5% |          10 |                0.29 |        3,471,295.06 |    0.0% |        5,307.12 |        1,207.02 |  4.397 |       1,215.00 |    0.0% |      0.00 | `emoji`
+| 5,650.7% |          20 |                0.31 |        3,241,407.70 |    0.0% |        6,059.13 |        1,292.67 |  4.687 |       1,378.00 |    0.0% |      0.00 | `emoji`
+| 4,323.6% |          50 |                0.40 |        2,480,133.62 |    0.0% |        8,368.16 |        1,690.29 |  4.951 |       1,856.00 |    0.0% |      0.00 | `emoji`
+| 1,611.2% |         100 |                1.08 |          924,214.42 |    0.0% |       13,035.00 |        4,494.00 |  2.901 |       2,867.00 |    1.9% |      0.00 | `emoji`
+| 1,260.5% |         200 |                1.38 |          723,065.80 |    0.0% |       20,962.00 |        5,796.00 |  3.617 |       4,549.00 |    1.0% |      0.00 | `emoji`
+| 6,214.6% |          10 |                0.28 |        3,564,863.81 |    0.0% |        5,139.12 |        1,175.34 |  4.372 |       1,180.00 |    0.0% |      0.00 | `japanese`
+| 5,851.8% |          20 |                0.30 |        3,356,760.73 |    0.0% |        5,714.12 |        1,248.19 |  4.578 |       1,303.00 |    0.0% |      0.00 | `japanese`
+| 4,885.2% |          50 |                0.36 |        2,802,262.19 |    0.0% |        7,373.15 |        1,495.20 |  4.931 |       1,655.00 |    0.0% |      0.00 | `japanese`
+| 1,999.2% |         100 |                0.87 |        1,146,788.99 |    0.0% |       10,437.00 |        3,654.00 |  2.856 |       2,300.00 |    1.1% |      0.00 | `japanese`
+| 1,757.4% |         200 |                0.99 |        1,008,064.52 |    0.0% |       16,202.00 |        4,158.00 |  3.897 |       3,525.00 |    0.6% |      0.00 | `japanese`
+
+| relative | complexityN |               us/op |                op/s |    err% |          ins/op |          cyc/op |    IPC |         bra/op |   miss% |     total | WidgetTextInput.CalculateCharacterIndex
+|---------:|------------:|--------------------:|--------------------:|--------:|----------------:|----------------:|-------:|---------------:|--------:|----------:|:----------------------------------------
+|   100.0% |          20 |               31.43 |           31,817.75 |    0.0% |      446,269.00 |      131,796.00 |  3.386 |      84,027.00 |    1.3% |      0.00 | `ascii`
+|    54.6% |          50 |               57.61 |           17,358.70 |    0.0% |      378,674.00 |      109,158.00 |  3.469 |      71,488.00 |    1.2% |      0.00 | `ascii`
+|    27.0% |         100 |              116.39 |            8,592.02 |    0.0% |    2,759,457.00 |      487,956.00 |  5.655 |     479,314.00 |    0.1% |      0.00 | `ascii`
+|     6.6% |         200 |              476.44 |            2,098.90 |    0.0% |   12,348,325.00 |    1,997,352.00 |  6.182 |   2,125,204.00 |    0.0% |      0.00 | `ascii`
+|     1.6% |         500 |            2,004.04 |              498.99 |    0.0% |   52,907,364.00 |    8,368,584.00 |  6.322 |   9,088,280.00 |    0.0% |      0.00 | `ascii`
+|    34.1% |          20 |               92.08 |           10,859.89 |    0.0% |    2,152,008.00 |      386,274.00 |  5.571 |     434,623.00 |    0.2% |      0.00 | `emoji`
+|    32.7% |          50 |               96.14 |           10,401.61 |    0.0% |    2,322,442.00 |      403,116.00 |  5.761 |     467,204.00 |    0.1% |      0.00 | `emoji`
+|     5.3% |         100 |              587.56 |            1,701.94 |    0.0% |   15,225,991.00 |    2,434,362.00 |  6.255 |   3,048,731.00 |    0.0% |      0.00 | `emoji`
+|     1.3% |         200 |            2,394.77 |              417.58 |    0.0% |   63,067,868.00 |   10,001,124.00 |  6.306 |  12,624,834.00 |    0.0% |      0.00 | `emoji`
+|     0.3% |         500 |            9,911.68 |              100.89 |    0.0% |  257,725,885.00 |   40,733,154.00 |  6.327 |  51,594,123.00 |    0.0% |      0.01 | `emoji`
+|     8.9% |          20 |              351.99 |            2,841.02 |    0.0% |    7,462,197.00 |    1,475,754.00 |  5.057 |   1,356,749.00 |    0.1% |      0.00 | `japanese`
+|     8.3% |          50 |              380.21 |            2,630.13 |    0.0% |    7,984,986.00 |    1,568,784.00 |  5.090 |   1,450,802.00 |    0.0% |      0.00 | `japanese`
+|     1.8% |         100 |            1,795.07 |              557.08 |    0.0% |   38,601,029.00 |    7,479,570.00 |  5.161 |   6,989,484.00 |    0.0% |      0.00 | `japanese`
+|     0.3% |         200 |            9,055.71 |              110.43 |    0.0% |  192,584,998.00 |   37,236,276.00 |  5.172 |  34,847,432.00 |    0.0% |      0.01 | `japanese`
+|     0.1% |         500 |           40,236.40 |               24.85 |    0.0% |  857,424,838.00 |  165,842,628.00 |  5.170 | 155,124,848.00 |    0.0% |      0.04 | `japanese`
+===============================================================================
+[doctest] test cases:  20 |  20 passed | 0 failed | 0 skipped
+[doctest] assertions: 307 | 307 passed | 0 failed |
+[doctest] Status: SUCCESS!
