@@ -12,15 +12,27 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusBootTest, "VaCuus.Core.Boot",
 bool FVaCuusBootTest::RunTest(const FString& Parameters)
 {
 	FVaCuusEngine& Engine = FVaCuusEngine::Get();
-	TestTrue(TEXT("Initialized"), Engine.Initialize());
+	if (!TestTrue(TEXT("Initialized"), Engine.Initialize()))
+	{
+		return false;
+	}
 
 	Rml::Context* Ctx = Rml::CreateContext("boot_test", Rml::Vector2i(1280, 720));
-	TestNotNull(TEXT("Context"), Ctx);
+	if (!TestNotNull(TEXT("Context"), Ctx))
+	{
+		Engine.Shutdown();
+		return false;
+	}
 
 	Rml::ElementDocument* Doc = Ctx->LoadDocumentFromMemory(
 		R"(<rml><head><style>body{display:block;width:100px;}</style></head>)"
 		R"(<body><div id="probe">hello</div></body></rml>)");
-	TestNotNull(TEXT("Document"), Doc);
+	if (!TestNotNull(TEXT("Document"), Doc))
+	{
+		Rml::RemoveContext("boot_test");
+		Engine.Shutdown();
+		return false;
+	}
 	Doc->Show();
 	Ctx->Update();
 	TestNotNull(TEXT("Probe element"), Doc->GetElementById("probe"));

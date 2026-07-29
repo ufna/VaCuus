@@ -26,7 +26,17 @@ Rml::FileHandle FVaCuusFileInterface::Open(const Rml::String& Path)
 		FullPath = FPaths::ProjectContentDir() / TEXT("DevUI") / RequestedPath;
 	}
 
-	IFileHandle* Handle = FPlatformFileManager::Get().GetPlatformFile().OpenRead(*FullPath);
+	IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
+
+	// Unix open() happily opens directories, which would false-succeed here and
+	// hand RmlUi an unreadable "file"; reject them explicitly.
+	if (PlatformFile.DirectoryExists(*FullPath))
+	{
+		UE_LOG(LogVaCuus, Warning, TEXT("Refusing to open directory '%s' as a file"), *FullPath);
+		return Rml::FileHandle(0);
+	}
+
+	IFileHandle* Handle = PlatformFile.OpenRead(*FullPath);
 	if (Handle == nullptr)
 	{
 		UE_LOG(LogVaCuus, Warning, TEXT("Failed to open file '%s' (resolved to '%s')"), *RequestedPath, *FullPath);
@@ -68,17 +78,32 @@ bool FVaCuusFileInterface::Seek(Rml::FileHandle File, long Offset, int Origin)
 		return false;
 	}
 
+	const int64 FileSize = Handle->Size();
+
+	int64 Target = 0;
 	switch (Origin)
 	{
 	case SEEK_SET:
-		return Handle->Seek(Offset);
+		Target = Offset;
+		break;
 	case SEEK_CUR:
-		return Handle->Seek(Handle->Tell() + Offset);
+		Target = Handle->Tell() + Offset;
+		break;
 	case SEEK_END:
-		return Handle->SeekFromEnd(Offset);
+		Target = FileSize + Offset;
+		break;
 	default:
 		return false;
 	}
+
+	// IFileHandle::Seek asserts on negative positions (and SeekFromEnd on positive
+	// offsets), so validate the computed target before delegating.
+	if (Target < 0 || Target > FileSize)
+	{
+		return false;
+	}
+
+	return Handle->Seek(Target);
 }
 
 size_t FVaCuusFileInterface::Tell(Rml::FileHandle File)

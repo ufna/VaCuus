@@ -11,7 +11,7 @@ class RenderInterface;
 
 class FVaCuusSystemInterface;
 class FVaCuusFileInterface;
-class FVcNullRenderInterface;
+class FVaCuusNullRenderInterface;
 
 /**
  * Owns the RmlUi library lifecycle: installs the system/file/render interfaces,
@@ -56,5 +56,5 @@ private:
 
 	TUniquePtr<FVaCuusSystemInterface> SystemInterface;
 	TUniquePtr<FVaCuusFileInterface> FileInterface;
-	TUniquePtr<FVcNullRenderInterface> NullRenderInterface;
+	TUniquePtr<FVaCuusNullRenderInterface> NullRenderInterface;
 };

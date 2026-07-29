@@ -15,7 +15,7 @@
  * Hands out dummy non-zero handles so layout and document loading work
  * headlessly (tests, commandlets). Replaced by the real RHI backend later.
  */
-class FVcNullRenderInterface : public Rml::RenderInterface
+class FVaCuusNullRenderInterface : public Rml::RenderInterface
 {
 public:
 	//~ Begin Rml::RenderInterface
@@ -70,7 +70,7 @@ bool FVaCuusEngine::Initialize()
 
 	if (RenderInterface == nullptr)
 	{
-		NullRenderInterface = MakeUnique<FVcNullRenderInterface>();
+		NullRenderInterface = MakeUnique<FVaCuusNullRenderInterface>();
 		RenderInterface = NullRenderInterface.Get();
 	}
 
@@ -81,6 +81,13 @@ bool FVaCuusEngine::Initialize()
 	if (!Rml::Initialise())
 	{
 		UE_LOG(LogVaCuus, Error, TEXT("Rml::Initialise() failed"));
+
+		// RmlUi caches these as raw static pointers and only clears them in
+		// Rml::Shutdown(); null them out before destroying the interfaces so
+		// nothing is left dangling after this failure path.
+		Rml::SetSystemInterface(nullptr);
+		Rml::SetFileInterface(nullptr);
+		Rml::SetRenderInterface(nullptr);
 
 		// Drop only our stub; an externally provided interface is kept for a later retry.
 		if (RenderInterface == NullRenderInterface.Get())
