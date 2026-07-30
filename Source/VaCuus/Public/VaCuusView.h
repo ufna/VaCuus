@@ -215,7 +215,7 @@ public:
 	//~
 	//~ 2. THERE IS NO UNBIND, AND THERE WILL NOT BE. RmlUi has no API for it: the only
 	//~    teardown is Context::RemoveDataModel, and that is a one-way door -- it calls
-	//~    Element::SetDataModel(nullptr) on every attached root (Context.cpp:1097-1112), and
+	//~    Element::SetDataModel(nullptr) on every attached root (Context.cpp:1097-1111), and
 	//~    SetDataModel is PRIVATE (Element.h:662, and SetParent is the only caller), so a
 	//~    document that is still loaded is permanently detached with no way to re-attach it.
 	//~    Re-binding the same name instead is refused: Context::CreateDataModel returns a
@@ -226,9 +226,9 @@ public:
 	//~ 3. ON DOCUMENT RELOAD, DO NOTHING. The context, the model, its variables and the
 	//~    values in the UI shadow all survive a load -- only element-attached DataViews are
 	//~    rebuilt, and RmlUi re-initialises those itself (Context::LoadDocument runs
-	//~    DataModel::Update over every model right after the load event, Context.cpp:303-305,
+	//~    DataModel::Update over every model right after the load event, Context.cpp:305-306,
 	//~    and DataViews::Update updates every newly added view unconditionally,
-	//~    DataView.cpp:78-90). VaCuus loads the new document BEFORE closing the old one
+	//~    DataView.cpp:76-88). VaCuus loads the new document BEFORE closing the old one
 	//~    (FVaCuusRmlDocumentHost::AdoptDocument), so the new one attaches while the model is
 	//~    fully live. Tearing the model down around a reload would race the load, and by
 	//~    contract 2 it could not be put back.

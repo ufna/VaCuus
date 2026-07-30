@@ -57,8 +57,8 @@ static const FName GModelName(TEXT("hud"));
  * unconditionally to register a console listener -- for nothing.
  *
  * THE GAME INSTANCE IS STILL AN OBJECT, though, and cannot be skipped: UGameInstanceSubsystem
- * declares `Within = UGameInstance` (Subsystem.h), and StaticAllocateObject ensures on an
- * outer of the wrong class. It is never Init()ed, so it has no world and no subsystem
+ * declares `Within = GameInstance` (GameInstanceSubsystem.h:15), and StaticAllocateObject
+ * ensures on an outer of the wrong class. It is never Init()ed, so it has no world and no subsystem
  * collection; this subsystem is constructed beside it rather than by it.
  */
 struct FFixture
@@ -298,7 +298,7 @@ bool FVaCuusModelApiTest::RunTest(const FString& Parameters)
  * THE ORDER OF THE LAST TWO STEPS IS THE WHOLE TEST, and it is the heisenbug this milestone is
  * built against. A newly added DataView is updated UNCONDITIONALLY -- DataViews::Update pushes
  * everything in `views_to_add` into `dirty_views` before it looks at a single dirty variable
- * (DataView.cpp:78-90) -- so a reload re-reads every value from the UI shadow whether or not
+ * (DataView.cpp:76-88) -- so a reload re-reads every value from the UI shadow whether or not
  * anything was dirtied. Writing a value, reloading, and then asserting it would therefore pass
  * with the dirty flag missing entirely. So the write that proves the model still works happens
  * AFTER the reload, with no reload between it and its assertion.

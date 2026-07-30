@@ -39,8 +39,9 @@
  * applies and dirties every variable -- and this test still passes with the same numbers (1
  * published, 11 settle frames), while VaCuus.Model.Apply fails seven assertions. The reason is
  * RmlUi's own: DataViewText::Update and DataViewAttribute::Update only touch the DOM when the
- * evaluated value actually CHANGED (`if (result && entry.value != value)`,
- * DataViewDefault.cpp), so re-dirtying an unchanged variable writes nothing, moves no geometry
+ * evaluated value actually CHANGED -- `if (result && entry.value != value)` before SetText
+ * (DataViewDefault.cpp:354) and `if (!attribute || attribute->Get<String>() != value)` before
+ * SetAttribute (:79) -- so re-dirtying an unchanged variable writes nothing, moves no geometry
  * and cannot fail the idle gate.
  *
  * So this asserts the END RESULT -- a bound model costs zero published frames, which is what
@@ -98,8 +99,8 @@ static bool RunFrames(FVaCuusUIThread& UIThread, int32 NumFrames)
  * A view built the production way, on the production host.
  *
  * The game instance is never Init()ed -- it exists only because UGameInstanceSubsystem declares
- * `Within = UGameInstance` and StaticAllocateObject ensures on an outer of the wrong class.
- * Nothing on this path reads it.
+ * `Within = GameInstance` (GameInstanceSubsystem.h:15) and StaticAllocateObject ensures on an
+ * outer of the wrong class. Nothing on this path reads it.
  */
 struct FFixture
 {
