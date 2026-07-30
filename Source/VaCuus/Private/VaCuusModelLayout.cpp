@@ -519,9 +519,12 @@ void FVaCuusModelLayout::BuildLevel(
 				bTopLevel ? VaCuusWireName::ValidateTopLevel(AuthoredName) : VaCuusWireName::ValidateNested(AuthoredName))
 		{
 			// ERROR, AND OMITTED. Renaming it to something legal would put a name in the
-			// document that appears nowhere in the C++; leaving it to RmlUi would produce a
-			// Log::LT_WARNING that is compiled out of every configuration we build
-			// (DataModel.cpp:119-124, spec 8) and then a silently absent variable.
+			// document that appears nowhere in the C++. Leaving it to RmlUi would produce a
+			// Log::LT_WARNING (DataModel.cpp:119-124) which does reach LogVaCuus -- see
+			// FVaCuusSystemInterface::LogMessage -- but names only the wire name RmlUi was
+			// handed, not the property it came from, and then an absent variable whose every
+			// reference warns again about something that looks like a document bug. This line
+			// names the model, the property and the rule.
 			UE_LOG(LogVaCuus, Error, TEXT("VaCuus model '%s': property '%s' cannot be bound under the name '%s%s' -- %s"),
 				*ModelName, *Property->GetName(), *Prefix, *AuthoredName, NameError);
 			continue;

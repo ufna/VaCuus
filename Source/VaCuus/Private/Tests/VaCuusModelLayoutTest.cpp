@@ -495,8 +495,11 @@ bool FVaCuusModelLayoutDuplicateNameTest::RunTest(const FString& Parameters)
 
 		// A duplicate must not leave a second top-level name behind either: TopLevelNames is
 		// what the bind step iterates, so an extra entry would bind a second RmlUi variable
-		// against the same shadow -- and RmlUi's own refusal of the repeat is a compiled-out
-		// LT_WARNING (DataModel.cpp:119-124, spec 8).
+		// against the same shadow. RmlUi's own refusal of the repeat is an LT_WARNING from
+		// BindVariable's `already exists` arm (DataModel.cpp:133-137 -- NOT the name-legality
+		// arm at :119-124), and it does reach the log through FVaCuusSystemInterface. It is
+		// still the wrong place to find out: it fires per bind, on the UI thread, naming only
+		// the wire name, while this asserts the layout never produced the duplicate at all.
 		TestEqual(TEXT("and exactly one top-level name"), Layout.GetTopLevelNames().Num(), 1);
 	}
 

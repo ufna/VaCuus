@@ -156,10 +156,16 @@ public:
 	 * MUST HAPPEN BEFORE THE DOCUMENT LOADS, and that is RmlUi's requirement rather than this
 	 * class's: `data-model` is read exactly once, in Element::SetParent
 	 * (Element.cpp:2202-2219), when the document's body is parented into the context. A name
-	 * that does not resolve there logs Log::LT_ERROR -- which is compiled out in every
-	 * configuration this plugin builds (spec 8) -- and leaves the whole subtree with no model,
-	 * i.e. an inert document and no diagnostic. UVaCuusView::BindModel warns when it can see
-	 * that a load has already been requested.
+	 * that does not resolve there leaves the whole subtree with no model -- an inert document,
+	 * every `{{Field}}` resolving against nothing, and no retry and no second lookup.
+	 *
+	 * IT IS NOT SILENT, and that is a correction to what this milestone assumed throughout.
+	 * Element.cpp:2218 calls Log::Message(LT_ERROR, "Could not locate data model '%s' in element
+	 * %s."), which reaches UE as `LogVaCuus: Error: [Rml] ...` --
+	 * FVaCuusSystemInterface::LogMessage carries the whole argument, including what genuinely
+	 * IS compiled out. So the diagnostic exists; what it does not do is name the bind that
+	 * should have preceded the load, which is why UVaCuusView::BindModel warns separately when
+	 * it can see that a load has already been requested.
 	 */
 	bool BindToContext(Rml::Context& Context);
 

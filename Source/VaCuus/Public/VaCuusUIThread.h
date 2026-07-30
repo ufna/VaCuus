@@ -220,9 +220,12 @@ public:
 	 *
 	 * The bind's only observable, and it is needed for the same reason
 	 * GetNumAssetCacheClears() is: a bind that never happened produces a model whose values go
-	 * nowhere, a document that reads empty, and no failure anywhere -- the UI thread cannot
-	 * report it to the game thread, because a BindModel command carries no serial and RmlUi's
-	 * own refusal is compiled out (spec 8).
+	 * nowhere and a document that reads empty, with nothing to ask about it. The UI thread
+	 * cannot report it to the game thread, because a BindModel command carries no serial; and
+	 * RmlUi cannot report it either -- NOT because its logging is compiled out (it is not; see
+	 * FVaCuusSystemInterface::LogMessage) but because a bind that never happened makes no RmlUi
+	 * call, so there is nothing for the library to refuse. This counter is the only way to
+	 * distinguish "bound and idle" from "never bound".
 	 */
 	int32 GetNumBoundModels() const;
 

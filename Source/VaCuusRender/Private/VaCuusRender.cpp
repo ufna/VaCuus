@@ -41,7 +41,9 @@ static const TCHAR* GM3DemoVfsPath = TEXT("m3_demo.rml");
 /**
  * The name m3_demo.rml's `data-model` attribute writes, and the name `vacuus.DumpModel hud`
  * takes. One constant so the document, the bind and the dump cannot drift apart -- a mismatch
- * here produces an inert document and RmlUi's only complaint about it is compiled out (spec 8).
+ * here produces an inert document whose only complaint is RmlUi's own `[Rml] Could not locate
+ * data model ...` at Error (Element.cpp:2218 via FVaCuusSystemInterface::LogMessage): a real
+ * log line, but one that names the element rather than the two constants that disagreed.
  */
 static const TCHAR* GM3ModelName = TEXT("hud");
 
@@ -479,10 +481,12 @@ static void PumpDemoModel()
  *
  * CALLED BEFORE THE VIEW'S FIRST LoadDocument, WHICH IS THE WHOLE CONTRACT. RmlUi reads
  * `data-model` exactly once, in Element::SetParent (Element.cpp:2202-2219); a model created
- * afterwards attaches to nothing, every `{{Field}}` resolves against no model, and the only
- * complaint is a Log::LT_ERROR this project compiles out (spec 8). The queue is FIFO from a
- * single producer, so a BindModel enqueued here is drained before the load Toggle() enqueues
- * next -- the ordering survives the thread boundary because of that and nothing else.
+ * afterwards attaches to nothing and every `{{Field}}` resolves against no model. The only
+ * complaint is one Log::LT_ERROR at load time -- which does reach LogVaCuus (see
+ * FVaCuusSystemInterface::LogMessage), but names the element rather than the ordering. The
+ * queue is FIFO from a single producer, so a BindModel enqueued here is drained before the load
+ * Toggle() enqueues next -- the ordering survives the thread boundary because of that and
+ * nothing else.
  *
  * FROM OnBeginFrame RATHER THAN A TICKER, for the reason HoverShot spells out at length:
  * OnBeginFrame broadcasts at LaunchEngineLoop.cpp:5682, BEFORE GEngine->Tick (:5859) where

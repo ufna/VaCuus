@@ -207,11 +207,16 @@ public:
 	//~    body is parented into the context -- Element::SetParent looks the attribute up in
 	//~    Context::GetDataModelPtr and, failing to find it, logs Log::LT_ERROR and moves on
 	//~    (Element.cpp:2202-2219). There is no retry and no second lookup. So a model created
-	//~    after its document loaded attaches to nothing, every `{{Field}}` in that document
-	//~    resolves against no model, and the ONLY diagnostic is that LT_ERROR -- which is
-	//~    compiled out in every configuration this project builds (spec 8). The symptom is an
-	//~    inert document and complete silence. BindModel() warns when it can see a load has
-	//~    already been requested on this view, which is the closest thing to a check there is.
+	//~    after its document loaded attaches to nothing and every `{{Field}}` in that document
+	//~    resolves against no model.
+	//~
+	//~    THE LT_ERROR IS REAL OUTPUT, not a compiled-out one: Log::Message forwards to the
+	//~    registered SystemInterface unconditionally (Log.cpp:11-31) and ours routes LT_ERROR to
+	//~    UE_LOG(LogVaCuus, Error) -- FVaCuusSystemInterface::LogMessage carries the full
+	//~    argument and the list of what genuinely is compiled out. What that line cannot say is
+	//~    that a BIND was missing, because from RmlUi's side nothing was ever asked for; so
+	//~    BindModel() also warns when it can see a load has already been requested on this view,
+	//~    which is the closest thing to an up-front check there is.
 	//~
 	//~ 2. THERE IS NO UNBIND, AND THERE WILL NOT BE. RmlUi has no API for it: the only
 	//~    teardown is Context::RemoveDataModel, and that is a one-way door -- it calls

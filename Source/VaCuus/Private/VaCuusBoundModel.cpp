@@ -79,9 +79,11 @@ bool FVaCuusBoundModel::BindToContext(Rml::Context& Context)
 	if (!Constructor)
 	{
 		// The one way this fails: the name is already taken in THIS context. RmlUi logs
-		// Log::LT_ERROR and hands back a default-constructed (falsy) constructor
-		// (Context.cpp:1066-1075) -- and its logging is compiled out in every configuration
-		// this plugin builds (spec 8), so this line is the only one anybody will see.
+		// Log::LT_ERROR ("Data model name '%s' already exists.") and hands back a
+		// default-constructed (falsy) constructor (Context.cpp:1066-1076). That line DOES reach
+		// the log, as `LogVaCuus: Error: [Rml] ...` -- see FVaCuusSystemInterface::LogMessage --
+		// but it names only the model, not the view, and says nothing about the consequence
+		// below, which is the reason this line exists as well rather than instead.
 		//
 		// The existing model KEEPS ITS OLD SHADOW POINTER, which is why this must not be
 		// tolerated as "close enough": the document would carry on reading a buffer this
@@ -235,8 +237,11 @@ void FVaCuusBoundModel::DumpUISide(uint32 ViewId)
 	check(FVaCuusUIThread::IsInUIThread());
 
 	// THE LINE THAT MATTERS MOST IS THE ONE THAT SAYS `boundToContext=no`. That is this
-	// milestone's signature failure -- a model whose values go nowhere, a document that reads
-	// empty, and no other trace anywhere, because RmlUi's own refusal is compiled out (spec 8).
+	// milestone's signature failure -- a model whose values go nowhere and a document that reads
+	// empty. RmlUi does complain about its own half of it (Element.cpp:2218 logs LT_ERROR, which
+	// reaches LogVaCuus through FVaCuusSystemInterface::LogMessage), but only about the DOCUMENT
+	// finding no model: a bind that never reached a context at all produces no RmlUi call and so
+	// no RmlUi line, and this is the only place that distinction is visible.
 	UE_LOG(LogVaCuus, Display,
 		TEXT("DumpModel:   UI thread (view %u model '%s'): boundToContext=%s updatesApplied=%llu fieldsApplied=%llu ")
 		TEXT("appliedGeneration=%llu lastConsumedGeneration=%llu"),

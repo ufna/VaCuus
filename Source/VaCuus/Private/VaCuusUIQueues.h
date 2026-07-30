@@ -62,10 +62,11 @@ enum class EVaCuusCommandKind : uint8
 	 *
 	 * ROUTED, AND IT MUST REACH THE CONTEXT BEFORE ANY LOAD DOES. `data-model` is read
 	 * exactly once, in Element::SetParent (Element.cpp:2202-2219), so a model created after
-	 * its document loaded never attaches -- and the failure is an RmlUi LT_ERROR, which is
-	 * compiled out in every configuration this plugin builds (spec 8), plus an inert
-	 * document. The ordering is the producer's to get right; the queue is FIFO from a single
-	 * producer, so a BindModel enqueued before a LoadDocument* is drained before it.
+	 * its document loaded never attaches: an inert document, plus one RmlUi LT_ERROR that
+	 * does reach LogVaCuus (see FVaCuusSystemInterface::LogMessage) but describes the
+	 * DOCUMENT's failed lookup rather than the ordering mistake behind it. The ordering is
+	 * the producer's to get right; the queue is FIFO from a single producer, so a BindModel
+	 * enqueued before a LoadDocument* is drained before it.
 	 */
 	BindModel,
 

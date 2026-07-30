@@ -6,10 +6,12 @@
 
 <!-- `data-model="hud"` is resolved EXACTLY ONCE, in Element::SetParent, when this body is
      parented into the context (ThirdParty/RmlUi/Source/Core/Element.cpp:2202-2219). A model
-     created after that attaches to nothing and the only diagnostic is a Log::LT_ERROR that is
-     compiled out in every configuration this project builds. vacuus.M3Demo therefore calls
-     BindModel BEFORE LoadDocument, and the queue being FIFO from one producer is what makes
-     that ordering hold across the thread boundary. -->
+     created after that attaches to nothing, and the only diagnostic is one Log::LT_ERROR --
+     which DOES appear, as `LogVaCuus: Error: [Rml] Could not locate data model 'hud' ...`
+     (FVaCuusSystemInterface::LogMessage routes it), but only at load time and naming this
+     element rather than the missing bind. vacuus.M3Demo therefore calls BindModel BEFORE
+     LoadDocument, and the queue being FIFO from one producer is what makes that ordering hold
+     across the thread boundary. -->
 <body data-model="hud">
 	<div id="m3-title">VaCuus M3 // DATA BINDING DEMO</div>
 

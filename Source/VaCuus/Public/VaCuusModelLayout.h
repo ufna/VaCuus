@@ -274,9 +274,17 @@ private:
  * RmlUi's variable-name rule, restated in UE terms because the layout must refuse a
  * name BEFORE RmlUi sees it (spec 3.3). RmlUi's own refusal is a Log::LT_WARNING and a
  * `false` from BindVariable (DataModel.cpp:119-124), after which the variable is simply
- * absent and every reference to it fails address resolution -- and the library's
- * logging is compiled out in every configuration this plugin builds (spec 8), so that
- * refusal is invisible.
+ * absent and every reference to it fails address resolution.
+ *
+ * THAT WARNING IS NOT INVISIBLE -- Log::Message reaches LogVaCuus through
+ * FVaCuusSystemInterface::LogMessage, which is where the whole compiled-out question is
+ * settled. What it cannot do is name the UE side: it prints the WIRE name RmlUi was
+ * handed, so a designer reading `[Rml] Could not bind data variable '2Hearts'` has no
+ * path back to the UPROPERTY, and the second symptom -- one
+ * `Could not get value from data variable` per reference per evaluation
+ * (DataModel.cpp:320-322) -- reads like an unrelated document bug. Refusing here instead
+ * costs one line that names the model, the property AND the rule, and the field then does
+ * not exist anywhere downstream.
  *
  * TWO RULES, NOT ONE, AND THIS IS A CORRECTION TO THE SPEC. Spec 3.3 says to validate
  * "each wire name" against LegalVariableName. RmlUi applies that function in exactly

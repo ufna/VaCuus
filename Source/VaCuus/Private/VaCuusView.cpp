@@ -279,9 +279,12 @@ bool UVaCuusView::BindModel(FName ModelName, const UScriptStruct* Type)
 
 	if (Models.Contains(ModelName))
 	{
-		// Refused here rather than left to RmlUi, which would also refuse it -- and which
-		// would do so through a log line that is compiled out (spec 8), leaving the second
-		// model's values going nowhere while the FIRST model's shadow stayed on screen.
+		// Refused here rather than left to RmlUi, which would also refuse it -- one
+		// Log::LT_ERROR from Context::CreateDataModel (Context.cpp:1075), and that one does
+		// reach LogVaCuus (see FVaCuusSystemInterface::LogMessage). What it does NOT say is
+		// the part that matters: the second model's values then go nowhere while the FIRST
+		// model's shadow stays on screen, so the UI keeps looking plausible. Refusing on this
+		// side also keeps the game-thread map single-valued, which nothing downstream rechecks.
 		UE_LOG(LogVaCuus, Error,
 			TEXT("View %u already has a model called '%s'; the second BindModel is ignored (there is no unbind in RmlUi, so a ")
 			TEXT("name cannot be reused on one view)"),
@@ -291,10 +294,13 @@ bool UVaCuusView::BindModel(FName ModelName, const UScriptStruct* Type)
 
 	if (NextLoadSerial > 1)
 	{
-		// THE ONLY WARNING THERE IS FOR CONTRACT 1, and it exists because RmlUi's own is not
-		// one: `data-model` is resolved in Element::SetParent (Element.cpp:2202-2219) and a
-		// miss is a Log::LT_ERROR that this project compiles out. A model created now cannot
-		// attach to a document that is already up.
+		// THE ONLY WARNING THERE IS FOR CONTRACT 1, and it exists because RmlUi's own arrives
+		// too late and from the wrong side: `data-model` is resolved in Element::SetParent
+		// (Element.cpp:2202-2219) and a miss is a Log::LT_ERROR that DOES reach LogVaCuus (see
+		// FVaCuusSystemInterface::LogMessage) -- but it is emitted at LOAD time, names the
+		// element, and by then the mistake is unfixable. This fires at BIND time, on the game
+		// thread, and says what to do about it. A model created now cannot attach to a
+		// document that is already up.
 		//
 		// A WARNING AND NOT A REFUSAL: the model is still correct for the NEXT load, which is
 		// exactly what a live reload or a view that swaps documents will do -- and refusing
