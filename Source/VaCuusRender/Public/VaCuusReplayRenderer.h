@@ -61,7 +61,29 @@ public:
 	 */
 	void EnsureOutputRT(FRHICommandList& RHICmdList, FIntPoint ViewSize);
 
-	/** Render-thread teardown: drops all RHI resources and resets replay state. */
+	/**
+	 * Render-thread teardown: drops all RHI resources and resets replay state.
+	 *
+	 * RESETTING LastConsumedGeneration IS LOAD-BEARING IN A WAY IT WAS NOT BEFORE THE IDLE
+	 * GATE (M2 Task 12), and nothing exploits that today only because of how the pieces are
+	 * currently paired. Until the gate existed, the recorder republished the whole frame
+	 * every tick, so a buffer that was lost, or an RT that went away, self-healed on the
+	 * NEXT frame. Now, on a static UI, the recorder deliberately never resends: the content
+	 * hash matches, the frame is withheld, and this render target is the only copy of those
+	 * pixels anywhere (FVaCuusRecordingRenderInterface::EndFrameAndPublish).
+	 *
+	 * So any FUTURE path that drops the RT without also destroying the recorder -- or that
+	 * discards an unreplayed buffer -- produces a PERMANENTLY blank UI rather than a
+	 * one-frame glitch, and nothing will log a thing. What keeps it safe here is that this
+	 * runs with the recorder's own teardown, and the fresh recorder that replaces it publishes
+	 * its first frame unconditionally, at generation 1, with no previous hash to compare
+	 * against (the first-frame assertions in VaCuus.Render.IdleGate.UnchangedFrame, restated
+	 * for a fresh recorder in .PerRecorder). Anyone adding a partial release must either bring
+	 * the recorder with it or give the recorder a way to be told "republish next frame".
+	 *
+	 * Until then, vacuus.IdleGate 0 is the in-the-field workaround: it forces every recorded
+	 * frame to publish, so a UI blanked by a lost RT comes back on the next frame.
+	 */
 	void ReleaseResources();
 
 private:

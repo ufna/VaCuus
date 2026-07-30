@@ -2,9 +2,11 @@
 
 #include "Misc/AutomationTest.h"
 
+#include "VaCuusContentPaths.h"
 #include "VaCuusFileInterface.h"
 
 #include "HAL/FileManager.h"
+#include "Interfaces/IPluginManager.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 
@@ -49,6 +51,7 @@ bool FVaCuusFileInterfaceTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("Read request past EOF returns remaining byte count"), FileInterface.Read(Buffer, sizeof(Buffer), File), (size_t)6);
 		TestTrue(TEXT("Read content matches payload tail"), FMemory::Memcmp(Buffer, "ABCDEF", 6) == 0);
 		TestEqual(TEXT("Read at EOF returns 0"), FileInterface.Read(Buffer, sizeof(Buffer), File), (size_t)0);
+		TestEqual(TEXT("Tell after reading to EOF"), FileInterface.Tell(File), (size_t)16);
 
 		// SEEK_END with negative offset lands back in range.
 		TestTrue(TEXT("Seek SEEK_END -16 succeeds"), FileInterface.Seek(File, -16, SEEK_END));
@@ -61,7 +64,72 @@ bool FVaCuusFileInterfaceTest::RunTest(const FString& Parameters)
 		TestFalse(TEXT("Seek SEEK_END past end fails"), FileInterface.Seek(File, 1, SEEK_END));
 		TestEqual(TEXT("Tell unchanged after failed seeks"), FileInterface.Tell(File), (size_t)0);
 
+		//~ EXACT EOF -- the one position IFileHandle cannot hold, and the reason this
+		//~ interface tracks the read position itself. FFileHandleUnix::Seek clamps a
+		//~ read-mode seek to the LAST BYTE
+		//~ (Runtime/Core/Private/Unix/UnixPlatformFile.cpp:177) and Tell() returns that
+		//~ clamped member (:152-157), so answering Tell() from the handle reports 15 here
+		//~ and the read below hands the last byte back a SECOND time instead of nothing.
+		//~ Rml::FileInterface::Tell is specified as bytes-from-the-origin with no clamp
+		//~ (ThirdParty/RmlUi/Include/RmlUi/Core/FileInterface.h:43-46), and RmlUi's own
+		//~ default Length() is Seek-to-end plus Tell (:48-52) -- so one short here is a
+		//~ silently truncated document.
+		TestTrue(TEXT("Seek to exact EOF succeeds"), FileInterface.Seek(File, 0, SEEK_END));
+		TestEqual(TEXT("EXACT EOF: Tell is Size, not Size - 1"), FileInterface.Tell(File), (size_t)16);
+		TestEqual(TEXT("EXACT EOF: a read returns 0, not the last byte again"),
+			FileInterface.Read(Buffer, sizeof(Buffer), File), (size_t)0);
+		TestEqual(TEXT("EXACT EOF: the refused read did not move the position"), FileInterface.Tell(File), (size_t)16);
+
+		// A seek past the end from exact EOF is still refused, and still leaves the
+		// position where Tell() says it is -- the property that lets Read() re-sync the
+		// underlying handle from it.
+		TestFalse(TEXT("EXACT EOF: SEEK_CUR +1 is still out of range"), FileInterface.Seek(File, 1, SEEK_CUR));
+		TestEqual(TEXT("EXACT EOF: Tell survives that too"), FileInterface.Tell(File), (size_t)16);
+
+		// SEEK_CUR back from exact EOF: only correct if Seek and Tell agree about where
+		// EOF is, and it proves the handle re-syncs rather than reading from wherever the
+		// clamp left it.
+		TestTrue(TEXT("Seek SEEK_CUR -6 from exact EOF succeeds"), FileInterface.Seek(File, -6, SEEK_CUR));
+		TestEqual(TEXT("...landing 6 bytes from the end"), FileInterface.Tell(File), (size_t)10);
+		FMemory::Memzero(Buffer, sizeof(Buffer));
+		TestEqual(TEXT("...and the tail still reads back"), FileInterface.Read(Buffer, sizeof(Buffer), File), (size_t)6);
+		TestTrue(TEXT("...with the right bytes"), FMemory::Memcmp(Buffer, "ABCDEF", 6) == 0);
+
+		// And the whole file re-reads from the start, so nothing above left the handle
+		// desynchronised from the logical position.
+		TestTrue(TEXT("Rewind to 0"), FileInterface.Seek(File, 0, SEEK_SET));
+		FMemory::Memzero(Buffer, sizeof(Buffer));
+		TestEqual(TEXT("The whole file reads back after all that seeking"),
+			FileInterface.Read(Buffer, sizeof(Buffer), File), (size_t)16);
+		TestTrue(TEXT("...byte for byte"), FMemory::Memcmp(Buffer, "0123456789ABCDEF", 16) == 0);
+
 		FileInterface.Close(File);
+	}
+
+	//~ THE ZERO-LENGTH FILE, which is the same clamp at its worst: FileSize - 1 is -1, so
+	//~ the handle's Tell() returns a NEGATIVE position and the size_t cast turns it into
+	//~ ~0ULL. Not hypothetical for a live-reload tree -- a just-created .rcss, or one
+	//~ caught mid-save, is exactly this file.
+	{
+		const FString EmptyPath = TestDir / TEXT("file_interface_empty.txt");
+		if (TestTrue(TEXT("Empty file saved"), FFileHelper::SaveStringToFile(FString(), *EmptyPath)))
+		{
+			const Rml::FileHandle Empty = FileInterface.Open(ToRmlPath(EmptyPath));
+			if (TestTrue(TEXT("Empty file opens"), Empty != Rml::FileHandle(0)))
+			{
+				char Buffer[8] = {0};
+				TestEqual(TEXT("Empty file length is 0"), FileInterface.Length(Empty), (size_t)0);
+				TestEqual(TEXT("Empty file starts at 0"), FileInterface.Tell(Empty), (size_t)0);
+				TestTrue(TEXT("Seek to EOF of an empty file succeeds"), FileInterface.Seek(Empty, 0, SEEK_END));
+				TestEqual(TEXT("EOF of an empty file is 0, not a huge unsigned"),
+					FileInterface.Tell(Empty), (size_t)0);
+				TestEqual(TEXT("Reading an empty file returns 0"),
+					FileInterface.Read(Buffer, sizeof(Buffer), Empty), (size_t)0);
+				TestFalse(TEXT("Seeking past the end of an empty file fails"), FileInterface.Seek(Empty, 1, SEEK_SET));
+				FileInterface.Close(Empty);
+			}
+			IFileManager::Get().Delete(*EmptyPath);
+		}
 	}
 
 	// Directories and missing files must not produce handles.
@@ -71,6 +139,105 @@ bool FVaCuusFileInterfaceTest::RunTest(const FString& Parameters)
 	// Clean up.
 	IFileManager::Get().Delete(*TestFilePath);
 	IFileManager::Get().DeleteDirectory(*TestDir);
+
+	return true;
+}
+
+/**
+ * The ordered DevUI roots and the precedence between them (controller decision D19,
+ * bead VaCuus-akj.6.3).
+ *
+ * WHAT THIS IS REALLY GUARDING: the plugin's Content/DevUI is now canonical, and the
+ * duplicated copy under <Project>/Content/DevUI has been deleted. If the order ever
+ * flipped, a project copy someone re-creates would silently shadow the plugin document
+ * the editor file watcher is watching -- live reload would stop working with no error
+ * anywhere. So the order is asserted, not just the resolution.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusContentRootsTest, "VaCuus.Core.ContentRoots",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusContentRootsTest::RunTest(const FString& Parameters)
+{
+	const TArray<FString>& Roots = VaCuusContentPaths::GetDocumentRoots();
+	if (!TestEqual(TEXT("Exactly two DevUI roots (plugin, project)"), Roots.Num(), 2))
+	{
+		return false;
+	}
+
+	const TSharedPtr<IPlugin> Plugin = IPluginManager::Get().FindPlugin(TEXT("VaCuus"));
+	if (!TestTrue(TEXT("VaCuus plugin descriptor found"), Plugin.IsValid()))
+	{
+		return false;
+	}
+
+	const FString ExpectedPluginRoot =
+		FPaths::ConvertRelativePathToFull(Plugin->GetContentDir() / TEXT("DevUI"));
+	const FString ExpectedProjectRoot =
+		FPaths::ConvertRelativePathToFull(FPaths::ProjectContentDir() / TEXT("DevUI"));
+
+	TestEqual(TEXT("Root 0 is the PLUGIN's Content/DevUI"), Roots[0], ExpectedPluginRoot);
+	TestEqual(TEXT("Root 1 is the PROJECT's Content/DevUI"), Roots[1], ExpectedProjectRoot);
+
+	// The shipped HUD document must resolve, and must resolve to the PLUGIN copy: that is
+	// the concrete claim "the plugin's Content/DevUI is canonical" makes.
+	FString HudRoot;
+	const FString HudPath = VaCuusContentPaths::ResolveExistingDocument(TEXT("m1_hud.rml"), &HudRoot);
+	TestFalse(TEXT("m1_hud.rml resolves"), HudPath.IsEmpty());
+	TestEqual(TEXT("m1_hud.rml comes from the plugin root"), HudRoot, ExpectedPluginRoot);
+
+	// Precedence, proved by shadowing rather than asserted: the same relative name exists
+	// under both roots with different contents, and the plugin's must win.
+	const FString ProbeName = TEXT("vacuus_root_order_probe.rml.tmptest");
+	const FString PluginProbe = Roots[0] / ProbeName;
+	const FString ProjectProbe = Roots[1] / ProbeName;
+
+	const bool bWrotePlugin = FFileHelper::SaveStringToFile(TEXT("PLUGIN"), *PluginProbe);
+	const bool bWroteProject = FFileHelper::SaveStringToFile(TEXT("PROJECTROOT"), *ProjectProbe);
+	if (TestTrue(TEXT("Probe written under both roots"), bWrotePlugin && bWroteProject))
+	{
+		FVaCuusFileInterface FileInterface;
+		const auto ToRmlPath = [](const FString& Path) { return Rml::String(TCHAR_TO_UTF8(*Path)); };
+
+		// Length is the discriminator: "PLUGIN" is 6 bytes, "PROJECTROOT" is 11.
+		const Rml::FileHandle Shadowed = FileInterface.Open(ToRmlPath(ProbeName));
+		if (TestTrue(TEXT("Shadowed probe opens"), Shadowed != Rml::FileHandle(0)))
+		{
+			TestEqual(TEXT("The PLUGIN copy wins when both roots have the file"),
+				FileInterface.Length(Shadowed), (size_t)6);
+			FileInterface.Close(Shadowed);
+		}
+
+		// With the plugin copy gone, the project root is a real fallback rather than dead
+		// code -- that is the "extension point" half of D19.
+		IFileManager::Get().Delete(*PluginProbe);
+
+		const Rml::FileHandle Fallback = FileInterface.Open(ToRmlPath(ProbeName));
+		if (TestTrue(TEXT("Project-root probe opens once the plugin copy is gone"), Fallback != Rml::FileHandle(0)))
+		{
+			TestEqual(TEXT("The PROJECT copy answers as the second root"),
+				FileInterface.Length(Fallback), (size_t)11);
+			FileInterface.Close(Fallback);
+		}
+
+		// A relative name under no root at all must not produce a handle.
+		TestEqual(TEXT("Unknown relative name returns 0"),
+			FileInterface.Open(ToRmlPath(TEXT("vacuus_no_such_document.rml"))), Rml::FileHandle(0));
+	}
+
+	IFileManager::Get().Delete(*PluginProbe);
+	IFileManager::Get().Delete(*ProjectProbe);
+
+	// The project DevUI directory may not have existed before this test created the probe
+	// in it (it is deliberately empty in this repo now); leave it as we found it.
+	if (IFileManager::Get().DirectoryExists(*Roots[1]))
+	{
+		TArray<FString> Remaining;
+		IFileManager::Get().FindFilesRecursive(Remaining, *Roots[1], TEXT("*"), true, true);
+		if (Remaining.Num() == 0)
+		{
+			IFileManager::Get().DeleteDirectory(*Roots[1]);
+		}
+	}
 
 	return true;
 }

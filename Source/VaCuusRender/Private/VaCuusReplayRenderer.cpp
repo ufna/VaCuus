@@ -136,8 +136,15 @@ void FVaCuusReplayRenderer::ReleaseResources()
 	Geometry.Empty();
 	Textures.Empty();
 	OutputRT.SafeRelease();
-	// Reset the guard: after teardown this replayer can only be paired with a
-	// fresh recorder, whose generations restart from 1.
+
+	// Reset the guard: after teardown this replayer can only be paired with a fresh
+	// recorder, whose generations restart from 1.
+	//
+	// LOAD-BEARING SINCE THE M2 TASK 12 IDLE GATE, not hygiene. OutputRT above was the only
+	// copy of an idle UI's pixels -- the recorder withholds the frame that would resend them
+	// -- so a path that dropped the RT and left this guard where it was would refuse the very
+	// first buffer of the replacement recorder as "already consumed" and blank the UI for
+	// good. See the note on the declaration for what any future partial release owes.
 	LastConsumedGeneration = 0;
 }
 
@@ -350,7 +357,18 @@ void FVaCuusReplayRenderer::ReplayCommands(FRHICommandList& RHICmdList, const FV
 
 	RHICmdList.Transition(FRHITransitionInfo(OutputRT, ERHIAccess::RTV, ERHIAccess::SRVMask));
 
-	// One replay per frame, so per-replay counts read as per-frame in `stat vacuus`.
+	// SET, not INC, and no longer "one replay per frame so these read as per-frame". Since the
+	// M2 Task 12 idle gate there are frames with NO replay at all, and what saves these two
+	// numbers from latching stale values is that both are declared
+	// DECLARE_DWORD_COUNTER_STAT_EXTERN (VaCuusStats.h:18-19), i.e. EStatFlags::ClearEveryFrame
+	// (Stats/Stats.h:180-182). So `stat vacuus` honestly reads 0 draw calls / 0 commands on a
+	// withheld frame rather than the last replay's figures.
+	//
+	// WHAT THAT LOOKS LIKE ON SCREEN, so nobody files it as a bug: on an idle UI the displayed
+	// numbers flicker between 0 and the real per-frame count, because the frames in between
+	// genuinely did not replay anything -- the composite is still running from the render
+	// target. Zero here means "nothing changed", not "nothing is drawn". The steady per-second
+	// view of the same thing is vacuus.M1HUD.PerfLog's published/skipped line.
 	SET_DWORD_STAT(STAT_VaCuusDrawCalls, NumDrawCalls);
 	SET_DWORD_STAT(STAT_VaCuusCommands, Buffer.Commands.Num());
 	FVaCuusPerfLog::AddDraws(NumDrawCalls);

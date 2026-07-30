@@ -65,8 +65,25 @@
 		<div class="kf-row"><span class="kf-killer">KESTREL</span> [LMG] <span class="kf-victim">WICK</span></div>
 	</div>
 
+	<!-- bottom-left: the M2 interaction probe. RCSS only, no script: :hover and
+	     :active restyle it, so hovering or pressing it is visible proof that the
+	     Slate -> queue -> Rml::Context input path works end to end. -->
+	<button id="demo-btn">INTERACT</button>
+
+	<!-- bottom-left, above the button: the M2 TEXT-ENTRY probe (Task 9). RCSS only,
+	     no script. Clicking it puts the caret in it, which is what activates the
+	     platform IME context on the FIRST click (controller decision D14a: the rect
+	     carries EVaCuusRectFlags::TextInput, unlike #demo-btn next to it), and typing
+	     goes SVaCuusWidget::OnKeyChar -> the input queue ->
+	     Rml::Context::ProcessTextInput -> this element's value. On a platform with no
+	     ITextInputMethodSystem -- which is every Linux build -- that OnKeyChar route is
+	     the WHOLE text path, and it is what vacuus.M1HUD.TypeShot photographs. -->
+	<input id="chat-input" type="text" maxlength="40"/>
+
 	<!-- bottom-center: ability bar; slot 3 is on cooldown (darkened overlay
-	     covering the bottom 60% of the slot + remaining-time text) -->
+	     covering the bottom 60% of the slot + remaining-time text). The slots are
+	     `tab-index: auto` (see the RCSS), which is what puts them in the
+	     interactive snapshot and makes them keyboard-focusable. -->
 	<div id="ability-bar">
 		<div class="slot"><div class="slot-icon icon-1"/><div class="keycap">1</div></div>
 		<div class="slot"><div class="slot-icon icon-2"/><div class="keycap">2</div></div>

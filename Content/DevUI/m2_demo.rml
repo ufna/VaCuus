@@ -1,0 +1,100 @@
+<rml>
+<head>
+	<title>VaCuus M2 Interaction Demo</title>
+	<link type="text/rcss" href="m2_demo.rcss"/>
+</head>
+<body>
+	<div id="m2-title">VaCuus M2 // INTERACTION DEMO</div>
+
+	<!-- 1. BUTTONS. RCSS only, no script: :hover, :active and :focus each restyle
+	     them, so a screenshot says which state the input path produced. The three
+	     are in normal flow inside the panel rather than absolutely positioned,
+	     because vacuus.M2Demo.Rects prints the rects the UI thread actually
+	     published and guessing coordinates from RCSS is what that command exists
+	     to replace. -->
+	<div id="p-buttons">
+		<div class="panel-title">1 &#183; BUTTONS :hover :active :focus</div>
+		<button id="btn-a" class="m2-btn">ALPHA</button>
+		<button id="btn-b" class="m2-btn">BRAVO</button>
+		<button id="btn-c" class="m2-btn last">CHARLIE</button>
+	</div>
+
+	<!-- 2. WHEEL-SCROLLABLE LIST. #list-clip carries `vacuus-interactive`, and that
+	     is load-bearing rather than decoration: the snapshot's predicate would not
+	     otherwise cover the list BODY (a plain div with no tab-index and a tag RmlUi
+	     ships no behaviour for), so SVaCuusWidget::OnMouseWheel would answer
+	     Unhandled over the rows and the wheel would zoom the game camera instead of
+	     scrolling the list. The scrollbar itself is covered without any marker --
+	     `scrollbarvertical` is in the known-interactive tag list (controller
+	     decision D8) -- which is what makes dragging it work.
+
+	     NOT `tab-index: auto` for the same job: that would make the list focusable,
+	     and a focused scroll container swallows the arrow keys into
+	     ElementDocument's navigation instead of scrolling. -->
+	<div id="p-list">
+		<div class="panel-title">2 &#183; WHEEL-SCROLL LIST (drag the bar too)</div>
+		<div id="list-clip" vacuus-interactive>
+			<div class="row">01 PLASMA CELL</div>
+			<div class="row alt">02 COOLANT FLASK</div>
+			<div class="row">03 RIFLE SCOPE MK II</div>
+			<div class="row alt">04 BREACHING CHARGE</div>
+			<div class="row">05 FIELD RATION</div>
+			<div class="row alt">06 SIGNAL FLARE</div>
+			<div class="row">07 REPAIR KIT</div>
+			<div class="row alt">08 NIGHT OPTIC</div>
+			<div class="row">09 SMOKE CANISTER</div>
+			<div class="row alt">10 STIM INJECTOR</div>
+			<div class="row">11 ARMOUR PLATE</div>
+			<div class="row alt">12 DATA SLATE</div>
+			<div class="row">13 GRAPPLE LINE</div>
+			<div class="row alt">14 THERMAL LANCE</div>
+			<div class="row">15 SPARE MAGAZINE</div>
+			<div class="row alt">16 WATER PURIFIER</div>
+			<div class="row">17 RADIO BEACON</div>
+			<div class="row alt">18 LOCK BYPASS</div>
+			<div class="row">19 SALVAGE TORCH</div>
+			<div class="row alt">20 SPENT CASING</div>
+		</div>
+	</div>
+
+	<!-- 3. TEXT INPUT. `type="text"` is what makes the rect carry
+	     EVaCuusRectFlags::TextInput (controller decision D14a), so the click that
+	     lands in it also activates the platform IME context -- on Linux there is
+	     none, and typing goes OnKeyChar -> the queue -> Context::ProcessTextInput
+	     instead (D16). maxlength is RmlUi's own attribute
+	     (InputTypeText.cpp:45-47). -->
+	<div id="p-input">
+		<div class="panel-title">3 &#183; TEXT INPUT (type, Tab, Shift-Tab)</div>
+		<input id="m2-input" type="text" maxlength="24"/>
+		<div class="hint">Tab moves ALPHA -&gt; BRAVO -&gt; CHARLIE -&gt; this field</div>
+	</div>
+
+	<!-- 4. PASS-THROUGH. `vacuus-passthrough` is a PLAIN attribute and the match is
+	     case-insensitive (VaCuusInteractiveSnapshot.cpp:40-41); lowercase is the
+	     convention.
+
+	     WHY #pass-zone IS `tab-index: auto` IN THE RCSS: pass-through is the ABSENCE
+	     of coverage, never an occluder, so marking a region that was never
+	     interactive proves nothing -- it would read as pass-through either way. This
+	     zone would be reported on its own merits, and the attribute is the only
+	     reason it is not. Delete the attribute and the clicks below stop reaching the
+	     game; that is the before/after.
+
+	     WHY IT ALSO CARRIES `focus: none`: the attribute is a POINTER opt-out and
+	     nothing else. RmlUi's tab search never sees it, so a `tab-index: auto` zone
+	     stays reachable by Tab -- and a focused element inside the region the demo
+	     advertises as the game's makes the widget eat every key over it. The rcss
+	     block for section 4 has the measurement.
+
+	     #pass-inner is a real <button>, i.e. interactive by tag, and it is inside the
+	     marked subtree -- so it is pruned from the rects with its parent, and from
+	     the tab chain by the same `focus: none`. That is the subtree half of both. -->
+	<div id="p-pass">
+		<div class="panel-title">4 &#183; PASS-THROUGH (clicks reach the GAME)</div>
+		<div id="pass-zone" vacuus-passthrough>
+			<div id="pass-label">tab-index: auto + vacuus-passthrough</div>
+			<button id="pass-inner">pruned with its parent</button>
+		</div>
+	</div>
+</body>
+</rml>

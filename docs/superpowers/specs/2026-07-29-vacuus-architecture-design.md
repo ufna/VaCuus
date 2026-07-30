@@ -83,12 +83,21 @@ formalized in v1.x.
 
 ## 4. Threading model
 
-**Ownership.** One `FVaCuusUIThread` (FRunnable) per `UVaCuusSubsystem`
-(UGameInstanceSubsystem — one per PIE instance / game instance). The UI thread exclusively
-owns: all `Rml::Context`s, all documents, the QuickJS `JSRuntime/JSContext`, font engine,
-and the data-model registry. **No RmlUi or QuickJS API is ever called from any other
-thread** (both libraries are single-thread-affine; enforced by `check(IsInUIThread())`
-wrappers in debug).
+**Ownership.** One `FVaCuusUIThread` (FRunnable) **per process**, owned by `FVaCuusModule`
+alongside the RmlUi library wrapper; the per-instance unit is the **view**
+(`UVaCuusView` — one `Rml::Context` each), and a `UVaCuusSubsystem`
+(UGameInstanceSubsystem — one per PIE instance / game instance) owns its instance's views
+and triggers the shared thread once per tick. This is forced by RmlUi's design: its
+system/file/render interfaces, its `initialised` flag and its whole `CoreData` (including
+the context registry) are process-global statics (`Core/Core.cpp`), so two UI threads would
+both have to own the same library state; contexts, by contrast, are per-view objects inside
+that global state and `Rml::CreateContext()` accepts a per-context render interface. The UI
+thread exclusively owns: all `Rml::Context`s, all documents, the QuickJS
+`JSRuntime/JSContext`, font engine, and the data-model registry. **No RmlUi or QuickJS API
+is ever called from any other thread** (both libraries are single-thread-affine; enforced by
+`check(IsInUIThread())` wrappers in debug). Where the platform reports no multithreading
+support (commandlets, `-nothreading`), the same frame body runs inline on the game thread,
+which is recorded as the RmlUi owner for the duration of each call.
 
 **Game thread → UI thread** (all non-blocking):
 - Input event ring buffer (mouse/key/touch/gamepad/IME composition events, timestamped).
@@ -195,6 +204,17 @@ RmlUi's native layer compositing (proven in the demo).
 **Idle cost model:** UI publishes nothing → render thread reuses the per-view RT →
 per-frame cost is one composite of the RT. Dirty-region partial replay is a v1.x
 optimization.
+
+*Implemented in M2 Task 12* (`FVaCuusRecordingRenderInterface::EndFrameAndPublish`).
+RmlUi exposes no dirty signal — `Context::Update()`/`Render()` return an unconditional
+`true`, `IsLayoutDirty()` is non-public *and* only tracks layout — so every frame is
+**recorded** as usual and only the **publish** is gated, on an xxhash of the command list
+plus `ViewSize` being unchanged **and** all four resource-delta arrays being empty. The
+recording is never skipped: the async image-decode drain lives at the top of
+`BeginFrame()`, and a decode arrival is a non-empty `NewTextures`, which is one of the
+four conditions that force a publish. A skipped frame consumes no `Generation` (that
+counter means *publishes*, and the replayer's idempotence guard reads it as one); the UI
+thread's own frame count still advances.
 
 ## 6. Data binding
 
@@ -316,7 +336,7 @@ budgets are asserted from M3.
 | Game-thread cost (input+snapshots) | ≤0.10 ms/frame | gate — **met with ~25× headroom; an inference from margin, not a complete measurement (2026-07-30)**. Measured 0.004 ms typical / 0.011 ms p99-sum @1080p across three scopes: `GameTick` (subsystem tick — snapshot poll + UI-thread pulse), `SlateTick` (per view), `Input` (per input *event*, incl. the snapshot scan). 60 s soaks, both documents. **The scopes are not the whole path:** `SVaCuusWidget::OnPaint` (per frame, per view, includes an `ENQUEUE_RENDER_COMMAND`) and five input/focus handlers (`OnMouseEnter/Leave/CaptureLost`, `OnFocusReceived/Lost`) carry no scope, and the perf logger's own `TickLog` is excluded by design. The unmeasured remainder is one render-command enqueue plus rare-event handlers — single-digit µs — and nothing plausible closes a 25× gap, which is why the gate is called met. **Whoever tightens this budget must add `OnPaint` to the scope set first.** Recorded exceptions: 1 frame in 13,073 (M1 run) had a 0.182 ms `GameTick` sample and one had 0.132 ms, both in fully idle windows with no VaCuus activity. Note the timers are wall-clock (as is `SCOPE_CYCLE_COUNTER`), so every sample includes preemption by construction — correct for a *budget*, since the frame really did lose that time, but it makes the OS-scheduling reading of those outliers permanently unfalsifiable with this tool |
 | UI-thread Update + command record (reference HUD) | ≤0.50 ms/frame | gate — **measured M2: 0.052 ms avg / 0.113 ms p99 (M1 HUD), 0.023 ms avg / 0.060 ms p99 (M2 demo) @1080p (2026-07-30)**, Update+Record summed, 13k frames each. Note this is the M1/M2 subset, not the full reference HUD (~10× the element count, animated), so the ~4× headroom is not the final margin |
 | Render-thread replay (re-replay frames) | ≤0.50 ms @1080p | gate — **measured M1: 0.03 ms avg / 0.07 ms p99 @1080p, 97 draws (2026-07-29)**. M1 static HUD subset, 100 s `-RenderOffscreen` soak, 15,324 replays, Linux Vulkan; steady-state max ≤0.37 ms, single 1.48 ms outlier on the first replay (font-atlas + image upload). Budget kept at 0.50 ms: ~7x p99 headroom for the full reference HUD (~10x the M1 element count, animated) |
-| Composite-only frames (idle UI) | ≤0.05 ms | gate — **measured M2 on genuinely idle frames: 0.004 ms avg / 0.010–0.013 ms p99 (2026-07-30)**. M1 could only measure the composite *section* because it re-recorded and re-published every frame; M2's idle short-circuit makes true idle frames exist, and on a static HUD **13,072 of 13,074 frames published nothing at all** (M2 demo: 13,496 of 13,571, 99.4% idle). On those frames `Replay` is not called — it produces **zero samples**, not a small cost — so the composite is the entire per-frame render-thread cost of an idle UI. 12× under gate |
+| Composite-only frames (idle UI) | ≤0.05 ms | gate — **measured M2 on genuinely idle frames: 0.004 ms avg / 0.010–0.013 ms p99 @1080p (2026-07-30)**. M1 could only measure the composite *section*, because it re-recorded and re-published every frame; M2 Task 12's publish gate makes true idle frames exist. In 60 s soaks the static M1 HUD published **2 of 13,074** frames and the M2 demo **75 of 13,571** (99.4% idle), so the render thread ran a handful of replays in each whole run. On a withheld frame `Replay` is not called at all — it produces **zero samples**, not a small cost — so the composite is the entire per-frame render-thread cost of an idle UI. 12× under gate. Two results worth keeping: the figure is **identical to M1's** (0.004 / 0.008), which is the expected outcome rather than a coincidence — the composite section never depended on a buffer arriving, which is also why an idle UI stays on screen at all. And `Record` (UI) is unchanged at 0.040 ms avg **with the content hash included**, i.e. hashing ~100 commands per frame is below the noise floor; the gate costs nothing to run. |
 | Added RAM (reference HUD, incl. JS heap ≤16 MB cap) | ≤32 MB | gate |
 | Added disk (Win64 shipping) | ≤10 MB | gate |
 | Frame-drop on document load (async path) | 0 hitches >1 ms on game thread | gate — **measured M2 (2026-07-30)**: game-thread max across the load window 0.033 ms; window fps 209.1 vs 208.3–234.2 steady. Separately stress-tested with a deliberately pathological image (6000×6000, 144 MB decoded, 150 KB on disk so the read and the dimension probe stay trivial): the UI thread's `Update` max was 0.095 ms, **indistinguishable from steady state**. The cost moved to the render thread as expected — one 36.6 ms `UpdateTexture2D`, never recurring — because M2 made the *decode* async and deliberately left the *upload* synchronous (`VaCuus-akj.6.25`, gated on a measurement: ~1 ms of render thread per 4 MB) |
@@ -345,7 +365,7 @@ budgets are asserted from M3.
 | RCSS gotchas surprise web devs (no UA stylesheet — `div` is inline; box-shadow not animatable; tween parse strictness; positioned-ancestor rules) | `@vacuus/cli` ships a base stylesheet + linter rules + "web-dev gotchas" docs page (seeded from demo findings) |
 | TAA/TSR ghosting on world-space UI | responsive-AA material presets; docs recommend post-AA compositing/FXAA (same guidance class as Gameface's) |
 | JS debugging expectations (breakpoints) | honest docs; CDP bridge on v2 roadmap; error overlay + inspector in v1 |
-| PIE multi-instance | one subsystem+UI thread per GameInstance by construction; automation test with 2 PIE clients |
+| PIE multi-instance | structural, per §4: one subsystem per GameInstance owning its own views, all sharing the one process-wide UI thread (N subsystems, 1 thread, N contexts — a view id on every command does the routing), so instances cannot collide over RmlUi's global state; covered headlessly by `VaCuus.Threading.MultiView` (two contexts on one thread, one destroyed while the other keeps rendering) plus an automation test with 2 PIE clients |
 | Fab review friction | package per verified Fab rules; no-executables scan in M6; precedents documented in research |
 | Grid absence hurts adoption | flex-first templates in CLI; evaluate upstream Grid contribution post-v1 |
 | Win64/macOS validation hardware | required for M6 matrix — tracked as open item §15 |

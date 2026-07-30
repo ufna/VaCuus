@@ -553,7 +553,7 @@ Linux. So: build the full path, gate it on a null check, and make the Linux fall
 (`OnKeyChar` → `ProcessTextInput`) the tested behaviour here; note Windows validation as an
 M6 matrix item.
 
-- [ ] **Step 9.1: Shadow state.** `ITextInputMethodContext`'s 14 pure virtuals are
+- [x] **Step 9.1: Shadow state.** `ITextInputMethodContext`'s 14 pure virtuals are
       **synchronous pulls on the game thread** and must never block on the UI thread.
       Publish a `FVaCuusTextFieldState` (text value, selection range, composition range,
       caret rect, read-only flag, generation) inside the interactive snapshot; answer
@@ -562,27 +562,27 @@ M6 matrix item.
       `BeginComposition/UpdateCompositionRange/EndComposition`) are queued to the UI thread,
       each stamped with the field generation so stale ones are dropped (RmlUi silently
       ignores `SetSelectionRange` when the element lost focus).
-- [ ] **Step 9.2: RmlUi side.** Implement `Rml::TextInputHandler` (`OnActivate`,
+- [x] **Step 9.2: RmlUi side.** Implement `Rml::TextInputHandler` (`OnActivate`,
       `OnDeactivate`, `OnDestroy`) and install with `Rml::SetTextInputHandler(...)` before
       context creation; cache the active `Rml::TextInputContext*` (raw, non-owning —
       null it in `OnDestroy`, mirroring `FSlateEditableTextLayout::FTextInputMethodContext::KillContext`).
       Caret rect comes from `SystemInterface::ActivateKeyboard(caret_position, line_height)`,
       not from `TextInputContext::GetBoundingBox` (that is the whole element border box).
-- [ ] **Step 9.3: Index spaces.** Three of them: RmlUi character offsets, RmlUi byte offsets
+- [x] **Step 9.3: Index spaces.** Three of them: RmlUi character offsets, RmlUi byte offsets
       (`GetCompositionRange` returns **bytes**), engine UTF-16 TCHAR. Convert at every
       boundary with `Rml::StringUtilities::ConvertCharacterOffsetToByteOffset` /
       `ConvertByteOffsetToCharacterOffset` / `LengthUTF8`. Never notify
       `NotifyTextChanged/NotifySelectionChanged` while `IsComposing()` is true.
-- [ ] **Step 9.4: Coordinates.** `GetTextBounds/GetScreenBounds` are Slate **absolute**
+- [x] **Step 9.4: Coordinates.** `GetTextBounds/GetScreenBounds` are Slate **absolute**
       pixels; RmlUi values are context pixels — transform through the cached widget geometry
       (`LocalToAbsolute`), and wrap `FGeometry::AbsolutePosition` (FVector2f) explicitly into
       `FVector2D`. World-space surfaces have no valid mapping: **disable IME for
       `UVaCuusWorldComponent`** and say so in the header.
-- [ ] **Step 9.5: Verify on Linux** — typing ASCII into an `<input>` in the demo document
+- [x] **Step 9.5: Verify on Linux** — typing ASCII into an `<input>` in the demo document
       works through the `OnKeyChar` path with the IME system absent (automation test
       `VaCuus.Input.TextEntry` asserting the element's value changed). Log once at startup
       when `GetTextInputMethodSystem()` is null so the degradation is visible.
-- [ ] **Step 9.6: Commit:** `git commit -am "feat: IME context (shadow-state pulls, queued mutations); Linux degrades to OnKeyChar"`
+- [x] **Step 9.6: Commit:** `git commit -am "feat: IME context (shadow-state pulls, queued mutations); Linux degrades to OnKeyChar"`
 
 ---
 
