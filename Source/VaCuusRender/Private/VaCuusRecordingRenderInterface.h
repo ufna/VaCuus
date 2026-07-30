@@ -15,6 +15,23 @@
 
 class IImageWrapperModule;
 
+/**
+ * Why a decode produced no payload. Carried back so the UI thread can name the
+ * actual cause: "the decoder disagreed with itself" sends a reader somewhere very
+ * different from "this asset will not decode", and both used to log the same line.
+ */
+enum class EVaCuusTextureDecodeFailure : uint8
+{
+	/** Decoded fine; Data carries the payload. */
+	None,
+
+	/** The wrapper refused bytes the synchronous probe had already accepted. */
+	Decode,
+
+	/** The wrapper decoded a different size (or byte count) than the probe reported. */
+	SizeMismatch
+};
+
 /** One finished async image decode on its way back to the recorder. */
 struct FVaCuusTextureDecode
 {
@@ -22,6 +39,9 @@ struct FVaCuusTextureDecode
 
 	/** Premultiplied RGBA8, ready for NewTextures. A zero Size means the decode FAILED. */
 	FVaCuusTextureData Data;
+
+	/** Only meaningful when Data.Size is zero; picks the log line the drain emits. */
+	EVaCuusTextureDecodeFailure Failure = EVaCuusTextureDecodeFailure::None;
 
 	/** Source path, kept only so a failed decode can name the file it choked on. */
 	FString Source;
@@ -45,7 +65,7 @@ struct FVaCuusTextureDecodeSink
 	 * thread queues in VaCuusUIQueues.h) — that one is valid for exactly one
 	 * producer. TQueue/TCircularQueue/TAtomic all carry 5.8 deprecation notices;
 	 * TMpscQueue does not, and its destructor destroys the elements still queued
-	 * (Containers/MpscQueue.h:29-43) so an abandoned sink leaks nothing.
+	 * (Containers/MpscQueue.h:29-44) so an abandoned sink leaks nothing.
 	 */
 	TMpscQueue<FVaCuusTextureDecode> Completed;
 
@@ -116,14 +136,20 @@ public:
 	 */
 	static IImageWrapperModule* CacheImageWrapperModule();
 
+#if WITH_DEV_AUTOMATION_TESTS
 	/**
 	 * Blocks until every decode launched so far has finished; their payloads are
 	 * then queued for the next BeginFrame() drain. Returns false on timeout.
 	 *
-	 * TESTS ONLY. The UI thread must never call this: waiting on a decode is the
-	 * hitch the async path exists to remove.
+	 * TESTS ONLY, and compiled out of shipping builds along with the DecodeTasks
+	 * array it waits on: production never needs an FTask handle (the scheduler holds
+	 * its own reference), so keeping the array, the per-LoadTexture Add and the
+	 * per-frame prune in a shipping build would be pure test scaffolding. The UI
+	 * thread must never call this anyway — waiting on a decode is the hitch the
+	 * async path exists to remove.
 	 */
 	bool WaitForTextureDecodes(FTimespan Timeout);
+#endif
 
 private:
 	/** Lazily creates the pending buffer; see class comment for out-of-frame semantics. */
@@ -162,6 +188,8 @@ private:
 	 */
 	TSet<FVaCuusTextureHandle> InFlightTextures;
 
+#if WITH_DEV_AUTOMATION_TESTS
 	/** Launched decode tasks, pruned as they complete; only WaitForTextureDecodes reads them. */
 	TArray<UE::Tasks::FTask> DecodeTasks;
+#endif
 };

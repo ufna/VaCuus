@@ -70,6 +70,10 @@ struct FVaCuusGeometryData
  * textures (fonts) per the Rml contract, loaded images premultiplied at decode
  * by the recorder. Upload as PF_R8G8B8A8 and blend One/InverseSourceAlpha.
  *
+ * The recorder ENFORCES the alpha half of this contract rather than assuming it —
+ * formats whose decoder leaves the A byte undefined (JPEG) are stamped opaque at the
+ * decode boundary. See FVaCuusRecordingRenderInterface::LoadTexture.
+ *
  * A 1x1 (0,0,0,0) payload is the async-load placeholder: LoadTexture returns the
  * real dimensions immediately but the decode runs on a worker, so the handle
  * carries one premultiplied-transparent texel until the payload arrives. That
@@ -101,8 +105,11 @@ struct FVaCuusCommandBuffer
 
 	TArray<FVaCuusCommand> Commands;
 
+	/** Geometry first seen this frame, keyed by handle. */
+	TMap<FVaCuusGeometryHandle, FVaCuusGeometryData> NewGeometry;
+
 	/**
-	 * Resources first seen this frame, keyed by handle.
+	 * Textures first seen this frame, keyed by handle.
 	 *
 	 * NewTextures is also the arrival channel for a finished async image decode,
 	 * so ONE texture handle may appear in NewTextures of two different buffers:
@@ -111,8 +118,10 @@ struct FVaCuusCommandBuffer
 	 * key destroys the old value before relocating the new one in
 	 * (Containers/SetUtilities.h:98, MoveByRelocate), so re-adding IS the swap:
 	 * the placeholder's RHI ref is released and no handle is orphaned.
+	 *
+	 * The two buffers are usually consecutive but need not be, and can even be the
+	 * same one: see FVaCuusRecordingRenderInterface::DrainCompletedDecodes.
 	 */
-	TMap<FVaCuusGeometryHandle, FVaCuusGeometryData> NewGeometry;
 	TMap<FVaCuusTextureHandle, FVaCuusTextureData> NewTextures;
 
 	/** Handles to release AFTER this buffer retires (commands above may still use them). */
