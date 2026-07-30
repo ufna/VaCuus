@@ -372,16 +372,29 @@ refused `Set` (§4).
 dirty sets, and the last applied generation. A milestone whose failure mode is *no output at all*
 must ship the tool that shows the pipeline is alive.
 
+**It is two halves on two threads, a UI frame apart, and that is forced rather than tidy:** the UI
+shadow's `FString` fields are freed and reallocated by every apply, so a game-thread getter reading
+them would be a use-after-free, not a stale read. The gap between the halves is itself diagnostic —
+when a bind never reached a context, the game half shows every field outstanding while the UI half
+reports no model registered at all, which is exactly the milestone's signature failure named out
+loud.
+
 ---
 
 ## 9. Budgets
 
 | | Budget | Note |
 |---|---|---|
-| Game-thread sample + diff, 64 scalar fields | ≤0.02 ms | inside the existing ≤0.10 ms gate, not additional to it — and that gate is itself met by inference from margin, not complete coverage |
-| UI-thread copy + `DirtyVariable` | ≤0.02 ms | **[unverified]**: the "~0.7 µs per variable" in the v1 spec cites nothing and no research document supports it. Experiment: dirty N variables in a real context and measure. |
-| **UI-thread re-evaluation caused by dirtying** | ≤0.05 ms | the dominant new cost, and v1 budgeted it nowhere. It runs inside `Context::Update()`, is `O(views under every dirtied name)`, and each expression run constructs a fresh variant stack |
+| Game-thread sample + diff, 64 scalar fields | ≤0.02 ms | **measured: idle 0.00035 ms, all 64 changed 0.00161 ms** — 12× under. Inside the existing ≤0.10 ms gate, not additional to it |
+| UI-thread copy + `DirtyVariable` | ≤0.02 ms | **measured 0.00195 ms** for 64 fields — 10× under |
+| UI-thread re-evaluation caused by dirtying | ≤0.05 ms | **measured 0.00723 ms** for 32 dirtied variables, 0.226 µs each — 3.5× under |
+| **…and the DOM write it triggers** | *unbudgeted in v2* | **measured 0.383 ms** for 64 simultaneously-changing text bindings — **7.7× the row above**. v2 budgeted the wrong half: re-evaluation is cheap, and the `SetText` plus relayout it *causes* is not. A real HUD changes a handful of bindings per frame, so this is a scaling note rather than a defect — but it is the number that bites first |
 | Idle (no field changed) | **0 published frames** *and* 0 fields applied | see below — the first half alone is not a sufficient test |
+
+**The "~0.7 µs per dirtied variable" figure is struck.** It came from the v1 architecture spec citing
+nothing, and it is wrong **in both directions**: dirty → re-evaluate with no DOM write measures
+**0.25 µs**/variable (2.8× pessimistic), and dirty → re-evaluate → `SetText` → relayout measures
+**5.99 µs**/variable (8.5× optimistic). There is no reading under which 0.7 is right.
 
 The last row is a correctness gate wearing a performance costume: if merely *having* a model
 publishes every frame, the milestone has silently undone M2's central result. It is achievable —
@@ -435,7 +448,7 @@ measured. Adding those scopes is a **prerequisite task**, not a follow-up.
 |---|---|
 | Stale value | §4's three invariants, one restore-the-bug test each |
 | A diff rule misses a change | Per-kind tests; the three sharp kinds each get their own |
-| BP struct recompiled under a live layout | Strong ref + rebuild. **[unverified]** — experiment in §6 |
+| BP struct recompiled under a live layout | **ANSWERED, and the v2 mitigation was half-fictional.** The strong reference works — `CompileStruct`'s own comment says a recompiled struct keeps the same instance. But the first thing it does to that instance is `CleanAndSanitizeStruct` → `DestroyChildPropertiesAndResetPropertyLinks`, a plain `delete` over the whole property chain. So **the type object survives and every `FProperty*` in the layout dangles**, and the "rebuild" half exists nowhere in M3a. The worst failure is not a leak: the shadow's destructor runs `DestroyStruct` on a buffer laid out by the *old* properties using the *new* `DestructorLink` — a free of a pointer read from the wrong offset. Editor-only, and needs a designer editing the struct while a bound view is live. Tracked; the fix is a **refusal**, not a rebuild |
 | Re-evaluation cost dominates | Budgeted in §9; measured per task |
 | Illegal property name | §3.3, with a test |
 | RmlUi's silent failures | §8 |
