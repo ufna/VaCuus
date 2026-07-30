@@ -219,9 +219,18 @@ views are unconditionally dirty, so it **looks correct after every live reload**
 v1 claimed one structural fix. The review showed the class needs three invariants, and that the
 shadow has **more than one writer**.
 
-**I1 — the two shadows are identical at bind.** Otherwise frame 1 sets no bit for an unchanged
-field and the UI shows a zero-initialised value until that field happens to change. Enforced by a
-**forced full-bit first publish**.
+**I1 — the first published update is unconditionally self-sufficient.** Restated after
+implementation: the symptom v2 gave was wrong. `InitializeStruct` memzeroes **and then runs the C++
+constructor**, so a `float Health = 100.f` reaches *both* shadows as 100 — the "UI shows 0" example
+cannot occur, and the test proved it (with the forcing removed, every value assertion still passed;
+only "frame 1 delivers every field" failed).
+
+The invariant still earns its place, for a stronger reason: it removes a dependency on an argument
+**the game thread cannot check** — that two independent `InitializeStruct` calls, on two threads at
+two times, on a type whose constructor may be non-deterministic and which may be a
+`UUserDefinedStruct` rebuilt in between, produced equal instances. Enforced by shape rather than by a
+flag: the channel is **born fully dirty in its constructor**, so a channel that starts empty cannot
+be constructed.
 
 **I2 — the channel never carries a bit whose value is older than the bit.** §3.5.
 
@@ -258,9 +267,27 @@ it holds for `data-attr`, `data-class`, `data-style` and `data-if` alike.
   exactly in the builds that ship. It still returns equal for two empty texts, a shared string-table
   id+key, a shared identity, or two culture-invariant/transient texts (that last falls through to a
   display-string compare). Shadow and compare the **display string**.
-- **`FString` / `FName` / `FUtf8Str` / `FAnsiStr`.** Direct comparison; `FName` compares as index.
+- **Strings and names — a whole family of wrong defaults, found during implementation.** UE's
+  equality operators here are **case-insensitive**, while what the adapter ships to RmlUi is the
+  display form. So `"hp"` → `"HP"` renders differently and compares **equal**, and the change is
+  never published. This is not one trap but four:
+  `FString::operator==` is `Equals(…, ESearchCase::IgnoreCase)` (its own doc comment says so, and
+  `Equals()` itself defaults to `CaseSensitive` — the operator and the method disagree); the same
+  template covers `FUtf8String` and `FAnsiString`; `FName::operator==` compares the **comparison**
+  index, which is case-folded; and `FSoftObjectPath::operator==` is an `FName` compare plus a
+  `Stricmp`. Use `Equals(…, ESearchCase::CaseSensitive)` and
+  `FName::IsEqual(…, ENameCase::CaseSensitive)`. The `FName` form is free where it cannot help —
+  without case-preserving names there is no display index and it compiles to the same comparison.
+  For soft refs, compare package name, asset name and sub-path componentwise rather than calling
+  `ToString()`, which costs two heap allocations per field per frame.
+  **The research note `ue-reflection.md` §4.4 recommends the buggy form** ("keep a shadow `FString`
+  and use `operator==`") — corrected there too.
+- **Floats need a bitwise compare** — nobody's document had this. `NaN != NaN` holds for *every*
+  pair including a value against itself, so a UI-bound float that goes NaN (a percentage over a zero
+  maximum) republishes **every frame from then on** — §9's idle row lost to the comparison rather
+  than to a change.
 - **Nested structs.** Flattened at build time; never `FStructProperty::Identical`.
-- **Soft/weak object refs.** Project to a path string at sample time and diff the string.
+- **Soft object refs.** Componentwise, per the string rule above. **Weak refs are refused** (§3.4).
 - **Never `ExportTextItem`** — removed from `FProperty` in 5.8 (the name survives as a
   `TStructOpsTypeTraits` customization point) → `ExportTextItem_Direct`. And the near-identically
   named `ExportText_Direct` **silently writes nothing** when the value equals its delta, so a
