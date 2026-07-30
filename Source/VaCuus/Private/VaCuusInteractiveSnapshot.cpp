@@ -227,6 +227,136 @@ static EVaCuusNavDirection LocalNavDirections(Rml::Element& Element)
 	return Directions;
 }
 
+/**
+ * RmlUi's own three-valued focusability answer, spelled out here because
+ * ElementDocument.cpp's sits in an anonymous namespace (:25-28) and cannot be called.
+ * Line-for-line with CanFocusElement (:30-44); the ORDER matters, because
+ * `focus: none` and invisibility both prune the SUBTREE while a non-auto tab-index
+ * only rejects the element itself.
+ */
+enum class ECanFocus : uint8
+{
+	Yes,
+	No,
+	NoAndNoChildren
+};
+
+static ECanFocus CanFocusElement(Rml::Element& Element)
+{
+	if (!Element.IsVisible())
+	{
+		return ECanFocus::NoAndNoChildren;
+	}
+
+	const Rml::ComputedValues& Computed = Element.GetComputedValues();
+
+	if (Computed.focus() == Rml::Style::Focus::None)
+	{
+		return ECanFocus::NoAndNoChildren;
+	}
+
+	if (Computed.tab_index() == Rml::Style::TabIndex::Auto)
+	{
+		return ECanFocus::Yes;
+	}
+
+	return ECanFocus::No;
+}
+
+static bool HasTabTargetAmongChildren(Rml::Element& Parent);
+
+/** Mirrors ElementDocument::SearchFocusSubtree (:728-737), reduced to "is there one". */
+static bool IsTabTargetOrContainsOne(Rml::Element& Element)
+{
+	switch (CanFocusElement(Element))
+	{
+		case ECanFocus::Yes:
+			return true;
+
+		case ECanFocus::NoAndNoChildren:
+			return false;
+
+		case ECanFocus::No:
+			break;
+	}
+
+	return HasTabTargetAmongChildren(Element);
+}
+
+/**
+ * Mirrors ElementDocument::SearchFocusSubtreeChildren (:739-750).
+ *
+ * GetNumChildren()'s DEFAULT -- include_non_dom_elements = FALSE -- and that is the whole
+ * reason this walk is separate from the snapshot DFS below, which passes true because
+ * scrollbars and form-control internals genuinely take clicks. Tab cannot reach them:
+ * :741 asks for the DOM count, so the search never indexes past the DOM children and never
+ * enters a non-DOM subtree at all. Nothing in RmlUi's own code puts `tab-index: auto` on a
+ * non-DOM element (ElementFormControl.cpp:8 is the only setter and its subclasses are
+ * parsed from RML), but tab-index is an ordinary registered property
+ * (StyleSheetSpecification.cpp:375) and non-DOM elements are style-matched like any other,
+ * so one line of author RCSS -- `scrollbarvertical { tab-index: auto; }` -- is enough to
+ * make the difference real. Mirroring the default makes it unreachable instead of unlikely.
+ *
+ * DIRECTION IS DROPPED, unlike :744's forward/backward index, because the question here is
+ * EXISTENCE and both directions visit the same set. Tab and Shift+Tab therefore get the
+ * same answer, which is correct: they differ in which target they land on, never in whether
+ * there is one.
+ */
+static bool HasTabTargetAmongChildren(Rml::Element& Parent)
+{
+	const int32 NumChildren = Parent.GetNumChildren();
+	for (int32 Index = 0; Index < NumChildren; ++Index)
+	{
+		if (Rml::Element* Child = Parent.GetChild(Index))
+		{
+			if (IsTabTargetOrContainsOne(*Child))
+			{
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
+/**
+ * Would a TAB press move focus INTO this document, given that the DOCUMENT ELEMENT is what
+ * holds focus right now? (The caller checks that; it is bTabEntersFocus's other
+ * precondition.)
+ *
+ * WHY THIS COLLAPSES TO ONE CALL. FindNextTabElement(document, forward, wrap_around=true --
+ * ElementDocument.h:104) with current_element == document takes the first branch
+ * unconditionally (`forward || current_element == document`, :679-681) and searches the
+ * document's children; the upward walk is then skipped entirely because its condition is
+ * `while (child != document)` (:691); and the wrap-around tail cannot add anything, since
+ * its self-focus test is guarded by `current_element != document` (:721) and its fallback
+ * is the very same SearchFocusSubtreeChildren(document, forward) call (:725). So the whole
+ * function reduces to this, and the DOCUMENT ITSELF IS NOT A CANDIDATE -- which is right,
+ * because it is where focus already is.
+ *
+ * PER DOCUMENT, NOT PER CONTEXT, because that is FindNextTabElement's own scope: it takes
+ * `document = current_element->GetOwnerDocument()` (:675) and every branch stops there. A
+ * focusable in a SECOND document is not somewhere Tab can go from this one.
+ *
+ * A SEPARATE TRAVERSAL FROM THE SNAPSHOT DFS, DELIBERATELY, and this is the fix for bead
+ * VaCuus-akj.6.36. The DFS answers a POINTER-COVERAGE question and prunes for
+ * pointer-coverage reasons -- `vacuus-passthrough` opts a subtree out of taking clicks, an
+ * empty child clip means no descendant can be hit -- neither of which RmlUi's tab search
+ * has ever heard of. Accumulating focusability inside that walk therefore made
+ * bTabEntersFocus a strict UNDER-approximation: a document whose only focusables sat in a
+ * pass-through wrapper, or in a collapsed `overflow:hidden; height:0` container, reported
+ * "Tab cannot enter" while RmlUi entered fine, and the entering press was then consumed by
+ * the game AND moved UI focus. Two questions, two walks.
+ *
+ * COST: at most one extra traversal per FRAME, not per document, and only in the state the
+ * flag is read in -- a document is shown and nothing inside it holds focus. It early-outs
+ * on the first target, which in a HUD is usually the first button.
+ */
+static bool DoesTabEnterDocument(Rml::ElementDocument& Document)
+{
+	return HasTabTargetAmongChildren(Document);
+}
+
 /** Window-space AABB of an element's box area, snapped outwards to whole pixels. */
 static FIntRect ToPixelRect(Rml::Vector2f Position, Rml::Vector2f Size)
 {
@@ -261,30 +391,6 @@ struct FSnapshotWalk
 
 	FVaCuusInteractiveSnapshot& Out;
 	int32 NumElementsVisited = 0;
-
-	/**
-	 * Did the document currently being walked contain any element RmlUi would let Tab
-	 * land on? Reset by the caller before each document.
-	 *
-	 * PER DOCUMENT, NOT PER CONTEXT, because that is FindNextTabElement's own scope: it
-	 * takes `document = current_element->GetOwnerDocument()` and every branch stops at
-	 * it -- the upward walk terminates on `while (child != document)` and even the
-	 * wrap-around searches `SearchFocusSubtreeChildren(document, ...)`
-	 * (ElementDocument.cpp:669-726). So a focusable in a SECOND document is not
-	 * somewhere Tab can go from the first, and counting it would make
-	 * bTabEntersFocus claim an entry that cannot happen. One document per view is the
-	 * only shape M2 ships, so this costs nothing today and is simply correct.
-	 *
-	 * DELIBERATELY NOT "did any Focusable rect get reported": a rect is only appended
-	 * when the element is also INTERACTIVE by the predicate and its clipped box has
-	 * area (see the `bInteractive && Rect.Area() > 0` test below), while
-	 * FindNextTabElement only cares about CanFocusElement. A focusable element that is
-	 * scrolled out of its clip container, or has collapsed to zero height, is tabbable
-	 * and unreported -- so deriving this from RectFlags would answer "Tab cannot enter"
-	 * for a document Tab enters perfectly well, and the key would be handed to the game
-	 * while the UI acted on it. Which is the exact bug the flag exists to close.
-	 */
-	bool bAnyFocusable = false;
 };
 
 void FSnapshotWalk::Visit(Rml::Element* Element, const FIntRect& Clip, bool bFocusBlocked)
@@ -360,16 +466,17 @@ void FSnapshotWalk::Visit(Rml::Element* Element, const FIntRect& Clip, bool bFoc
 	// reported focusable.
 	bFocusBlocked = bFocusBlocked || Computed.focus() == Rml::Style::Focus::None;
 
-	// RmlUi's own focusability rule, not a proxy for it: visible (already true -- an
-	// invisible element returned above), no `focus: none` anywhere up the chain, and
-	// computed tab-index auto. Same three tests as ElementDocument's private
-	// CanFocusElement (ElementDocument.cpp:30-43), which is what Tab, the arrow keys and
-	// a mouse press all resolve focus through.
+	// Same three tests as ElementDocument's private CanFocusElement
+	// (ElementDocument.cpp:30-44): visible (already true -- an invisible element returned
+	// above), no `focus: none` anywhere up the chain, and computed tab-index auto.
+	//
+	// PER RECT, AND ONLY PER RECT. This is the flag on a reported rectangle, answering
+	// "would a click here land on something focusable"; it is NOT where bTabEntersFocus
+	// comes from, and deriving that from these would be wrong in both directions -- a
+	// tabbable element with a clipped or zero-area box is never reported at all, and this
+	// walk descends into non-DOM children that Tab provably cannot reach. That question has
+	// its own traversal, DoesTabEnterDocument() above.
 	const bool bFocusable = !bFocusBlocked && Computed.tab_index() == Rml::Style::TabIndex::Auto;
-
-	// Recorded here rather than from the rects, and before the reporting test below,
-	// because that test is narrower than RmlUi's focusability rule (see bAnyFocusable).
-	bAnyFocusable = bAnyFocusable || bFocusable;
 
 	if (bInteractive && Rect.Area() > 0)
 	{
@@ -463,13 +570,11 @@ FVaCuusSnapshotBuildStats BuildVaCuusInteractiveSnapshot(
 
 	FSnapshotWalk Walk(OutSnapshot);
 
-	// The document element that holds focus, if focus is on a document at all, and
-	// whether THAT document has anything Tab could land on. Both entry flags below need
-	// them: it is the element ProcessDefaultAction would run on, the element whose local
-	// `nav-*` the arrow branch would read, and the only subtree FindNextTabElement
-	// searches.
+	// The document element that holds focus, if focus is on a document at all. Both entry
+	// flags below need it: it is the element ProcessDefaultAction would run on, the element
+	// whose local `nav-*` the arrow branch would read, and the only subtree
+	// FindNextTabElement searches.
 	Rml::ElementDocument* FocusedDocument = nullptr;
-	bool bFocusedDocumentHasFocusable = false;
 
 	// Front to back: a higher document index is closer to the front
 	// (PullDocumentToFront appends to the root's children, Context.cpp:468-481). The
@@ -493,22 +598,11 @@ FVaCuusSnapshotBuildStats BuildVaCuusInteractiveSnapshot(
 				FocusedDocument = Document;
 			}
 
-			// Reset per document, because FindNextTabElement never leaves the document it
-			// starts in (see FSnapshotWalk::bAnyFocusable) -- so only the FOCUSED document's
-			// answer is the one Tab would get, and a focusable in some other document must
-			// not be counted.
-			Walk.bAnyFocusable = false;
-
 			// bFocusBlocked starts false: `focus` defaults to auto and is inherited
 			// (StyleSheetSpecification.cpp:376), so a document is focusable until an
 			// author says otherwise -- and RmlUi relies on that, since Show() focuses the
 			// document element itself.
 			Walk.Visit(Document, ViewRect, /*bFocusBlocked=*/false);
-
-			if (Document == Focus)
-			{
-				bFocusedDocumentHasFocusable = Walk.bAnyFocusable;
-			}
 		}
 	}
 
@@ -524,7 +618,9 @@ FVaCuusSnapshotBuildStats BuildVaCuusInteractiveSnapshot(
 	// focus and consuming one would be a lie. If focus is on something INSIDE a document,
 	// bWantsKeyboardFocus is already true and these are irrelevant (and false: the loop
 	// above only sets FocusedDocument when the focus IS a document element).
-	OutSnapshot.bTabEntersFocus = FocusedDocument != nullptr && bFocusedDocumentHasFocusable;
+	// Asked here, after the DFS, rather than accumulated inside it: the DFS prunes for
+	// pointer-coverage reasons RmlUi's tab search does not share. See DoesTabEnterDocument().
+	OutSnapshot.bTabEntersFocus = FocusedDocument != nullptr && DoesTabEnterDocument(*FocusedDocument);
 	OutSnapshot.DirectionsEnteringFocus =
 		OutSnapshot.bTabEntersFocus ? LocalNavDirections(*FocusedDocument) : EVaCuusNavDirection::None;
 

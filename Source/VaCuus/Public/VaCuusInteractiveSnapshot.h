@@ -302,11 +302,24 @@ struct FVaCuusTextFieldState
  * without this a drag on a scrollbar read as pass-through and scrolled the game
  * instead of the list.
  *
- * FOCUSABILITY, BY CONTRAST, IS EXACT. Each reported rect also carries whether a
- * click on it would take RmlUi focus (EVaCuusRectFlags::Focusable), computed with
- * RmlUi's own rule rather than a proxy -- because unlike "does this have a click
- * listener", focusability IS queryable: visible, computed `focus` != none on the
- * element and every ancestor, and computed `tab-index: auto`.
+ * FOCUSABILITY, BY CONTRAST, IS QUERYABLE, and each reported rect carries it
+ * (EVaCuusRectFlags::Focusable): visible, computed `focus` != none on the element
+ * and every ancestor, and computed `tab-index: auto`. That is RmlUi's
+ * CanFocusElement verbatim (ElementDocument.cpp:30-44) -- the rule Tab, the arrow
+ * keys and ENTER-to-click all resolve through -- rather than a proxy for it.
+ *
+ * WHAT IT IS NOT is "would a click here take RmlUi focus", and the flag used to say
+ * so. A CLICK focuses far more than this: Context::ProcessMouseButtonDown resolves
+ * its target through FindFocusElement, which walks up from the hovered element to
+ * the nearest ancestor-or-self whose computed `focus` != none and does not look at
+ * tab-index at all (Context.cpp:607-619, :631-641), and Element::Focus() then
+ * accepts on the same one test (Element.cpp:1179-1184). So a click on a plain
+ * <div> does take RmlUi focus. Reporting THAT would be useless to the only
+ * consumer: SVaCuusWidget takes SLATE keyboard focus from this flag, and taking the
+ * player's keyboard because they clicked a background panel is the behaviour D11
+ * exists to avoid. `tab-index: auto` is the narrower and deliberate question --
+ * "did the click land on a control that will want keystrokes" -- so this is a
+ * policy, honestly under-approximating the click rule, not an attempt at it.
  *
  * KNOWN GAP (not silent): only an element's MAIN box is measured, so fragmented
  * inline content under-reports. RmlUi's own hit test unions all of an element's
@@ -385,14 +398,30 @@ struct FVaCuusInteractiveSnapshot
 	 *     or to the context ROOT when there is none (Context.cpp:534-537); the root is not
 	 *     an ElementDocument, so ElementDocument::ProcessDefaultAction -- where every Tab,
 	 *     arrow and Return handler lives -- never runs and no key can move focus at all.
-	 *  2. At least one element in the context passes RmlUi's focusability test, because
-	 *     FindNextTabElement has to have somewhere to land (ElementDocument.cpp:581-591
-	 *     calls it; SearchFocusSubtree gates every candidate on CanFocusElement,
-	 *     :728-733, and CanFocusElement is :30-43).
+	 *  2. FindNextTabElement has somewhere to land (ElementDocument.cpp:583 calls it from
+	 *     the Tab branch). With focus ON the document that whole function reduces to
+	 *     SearchFocusSubtreeChildren(document, forward) -- see DoesTabEnterDocument() in
+	 *     VaCuusInteractiveSnapshot.cpp for the line-by-line reduction -- so the test is a
+	 *     DOM-children-only recursion (:739-750) in which CanFocusElement (:30-44) accepts
+	 *     `tab-index: auto`, prunes the subtree on invisible or `focus: none`, and descends
+	 *     through everything else. VaCuus mirrors that function rather than approximating
+	 *     it, and the document element itself is not a candidate (it is where focus is).
 	 *
-	 * NOT DERIVABLE FROM RectFlags: a focusable element with a zero-area or fully clipped
-	 * box is tabbable but is not REPORTED (the rect list gates on Area() > 0), so counting
-	 * Focusable rects would answer "no" for a document Tab can enter perfectly well.
+	 * THE WORD "EXACTLY" WAS A LIE UNTIL bead VaCuus-akj.6.36, and how it was wrong is worth
+	 * knowing, because the shape that caused it is still here. This used to be accumulated
+	 * inside the interactive-rect DFS, which prunes a subtree on `vacuus-passthrough` and on
+	 * an empty child clip -- pointer-coverage rules that RmlUi's tab search has never heard
+	 * of. So a document whose only focusables sat inside a pass-through wrapper, or inside a
+	 * collapsed `overflow:hidden; height:0` container, reported "Tab cannot enter" while
+	 * RmlUi entered fine, and the entering press was then consumed by the GAME as well as
+	 * moving UI focus. It also walked non-DOM children, which Tab provably cannot reach, so
+	 * it could over-report as well. Pointer coverage and tab reachability are two questions
+	 * and now have two traversals.
+	 *
+	 * NOT DERIVABLE FROM RectFlags, for the same reason in miniature: a focusable element
+	 * with a zero-area or fully clipped box is tabbable but is not REPORTED (the rect list
+	 * gates on Area() > 0), so counting Focusable rects would answer "no" for a document Tab
+	 * can enter perfectly well.
 	 *
 	 * MEANINGLESS WHILE bWantsKeyboardFocus IS TRUE, and it is false then by construction:
 	 * if something focusable holds focus, the document does not, so (1) fails. The two are

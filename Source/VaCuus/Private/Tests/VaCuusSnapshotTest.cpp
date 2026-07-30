@@ -491,4 +491,193 @@ bool FVaCuusSnapshotTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+namespace VaCuusSnapshotTest
+{
+/**
+ * One case per document, each a MINIMAL shape with exactly one thing to say about
+ * bTabEntersFocus. Every one of them is loaded into the same probe host in turn, and in
+ * every one the DOCUMENT ELEMENT is what holds focus -- Show() with FocusFlag::Auto focuses
+ * the document itself unless a tabbable element carries `autofocus`
+ * (ElementDocument.cpp:355-358, :369-401), and none of these do. That is bTabEntersFocus's
+ * other precondition, so these documents isolate the one under test.
+ */
+struct FTabReachCase
+{
+	const TCHAR* Name;
+	const TCHAR* Rml;
+	bool bExpectTabEnters;
+};
+
+static const FTabReachCase GTabReachCases[] = {
+	// The control: the flag is not stuck in either position.
+	{TEXT("a plain focusable button"),
+		TEXT(R"(<rml><head><style>
+body { width: 100%; height: 100%; }
+button { display: block; width: 100px; height: 40px; tab-index: auto; }
+</style></head><body><button id="btn"/></body></rml>)"),
+		true},
+
+	{TEXT("no focusable anywhere"),
+		TEXT(R"(<rml><head><style>
+body { width: 100%; height: 100%; }
+div { display: block; width: 100px; height: 40px; }
+</style></head><body><div id="plain"/></body></rml>)"),
+		false},
+
+	// THE FIRST BUG (bead VaCuus-akj.6.36). `vacuus-passthrough` is a POINTER-coverage
+	// opt-out; RmlUi's tab search has never heard of the attribute, so Tab walks straight
+	// into this button. Accumulating focusability inside the rect DFS -- which prunes the
+	// subtree here -- answered "Tab cannot enter", so SVaCuusWidget let the entering press
+	// through to the game as well.
+	{TEXT("the only focusable is inside a vacuus-passthrough wrapper"),
+		TEXT(R"(<rml><head><style>
+body { width: 100%; height: 100%; }
+div, button { display: block; }
+#btn { width: 100px; height: 40px; tab-index: auto; }
+</style></head><body><div id="pass" vacuus-passthrough><button id="btn"/></div></body></rml>)"),
+		true},
+
+	// THE SECOND BUG, same cause. A zero-area clip container means no DESCENDANT RECT can
+	// be hit, which is why the DFS prunes there -- and says nothing at all about whether
+	// the button can be tabbed to. CanFocusElement does not look at boxes
+	// (ElementDocument.cpp:30-44).
+	{TEXT("the only focusable is inside a collapsed overflow:hidden container"),
+		TEXT(R"(<rml><head><style>
+body { width: 100%; height: 100%; }
+div, button { display: block; }
+#box { overflow: hidden; width: 0px; height: 0px; }
+#btn { width: 100px; height: 40px; tab-index: auto; }
+</style></head><body><div id="box"><button id="btn"/></div></body></rml>)"),
+		true},
+
+	// THE PRUNE THAT MUST SURVIVE, and the reason the fix is a MIRROR of RmlUi rather than
+	// "stop pruning": CanFocusElement returns NoAndNoChildren for `focus: none`
+	// (ElementDocument.cpp:37-38), so RmlUi will not tab in here either. A walk that
+	// accepted everything would be just as wrong, in the direction that consumes the
+	// player's key for nothing.
+	{TEXT("the only focusable is under focus:none"),
+		TEXT(R"(<rml><head><style>
+body { width: 100%; height: 100%; }
+div, button { display: block; }
+#blocked { focus: none; }
+#btn { width: 100px; height: 40px; tab-index: auto; }
+</style></head><body><div id="blocked"><button id="btn"/></div></body></rml>)"),
+		false},
+
+	// The same for the other subtree prune both walks agree on.
+	{TEXT("the only focusable is inside a display:none subtree"),
+		TEXT(R"(<rml><head><style>
+body { width: 100%; height: 100%; }
+div, button { display: block; }
+#gone { display: none; }
+#btn { width: 100px; height: 40px; tab-index: auto; }
+</style></head><body><div id="gone"><button id="btn"/></div></body></rml>)"),
+		false},
+
+	// THE FALSE POSITIVE, which the reverse mistake would produce. <progress> appends its
+	// `fill` as a NON-DOM child (ElementProgress.cpp:24-27) and `tab-index` is an ordinary
+	// registered property (StyleSheetSpecification.cpp:375) that matches non-DOM elements
+	// like any other -- so one line of RCSS builds an element RmlUi's tab search provably
+	// cannot reach, because SearchFocusSubtreeChildren asks for the DOM child count
+	// (ElementDocument.cpp:741). The rect DFS passes include_non_dom_elements=true on
+	// purpose (scrollbars take drags), which is exactly why focusability cannot ride on it.
+	{TEXT("the only tab-index:auto element is a non-DOM child"),
+		TEXT(R"(<rml><head><style>
+body { width: 100%; height: 100%; }
+progress { display: block; width: 100px; height: 20px; }
+fill { tab-index: auto; }
+</style></head><body><progress id="bar" value="0.5"/></body></rml>)"),
+		false},
+};
+}	 // namespace VaCuusSnapshotTest
+
+/**
+ * bTabEntersFocus IS RmlUi's TAB REACHABILITY, not a by-product of the pointer-coverage
+ * walk (bead VaCuus-akj.6.36).
+ *
+ * The header used to call the flag "EXACTLY RmlUi's OWN PRECONDITIONS" while it was
+ * accumulated inside the interactive-rect DFS, which prunes on `vacuus-passthrough` and on
+ * an empty child clip -- neither of which appears anywhere in ElementDocument's focus
+ * search -- and which descends into non-DOM children, which that search cannot reach. So it
+ * could answer no when RmlUi says yes (the press then double-acts: consumed by the game AND
+ * moving UI focus) and yes when RmlUi says no (the press is eaten for nothing).
+ *
+ * Each case below is one document, in the state the flag is defined for. Together they pin
+ * both directions: the two prunes RmlUi does NOT do, the two it DOES, the non-DOM
+ * over-report, and a positive and negative control so a stuck answer cannot pass.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusTabReachTest, "VaCuus.Input.TabReach",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusTabReachTest::RunTest(const FString& Parameters)
+{
+	using namespace VaCuusSnapshotTest;
+
+	if (!FPlatformProcess::SupportsMultithreading())
+	{
+		AddInfo(TEXT("Skipped: no multithreading support, so there is no worker thread to drive"));
+		return true;
+	}
+
+	if (!TestFalse(TEXT("RmlUi is down before the test"), FVaCuusEngine::Get().IsInitialized()))
+	{
+		return false;
+	}
+
+	FVaCuusModule& Module = FVaCuusModule::Get();
+	FVaCuusUIThread* UIThread = Module.GetOrStartUIThread();
+	if (!TestNotNull(TEXT("UI thread"), UIThread))
+	{
+		return false;
+	}
+
+	ON_SCOPE_EXIT
+	{
+		Module.StopUIThread();
+	};
+
+	const FIntPoint ViewSize(400, 300);
+	const TSharedRef<FVaCuusViewStatus> Status = MakeShared<FVaCuusViewStatus>();
+
+	const uint32 ViewId = UIThread->AllocateViewId();
+	UIThread->EnqueueAddView(ViewId, MakeUnique<FProbeHost>(), ViewSize, Status);
+
+	uint64 LoadSerial = 0;
+	for (const FTabReachCase& Case : GTabReachCases)
+	{
+		++LoadSerial;
+		UIThread->EnqueueLoadDocumentFromMemory(ViewId, Case.Rml, LoadSerial);
+
+		// Two frames: the first drains the load and snapshots the fresh layout, the second
+		// makes sure the answer is the steady state and not a first-frame artefact.
+		if (!TestTrue(FString::Printf(TEXT("UI frames ran for '%s'"), Case.Name), RunFrames(*UIThread, 2)))
+		{
+			return false;
+		}
+
+		if (!TestTrue(FString::Printf(TEXT("'%s' loaded"), Case.Name),
+				Status->LoadCompletedSerial.load(std::memory_order_acquire) == LoadSerial &&
+					Status->LoadResult.load(std::memory_order_relaxed) == uint8(EVaCuusLoadResult::Succeeded)))
+		{
+			return false;
+		}
+
+		const FVaCuusInteractiveSnapshot& Snapshot = Status->AcquireSnapshot();
+
+		// The precondition, asserted rather than assumed: if Show() had focused something
+		// INSIDE the document, bTabEntersFocus would be false for a reason that has nothing
+		// to do with what this test is about, and every negative case would pass by accident.
+		if (!TestFalse(FString::Printf(TEXT("'%s': the document itself holds focus"), Case.Name),
+				Snapshot.bWantsKeyboardFocus))
+		{
+			return false;
+		}
+
+		TestEqual(FString::Printf(TEXT("Tab enters '%s'"), Case.Name),
+			Snapshot.bTabEntersFocus, Case.bExpectTabEnters);
+	}
+
+	return true;
+}
+
 #endif	// WITH_DEV_AUTOMATION_TESTS
