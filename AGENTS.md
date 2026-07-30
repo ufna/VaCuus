@@ -125,3 +125,93 @@ bd prime                # Refresh Beads context
 
 **Architecture in one line:** issues live in a local Dolt DB; sync uses `refs/dolt/data` on your git remote; `.beads/issues.jsonl` is a passive export. See https://github.com/gastownhall/beads/blob/main/docs/core-concepts/sync-concepts.md for details and anti-patterns.
 <!-- END BEADS CODEX SETUP -->
+## Build & Test
+
+**The plugin does not build where it lives.** `/w/Unreal/VaCuus` is the git + docs + beads
+tree; the editor loads and builds a **separate clone** at `/w/Unreal/VcHost/Plugins/VaCuus`.
+Edit code there, not here. (Why a clone and not a symlink: UBA aborts on symlinked plugins —
+`cross-process rename-while-open`. `AdditionalPluginDirectories` would remove the duplication
+entirely; the recipe and its trap are on `VaCuus-akj.6.22`.)
+
+```bash
+# Build (editor target)
+cd /w/Unreal/UnrealEngine && ./Engine/Build/BatchFiles/Linux/Build.sh \
+  VcHostEditor Linux Development -project=/w/Unreal/VcHost/VcHost.uproject
+
+# Build (monolithic game target — exercises a different code path, check it before a milestone lands)
+./Engine/Build/BatchFiles/Linux/Build.sh VcHost Linux Development -project=/w/Unreal/VcHost/VcHost.uproject
+
+# Automation suite
+/w/Unreal/UnrealEngine/Engine/Binaries/Linux/UnrealEditor-Cmd /w/Unreal/VcHost/VcHost.uproject \
+  -ExecCmds="Automation RunTests VaCuus; Quit" -unattended -nullrhi -nosplash
+
+# Headless visual run
+/w/Unreal/UnrealEngine/Engine/Binaries/Linux/UnrealEditor /w/Unreal/VcHost/VcHost.uproject \
+  -game -RenderOffscreen -ForceRes -resx=1920 -resy=1080 \
+  -ExecCmds="vacuus.M2Demo, vacuus.M1HUD.AutoShot 10"
+```
+
+**Dev-loop hazards. Every one of these cost real time at least once.**
+
+- **No editor may be running while you build** — it holds the `.so`. Check `pgrep -a UnrealEditor`
+  and kill **by PID**. Never `pkill -f <pattern>`: the pattern matches your own bash wrapper and
+  kills your shell.
+- **`-ExecCmds` splits on COMMAS, not semicolons.** A recipe written with `;` runs as one
+  malformed command and silently does nothing — no "not recognized" line anywhere.
+- **The editor often does not exit** after `Automation RunTests …, Quit`: `Quit` is dispatched at
+  frame 0, deferred, and never fires. Kill by PID once `Sending StopTestSession` appears.
+- **Read test counts from `Saved/Logs/VcHost.log`**, not stdout — an interleaved `UnrealTraceServer`
+  fork clobbers the tail of every run.
+- **`-resx`/`-resy` are ignored offscreen without `-ForceRes`** (you get 888×500).
+- **Launch editors detached** (`setsid nohup … & disown`) with an **absolute** `.uproject` path;
+  a relative path gives "Project file not found" then SIGSEGV.
+- **`ShutdownModule` never runs** in an `Automation RunTests …; Quit` run — module-teardown fixes
+  need a separate normal-quit run to verify.
+- **`vacuus.M1HUD.AutoShot N` fires after `max(N, 3)` *recorded* frames**, not published ones and
+  not N — the counter is a floor. To photograph a transient state, make the state last longer.
+
+## Architecture Overview
+
+HTML/CSS UI (vendored RmlUi 6.x) rendered **fully off the game thread**.
+
+One **process-wide UI thread** owns every `Rml::Context` — forced by RmlUi, whose interfaces,
+`initialised` flag and whole `CoreData` are process-global statics. The per-instance unit is the
+**view** (`UVaCuusView`, one context each); `UVaCuusSubsystem` owns its game instance's views and
+pulses the shared thread once per tick.
+
+Each UI frame: drain command queue → `Context::Update()` → publish an **interactive-region
+snapshot** → `Context::Render()`, during which a **record-only** `Rml::RenderInterface` produces a
+command buffer. The buffer crosses to the render thread, which creates RHI resources and replays it
+into a **persistent per-view render target**; a Slate custom element composites that RT every engine
+frame. Publication is **withheld** when the frame's content hash is unchanged and no resource
+traffic occurred — on a static HUD that is ~13,000 recorded frames to 1 published.
+
+The game thread only enqueues input and reads the snapshot. **The snapshot is what makes the design
+work**: Slate demands a synchronous Handled/Unhandled answer about geometry that lives on another
+thread, and the snapshot is that answer, cached once per frame so every handler in a frame sees one
+stable picture.
+
+**Modules:** `VaCuusRml` (vendored library) · `VaCuus` (UI thread, VFS, subsystem, view, snapshot,
+input mapping, IME) · `VaCuusRender` (recorder, replayer, Slate element, UMG widget) ·
+`VaCuusEditor` (live reload).
+
+## Conventions & Patterns
+
+- **Comments explain *why*, and cite engine or RmlUi source as `file:line`.** A comment that
+  restates the code is noise. **Open every line you cite** — seven comments in M2 asserted
+  mechanisms or contracts that did not hold, and two of that milestone's four critical bugs were
+  found by noticing a justification that contradicted the source it named.
+- **Restore-the-bug is the proof standard.** For any correctness claim: break it deliberately,
+  watch the specific test fail, restore, and report both outcomes. A test that has never been seen
+  to fail is not yet evidence.
+- **An invariant with no observable cannot be tested and will rot.** M2's critical cache bug
+  survived implementation *and* its first review because RmlUi exposes no way to see its caches;
+  the fix had to add a counter before the property could be asserted at all.
+- **Prefer enforcement by shape over enforcement by comment.** Make the wrong call fail to compile:
+  a private member reachable only through the correctly-paired static; a member-count `static_assert`
+  next to the array it guards. Note `sizeof` catches growth and `offsetof` catches reordering, but
+  only a **member count** catches a field inserted into existing padding.
+- **Never weaken the thread invariant.** Every RmlUi call happens on the UI thread; other threads
+  enqueue. Every cross-thread entry point asserts its thread.
+- **Push back with sources.** Being handed a wrong premise and implementing it anyway is the more
+  expensive failure. This has happened repeatedly and been right every time.
