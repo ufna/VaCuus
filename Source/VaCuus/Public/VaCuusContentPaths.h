@@ -40,10 +40,14 @@
  * NOT EDITOR-ONLY: IPlugin::GetContentDir() is `FPaths::GetPath(FileName)/Content`
  * (PluginManager.cpp:406-409) in the Runtime `Projects` module, so a packaged game
  * resolves the same root. Loose DevUI files still have to be STAGED for that to find
- * anything, and that is NOT YET CONFIGURED: Config/FilterPlugin.ini is still the stock
- * template -- a [FilterPlugin] section header (:1) and comments, and no entries under it --
- * so a packaged build ships none of these documents today. Tracked separately: it is a
- * packaging task, not a path one.
+ * anything, and they ARE: the RuntimeDependencies block in Source/VaCuus/VaCuus.Build.cs
+ * stages them, with the whole receipt-to-staging chain cited there -- including the one
+ * trap that survives it (a document added since the last makefile generation can be left
+ * out of the receipt). Config/FilterPlugin.ini is NOT part of that and never was: its only
+ * consumer in the engine is `RunUAT BuildPlugin`, which builds a redistributable plugin zip
+ * rather than a cooked game, and that command's default filter already includes /Content/...
+ * (BuildPluginCommand.Automation.cs:465, read at :472). Read VaCuus.Build.cs, not this
+ * paragraph, when the question is "does it ship".
  */
 namespace VaCuusContentPaths
 {

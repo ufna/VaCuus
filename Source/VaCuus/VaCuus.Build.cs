@@ -39,7 +39,7 @@ public class VaCuus : ModuleRules
 		// it. That file is read ONLY by `RunUAT BuildPlugin`, i.e. it decides the contents of
 		// a redistributable plugin zip (Scripts/BuildPluginCommand.Automation.cs:472 loads it,
 		// :453 reads the section), and the default filter that command builds first already
-		// includes /Content/... (:464) -- so the DevUI documents were never missing from a
+		// includes /Content/... (:465) -- so the DevUI documents were never missing from a
 		// plugin zip, and nothing in CopyBuildToStagingDirectory or DeploymentContext consults
 		// that file at all. Editing it would have changed nothing about a packaged game.
 		//
@@ -67,10 +67,37 @@ public class VaCuus : ModuleRules
 		// is refused at the probe), and the font list is what RmlUi's FreeType interface
 		// loads.
 		//
-		// KNOWN CAVEAT, stated because it is a build-order trap rather than a bug: the
-		// wildcards are resolved when UBT runs, so a document added to DevUI after the last
-		// build is not in the receipt until the next one. Packaging always builds first, so
-		// this only bites someone staging from a stale receipt by hand.
+		// KNOWN CAVEAT, AND IT IS SHARPER THAN A BUILD-ORDER NOTE: a document added to DevUI
+		// can be missing from an ordinary package, silently. "Packaging builds first" is not
+		// the protection it looks like.
+		//
+		// The wildcards below are expanded during MAKEFILE GENERATION, not on every build:
+		// UEBuildTarget calls Binary.PrepareRuntimeDependencies once while constructing the
+		// makefile (UEBuildTarget.cs:3139) and serialises the resulting receipt into the
+		// WriteMetadata action's input file right there (UEBuildTarget.cs:3627), which is that
+		// action's ONLY input. A build that reuses a cached makefile therefore re-emits the
+		// receipt frozen at the last generation; it re-expands nothing.
+		//
+		// And a new .rml does not invalidate that cache. UBT's invalidation set is broad but
+		// it is a set of BUILD INPUTS, never of content: directories that hold .cpp/.h, and
+		// only when files are ADDED or REMOVED from them (TargetMakefile.cs:922-957 -- editing
+		// a source file recompiles through the action graph without touching the makefile);
+		// every module's .Build.cs, the .Target.cs, every .uplugin, Build.version and every
+		// ini in the Engine/Game/Encryption/Crypto (plus, for an editor target, Editor)
+		// hierarchies, all of which arrive as ExternalDependencies
+		// (UEBuildTarget.cs:3455-3487) and are timestamp-compared at TargetMakefile.cs:971-982;
+		// plus the platform SDK, the UHT markup set, the command line, BuildConfiguration.xml
+		// and the UBT/UHT assemblies themselves. A plugin's Content directory is in none of
+		// them. So a SECOND BuildCookRun, after a document was added since the first, can
+		// legitimately reuse the makefile, re-emit the old receipt and stage every document
+		// except the new one, with no warning anywhere.
+		//
+		// SO, WHEN A DOCUMENT IS ADDED: touch this file -- it is Module.RulesFile, i.e. an
+		// ExternalDependency (UEBuildTarget.cs:3459), so its timestamp alone forces
+		// regeneration -- or pass -Rebuild, which deletes the makefile outright
+		// (TargetDescriptor.cs:132 -> BuildMode.cs:196-201 -> CleanMode.cs:181). A commit that
+		// also adds or removes a .cpp/.h happens to do it for free, which is the likeliest
+		// reason this has not bitten yet.
 		string DevUIDir = "$(PluginDir)/Content/DevUI";
 		foreach (string Pattern in new string[] { "*.rml", "*.rcss", "*.png", "*.jpg", "*.jpeg", "*.ttf", "*.otf" })
 		{
