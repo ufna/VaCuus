@@ -8,7 +8,7 @@
 #include "VaCuusModelLayoutTestTypes.generated.h"
 
 /*
- * FIXTURE TYPES FOR VaCuus.Model.Layout.
+ * FIXTURE TYPES FOR THE VaCuus.Model.* TESTS -- layout, shadow, channel and sampler.
  *
  * IN A HEADER, NOT NEXT TO THE TEST, because UnrealHeaderTool only parses .h files --
  * a USTRUCT in a .cpp is never reflected and the test would have nothing to walk. In
@@ -51,11 +51,12 @@ struct FVaCuusTestPoint
  * The supported set, one field per kind, in declaration order.
  *
  * There are TWO adjacent bitfields and one native bool, on purpose. A bitfield's
- * Offset_Internal points at its storage integer and GetElementSize() is that integer's
- * size (UnrealType.h:2595-2603), so bBitfieldBool and bBitfieldTwo share BOTH: anything
- * keyed on (offset, size) aliases them, and only a pair makes that observable. The
- * native bool is the control -- FieldMask 255 and ByteOffset 0 rather than an isolated
- * bit (PropertyBool.cpp:80-91).
+ * Offset_Internal is the offset of the BYTE its bit landed in -- DetermineBitfieldOffsetAndMask
+ * sets the bit in a scratch instance and scans for it (PropertyBool.cpp:98-117), and the
+ * result goes straight to SetOffset_Internal (:40) -- while ElementSize comes from the
+ * declared type (:41). So bBitfieldBool and bBitfieldTwo share BOTH: anything keyed on
+ * (offset, size) aliases them, and only a pair makes that observable. The native bool is the
+ * control -- FieldMask 255 and ByteOffset 0 rather than an isolated bit (PropertyBool.cpp:76-93).
  *
  * Utf8Str and AnsiStr are EditAnywhere rather than BlueprintReadWrite because they
  * CANNOT be Blueprint-visible: UhtUtf8StrProperty.cs:46-47 and UhtAnsiStrProperty.cs
@@ -287,4 +288,270 @@ struct FVaCuusLayoutTestEmptyNestedModel
 
 	UPROPERTY(EditAnywhere, Category = "Test")
 	int32 Kept = 0;
+};
+
+/**
+ * DEFAULTS THAT DIFFER FROM ZERO, for spec 4's invariant I1.
+ *
+ * Every field's default is something a memzeroed buffer would not produce, and the test
+ * hands the sampler a DEFAULT-CONSTRUCTED live instance -- so the differ correctly concludes
+ * that nothing has changed and marks nothing. What reaches the UI on frame 1 is then decided
+ * entirely by whether the channel forces a full first publish.
+ *
+ * bFlagged is a bitfield rather than a second native bool so that I1 is proven for the one
+ * kind whose "unchanged" is a masked read rather than a byte compare.
+ */
+USTRUCT()
+struct FVaCuusSamplerDefaultsModel
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	float Health = 100.f;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	int32 Ammo = 30;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	bool bAlive = true;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	uint8 bFlagged : 1;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	FString Title;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	FName Tag;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	FText Caption;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	EVaCuusTestColour Colour = EVaCuusTestColour::Blue;
+
+	FVaCuusSamplerDefaultsModel()
+		: bFlagged(1)
+		, Title(TEXT("Ready"))
+		, Tag(TEXT("hp"))
+		, Caption(FText::FromString(TEXT("Ready")))
+	{
+	}
+};
+
+/**
+ * SIXTY-FOUR SCALAR FIELDS, for the spec 9 budget row ("game-thread sample + diff, 64
+ * scalar fields <= 0.02 ms").
+ *
+ * A MIX RATHER THAN 64 FLOATS, because the number that matters is a frame's, and the kinds
+ * do not cost the same: a float diff is two virtual accessor calls and a 64-bit compare,
+ * while an FString is a length check plus a Strcmp and an FText adds a Rebuild() call on
+ * each side. Sixty-four floats would measure a struct nobody writes.
+ *
+ * The proportions are a plausible HUD: mostly numbers, a few labels, two localised strings.
+ */
+USTRUCT()
+struct FVaCuusSamplerCostModel
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	float F00 = 0.f;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	float F01 = 0.f;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	float F02 = 0.f;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	float F03 = 0.f;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	float F04 = 0.f;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	float F05 = 0.f;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	float F06 = 0.f;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	float F07 = 0.f;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	float F08 = 0.f;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	float F09 = 0.f;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	float F10 = 0.f;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	float F11 = 0.f;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	float F12 = 0.f;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	float F13 = 0.f;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	float F14 = 0.f;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	float F15 = 0.f;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	float F16 = 0.f;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	float F17 = 0.f;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	float F18 = 0.f;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	float F19 = 0.f;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	float F20 = 0.f;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	float F21 = 0.f;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	float F22 = 0.f;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	float F23 = 0.f;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	float F24 = 0.f;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	float F25 = 0.f;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	float F26 = 0.f;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	float F27 = 0.f;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	float F28 = 0.f;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	float F29 = 0.f;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	float F30 = 0.f;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	float F31 = 0.f;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	int32 I00 = 0;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	int32 I01 = 0;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	int32 I02 = 0;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	int32 I03 = 0;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	int32 I04 = 0;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	int32 I05 = 0;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	int32 I06 = 0;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	int32 I07 = 0;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	int32 I08 = 0;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	int32 I09 = 0;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	int32 I10 = 0;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	int32 I11 = 0;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	int32 I12 = 0;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	int32 I13 = 0;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	int32 I14 = 0;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	int32 I15 = 0;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	bool bNative0 = false;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	bool bNative1 = false;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	bool bNative2 = false;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	bool bNative3 = false;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	uint8 bBit0 : 1;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	uint8 bBit1 : 1;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	uint8 bBit2 : 1;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	uint8 bBit3 : 1;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	FString S0;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	FString S1;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	FString S2;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	FString S3;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	FName N0;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	FName N1;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	FText T0;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	FText T1;
+
+	FVaCuusSamplerCostModel()
+		: bBit0(0)
+		, bBit1(0)
+		, bBit2(0)
+		, bBit3(0)
+	{
+	}
 };
