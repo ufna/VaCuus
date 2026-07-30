@@ -322,6 +322,19 @@ bool FVaCuusModelSamplerStringCaseTest::RunTest(const FString& Parameters)
 
 	FPipeline Pipeline(FVaCuusLayoutTestModel::StaticStruct());
 
+	// NOT TestEqual, AND THAT IS THE WHOLE POINT OF THIS TEST ARRIVING THROUGH THE FRAMEWORK.
+	// FAutomationTestBase::TestEqual on strings is FCString::Stricmp
+	// (AutomationTest.cpp:2161-2171), i.e. case-INSENSITIVE -- the same trap the sampler is
+	// defending against, one layer up. Every read-back below has to compare case-sensitively or
+	// it passes on the stale string and asserts nothing at all. (Found the hard way: with the
+	// componentwise compare deliberately reverted, the "a case-only change is a change"
+	// assertion failed and the read-back assertion next to it still passed.)
+	auto TestEqualCased = [this](const TCHAR* What, const FString& Actual, const FString& Expected)
+	{
+		return TestTrue(*FString::Printf(TEXT("%s (expected '%s', got '%s')"), What, *Expected, *Actual),
+			Actual.Equals(Expected, ESearchCase::CaseSensitive));
+	};
+
 	FVaCuusLayoutTestModel Live;
 	Live.Title = TEXT("hp");
 	Live.Tag = TEXT("hp");
@@ -334,8 +347,8 @@ bool FVaCuusModelSamplerStringCaseTest::RunTest(const FString& Parameters)
 
 	// The premise, asserted rather than assumed: if the sub-path stopped surviving the round
 	// trip into the shadow, the soft-reference assertion below would pass for the wrong reason.
-	TestEqual(TEXT("the sub-path reached the UI shadow"),
-		FString(Read<TSoftObjectPtr<UObject>>(Pipeline.Layout, Pipeline.UIShadow.GetData(), TEXT("Icon")).ToString()),
+	TestEqualCased(TEXT("the sub-path reached the UI shadow"),
+		Read<TSoftObjectPtr<UObject>>(Pipeline.Layout, Pipeline.UIShadow.GetData(), TEXT("Icon")).ToString(),
 		FString(TEXT("/Game/UI/Icons.Icons:hp")));
 
 	// Case, and nothing else, changes on all six.
@@ -360,10 +373,10 @@ bool FVaCuusModelSamplerStringCaseTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("FName: a case-only change is a change where the case is kept"), WasMarked(TEXT("Tag")));
 #endif
 
-	TestEqual(TEXT("the new casing reached the UI"), Read<FString>(Pipeline.Layout, Pipeline.UIShadow.GetData(), TEXT("Title")),
-		FString(TEXT("HP")));
-	TestEqual(TEXT("and so did the new sub-path casing"),
-		FString(Read<TSoftObjectPtr<UObject>>(Pipeline.Layout, Pipeline.UIShadow.GetData(), TEXT("Icon")).ToString()),
+	TestEqualCased(TEXT("the new casing reached the UI"),
+		Read<FString>(Pipeline.Layout, Pipeline.UIShadow.GetData(), TEXT("Title")), FString(TEXT("HP")));
+	TestEqualCased(TEXT("and so did the new sub-path casing"),
+		Read<TSoftObjectPtr<UObject>>(Pipeline.Layout, Pipeline.UIShadow.GetData(), TEXT("Icon")).ToString(),
 		FString(TEXT("/Game/UI/Icons.Icons:HP")));
 
 	return true;
