@@ -1,13 +1,15 @@
 # VaCuus M3 — Data Binding: UPROPERTY reflection → RmlUi data models
 
-**Status:** design, ready for planning
-**Supersedes:** the sketch in the v1 architecture spec §6, which assumed facts that the API
-research disproved. Deltas are called out inline as **§6 CORRECTION**.
+**Status:** design v2, ready for planning. v1 was reviewed adversarially and came back
+**NEEDS REWORK** with six blocking items; this is the rewrite. What changed is listed in §13, because
+the *reasons* three of those items were wrong are the most useful thing in the document.
+
+**Scope:** this spec covers **M3a — the channel and scalar binding**. Arrays and `data-for` are
+**M3b**, split out on the review's recommendation; the seam and the reason are in §12.
 
 **Ground truth:** `docs/research/m3-api-notes/{rmlui-data-binding,ue-reflection,vacuus-publish-path}.md`
-— ~640 verified `file:line` citations across the three. Every load-bearing claim below points at
-one of them. Where this spec asserts something those documents do not, it is marked **[unverified]**
-and carries the experiment that would settle it.
+plus the review's own corrections to those documents. Claims not supported by read source are marked
+**[unverified]** and carry the experiment that settles them.
 
 ---
 
@@ -23,14 +25,13 @@ struct FPlayerHud
     GENERATED_BODY()
     UPROPERTY(BlueprintReadWrite) float Health = 100.f;
     UPROPERTY(BlueprintReadWrite) FString PlayerName;
-    UPROPERTY(BlueprintReadWrite) TArray<FKillfeedEntry> Killfeed;
+    UPROPERTY(BlueprintReadWrite) FVector2D Crosshair;   // nested struct, flattened
 };
 ```
 ```html
 <div data-model="hud">
   <progress data-attr-value="Health"/>
   <span>{{PlayerName}}</span>
-  <li data-for="e : Killfeed">{{e.Killer}} → {{e.Victim}}</li>
 </div>
 ```
 
@@ -38,165 +39,199 @@ One call binds them, and the UI tracks the struct from then on.
 
 ---
 
-## 2. The three findings that decide the architecture
+## 2. The findings that decide the architecture
 
-**(a) RmlUi's binding API is *not* compile-time only.** `DataModelHandle::BindCustomDataVariable`
-is public and non-template, and `DataVariable(VariableDefinition*, void*)` is a public constructor
-over a plain polymorphic class whose `Child()` resolves a field **by string at runtime**. So a
-runtime adapter over UE reflection needs **no per-type codegen and no template instantiation per
-game type** — roughly four hand-written definition classes plus a registry.
+**(a) RmlUi's binding API is not compile-time only.** `DataModelHandle::BindCustomDataVariable` is
+public and non-template; `DataVariable(VariableDefinition*, void*)` is a public constructor over a
+plain polymorphic class whose `Child()` resolves a field **by string at runtime**. `Family<T>` and
+the type register are bypassed entirely on this path. No per-type codegen.
 
-**(b) RmlUi stores a raw `void*` at bind time and dereferences it on the UI thread, with no
-liveness check.** The game thread owns `UObject`s and GC moves and frees them. Therefore **the
-pointer RmlUi holds must point at a UI-thread-owned shadow buffer**, never at live gameplay memory.
-This — not the type system — is the real constraint of the milestone.
+**(b) RmlUi retains a raw `void*` and dereferences it on the UI thread with no liveness check.**
+`DataVariable` owns neither of its two pointers; the only null check anywhere is
+`BasePointerDefinition`'s on its own pointer, and `ScalarDefinition<T>::Get` has none. Nothing ever
+revalidates. **So the pointer must address a UI-thread-owned shadow buffer, never live gameplay
+memory.** This is the organising constraint of the milestone — not the type system.
 
-**(c) `UPROPERTY` metadata does not exist at runtime.** Not empty: *absent*. The accessors live
-inside `#if WITH_METADATA`, which is `WITH_EDITORONLY_DATA`, which a Game target compiles as `0`;
-UHT does not even emit the strings. Epic says so in its own header. **§6 CORRECTION:** any design
-keyed on `meta=(...)` tags is dead. Exposure is driven by `EPropertyFlags`, which *are* cooked.
+**(c) `UPROPERTY` metadata does not exist at runtime.** Absent, not empty: the accessors are inside
+`#if WITH_METADATA` == `WITH_EDITORONLY_DATA`, a Game target compiles it as `0`, and UHT does not
+emit the strings. Exposure runs off `EPropertyFlags`, which survive cooking.
 
 ---
 
 ## 3. Architecture
 
-Three stages, each on the thread that is allowed to do it.
-
 ```
-GAME THREAD                    │ CHANNEL              │ UI THREAD
-                               │                      │
- sample live struct            │                      │
- diff vs previous shadow  ─────┼─ TTripleBuffer ─────►│ for each dirty bit:
- write changed fields only     │  latest-wins         │   copy field → SHADOW BUFFER
- OR dirty bits into slot       │  + generation        │   Model.DirtyVariable(topLevelName)
- publish                       │  + dirty bitset      │                    │
-                               │                      │ Context::Update() ─┘ evaluates models
+GAME THREAD                      │ CHANNEL              │ UI THREAD
+                                 │                      │
+ sample live struct              │                      │
+ diff vs game-side shadow        │                      │
+ accumulate pending bits ────────┼─ TTripleBuffer ─────►│ for each published bit:
+ publish: write CURRENT value    │  latest-wins         │   copy field → UI SHADOW
+   of every pending bit          │  + own generation    │   Model.DirtyVariable(name)
+ clear bits only on echo         │◄─ applied generation │                    │
+                                 │                      │ Context::Update() ─┘
 ```
 
-**Why not simply give RmlUi a pointer to the gameplay struct.** Finding (b). Also the sampler must
-run on the game thread while RmlUi runs on another, so a shared pointer is a data race by
-construction, not merely a lifetime risk.
+### 3.1 The shadow is a real `UScriptStruct` instance — and that is load-bearing
 
-**Why a triple buffer and not the command queue.** Per-frame gameplay data is *state*, not an
-ordered event stream: only the newest value matters and repeated updates before consumption must
-coalesce. The command queue has no coalescing. This mirrors the interactive-region snapshot that
-already works, with producer and consumer swapped.
+Both shadows (game-side previous-value, UI-side bound) are `Malloc(GetStructureSize())` +
+`InitializeStruct`, destroyed with `DestroyStruct`.
 
-### 3.1 The layout — a flat, pre-resolved command list
+**Why this and not a bespoke packed buffer.** The property definition's `DereferencePointer` is
+`Property->ContainerPtrToValuePtr<void>(base)`, which uses `FProperty::Offset_Internal` — the offset
+in the *real* struct. If the shadow is a real instance, that works directly, and so do
+`CopySingleValue` and every property accessor; the adapter stays four classes. If the shadow had its
+own packing, every kind would need hand-written marshalling on both sides and bespoke container
+types. v1 specified both offsets at once and was therefore incoherent.
 
-`FVaCuusModelLayout` is built **once** per `UStruct`, and is the milestone's central object. It is
-deliberately the shape Unreal's own per-frame differ (`FRepLayout`) uses, and for the same reason:
-walking `TFieldIterator` per frame, or calling `FStructProperty::Identical` (which spins up a fresh
-iterator per call) or `FMapProperty::Identical` (**O(n²)** — a permutation check), is how a data
-binder becomes the frame's dominant cost.
+**The GC consequence, which is the real reason object properties are excluded.** A `UScriptStruct`
+instance owned by the UI thread is **invisible to GC** — nothing calls `AddStructReferencedObjects`
+on it. A hard `UObject*` inside it would dangle with no diagnostic. This is independent of, and
+harder than, the data-race argument.
 
-Each entry is flat: resolved `FProperty*`, byte offset from the struct base, a `EVaCuusFieldKind`,
-the wire name, the shadow-buffer offset, and the index of the top-level name to dirty.
+### 3.2 The layout — flat, pre-resolved, built once
 
-**The wire name is `FField::GetAuthoredName()`, not `GetName()`.** Blueprint struct properties are
-mangled `<Base>_<UniqueId>_<32hexGUID>`; `GetAuthoredName` is the runtime-safe demangler and its
-header promises consistency between editor and cooked builds. A designer writing `{{Health}}` in
-RCSS must not have to know the GUID.
+`FVaCuusModelLayout` is built once per `UScriptStruct`. Each entry: resolved `FProperty*`, the wire
+name, the top-level name index to dirty, and the field kind. Nested structs are **flattened at build
+time**; there is no per-frame `TFieldIterator`.
 
-**Property order is declaration order and is stable within a build but not across builds or
-Blueprint recompiles.** Indices are therefore valid only for the lifetime of a layout — never
-persisted, never sent anywhere that outlives the process.
+Deliberately the shape Unreal's own per-frame differ (`FRepLayout`) uses, and for the same reason:
+`FStructProperty::Identical` spins up a fresh `TFieldIterator` per call and `FMapProperty::Identical`
+is **O(n²)**. A binder that calls those per frame becomes the frame's dominant cost.
 
-### 3.2 Type coverage
+**Wire names are `FField::GetAuthoredName()`**, not `GetName()` — Blueprint properties are mangled
+`<Base>_<UniqueId>_<32hexGUID>` and a designer writing `{{Health}}` must not need the GUID.
 
-| Kind | v1 | Note |
+**Property order is declaration order, stable within a build only** — not across builds or Blueprint
+recompiles. Indices live and die with the layout; never persisted.
+
+### 3.3 Name legality is a policy, not an accident — **new in v2**
+
+RmlUi's `LegalVariableName` is a **strict subset** of what UE permits: first character must be a
+letter, the rest `[A-Za-z0-9_]`, and a reserved set `{it, it_index, ev, true, false, size, literal}`
+checked **case-insensitively**. UE additionally permits `-`, `+`, `<`, `>`, `?` and leading digits in
+an `FName`.
+
+So `UPROPERTY() int32 Size;` — about as ordinary as UE gets — **cannot be bound**. `BindVariable`
+logs a warning and returns false, the variable is silently absent, and every `{{Size}}` then fails
+address resolution with a second warning.
+
+**Policy: v1 refuses and says so.** The builder validates each wire name against the same rule,
+logs one `Error` per rejected property naming the property, the reason, and the reserved word if
+that is the cause, and omits it. Renaming silently would put a name in the document that appears
+nowhere in the C++, which is worse. An explicit rename attribute is v1.x.
+
+### 3.4 Type coverage — M3a
+
+| Kind | M3a | Note |
 |---|---|---|
-| numeric, `FBoolProperty` | ✅ | bitfields need care — see §5 |
+| numeric, `FBoolProperty` | ✅ | bitfields need care — §5 |
 | `FStrProperty`, `FNameProperty` | ✅ | |
-| `FTextProperty` | ✅ | shadow the **display string**; see §5 |
-| `FUtf8StrProperty`, `FAnsiStrProperty` | ✅ | new kinds; `CastField<FStrProperty>` silently misses them |
-| `FEnumProperty`, `FByteProperty`-with-enum | ✅ | exposed as both name and value |
-| `FStructProperty` (nested) | ✅ | recursive, depth-limited |
-| `FArrayProperty` of the above | ✅ | `data-for`; see §5 on shrink cost |
-| `FObjectProperty` and friends | ❌ | see below |
-| `FMapProperty`, `FSetProperty` | ❌ | v1.x — RmlUi has no map view, and `Identical` is O(n²) |
-| `FDelegateProperty` | ❌ | events go the other way, via `data-event-*` |
+| `FTextProperty` | ✅ | shadow the **display string** — §5 |
+| `FUtf8StrProperty`, `FAnsiStrProperty` | ✅ | `CastField<FStrProperty>` silently misses these |
+| `FEnumProperty`, `FByteProperty`-with-enum | ✅ | see below |
+| `FStructProperty` (nested) | ✅ | flattened, depth-limited |
+| `FSoftObjectProperty`, `FWeakObjectProperty` | ✅ | projected to a path string at sample time — value types, no GC ownership |
+| `FArrayProperty` | **M3b** | §12 |
+| `FObjectProperty` (hard) | ❌ | §3.1's GC argument |
+| `FMapProperty`, `FSetProperty` | ❌ | no RmlUi map view; `Identical` is O(n²) |
+| `FDelegateProperty` | ❌ | events travel the other way |
 
-**Object properties are deliberately excluded from v1, and this is a decision rather than a gap.**
-A snapshot that owns its data cannot own a `UObject*` — holding one across the channel either
-races GC or requires the UI thread to participate in reference counting, which would put UObject
-lifetime on a thread that must never block. The supported pattern is to project what the UI needs
-into a plain struct on the game thread. This is stated in the docs, and the builder logs the
-property as unsupported rather than skipping it silently.
+**Enums** are exposed as **one** variable holding the name string, from
+`UEnum::GetAuthoredNameStringByValue`. v1 exposed name *and* value, which needs two legal names per
+property and collides with §3.3 for no clear gain; the numeric value is available by binding the
+underlying integer property if a document needs it.
 
-**Unsupported properties are never silent.** The builder emits one `Warning` per property with the
-type name and the reason, once per layout build.
+**Unsupported properties are never silent** — one `Warning` per property per layout build, with the
+type name and the reason.
 
-### 3.3 What is exposed
+**Exposure** is `CPF_BlueprintVisible` **or** `CPF_Edit`. Both survive cooking. Note `CPF_Edit`
+means "the author ticked EditAnywhere", not "the shipped game considers this visible" — using it is
+a deliberate convenience, not a semantic claim.
 
-A property is bound when it carries `CPF_BlueprintVisible` **or** `CPF_Edit`. These flags survive
-cooking; metadata does not (finding (c)). An explicit opt-out and a descriptor asset for richer
-control are v1.x.
+### 3.5 The channel — **corrected in v2**
 
-### 3.4 The shadow buffer
+`TTripleBuffer::SwapWriteBuffers` swaps write with **temp**, so the producer's next write buffer is
+one that was *published earlier* and never cleared. v1 said "dirty bits OR-accumulate into the
+unpublished slot", inherited from the v1 architecture spec. That is wrong, and it regresses values:
 
-A single allocation owned by the view's UI-thread state, laid out by the layout: POD fields inline,
-strings and arrays as owning containers. RmlUi's `void*` points into it and only into it.
+> `Health` 100→90 published; not consumed. 90→80 published into the other slot; consumed. Next frame
+> the producer gets the **first** slot back — still carrying `bit(Health)` and the value **90**.
+> `Health` did not change this frame, so nothing overwrites it. The UI applies 90 over 80 and holds
+> it until `Health` next changes. The applier was faithful to the bits; the value was still stale.
 
----
+**Corrected protocol.** The pending-dirty set lives on the **game thread**, not in the slot. Every
+publish writes the **current** value of every pending field into whichever slot it holds. A bit
+clears only when the UI thread echoes back an applied generation — the load-serial protocol the
+document loader already uses. The channel carries its own generation counter, because
+`FVaCuusViewStatus` has none (the existing `Generation` belongs to the interactive snapshot).
 
-## 4. The safety property, and how it is enforced
+### 3.6 Where the apply runs
 
-The research found the failure mode this milestone must be built against:
-
-> Writing the bound storage **without dirtying the variable**. `DataViews::Update` visits only views
-> reached from `dirty_variables`, so the DOM never changes, the frame hashes identical, the idle gate
-> withholds publication, and the screen shows a stale value **forever, with no log line**.
-
-It is also a heisenbug: `views_to_add` is unconditionally treated as dirty, so it **looks correct
-after every live reload** — the developer edits the document, sees the right number, and concludes
-it works.
-
-**Enforcement, by shape rather than by discipline: the apply loop is *driven by* the dirty bits.**
-
-```cpp
-for (int32 Bit : PublishedDirtyBits)          // iterate the bits …
-{
-    CopyFieldIntoShadow(Layout[Bit], …);      // … the copy lives inside …
-    Model.DirtyVariable(Layout[Bit].TopLevelName);  // … and so does the dirty call.
-}
-```
-
-A field that is not dirty is never copied, so "written but not dirtied" cannot be expressed. There
-is no other writer of the shadow buffer; that is a class invariant, asserted, and the reason the
-buffer is private to the applier.
-
-The residual risk moves to the **game-thread diff**: a change the diff fails to detect never sets a
-bit. That is why §5's per-kind diff rules are correctness requirements, not optimisations — and why
-each gets a test that changes only that kind and asserts a publish.
-
-**Conversely, the publish itself is already proven.** A dirtied variable forces a publish through
-two independent legs — the text change re-lays out in the same `Context::Update()` and regenerates
-geometry, so both `NewGeometry` and `ReleasedGeometry` are non-empty and the resource-traffic
-condition fails the idle gate; and independently the content hash moves, because the recorder never
-recycles handles. Same argument the codebase already makes for `:hover`, and the existing
-`VaCuus.Render.IdleGate.HoverRecolour` test is its end-to-end assertion.
+At the UI thread's existing `// (data snapshots: M3)` marker, after command and input drain and
+**before** `Context::Update()` — over **every** host, not only recordable ones. The per-view record
+loop is gated on `HasView()`, which requires a non-degenerate view size; every UMG view fails that
+until its first Slate tick. Putting the apply there would silently drop updates and then deliver
+them in a burst.
 
 ---
 
-## 5. The per-kind diff rules (correctness, not optimisation)
+## 4. The safety property — **three invariants, not one**
 
-- **Bitfield bools.** Storage is the whole containing integer plus a field mask, and adjacent
-  bitfields share an offset and element size; `CopyValuesInternal` read-modify-writes the
-  destination byte. **A `memcmp` of a scratch buffer gives false positives.** Compare through
-  `GetPropertyValue_InContainer`.
-- **`FText`.** `FTextProperty::Identical` compares *identity*, not display string, when
-  `GIsEditor == false` — i.e. exactly in the builds that ship. Shadow and compare the **display
-  string**.
-- **`FString` / `FName`.** Direct comparison; `FName` compares as index.
-- **Nested structs.** Flattened into the layout at build time; never `FStructProperty::Identical`.
-- **Arrays.** Length first, then element-wise through the flattened element layout. `data-for`
-  reuses elements and appends/truncates at the tail, so growth is cheap; **shrink is the expensive
-  direction** and RmlUi's own code self-flags it. Large arrays get a documented budget, not a
-  silent cliff.
-- **Never `ExportTextItem`.** Removed in 5.8 → `ExportTextItem_Direct`. And the near-identically
-  named `ExportText_Direct` **silently writes nothing** when the value equals its delta, so passing
-  `nullptr` yields an empty string for every default-valued field.
+The failure mode this milestone is built against: **the shadow holds a value the UI never learns
+about.** The result is a stale number on screen forever, with no log line, because the idle gate
+correctly withholds a frame that genuinely did not change. It is also a heisenbug — newly added
+views are unconditionally dirty, so it **looks correct after every live reload**.
+
+v1 claimed one structural fix. The review showed the class needs three invariants, and that the
+shadow has **more than one writer**.
+
+**I1 — the two shadows are identical at bind.** Otherwise frame 1 sets no bit for an unchanged
+field and the UI shows a zero-initialised value until that field happens to change. Enforced by a
+**forced full-bit first publish**.
+
+**I2 — the channel never carries a bit whose value is older than the bit.** §3.5.
+
+**I3 — the shadow has exactly one writer.** v1 asserted this; it was false. `data-value`,
+`data-checked` and any `data-event-click="Health = 50"` assignment reach `VariableDefinition::Set`
+and write the shadow directly, with no VaCuus code involved and no game-thread participation — after
+which the game-side diff compares the live struct against its *own* shadow, sees no change, and the
+two shadows diverge permanently.
+
+**Decision: `Set()` refuses.** It returns `false` and logs once per address. This is clean because
+both RmlUi call sites skip their `DirtyVariable` when `Set` returns false. One-way binding is the
+contract for M3; writing back to gameplay is M4's surface, where it can be routed to a delegate on
+the game thread instead of scribbling on a buffer.
+
+Given all three, the apply loop is still driven by the dirty bits — a field that is not dirty is
+never copied, so "written but not dirtied" cannot be expressed *inside the applier*. The other two
+doors are now closed too.
+
+**The publish itself is proven.** A dirtied variable forces a publish by two independent legs: the
+DOM change regenerates geometry, and `RenderInterface` has **no mutate-in-place operation** for any
+resource, so a change necessarily appears as release + fresh compile — both resource-delta arrays
+non-empty, failing the idle gate — and independently the content hash moves, because handles are
+strictly increasing and never recycled. This is the general mechanism, not a text-specific one, so
+it holds for `data-attr`, `data-class`, `data-style` and `data-if` alike.
+
+---
+
+## 5. Per-kind diff rules (correctness, not optimisation)
+
+- **Bitfield bools.** Storage is the containing integer plus a field mask; adjacent bitfields share
+  an offset and element size, and `CopyValuesInternal` read-modify-writes. **A `memcmp` of a scratch
+  buffer gives false positives.** Compare through `GetPropertyValue_InContainer`.
+- **`FText`.** `FTextProperty::Identical` selects an identity comparison when `!GIsEditor` — i.e.
+  exactly in the builds that ship. It still returns equal for two empty texts, a shared string-table
+  id+key, a shared identity, or two culture-invariant/transient texts (that last falls through to a
+  display-string compare). Shadow and compare the **display string**.
+- **`FString` / `FName` / `FUtf8Str` / `FAnsiStr`.** Direct comparison; `FName` compares as index.
+- **Nested structs.** Flattened at build time; never `FStructProperty::Identical`.
+- **Soft/weak object refs.** Project to a path string at sample time and diff the string.
+- **Never `ExportTextItem`** — removed from `FProperty` in 5.8 (the name survives as a
+  `TStructOpsTypeTraits` customization point) → `ExportTextItem_Direct`. And the near-identically
+  named `ExportText_Direct` **silently writes nothing** when the value equals its delta, so a
+  `nullptr` delta yields an empty string for every default-valued field.
 
 ---
 
@@ -204,92 +239,115 @@ recycles handles. Same argument the codebase already makes for `:hover`, and the
 
 | Stage | Thread | Why |
 |---|---|---|
-| Build layout | any | Type descriptors are immutable once linked; native `UClass`/`UScriptStruct` are GC-root-flagged. **But** `UUserDefinedStruct`/`UBlueprintGeneratedClass` are *not* native and are collectable — a layout over a Blueprint type must hold a strong reference or be rebuilt on recompile. |
-| Sample + diff | **game thread only** | Instance data has *zero* engine synchronisation; reading a live `UObject` while the game thread writes is a plain data race. |
-| Ship | any | The snapshot is a value copy owning its strings, retaining no `UObject*`. |
+| Build layout | any | Type descriptors are immutable once linked. **But** `UUserDefinedStruct` / `UBlueprintGeneratedClass` are not native and are collectable — a layout over a Blueprint type holds a strong reference or is rebuilt on recompile. **[unverified]**: recompiling a BP struct under a live layout. Experiment: bind, edit the struct in the editor, recompile, observe. |
+| Sample + diff | **game thread only** | Instance data has zero engine synchronisation. Must be driven from `UVaCuusSubsystem::Tick` to land inside the existing `GameTick` perf scope; from an actor tick or a Blueprint node it is outside every scope. |
+| Ship | any | Value copy, owns its strings, retains no `UObject*`. |
 | Apply + dirty | **UI thread only** | Everything RmlUi. Asserted. |
+
+The definition registry is **process-wide and UI-thread-only** — `VariableDefinition`s carry only
+`FProperty*`/`UStruct*` and no per-instance state, so one registry is correct and cheaper than one
+per model. Asserted as UI-thread-only state.
+
+**PIE multi-instance is a non-issue, and the reason is worth stating:** there is one `Rml::Context`
+per **view**, not per game instance; models live on the context; view ids are process-unique. The
+same model name in two views cannot collide. The one process-wide non-atomic global on this path,
+`Family<T>::Id()`, is never touched by `BindCustomDataVariable` — which is precisely why this design
+is PIE-safe.
 
 ---
 
 ## 7. Public API
 
 ```cpp
-// C++ and Blueprint
-UVaCuusView::BindModel(FName ModelName, UScriptStruct* Type);   // once
-UVaCuusView::UpdateModel(FName ModelName, const void* Data);    // per frame; diffs internally
-UVaCuusView::MarkModelDirty(FName ModelName, FName FieldPath);  // fine-grained escape hatch
+UVaCuusView::BindModel(FName ModelName, const UScriptStruct* Type);              // once, before LoadDocument
+UVaCuusView::UpdateModel(FName ModelName, const UScriptStruct* Type, const void* Data);
 ```
 
-Blueprint gets `CreateModelFromStruct` / `UpdateWholeModel` with a wildcard struct pin, matching
-the ergonomics of the category leader.
+**`UpdateModel` takes the type**, because v1's `(FName, const void*)` made "wrong type" and "wrong
+size" undiagnosable — both would read arbitrary memory at the layout's offsets, and the first
+`FString` field turns that into a crash. The Blueprint CustomThunk gets the type for free; C++ pays
+the same. Mismatch → `Error`, no write.
 
-**Model lifetime: created once, never removed.** `RemoveDataModel` is a one-way door — `data-model`
-is read only in `Element::SetParent` and `Element::SetDataModel` is private, so a still-loaded
-document is permanently detached afterwards. There is **no unbind API at all**; re-binding a name
-warns and keeps the stale pointer. The API therefore offers no unbind, and says why.
+Wrong-call behaviour is specified, not left to chance: null data → `Warning`, return; called before
+bind → `Warning`, return; wrong thread → `check(IsInGameThread())`, as every other view mutator
+already does; dead view → existing registration gate.
 
-**On document reload the correct action is nothing.** The context, the model and its values all
-survive; only element-attached `DataView`s are destroyed and rebuilt, and RmlUi re-initialises
-those itself. Tearing the model down races the load and can leave the document unbound with only an
-RmlUi error to show for it — and that error is invisible (§8).
+**`MarkModelDirty` is dropped.** `DirtyVariable` accepts top-level names only — a dotted path fails
+the same legality rule and is *silently* inserted where it matches nothing, because the guard is a
+compiled-out assert. And dirtying without copying makes RmlUi re-read a shadow that still holds the
+old value: a footgun whose two failure modes are both silent.
+
+**Ordering requirement: bind the model and every variable before `LoadDocument`.** `data-model` is
+resolved once, in `Element::SetParent`; a `data-for` container address is resolved at view
+initialisation and the view is discarded if it does not resolve. The failure is an RmlUi log line —
+which is invisible (§8) — plus an inert document.
+
+**Model lifetime: created once, never removed.** `RemoveDataModel` is a one-way door and there is
+**no unbind API**; re-binding a name warns and keeps the stale pointer. The API therefore offers no
+unbind, and the header says why.
+
+**On document reload, do nothing.** The context, model and values all survive; only element-attached
+views are rebuilt, and RmlUi re-initialises those itself. VaCuus loads the new document *before*
+closing the old one, so the new document attaches while the model is fully live. Tearing the model
+down races the load.
 
 ---
 
-## 8. Diagnostics, because the library's own are gone
+## 8. Diagnostics, because the library's are gone
 
-**Every RmlUi assert and error log is compiled out in every build we produce.** `NDEBUG` leaves
-`RMLUI_DEBUG` undefined, and `RMLUI_LOG_TYPE_ERROR` is defined as the assert macro. The worst
-instance sits in the machinery this milestone uses: double-registering a struct returns a null
-handle **silently**, and the next member registration null-derefs.
+**Every RmlUi assert and error log is compiled out in every configuration we build** — `NDEBUG=1`
+is keyed on `bUseDebugCRT`, which defaults **false even in Debug**, so `RMLUI_DEBUG` is never
+defined; and `RMLUI_LOG_TYPE_ERROR` is the assert macro. The library's entire self-diagnosis is
+absent, including for M1/M2 code already shipped. Tracked plugin-wide.
 
-Therefore VaCuus checks its own preconditions and logs through `LogVaCuus`:
+So VaCuus checks its own preconditions and logs through `LogVaCuus`: duplicate model name, duplicate
+member, unsupported property kind, illegal wire name (§3.3), layout/type mismatch (§7), and a
+refused `Set` (§4).
 
-- duplicate model name, duplicate member, unsupported property kind, layout/shadow size mismatch,
-  a bind whose type does not match the layout;
-- each model gets its **own `DataTypeRegister`** via `CreateDataModel(name, register)`, so a reload
-  cannot trip the silent double-registration path;
-- `vacuus.DumpModel <view> <model>` prints the layout, the shadow values and the dirty state — the
-  observable the stale-value bug needs, because a milestone whose failure mode is *no output at all*
-  must ship the tool that shows the pipeline is alive.
-
-Tracked separately as a plugin-wide question: whether Development builds should define `RMLUI_DEBUG`.
+**`vacuus.DumpModel <view> <model>`** prints the layout, both shadows, the pending and published
+dirty sets, and the last applied generation. A milestone whose failure mode is *no output at all*
+must ship the tool that shows the pipeline is alive.
 
 ---
 
 ## 9. Budgets
 
-The game-thread gate is **≤0.10 ms/frame total**, currently met with ~25× headroom — but the
-existing measurement is an inference from margin, not complete coverage, and the sample+diff lands
-squarely inside it.
-
 | | Budget | Note |
 |---|---|---|
-| Game-thread sample + diff, 64-field struct | ≤0.02 ms | inside the existing gate, not additional to it |
-| UI-thread apply + dirty | ≤0.05 ms | RmlUi's own measured cost is ~0.7 µs per dirtied variable |
-| Idle (no field changed) | **0 published frames** | the gate must still hold; a bound model must not by itself defeat it |
+| Game-thread sample + diff, 64 scalar fields | ≤0.02 ms | inside the existing ≤0.10 ms gate, not additional to it — and that gate is itself met by inference from margin, not complete coverage |
+| UI-thread copy + `DirtyVariable` | ≤0.02 ms | **[unverified]**: the "~0.7 µs per variable" in the v1 spec cites nothing and no research document supports it. Experiment: dirty N variables in a real context and measure. |
+| **UI-thread re-evaluation caused by dirtying** | ≤0.05 ms | the dominant new cost, and v1 budgeted it nowhere. It runs inside `Context::Update()`, is `O(views under every dirtied name)`, and each expression run constructs a fresh variant stack |
+| Idle (no field changed) | **0 published frames** | |
 
 The last row is a correctness gate wearing a performance costume: if merely *having* a model
-publishes every frame, the milestone has silently undone M2's central result.
+publishes every frame, the milestone has silently undone M2's central result. It is achievable —
+with no dirty variables the view update runs once over an empty vector and exits, nothing writes the
+DOM, the hash is unchanged and there is no resource traffic.
 
-`RunFrame()` currently has **no perf scope at all**, so the apply would be unmeasurable where it
-lands. Adding those scopes is a prerequisite task, not a follow-up.
+`RunFrame()` currently has **no perf scope at all**, so the apply would land where nothing is
+measured. Adding those scopes is a **prerequisite task**, not a follow-up.
 
 ---
 
 ## 10. Testing
 
-- **Unit, per property kind:** change exactly one field of one kind, assert exactly its bit sets.
-  Bitfield bools, `FText` in a cooked-like configuration, and `FName` each get their own case —
-  these are §5's correctness rules and each has a plausible wrong implementation that passes a naive
-  test.
-- **The stale-value regression, restore-the-bug:** write the shadow without dirtying and assert the
-  frame is withheld and the value stale — then assert the shipped design cannot express it.
+- **Per property kind:** change exactly one field, assert exactly its bit sets. Bitfield bools,
+  `FText`, `FName`, and the new UTF8/ANSI string kinds each get a case — each has a plausible wrong
+  implementation that a naive test passes.
+- **The three invariants, each restore-the-bug:** (I1) bind a struct whose defaults differ from
+  zero and assert frame 1 shows the defaults; (I2) publish twice without consuming, then consume,
+  and assert no field regresses; (I3) drive a `data-event` assignment and assert the shadow is
+  unchanged and a warning is logged.
 - **Idle:** a bound, unchanging model publishes nothing over N frames.
-- **Reload:** a model survives a document reload and keeps updating, with no rebind.
-- **End-to-end through a real `Rml::Context`:** a `{{Field}}` expression shows the new value after
-  an update. The idle-gate tests learned this lesson already — five of them drove the recorder
-  directly and would not have caught RmlUi changing behaviour.
-- **Blueprint-authored struct:** wire names are authored names, not mangled ones.
+- **Reload:** a model survives a reload and keeps updating, with no rebind. **Do not reload between
+  a write and its assertion** — reload masks a missing dirty flag.
+- **End-to-end through a real `Rml::Context`:** `{{Field}}` shows the new value. Six of the seven
+  existing idle-gate tests drive the recorder directly and would not catch RmlUi changing behaviour.
+- **Illegal names:** a property called `Size` is refused with a diagnostic, not silently absent.
+- **Blueprint wire names:** assert `GetAuthoredName() == chop(GetName())` rather than comparing to a
+  literal — `UUserDefinedStruct::GetAuthoredNameForField` has two *separate* implementations, editor
+  and cooked, which agree for a renamed member but **not** for a never-renamed one (editor yields
+  `MemberVar_2`, cooked yields `MemberVar`). An editor automation test only exercises the first.
 
 ---
 
@@ -297,17 +355,58 @@ lands. Adding those scopes is a prerequisite task, not a follow-up.
 
 | Risk | Mitigation |
 |---|---|
-| Stale-value bug (§4) | Structurally unexpressible; plus a restore-the-bug test |
-| A diff rule misses a change | Per-kind tests; the three known-sharp kinds each get their own |
-| Blueprint type recompiled under a live layout | Layout holds a strong ref; rebuild on recompile. **[unverified]** — needs an experiment recompiling a BP struct with a bound model live |
-| Array shrink cost on a large `data-for` | Documented budget; measure at 200 rows before committing to a v1 number |
-| Game-thread budget eaten by the diff | Flat command list from the start; measured per task, not at the end |
+| Stale value | §4's three invariants, one restore-the-bug test each |
+| A diff rule misses a change | Per-kind tests; the three sharp kinds each get their own |
+| BP struct recompiled under a live layout | Strong ref + rebuild. **[unverified]** — experiment in §6 |
+| Re-evaluation cost dominates | Budgeted in §9; measured per task |
+| Illegal property name | §3.3, with a test |
 | RmlUi's silent failures | §8 |
 
 ---
 
-## 12. Out of scope for M3
+## 12. M3b — arrays and `data-for`
 
-JS access to models (M4 — the models are the same objects, so no rework), maps/sets, object
-properties, a descriptor asset for per-property control, and two-way binding from UI back into
-gameplay (`data-event-*` handlers exist; routing them to Unreal delegates is M4's surface).
+Split out because **everything in it depends on a measurement nobody has taken**, while everything in
+M3a is settled by source already read.
+
+The seam is real, not administrative. A flat entry keyed on a byte offset cannot address an array
+element — its address is `FScriptArrayHelper::GetRawPtr(i)`, valid only for the current `Num()`. And
+RmlUi dirties **top-level names only**, so the only granularity that maps onto `DirtyVariable` is
+**one bit per top-level array**, which means the apply deep-copies the whole array whenever any
+element changes. Whether that is acceptable at 200 rows is a measurement.
+
+M3b carries: the array definition including the `.size` child (handled inline by RmlUi's own array
+definition — a hand-written one that forgets it breaks `{{ Killfeed.size }}` with only a warning);
+the bit-granularity decision; the shrink cost (RmlUi's own view cleanup is self-flagged quadratic and
+shrink is the expensive direction, while growth appends at the tail); a 200-row budget; and the
+killfeed end to end.
+
+## 12.1 Also out of scope
+
+JS access to the same models (M4 — same objects, no rework), two-way binding (M4, via delegates
+rather than shadow writes — see §4/I3), maps and sets, hard object properties, and a descriptor
+asset for per-property control.
+
+---
+
+## 13. What v1 got wrong, and why it matters
+
+Recorded because each was a *plausible* error, and the pattern is worth remembering.
+
+1. **The channel protocol regressed values** (§3.5). v1 inherited "OR dirty bits into the unpublished
+   slot" from the v1 architecture spec without checking what `TTripleBuffer` actually recycles. A
+   design inherited from an approved document still needs its mechanism read.
+2. **Two incompatible shadow layouts** (§3.1). v1 gave each entry a struct offset *and* a shadow
+   offset, which are the same number only if the shadow is a real struct instance — which v1 did not
+   say. Two half-specified designs read as one complete one.
+3. **"The shadow has exactly one writer" was false** (§4/I3). RmlUi's own `data-value` /
+   `data-checked` / `data-event` assignment path writes it. A safety argument that names its writers
+   must enumerate them from the library's code, not from ours.
+4. **Arrays broke the central data structure** (§12) and v1 described them in one line as though they
+   fit.
+5. **An untyped `UpdateModel`** (§7) made two of the four wrong-call cases undiagnosable.
+6. **Name legality was never considered** (§3.3) — and `Size` is both an extremely common UE property
+   name and an RmlUi reserved word.
+
+Two things v1 got right and that survived review intact: **finding (b)** as the organising constraint
+of the whole milestone, and **§9's idle row** as a correctness gate wearing a performance costume.
