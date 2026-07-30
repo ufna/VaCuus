@@ -741,7 +741,7 @@ publish on the frame a texture lands.
       any more (the recorder header moved to Private in M1's wrap-up) — move `VaCuusRml` from
       `PublicDependencyModuleNames` to `PrivateDependencyModuleNames` and delete the stale
       comment. Rebuild to confirm.
-- [ ] **Step 13.3: Task 10 re-review follow-ups (`VaCuus-akj.6.28`).** Added mid-flight; the
+- [ ] **Step 13.3: Task 10 re-review follow-ups (`VaCuus-akj.6.29`).** Added mid-flight; the
       re-review of Task 10's fixes approved with five minor items, and this is the right task to
       absorb them. The one that matters is a **contract gap, not a bug**: after the C1 fix the RmlUi
       cache clear lives in the **editor-only** `FVaCuusLiveReload::ReloadAllLiveViews`, while
@@ -754,7 +754,7 @@ publish on the frame a texture lands.
       `.gitignore` line (it must be written inside a watched root, which is git-tracked);
       `DebouncePollSeconds` is still public under a claim no test honours (I5 left one constant
       behind); and `FlushNow()` now has no production caller. Nits listed on the bead.
-- [ ] **Step 13.4: Commit:** `git commit -am "fix: exact-EOF Tell(); private VaCuusRml dep; task 10 review follow-ups (closes VaCuus-akj.6.1, VaCuus-akj.6.4, VaCuus-akj.6.28)"`
+- [ ] **Step 13.4: Commit:** `git commit -am "fix: exact-EOF Tell(); private VaCuusRml dep; task 10 review follow-ups (closes VaCuus-akj.6.1, VaCuus-akj.6.4, VaCuus-akj.6.29)"`
 
 ---
 
