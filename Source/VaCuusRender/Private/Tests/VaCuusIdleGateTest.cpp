@@ -433,8 +433,15 @@ bool FVaCuusIdleGateHashPaddingTest::RunTest(const FString& Parameters)
 		VaCuusHashFrameContent(Clean) == VaCuusHashFrameContent(Poisoned));
 
 	// Positive controls, so a hash function that returned a constant could not pass.
-	// One per hashed field group, because a field left out of FVaCuusCommandHashImage
-	// is exactly the failure mode that would silently stop triggering publishes.
+	//
+	// PER SCALAR, NOT PER FIELD GROUP, which is a deliberate upgrade over the obvious
+	// version of this test. Translation, Scissor and Transform are copied into
+	// FVaCuusCommandHashImage element by element -- nine hand-written assignments in
+	// VaCuusHashFrameContent -- so mutating one representative scalar per group only proves
+	// the GROUP participates. A copy-paste slip like `Image.Scissor[1] = Command.Scissor.Min.X;`
+	// would leave Scissor.Min.Y permanently unhashed, and a test that only ever changed
+	// Scissor.Max.Y would still pass while the gate withheld a frame whose clip rect moved.
+	// The nine assignments are correct today; these controls are what keeps them so.
 	const uint64 Baseline = VaCuusHashFrameContent(Clean);
 
 	const auto TestFieldIsHashed = [this, &Clean, Baseline](const TCHAR* Field, TFunctionRef<void(FVaCuusCommand&)> Mutate)
@@ -448,9 +455,26 @@ bool FVaCuusIdleGateHashPaddingTest::RunTest(const FString& Parameters)
 	TestFieldIsHashed(TEXT("Type"), [](FVaCuusCommand& Command) { Command.Type = EVaCuusCommandType::SetTransform; });
 	TestFieldIsHashed(TEXT("Geometry"), [](FVaCuusCommand& Command) { Command.Geometry = 8; });
 	TestFieldIsHashed(TEXT("Texture"), [](FVaCuusCommand& Command) { Command.Texture = 10; });
-	TestFieldIsHashed(TEXT("Translation"), [](FVaCuusCommand& Command) { Command.Translation.Y = 14.f; });
-	TestFieldIsHashed(TEXT("Scissor"), [](FVaCuusCommand& Command) { Command.Scissor.Max.Y = 5; });
-	TestFieldIsHashed(TEXT("Transform"), [](FVaCuusCommand& Command) { Command.Transform.M[3][1] = 19.f; });
+
+	// Translation: both components. FillCommand sets (11, 13), so each of these really is a
+	// change to the one scalar named and to nothing else.
+	TestFieldIsHashed(TEXT("Translation.X"), [](FVaCuusCommand& Command) { Command.Translation.X = 12.f; });
+	TestFieldIsHashed(TEXT("Translation.Y"), [](FVaCuusCommand& Command) { Command.Translation.Y = 14.f; });
+
+	// Scissor: all four corners, in the order they are copied. FillCommand sets
+	// FIntRect(1, 2, 3, 4), i.e. Min(1,2) Max(3,4).
+	TestFieldIsHashed(TEXT("Scissor.Min.X"), [](FVaCuusCommand& Command) { Command.Scissor.Min.X = -1; });
+	TestFieldIsHashed(TEXT("Scissor.Min.Y"), [](FVaCuusCommand& Command) { Command.Scissor.Min.Y = -2; });
+	TestFieldIsHashed(TEXT("Scissor.Max.X"), [](FVaCuusCommand& Command) { Command.Scissor.Max.X = 6; });
+	TestFieldIsHashed(TEXT("Scissor.Max.Y"), [](FVaCuusCommand& Command) { Command.Scissor.Max.Y = 5; });
+
+	// Transform is a single Memcpy of all 16 cells rather than 16 assignments, so it cannot
+	// have the per-element slip above -- but it CAN be given the wrong length or the wrong
+	// source. Two cells in different rows, one of them (M[3][0]) a cell FillCommand wrote to
+	// a non-default value, so a copy that stopped short of the last row would show up.
+	TestFieldIsHashed(TEXT("Transform.M[0][0]"), [](FVaCuusCommand& Command) { Command.Transform.M[0][0] = 2.f; });
+	TestFieldIsHashed(TEXT("Transform.M[3][0]"), [](FVaCuusCommand& Command) { Command.Transform.M[3][0] = 23.f; });
+	TestFieldIsHashed(TEXT("Transform.M[3][1]"), [](FVaCuusCommand& Command) { Command.Transform.M[3][1] = 19.f; });
 
 	FVaCuusCommandBuffer Resized = Clean;
 	Resized.ViewSize = FIntPoint(1920, 1081);

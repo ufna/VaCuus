@@ -871,10 +871,20 @@ TUniquePtr<FVaCuusCommandBuffer> FVaCuusRecordingRenderInterface::EndFrameAndPub
 	// document (Context.cpp:207-214) and UpdateLayout() ends with layout_dirty = false
 	// (ElementDocument.cpp:476-493). And it is the wrong question regardless -- a colour
 	// change, a hover restyle or a scroll all change what is drawn without dirtying
-	// layout. RenderManager carries no version counter, and GetNextUpdateDelay
-	// (Include/RmlUi/Core/Context.h:294) is the lowest requested TIMER timestamp
-	// (documented at :286), not a change flag. So the frame is recorded as usual and
-	// compared afterwards.
+	// layout. RenderManager carries no version counter either.
+	//
+	// GetNextUpdateDelay (Include/RmlUi/Core/Context.h:294) deserves more than the
+	// brush-off it used to get here -- RmlUi presents it as exactly this kind of
+	// mechanism, "used by elements and the application to implement ON-DEMAND RENDERING
+	// and thus drastically save CPU/GPU" (:284-286, on RequestNextUpdate, which is what
+	// feeds it). It still cannot answer the question this gate asks, for three reasons
+	// its own contract states (:289-293): it is FORWARD-looking (when Update() should next
+	// be called, not what the last frame produced); it returns INFINITY when the answer is
+	// "wait for user input", which is the steady state of an idle document and says
+	// nothing about whether that document was already drawn; and it is a schedule, so
+	// acting on it means skipping Update()/Render() -- a different, larger feature than
+	// withholding a publish, and one that would stop input and animation from being
+	// serviced on time. So the frame is recorded as usual and compared afterwards.
 	//
 	// WHY DROPPING THIS BUFFER LOSES NOTHING: each buffer repaints the whole frame
 	// from scratch (that is why the replayer draws only the newest queued one and

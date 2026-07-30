@@ -136,8 +136,11 @@ void FVaCuusReplayRenderer::ReleaseResources()
 	Geometry.Empty();
 	Textures.Empty();
 	OutputRT.SafeRelease();
+
 	// Reset the guard: after teardown this replayer can only be paired with a
-	// fresh recorder, whose generations restart from 1.
+	// fresh recorder, whose generations restart from 1. Since the idle gate this
+	// is not merely hygiene -- see the note on the declaration for why a partial
+	// release would blank the UI permanently rather than for one frame.
 	LastConsumedGeneration = 0;
 }
 

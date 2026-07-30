@@ -46,6 +46,45 @@ struct FVaCuusCommand
 };
 
 /**
+ * MEMBER COUNT OF FVaCuusCommand, and the only thing that can actually detect a field
+ * added to it -- which is what the tripwire in VaCuusHashFrameContent() below promises.
+ *
+ * WHY sizeof AND offsetof ARE NOT ENOUGH, measured rather than reasoned about: declaring a
+ * uint8, uint16 or uint32 between Type and Geometry puts it in the seven bytes of padding
+ * at offsets 1..7. It shifts NOTHING -- sizeof stays 112 and every other member keeps its
+ * offset -- so a layout tripwire built only from sizeof and offsetof compiles it silently,
+ * however many offsets it pins. The field then never reaches
+ * FVaCuusCommandHashImage, the hash cannot see it change, and the gate reports "unchanged"
+ * for a frame that is not: a UI frozen on stale pixels with no diagnostic anywhere. That is
+ * the one failure mode the idle short-circuit must not have, so it is asserted directly.
+ *
+ * FVaCuusCommand is an aggregate (no user-declared constructors, no bases, no private
+ * members; the default member initialisers do not change that in C++14 and later), so its
+ * member count is observable: brace initialisation accepts at most one initialiser per
+ * member, and one too many is ill-formed in the immediate context of a requires-expression.
+ * The offsetof clauses still earn their place -- they catch a REORDER, which keeps both
+ * sizeof and the member count intact.
+ */
+namespace VaCuusCommandLayout
+{
+/** Stands in for any member's type: converts to whatever the member happens to be. */
+struct FAnyMember
+{
+	template <typename T>
+	constexpr operator T() const;
+};
+
+/** Can FVaCuusCommand be brace-initialised from exactly this many initialisers? */
+template <typename... TInitialisers>
+constexpr bool bTakes = requires { FVaCuusCommand{TInitialisers{}...}; };
+
+using FAny = FAnyMember;
+
+constexpr bool bHasExactlySixMembers = bTakes<FAny, FAny, FAny, FAny, FAny, FAny> &&	//
+									   !bTakes<FAny, FAny, FAny, FAny, FAny, FAny, FAny>;
+} // namespace VaCuusCommandLayout
+
+/**
  * Bit-identical mirror of Rml::Vertex (Vector2f position, ColourbPremultiplied
  * colour, Vector2f tex_coord); the recorder memcpy's the vertex stream.
  *
@@ -194,7 +233,29 @@ static_assert(sizeof(FVaCuusCommandHashImage) ==
  */
 inline uint64 VaCuusHashFrameContent(const FVaCuusCommandBuffer& Buffer)
 {
-	static_assert(sizeof(FVaCuusCommand) == 112 && offsetof(FVaCuusCommand, Geometry) == 8,
+	// THE COMPLETENESS TRIPWIRE, in two halves because neither is sufficient on its own.
+	//
+	// The member count catches an ADDED or REMOVED field wherever it is declared, including
+	// the case sizeof and offsetof provably cannot see -- a small scalar tucked into the
+	// seven bytes of padding at offsets 1..7, which shifts nothing at all. See
+	// VaCuusCommandLayout above; that hole was verified by building with such a field
+	// present, not argued.
+	//
+	// The offsets catch a REORDER, which leaves both the total size and the member count
+	// alone: swap Texture and Translation and sizeof is still 112 with six members, but the
+	// nine hand-written scalar copies below would be reading the wrong fields.
+	//
+	// Either way the failure being prevented is the same one, and it is the worst kind this
+	// feature can have: a field that never reaches FVaCuusCommandHashImage cannot make the
+	// hash differ, so a frame that changed reads as "unchanged" and is withheld -- a UI
+	// frozen on stale pixels, with nothing logged anywhere.
+	static_assert(VaCuusCommandLayout::bHasExactlySixMembers,
+		"FVaCuusCommand gained or lost a field. Every field that reaches the replayer must be copied into "
+		"FVaCuusCommandHashImage below, or an unhashed field silently stops triggering a publish");
+	static_assert(sizeof(FVaCuusCommand) == 112 && offsetof(FVaCuusCommand, Type) == 0 &&
+			offsetof(FVaCuusCommand, Geometry) == 8 && offsetof(FVaCuusCommand, Texture) == 16 &&
+			offsetof(FVaCuusCommand, Translation) == 24 && offsetof(FVaCuusCommand, Scissor) == 32 &&
+			offsetof(FVaCuusCommand, Transform) == 48,
 		"FVaCuusCommand's layout changed. Every field that reaches the replayer must be copied into "
 		"FVaCuusCommandHashImage below, or an unhashed field silently stops triggering a publish");
 
