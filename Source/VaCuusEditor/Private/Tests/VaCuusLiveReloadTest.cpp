@@ -50,6 +50,71 @@ public:
 	virtual Rml::Context* GetContext() const override { return nullptr; }
 	virtual void RecordAndPublishFrame() override {}
 };
+
+/**
+ * A standalone UGameInstance carrying a live UVaCuusSubsystem, torn down in the order the
+ * subsystem needs (Shutdown() clears the world context pointer, so the world is taken
+ * first).
+ *
+ * BUILT THE HARD WAY for the reason VaCuus.UMG.Widget spells out: a bare
+ * NewObject<UGameInstance>() has an EMPTY subsystem collection, so there would be no
+ * UVaCuusSubsystem to find. UGameInstance::InitializeStandalone() creates a world CONTEXT
+ * (EWorldType::Game -- GameInstance.cpp:193), a world, and then runs Init(), which
+ * initializes the collection. That world type is also the whole reason
+ * FVaCuusLiveReload::ReloadAllLiveViews accepts Game as well as PIE: it is what lets these
+ * tests exercise the real GEngine->GetWorldContexts() walk rather than a hand-fed subsystem.
+ */
+struct FStandaloneInstance
+{
+	TStrongObjectPtr<UGameInstance> GameInstance;
+	UVaCuusSubsystem* Subsystem = nullptr;
+
+	FStandaloneInstance()
+	{
+		GameInstance.Reset(NewObject<UGameInstance>(GEngine));
+		GameInstance->InitializeStandalone();
+		Subsystem = GameInstance->GetSubsystem<UVaCuusSubsystem>();
+	}
+
+	~FStandaloneInstance()
+	{
+		UWorld* World = GameInstance->GetWorld();
+		GameInstance->Shutdown();
+		if (World)
+		{
+			GEngine->DestroyWorldContext(World);
+			World->DestroyWorld(false);
+		}
+	}
+
+	FStandaloneInstance(const FStandaloneInstance&) = delete;
+	FStandaloneInstance& operator=(const FStandaloneInstance&) = delete;
+};
+
+/**
+ * The preconditions every test below shares. Returns a reason to skip, or empty.
+ *
+ * Skips rather than fails: a session without threads or without Slate cannot host a game
+ * instance at all, and reporting that as a live-reload failure would be a lie.
+ */
+static FString WhySkip()
+{
+	if (!FPlatformProcess::SupportsMultithreading())
+	{
+		return TEXT("no multithreading support, so there is no worker thread to drive");
+	}
+	if (!FSlateApplication::IsInitialized())
+	{
+		// UGameInstance::Init() calls FSlateApplication::Get() unconditionally to register
+		// its console command listener.
+		return TEXT("no FSlateApplication, so a game instance cannot be initialized");
+	}
+	if (GEngine == nullptr)
+	{
+		return TEXT("no GEngine");
+	}
+	return FString();
+}
 }	 // namespace VaCuusLiveReloadTest
 
 /**
@@ -199,13 +264,9 @@ bool FVaCuusLiveReloadFilterTest::RunTest(const FString& Parameters)
  * The dispatch path, end to end on the game thread: a live view with a file document is
  * found through the world contexts and its load is re-issued.
  *
- * THE GAME INSTANCE IS BUILT THE HARD WAY for the reason VaCuus.UMG.Widget spells out --
- * a bare NewObject<UGameInstance>() has an EMPTY subsystem collection, so there would be
- * no UVaCuusSubsystem to find. UGameInstance::InitializeStandalone() creates a world
- * CONTEXT (EWorldType::Game), a world, and then runs Init(), which initializes the
- * collection. The world type matters here: it is why FVaCuusLiveReload::ReloadAllLiveViews
- * accepts Game as well as PIE, and it is what makes this test exercise the real
- * GEngine->GetWorldContexts() walk rather than a hand-fed subsystem.
+ * The game instance comes from FStandaloneInstance -- see its comment for why it is built
+ * the hard way and why its EWorldType::Game context is what makes this a real
+ * GetWorldContexts() walk rather than a hand-fed subsystem.
  *
  * NOT COVERED: multi-client PIE (several contexts at once). The GetWorldContexts() loop is
  * the same code either way; what a second context would add is only a second iteration.
@@ -217,23 +278,11 @@ bool FVaCuusLiveReloadDispatchTest::RunTest(const FString& Parameters)
 {
 	using namespace VaCuusLiveReloadTest;
 
-	if (!FPlatformProcess::SupportsMultithreading())
+	const FString SkipReason = WhySkip();
+	if (!SkipReason.IsEmpty())
 	{
-		AddInfo(TEXT("Skipped: no multithreading support, so there is no worker thread to drive"));
+		AddInfo(FString::Printf(TEXT("Skipped: %s"), *SkipReason));
 		return true;
-	}
-
-	if (!FSlateApplication::IsInitialized())
-	{
-		// UGameInstance::Init() calls FSlateApplication::Get() unconditionally to register
-		// its console command listener.
-		AddInfo(TEXT("Skipped: no FSlateApplication, so a game instance cannot be initialized"));
-		return true;
-	}
-
-	if (!TestNotNull(TEXT("GEngine"), GEngine))
-	{
-		return false;
 	}
 
 	FVaCuusModule& Module = FVaCuusModule::Get();
@@ -250,22 +299,8 @@ bool FVaCuusLiveReloadDispatchTest::RunTest(const FString& Parameters)
 		Module.StopUIThread();
 	};
 
-	TStrongObjectPtr<UGameInstance> GameInstance(NewObject<UGameInstance>(GEngine));
-	GameInstance->InitializeStandalone();
-
-	ON_SCOPE_EXIT
-	{
-		// Shutdown() clears the world context pointer, so the world has to be taken first.
-		UWorld* World = GameInstance->GetWorld();
-		GameInstance->Shutdown();
-		if (World)
-		{
-			GEngine->DestroyWorldContext(World);
-			World->DestroyWorld(false);
-		}
-	};
-
-	UVaCuusSubsystem* Subsystem = GameInstance->GetSubsystem<UVaCuusSubsystem>();
+	FStandaloneInstance Instance;
+	UVaCuusSubsystem* Subsystem = Instance.Subsystem;
 	if (!TestNotNull(TEXT("UVaCuusSubsystem on the standalone game instance"), Subsystem))
 	{
 		return false;
@@ -323,6 +358,103 @@ bool FVaCuusLiveReloadDispatchTest::RunTest(const FString& Parameters)
 	Subsystem->DestroyView(FileView);
 	TestFalse(TEXT("A destroyed view does not reload"), FileView->ReloadDocument());
 	TestEqual(TEXT("Only the surviving view reloads"), Subsystem->ReloadAllDocuments(), 1);
+
+	return true;
+}
+
+/**
+ * THE CACHE CLEAR, which is what actually makes an RCSS edit visible -- and which used to
+ * ride as a flag on a per-view load command, behind the drain's FindHost() gate.
+ *
+ * The two properties that bug violated, and that this test exists to keep:
+ *
+ *  1. A FLUSH THAT REACHES ZERO LIVE VIEWS STILL CLEARS. RmlUi's parsed-stylesheet and
+ *     template caches are process-global statics keyed on file name, and they outlive a PIE
+ *     session (UVaCuusSubsystem::Deinitialize leaves the UI thread running). So "stop PIE,
+ *     edit the .rcss, press Play" must not re-load the RML from disk and then take the
+ *     PREVIOUS session's stylesheet. With the clear on the load command, that flush enqueued
+ *     nothing and cleared nothing -- silently, and only for RCSS, which is the edit people
+ *     make most.
+ *  2. ONE FAN-OUT IS ONE CLEAR, not one per view. Three reloaded views used to clear three
+ *     times, and clears 2 and 3 discarded the stylesheet view 1 had just re-parsed.
+ *
+ * Observed through FVaCuusUIThread::GetNumAssetCacheClears() because RmlUi offers nothing to
+ * ask about its caches. Trigger()+WaitForFrameCount() rather than a sleep: nothing else wakes
+ * the UI thread here (no world is ticking the subsystem).
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusLiveReloadAssetCachesTest, "VaCuus.LiveReload.AssetCaches",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusLiveReloadAssetCachesTest::RunTest(const FString& Parameters)
+{
+	using namespace VaCuusLiveReloadTest;
+
+	const FString SkipReason = WhySkip();
+	if (!SkipReason.IsEmpty())
+	{
+		AddInfo(FString::Printf(TEXT("Skipped: %s"), *SkipReason));
+		return true;
+	}
+
+	FVaCuusModule& Module = FVaCuusModule::Get();
+	FVaCuusUIThread* UIThread = Module.GetOrStartUIThread();
+	if (!TestNotNull(TEXT("UI thread"), UIThread))
+	{
+		return false;
+	}
+
+	ON_SCOPE_EXIT
+	{
+		Module.StopUIThread();
+	};
+
+	// Drives one UI frame and returns how many clears it applied since Before.
+	const auto ClearsAfterOneFrame = [this, UIThread](uint64 Before) -> uint64
+	{
+		const uint64 FrameBefore = UIThread->GetFrameCount();
+		UIThread->Trigger();
+		if (!TestTrue(TEXT("A UI frame ran"), UIThread->WaitForFrameCount(FrameBefore + 1, 10.0)))
+		{
+			return 0;
+		}
+		return UIThread->GetNumAssetCacheClears() - Before;
+	};
+
+	//~ (1) NO VIEWS AT ALL. No game instance exists yet, so the fan-out finds nothing --
+	//~ which is exactly the "edited the CSS between PIE sessions" case.
+	{
+		const uint64 ClearsBefore = UIThread->GetNumAssetCacheClears();
+		TestEqual(TEXT("(1) With no game instance, no view is reloaded"),
+			FVaCuusLiveReload::ReloadAllLiveViews(TEXT("automation")), 0);
+		TestEqual(TEXT("(1) ...and the RmlUi asset caches are dropped anyway"),
+			ClearsAfterOneFrame(ClearsBefore), static_cast<uint64>(1));
+	}
+
+	//~ (2) TWO VIEWS, ONE CLEAR.
+	{
+		FStandaloneInstance Instance;
+		UVaCuusSubsystem* Subsystem = Instance.Subsystem;
+		if (!TestNotNull(TEXT("UVaCuusSubsystem on the standalone game instance"), Subsystem))
+		{
+			return false;
+		}
+
+		UVaCuusView* FirstView = Subsystem->CreateView(MakeUnique<FStubHost>(), FIntPoint(320, 200));
+		UVaCuusView* SecondView = Subsystem->CreateView(MakeUnique<FStubHost>(), FIntPoint(320, 200));
+		if (!TestNotNull(TEXT("First view"), FirstView) || !TestNotNull(TEXT("Second view"), SecondView))
+		{
+			return false;
+		}
+
+		FirstView->LoadDocument(TEXT("m1_hud.rml"));
+		SecondView->LoadDocument(TEXT("m1_hud.rml"));
+
+		const uint64 ClearsBefore = UIThread->GetNumAssetCacheClears();
+		TestEqual(TEXT("(2) Both views reloaded"),
+			FVaCuusLiveReload::ReloadAllLiveViews(TEXT("automation")), 2);
+		TestEqual(TEXT("(2) ...at the cost of exactly one cache clear, not one per view"),
+			ClearsAfterOneFrame(ClearsBefore), static_cast<uint64>(1));
+	}
 
 	return true;
 }

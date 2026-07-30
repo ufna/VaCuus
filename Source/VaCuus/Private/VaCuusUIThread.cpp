@@ -501,8 +501,7 @@ void FVaCuusUIThread::EnqueueRemoveView(uint32 ViewId)
 	Enqueue(MoveTemp(Command));
 }
 
-void FVaCuusUIThread::EnqueueLoadDocumentFile(uint32 ViewId, const FString& VfsPath, uint64 LoadSerial, FIntPoint ViewSize,
-	bool bClearAssetCaches)
+void FVaCuusUIThread::EnqueueLoadDocumentFile(uint32 ViewId, const FString& VfsPath, uint64 LoadSerial, FIntPoint ViewSize)
 {
 	FVaCuusUICommand Command;
 	Command.Kind = EVaCuusCommandKind::LoadDocumentFile;
@@ -510,7 +509,6 @@ void FVaCuusUIThread::EnqueueLoadDocumentFile(uint32 ViewId, const FString& VfsP
 	Command.Payload = VfsPath;
 	Command.ViewSize = ViewSize;
 	Command.LoadSerial = LoadSerial;
-	Command.bClearAssetCaches = bClearAssetCaches;
 	Enqueue(MoveTemp(Command));
 }
 
@@ -555,6 +553,14 @@ void FVaCuusUIThread::EnqueueShutdown()
 {
 	FVaCuusUICommand Command;
 	Command.Kind = EVaCuusCommandKind::Shutdown;
+	Enqueue(MoveTemp(Command));
+}
+
+void FVaCuusUIThread::EnqueueClearAssetCaches()
+{
+	// No ViewId: process-global caches, applied before the drain's per-view routing.
+	FVaCuusUICommand Command;
+	Command.Kind = EVaCuusCommandKind::ClearAssetCaches;
 	Enqueue(MoveTemp(Command));
 }
 
@@ -614,6 +620,11 @@ uint64 FVaCuusUIThread::GetFrameCount() const
 int32 FVaCuusUIThread::GetNumViews() const
 {
 	return NumViews.load(std::memory_order_acquire);
+}
+
+uint64 FVaCuusUIThread::GetNumAssetCacheClears() const
+{
+	return NumAssetCacheClears.load(std::memory_order_acquire);
 }
 
 bool FVaCuusUIThread::WaitForFrameCount(uint64 Target, double TimeoutSeconds)
@@ -816,6 +827,12 @@ void FVaCuusUIThread::DrainCommands()
 			continue;
 		}
 
+		if (Command->Kind == EVaCuusCommandKind::ClearAssetCaches)
+		{
+			ClearAssetCaches();
+			continue;
+		}
+
 		IVaCuusDocumentHost* Host = FindHost(Command->ViewId);
 		if (Host == nullptr)
 		{
@@ -836,26 +853,6 @@ void FVaCuusUIThread::DrainCommands()
 		switch (Command->Kind)
 		{
 			case EVaCuusCommandKind::LoadDocumentFile:
-				if (Command->bClearAssetCaches)
-				{
-					// LIVE RELOAD'S ACTUAL MECHANISM, and it has to happen here rather than
-					// anywhere on the game thread: Rml::Factory keys parsed stylesheets and
-					// templates on their file name and hands the same StyleSheetContainer back
-					// for a second load, so re-loading an .rml whose .rcss changed would show
-					// the OLD colours. RmlUi does exactly this pair in its own
-					// ElementDocument::ReloadStyleSheet (ElementDocument.cpp:296-297).
-					//
-					// Process-wide, not per-view: the caches are global statics, so one clear
-					// serves every view reloaded in this drain. Textures are deliberately NOT
-					// released -- see the note in FVaCuusLiveReload.
-					Rml::Factory::ClearStyleSheetCache();
-					Rml::Factory::ClearTemplateCache();
-
-					UE_LOG(LogVaCuus, Verbose,
-						TEXT("View %u: cleared the RmlUi stylesheet/template caches before reloading '%s'"),
-						Command->ViewId, *Command->Payload);
-				}
-
 				Host->LoadDocumentFromFile(Command->Payload, Command->LoadSerial);
 				break;
 
@@ -977,6 +974,33 @@ void FVaCuusUIThread::RemoveView(uint32 ViewId)
 	RetiredHosts.Add(MoveTemp(Host));
 
 	UE_LOG(LogVaCuus, Log, TEXT("View %u removed from the UI thread (%d view(s) left)"), ViewId, Hosts.Num());
+}
+
+void FVaCuusUIThread::ClearAssetCaches()
+{
+	check(IsInUIThread());
+
+	// HAS TO HAPPEN HERE rather than anywhere on the game thread: Rml::Factory keys
+	// parsed stylesheets and templates on their file name and hands the same
+	// StyleSheetContainer back for a second load, so re-loading an .rml whose .rcss
+	// changed would show the OLD colours. RmlUi does exactly this pair itself, in
+	// ElementDocument::ReloadStyleSheet (ElementDocument.cpp:296-297).
+	//
+	// SAFE WITH OTHER DOCUMENTS STILL UP, which is not obvious and is the reason this is
+	// one process-wide clear rather than something scoped to the view being reloaded: an
+	// ElementDocument never retains the cached StyleSheetContainer*. It merges (or
+	// combines) it into a SharedPtr of its own -- ElementDocument.cpp:200-215, member at
+	// ElementDocument.h:165 -- so dropping the cache cannot invalidate anything a live
+	// document is holding. A future reader tempted to make this per-view should know
+	// there is nothing to protect.
+	Rml::Factory::ClearStyleSheetCache();
+	Rml::Factory::ClearTemplateCache();
+
+	// Textures are deliberately NOT released -- see the note in FVaCuusLiveReload.
+	NumAssetCacheClears.fetch_add(1, std::memory_order_release);
+
+	UE_LOG(LogVaCuus, Verbose, TEXT("Dropped the RmlUi stylesheet/template caches (clear #%llu)"),
+		NumAssetCacheClears.load(std::memory_order_relaxed));
 }
 
 int32 FVaCuusUIThread::DrainAndDiscardCommands()

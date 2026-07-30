@@ -142,16 +142,16 @@ public:
 	const FString& GetDocumentPath() const { return DocumentPath; }
 
 	/**
-	 * Re-issues the last file load, forcing RmlUi to re-read the document AND to drop
-	 * its parsed-stylesheet/template caches first (controller decision D21's editor live
-	 * reload, and what vacuus.ReloadUI does).
+	 * Re-issues the last file load, forcing RmlUi to re-read the document (controller
+	 * decision D21's editor live reload, and half of what vacuus.ReloadUI does).
 	 *
-	 * WHY THE CACHE DROP IS PART OF IT AND NOT AN EXTRA: Rml::Factory keys parsed
-	 * stylesheets on their file name, so a second LoadDocument of the same .rml happily
-	 * re-parses the RML and then reuses the CACHED .rcss -- an edited colour would not
-	 * appear and live reload would look broken for the most common kind of edit there is.
-	 * The clear happens on the UI thread, immediately before the load, inside the same
-	 * command.
+	 * THE OTHER HALF IS NOT HERE, and the split is deliberate: an RML re-read alone shows
+	 * stale CSS, because Rml::Factory keys parsed stylesheets on their file name and hands
+	 * the cached one back. Dropping that cache is a PROCESS-WIDE act that must also happen
+	 * when no view is live at all (an .rcss edited between PIE sessions), so it belongs to
+	 * the dispatcher -- FVaCuusUIThread::EnqueueClearAssetCaches(), which
+	 * FVaCuusLiveReload::ReloadAllLiveViews() enqueues once before fanning out over the
+	 * views. Calling this directly, without that clear, re-reads the RML only.
 	 *
 	 * Returns false when there is nothing to reload (invalid view, or no file document).
 	 */

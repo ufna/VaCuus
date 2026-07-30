@@ -33,6 +33,16 @@ enum class EVaCuusCommandKind : uint8
 	/** Retires the view: closes its document, drops its context, keeps the host retired (see below). */
 	RemoveView,
 
+	/**
+	 * Drops RmlUi's parsed stylesheet/template caches. Carries nothing, and
+	 * deliberately carries no ViewId: the caches are process-global statics, so this is
+	 * a THREAD-level command and is handled before the drain's per-view routing -- which
+	 * is the whole point. A cache clear that rode on a per-view load would be lost
+	 * exactly when there is no live view to carry it, and RmlUi's caches outlive a PIE
+	 * session (see FVaCuusUIThread::EnqueueClearAssetCaches).
+	 */
+	ClearAssetCaches,
+
 	/** Payload is a path for the RmlUi file interface (relative to a DevUI root -- see VaCuusContentPaths.h). */
 	LoadDocumentFile,
 
@@ -55,16 +65,18 @@ enum class EVaCuusCommandKind : uint8
 /**
  * One unit of game-thread -> UI-thread work.
  *
- * ROUTING: every command except Shutdown carries the ViewId it applies to, and
- * the UI thread looks that up in its id -> document host map. That is what lets
- * one process-wide UI thread serve N views (N game instances in PIE included)
- * while each view keeps its own Rml::Context.
+ * ROUTING: every per-view command carries the ViewId it applies to, and the UI
+ * thread looks that up in its id -> document host map. That is what lets one
+ * process-wide UI thread serve N views (N game instances in PIE included) while
+ * each view keeps its own Rml::Context. Shutdown and ClearAssetCaches are the
+ * THREAD-level kinds: they carry no view and are applied before the lookup, so
+ * they still happen when the view map is empty.
  *
  * ViewSize is honoured on every ROUTED kind, not just Resize: a non-zero value is
  * applied to the routed view before the command itself runs, so a document loads
  * straight into the right layout size instead of being laid out twice. The kinds
- * that bypass that -- AddView applies its size at boot instead, RemoveView and
- * Shutdown ignore it -- are handled before the routing block.
+ * that bypass that -- AddView applies its size at boot instead, RemoveView,
+ * ClearAssetCaches and Shutdown ignore it -- are handled before the routing block.
  *
  * Move-only (it can carry a document host), which TSpscQueue's in-place
  * variadic Enqueue and TOptional-returning Dequeue both handle.
@@ -87,16 +99,6 @@ struct FVaCuusUICommand
 
 	/** Load kinds only: echoed into the status when the load completes. */
 	uint64 LoadSerial = 0;
-
-	/**
-	 * LoadDocumentFile only: drop RmlUi's parsed stylesheet/template caches immediately
-	 * before the load. Set exactly by UVaCuusView::ReloadDocument() (live reload).
-	 *
-	 * NOT THE DEFAULT, on purpose: the caches are what make a second view of the same
-	 * document cheap, and clearing them on every ordinary load would re-parse every
-	 * stylesheet each time a view swaps documents.
-	 */
-	bool bClearAssetCaches = false;
 
 	/** AddView only: the view's document host, handed over to the UI thread. */
 	TUniquePtr<IVaCuusDocumentHost> Host;

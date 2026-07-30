@@ -2,9 +2,11 @@
 
 #include "VaCuusLiveReload.h"
 
+#include "VaCuus.h"
 #include "VaCuusContentPaths.h"
 #include "VaCuusDefines.h"
 #include "VaCuusSubsystem.h"
+#include "VaCuusUIThread.h"
 #include "VaCuusView.h"
 
 #include "DirectoryWatcherModule.h"
@@ -290,6 +292,23 @@ int32 FVaCuusLiveReload::ReloadAllLiveViews(const TCHAR* Reason)
 {
 	check(IsInGameThread());
 
+	// FIRST, AND WITHOUT REGARD TO WHETHER ANY VIEW IS FOUND BELOW. RmlUi's parsed
+	// stylesheet and template caches are process-global statics keyed on file name that
+	// OUTLIVE a PIE session -- UVaCuusSubsystem::Deinitialize deliberately leaves the UI
+	// thread running, only FVaCuusModule::ShutdownModule stops it -- so an .rcss edited
+	// while nothing is live must still drop them. Otherwise the next Play re-reads the RML
+	// from disk and takes the previous session's stylesheet, silently, and RML edits appear
+	// to live-reload while RCSS edits do not.
+	//
+	// One clear serves every load queued behind it: single-producer FIFO, so this drains
+	// ahead of the loads the fan-out below enqueues.
+	const FVaCuusModule* Module = FVaCuusModule::GetPtr();
+	FVaCuusUIThread* UIThread = Module ? Module->GetUIThread() : nullptr;
+	if (UIThread != nullptr)
+	{
+		UIThread->EnqueueClearAssetCaches();
+	}
+
 	if (GEngine == nullptr)
 	{
 		return 0;
@@ -326,8 +345,9 @@ int32 FVaCuusLiveReload::ReloadAllLiveViews(const TCHAR* Reason)
 		NumReloaded += Subsystem->ReloadAllDocuments();
 	}
 
-	UE_LOG(LogVaCuus, Verbose, TEXT("Live reload (%s): %d view(s) across %d game instance(s)"),
-		Reason, NumReloaded, NumSubsystems);
+	UE_LOG(LogVaCuus, Verbose, TEXT("Live reload (%s): %d view(s) across %d game instance(s)%s"),
+		Reason, NumReloaded, NumSubsystems,
+		UIThread != nullptr ? TEXT("; RmlUi asset caches dropped") : TEXT("; no UI thread, nothing cached to drop"));
 	return NumReloaded;
 }
 

@@ -164,9 +164,11 @@ bool UVaCuusView::ReloadDocument()
 	const uint64 Serial = NextLoadSerial++;
 	Status->LoadRequestSerial.store(Serial, std::memory_order_relaxed);
 
-	// bClearAssetCaches: see UVaCuusView::ReloadDocument's comment in the header for why
-	// this, and not the load itself, is what makes an RCSS edit visible.
-	UIThread->EnqueueLoadDocumentFile(ViewId, DocumentPath, Serial, LastViewSize, /*bClearAssetCaches=*/true);
+	// No cache clear here: it is not this view's business (the caches are process-global)
+	// and it must happen even when there is no view at all. The dispatcher that decided to
+	// reload enqueues one FVaCuusUIThread::EnqueueClearAssetCaches() before fanning out,
+	// and FIFO ordering on a single-producer queue puts it ahead of this load.
+	UIThread->EnqueueLoadDocumentFile(ViewId, DocumentPath, Serial, LastViewSize);
 
 	UE_LOG(LogVaCuus, Log, TEXT("View %u: reload of '%s' queued (load serial %llu)"), ViewId, *DocumentPath, Serial);
 	return true;

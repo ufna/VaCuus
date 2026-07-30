@@ -135,18 +135,37 @@ public:
 	/** Retires a view; the rest of the views keep running. */
 	void EnqueueRemoveView(uint32 ViewId);
 
-	/**
-	 * bClearAssetCaches drops RmlUi's parsed stylesheet and template caches on the UI
-	 * thread immediately before the load -- the live-reload path (D21). See
-	 * UVaCuusView::ReloadDocument() for why an ordinary load must NOT set it.
-	 */
 	void EnqueueLoadDocumentFile(uint32 ViewId, const FString& VfsPath, uint64 LoadSerial,
-		FIntPoint ViewSize = FIntPoint::ZeroValue, bool bClearAssetCaches = false);
+		FIntPoint ViewSize = FIntPoint::ZeroValue);
 	void EnqueueLoadDocumentFromMemory(uint32 ViewId, const FString& RmlSource, uint64 LoadSerial, FIntPoint ViewSize = FIntPoint::ZeroValue);
 	void EnqueueCloseDocument(uint32 ViewId);
 	void EnqueueResize(uint32 ViewId, FIntPoint ViewSize);
 	void EnqueueSetVisible(uint32 ViewId, bool bVisible);
 	void EnqueueShutdown();
+
+	/**
+	 * Drops RmlUi's parsed stylesheet and template caches on the UI thread. Live
+	 * reload's actual mechanism (controller decision D21).
+	 *
+	 * ITS OWN COMMAND, NOT A FLAG ON A LOAD, and that is the correctness point rather
+	 * than tidiness. Rml::Factory keys parsed stylesheets and templates on their FILE
+	 * NAME in process-global statics that outlive a PIE session (UVaCuusSubsystem's
+	 * Deinitialize deliberately leaves this thread running; only
+	 * FVaCuusModule::ShutdownModule stops it). A clear that rides on a per-view load
+	 * command is therefore lost in exactly the case that needs it most -- an .rcss edited
+	 * while no view is live enqueues no load, clears nothing, and the next PIE session
+	 * re-parses the RML from disk while taking the STALE stylesheet from the cache.
+	 * Being view-less, this command is applied before the drain's per-view lookup, so it
+	 * lands whether or not anything is showing.
+	 *
+	 * One clear then serves every load queued behind it: the queue is FIFO from a single
+	 * producer, so ReloadAllLiveViews() enqueues one of these and then fans out.
+	 *
+	 * NOT part of an ordinary load, on purpose: the caches are what make a second view of
+	 * the same document cheap, and clearing on every load would re-parse every stylesheet
+	 * each time a view swaps documents.
+	 */
+	void EnqueueClearAssetCaches();
 
 	/**
 	 * Queues one input event for a view. Stamps ViewId, so the caller only fills in
@@ -170,6 +189,18 @@ public:
 
 	/** Number of views currently registered. Safe from any thread. */
 	int32 GetNumViews() const;
+
+	/**
+	 * How many ClearAssetCaches commands this thread has applied. Safe from any thread.
+	 *
+	 * The ONLY observable the clear has: RmlUi exposes no way to ask whether its
+	 * stylesheet/template caches are populated (Factory has Clear* and nothing else,
+	 * ThirdParty/RmlUi/Include/RmlUi/Core/Factory.h:133-135). Without this counter the
+	 * two properties live reload depends on -- a clear happens even when zero views
+	 * reload, and a fan-out over N views clears ONCE rather than N times -- would be
+	 * untestable, which is how the "flag on the load command" bug survived review.
+	 */
+	uint64 GetNumAssetCacheClears() const;
 
 	/** Blocks until GetFrameCount() >= Target. Returns false on timeout. Test helper. */
 	bool WaitForFrameCount(uint64 Target, double TimeoutSeconds);
@@ -206,6 +237,9 @@ private:
 	/** AddView/RemoveView handlers, split out because both are more than a line. */
 	void AddView(FVaCuusUICommand& Command);
 	void RemoveView(uint32 ViewId);
+
+	/** ClearAssetCaches handler: drops RmlUi's global stylesheet/template caches. UI thread. */
+	void ClearAssetCaches();
 
 	/** Empties the command queue without applying anything; returns how much was lost. UI thread. */
 	int32 DrainAndDiscardCommands();
@@ -272,6 +306,9 @@ private:
 	std::atomic<uint32> ThreadId{0};
 	std::atomic<uint64> FrameCount{0};
 	std::atomic<int32> NumViews{0};
+
+	/** Applied ClearAssetCaches commands; see GetNumAssetCacheClears(). */
+	std::atomic<uint64> NumAssetCacheClears{0};
 
 	/** Process-unique view ids; shared by every subsystem that uses this thread. */
 	std::atomic<uint32> NextViewId{1};

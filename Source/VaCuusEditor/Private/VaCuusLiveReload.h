@@ -103,6 +103,10 @@ public:
 	 * the path would therefore make the main use case silently do nothing. Reloading a
 	 * document that did not change costs one re-parse and re-layout of one document.
 	 *
+	 * It also drops RmlUi's parsed stylesheet/template caches ONCE, before the fan-out and
+	 * whether or not any view is found -- see FVaCuusUIThread::EnqueueClearAssetCaches() for
+	 * why that cannot ride on a per-view load command.
+	 *
 	 * Returns how many views were reloaded. Static: it holds no state and vacuus.ReloadUI
 	 * calls it directly.
 	 */
