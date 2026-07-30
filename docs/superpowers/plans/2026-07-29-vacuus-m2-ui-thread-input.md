@@ -617,6 +617,13 @@ directory** (silent no-op); `FFileChangeData::Filename` is **relative**; one sav
       within ~200 ms the running UI updates without leaving PIE. Screenshot before/after.
 - [ ] **Step 10.7: Commit:** `git commit -am "feat: editor live reload for UI documents (closes VaCuus-akj.6.3)"`
 
+**10.6 verified: 191 ms**, live PIE session, never exited; one editor save produced 4 inotify
+events collapsed to 1 path. Evidence (screenshots + log excerpt + what the automated coverage
+actually is) preserved in `docs/research/proofs/m2-t10-live-reload/`, because the original
+artifacts lived in untracked `Saved/` and were overwritten by Task 11's automation runs within the
+hour. `9e9ca23`'s body records the harness but not the result — the spec review flagged that as
+the step's only real gap, and this is the fix.
+
 ---
 
 ### Task 11: Async texture load  · closes `VaCuus-akj.6.2`
@@ -629,6 +636,30 @@ directory** (silent no-op); `FFileChangeData::Filename` is **relative**; one sav
 5.8 shape is: worker thread → `FRHICommandListBase::CreateTextureInitializer(desc)` →
 `GetTexture2DSubresource(mip).Data/Stride` → `Finalize()` on a **non-immediate**
 `FRHICommandList` → `FRHICommandListImmediate::Get().QueueAsyncCommandListSubmit(...)`.
+
+**AMENDMENT (controller, at dispatch time) — arrival is in band, not out of band.** Step 11.2
+as written routes the finished payload worker → private RHI command list → render thread →
+straight into `FVaCuusReplayRenderer::Textures`. Overridden: the decode goes async, the
+**arrival travels through the existing command-buffer channel**. `LoadTexture` mints the
+handle, puts a 1×1 transparent payload in the pending buffer's `NewTextures` (the Step 11.3
+placeholder) and kicks the decode; the UI thread drains completions at the top of its next
+frame and adds the real payload under the same handle. `TMap::Add` on an existing key replaces
+the value, so the replayer needs no change — that *is* the swap Step 11.3 describes.
+
+Three reasons: **(1)** the out-of-band path breaks Task 12 — a texture arriving while the idle
+short-circuit is publishing nothing would be installed but never re-replayed, leaving the
+placeholder on screen until an unrelated change dirtied the frame; an in-band arrival is a
+non-empty `NewTextures`, which is exactly the signal that gate reads. **(2)** `FVaCuusCommandBuffer`
+documents itself as the single channel for all resource traffic; a second private channel means
+two orderings to reason about. **(3)** the replayer is a by-value member of the Slate element,
+so reaching it from a worker task needs a weak pointer across two modules plus
+teardown-vs-in-flight-upload correctness.
+
+Cost of the choice: the `UpdateTexture2D` upload still happens on the render thread — only the
+decode is async. The decode is the expensive part and the content of `6.2`. Async **upload** is
+deferred to `VaCuus-akj.6.25` (P3, measurement-gated). Task 11 also folds in `VaCuus-akj.6.12`:
+the `IImageWrapperModule` lookup must be cached from the game thread, since it currently runs
+on the UI thread where the module manager refuses callers.
 
 - [ ] **Step 11.1: Synchronous dimension probe.** `LoadTexture` must return dimensions
       immediately: `IImageWrapperModule::DetectImageFormat` → `CreateImageWrapper` →
@@ -742,7 +773,7 @@ bd close VaCuus-akj.6 --reason="M2 accepted: <numbers>" --suggest-next
   (1, 8), §9 live reload (10), §11 budgets (12, 14). Data binding (§6) and JS (§7) are M3/M4
   — deliberately absent.
 - **Debt coverage:** 6.1 (T13), 6.2 (T11), 6.3 (T10), 6.4 (T13), 6.5 (T1), 6.6 (T0),
-  6.7 (T4), 6.8 (T12) — all eight scheduled.
+  6.7 (T4), 6.8 (T12) — all eight scheduled. Added mid-flight: 6.12 (T11 — same code path).
 - **Ordering rationale:** the UI thread lands before input because the snapshot (the input
   contract) can only be produced by a running UI frame; debt items sit where they are
   cheapest (monolithic first — it changes build config; async texture after the thread exists).
