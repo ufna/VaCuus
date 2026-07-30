@@ -134,10 +134,17 @@ public:
 	 * neither the widget (whose own copy is guarded, see UVaCuusWidget) nor the UI thread
 	 * (which keeps an Rml::ElementDocument, not a path) can answer for it.
 	 *
-	 * DELIBERATELY EMPTY AFTER LoadDocumentFromMemory(): an inline document has no file
-	 * to have changed, so reloading it would only destroy and rebuild identical content
-	 * -- and would silently undo a fallback (vacuus.M1HUD's inline document is exactly
-	 * that case) by re-loading the file that failed.
+	 * THE INVARIANT IS "THIS DESCRIBES WHAT IS SHOWING", which is why
+	 * LoadDocumentFromMemory() and Close() both clear it: an inline document has no file
+	 * behind it, and reloading it would destroy and rebuild identical content.
+	 *
+	 * The consequence, stated because it bit us: a view that FELL BACK to an inline
+	 * document (vacuus.M1HUD does when its .rml is missing or unparseable) is not
+	 * reloadable through this path, and iterating on a broken document is the single most
+	 * valuable thing live reload does. That gap is closed one level up rather than by
+	 * keeping a lying path here -- UVaCuusSubsystem::OnDocumentsReloadRequested lets the
+	 * owner that chose the fallback re-arm it, because only the owner knows which file it
+	 * fell back FROM and whether it wants that file back.
 	 */
 	const FString& GetDocumentPath() const { return DocumentPath; }
 

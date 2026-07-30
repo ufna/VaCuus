@@ -13,6 +13,16 @@ class IVaCuusDocumentHost;
 class UVaCuusView;
 
 /**
+ * "A reload was asked for; views that cannot reload themselves get one chance now."
+ *
+ * WHY IT CARRIES AN ACCUMULATOR: the flush's own log line reports how many views a
+ * reload reached, and a re-arm done in here IS one of them -- reporting "reloaded 0
+ * view(s)" while a subscriber just re-issued a load would make the one diagnostic live
+ * reload has lie. Add one per view you loaded.
+ */
+DECLARE_MULTICAST_DELEGATE_OneParam(FOnVaCuusDocumentsReloadRequested, int32& /*InOutNumReloaded*/);
+
+/**
  * Per-GameInstance owner of VaCuus views, and the once-per-frame pulse that
  * drives the UI thread.
  *
@@ -82,6 +92,21 @@ public:
 	 * place rather than at every call site.
 	 */
 	int32 ReloadAllDocuments();
+
+	/**
+	 * Broadcast at the END of every ReloadAllDocuments() fan-out, for owners of views that
+	 * the fan-out could not reach.
+	 *
+	 * THE CASE IT EXISTS FOR is a view showing an INLINE FALLBACK: its DocumentPath is
+	 * empty by design (see UVaCuusView::GetDocumentPath), so ReloadDocument() refuses it,
+	 * and without this hook "create the .rml the HUD complained about, save it" would
+	 * never reach the screen -- only toggling the HUD off and on would. vacuus.M1HUD
+	 * subscribes while it is on its inline document and re-arms the file load from here.
+	 *
+	 * At the end rather than the start so a subscriber's load is not immediately followed
+	 * by the loop reloading the same view a second time.
+	 */
+	FOnVaCuusDocumentsReloadRequested OnDocumentsReloadRequested;
 
 	/** The process-wide UI thread, or null if none is running. Does not start one. */
 	FVaCuusUIThread* GetUIThread() const;

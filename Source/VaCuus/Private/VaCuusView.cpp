@@ -185,8 +185,10 @@ void UVaCuusView::LoadDocumentFromMemory(const FString& RmlSource)
 		return;
 	}
 
-	// Cleared, not kept: an inline document has no file behind it, and leaving a stale
-	// path here would let a live reload replace it with the file it fell back FROM.
+	// Cleared, not kept: DocumentPath describes what is SHOWING, and an inline document
+	// has no file behind it (see GetDocumentPath()). A view that fell back to an inline
+	// document is re-armed by its owner through
+	// UVaCuusSubsystem::OnDocumentsReloadRequested, not by a stale path left here.
 	DocumentPath.Reset();
 
 	const uint64 Serial = NextLoadSerial++;

@@ -179,6 +179,11 @@ int32 UVaCuusSubsystem::ReloadAllDocuments()
 		}
 	}
 
+	// Then the views this loop CANNOT reach: one showing an inline fallback has no
+	// DocumentPath to re-issue, and its owner is the only thing that knows which file it
+	// fell back from. See OnDocumentsReloadRequested.
+	OnDocumentsReloadRequested.Broadcast(NumReloaded);
+
 	return NumReloaded;
 }
 

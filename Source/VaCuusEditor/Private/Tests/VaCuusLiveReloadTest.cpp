@@ -335,11 +335,12 @@ bool FVaCuusLiveReloadDispatchTest::RunTest(const FString& Parameters)
 		FileView->GetDocumentPath(), FString(TEXT("m1_hud.rml")));
 	TestTrue(TEXT("The view without a document was left alone"), EmptyView->GetDocumentPath().IsEmpty());
 
-	// An inline document has no file behind it, so it must not become reloadable -- and
-	// must not resurrect the path it fell back FROM (vacuus.M1HUD's fallback is that case).
+	// An inline document has no file behind it, so the FAN-OUT must not reach it and must not
+	// resurrect the path it fell back FROM. (Its owner still can, deliberately and knowing
+	// which file it wants back -- that is VaCuus.LiveReload.Rearm.)
 	FileView->LoadDocumentFromMemory(TEXT("<rml><body/></rml>"));
 	TestTrue(TEXT("An in-memory load clears the document path"), FileView->GetDocumentPath().IsEmpty());
-	TestEqual(TEXT("Nothing is reloadable after an in-memory load"),
+	TestEqual(TEXT("The fan-out reloads nothing after an in-memory load"),
 		FVaCuusLiveReload::ReloadAllLiveViews(TEXT("automation")), 0);
 
 	// Closing has the same effect, for the same reason.
@@ -455,6 +456,104 @@ bool FVaCuusLiveReloadAssetCachesTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("(2) ...at the cost of exactly one cache clear, not one per view"),
 			ClearsAfterOneFrame(ClearsBefore), static_cast<uint64>(1));
 	}
+
+	return true;
+}
+
+/**
+ * A VIEW THAT FELL BACK TO AN INLINE DOCUMENT MUST BECOME RELOADABLE AGAIN once its file
+ * appears -- through its owner, which is the only thing that knows which file it fell back
+ * FROM (review finding I4).
+ *
+ * The bug this replaces: vacuus.M1HUD reports 'm1_hud.rml not found, using the inline
+ * fallback'; you create the file and save it; the watcher fires, the flush says
+ * `reloaded 0 view(s)`, and nothing reaches the screen until the toggle is cycled. Iterating
+ * on a missing or broken document is the single most valuable thing live reload does.
+ *
+ * The handler here mimics vacuus.M1HUD's (VaCuusRender.cpp's OnDocumentsReloadRequested),
+ * which cannot be driven headlessly: it needs GEngine->GameViewport, i.e. PIE. What is
+ * asserted is the mechanism the real handler hangs on, including that a re-arm is COUNTED --
+ * the flush's log line reports how many views a reload reached, and a silent re-arm would
+ * make it say 0 while a load was in flight.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusLiveReloadRearmTest, "VaCuus.LiveReload.Rearm",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusLiveReloadRearmTest::RunTest(const FString& Parameters)
+{
+	using namespace VaCuusLiveReloadTest;
+
+	const FString SkipReason = WhySkip();
+	if (!SkipReason.IsEmpty())
+	{
+		AddInfo(FString::Printf(TEXT("Skipped: %s"), *SkipReason));
+		return true;
+	}
+
+	FVaCuusModule& Module = FVaCuusModule::Get();
+	if (!TestNotNull(TEXT("UI thread"), Module.GetOrStartUIThread()))
+	{
+		return false;
+	}
+
+	ON_SCOPE_EXIT
+	{
+		Module.StopUIThread();
+	};
+
+	FStandaloneInstance Instance;
+	UVaCuusSubsystem* Subsystem = Instance.Subsystem;
+	if (!TestNotNull(TEXT("UVaCuusSubsystem on the standalone game instance"), Subsystem))
+	{
+		return false;
+	}
+
+	UVaCuusView* View = Subsystem->CreateView(MakeUnique<FStubHost>(), FIntPoint(320, 200));
+	if (!TestNotNull(TEXT("View"), View))
+	{
+		return false;
+	}
+
+	// The fallback: the file load was tried and lost, so the view is showing inline RML and
+	// its document path is empty by design.
+	View->LoadDocument(TEXT("m1_hud.rml"));
+	View->LoadDocumentFromMemory(TEXT("<rml><body/></rml>"));
+	TestTrue(TEXT("The fallback left no document path"), View->GetDocumentPath().IsEmpty());
+	TestEqual(TEXT("So the fan-out on its own reaches nothing"), Subsystem->ReloadAllDocuments(), 0);
+
+	// The owner's re-arm, exactly as vacuus.M1HUD does it: only when the view is showing the
+	// fallback, and counted.
+	int32 NumHandlerRuns = 0;
+	FDelegateHandle Handle = Subsystem->OnDocumentsReloadRequested.AddLambda(
+		[View, &NumHandlerRuns](int32& InOutNumReloaded)
+		{
+			++NumHandlerRuns;
+			if (View->GetDocumentPath().IsEmpty())
+			{
+				View->LoadDocument(TEXT("m1_hud.rml"));
+				++InOutNumReloaded;
+			}
+		});
+
+	ON_SCOPE_EXIT
+	{
+		Subsystem->OnDocumentsReloadRequested.Remove(Handle);
+	};
+
+	const uint64 SerialBefore = View->GetLastRequestedLoadSerial();
+	TestEqual(TEXT("An owner re-arm is reported as a reload"), Subsystem->ReloadAllDocuments(), 1);
+	TestEqual(TEXT("...the handler ran once"), NumHandlerRuns, 1);
+	TestTrue(TEXT("...a load was actually issued"), View->GetLastRequestedLoadSerial() > SerialBefore);
+	TestEqual(TEXT("...and the view is describing the file again"),
+		View->GetDocumentPath(), FString(TEXT("m1_hud.rml")));
+
+	// And now the ordinary path takes over: the fan-out reloads it, the owner stands down, so
+	// the same flush cannot load one document twice.
+	const uint64 SerialAfterRearm = View->GetLastRequestedLoadSerial();
+	TestEqual(TEXT("Once re-armed, the fan-out reloads it exactly once"), Subsystem->ReloadAllDocuments(), 1);
+	TestEqual(TEXT("...the handler ran again but did nothing"), NumHandlerRuns, 2);
+	TestEqual(TEXT("...so exactly one load was issued"),
+		View->GetLastRequestedLoadSerial(), SerialAfterRearm + 1);
 
 	return true;
 }

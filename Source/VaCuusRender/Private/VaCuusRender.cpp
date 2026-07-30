@@ -137,8 +137,22 @@ struct FState
 	/** True while the pending load is the VFS document, i.e. while a fallback is possible. */
 	bool bLoadingFromFile = false;
 
-	/** One shot only: a failing inline fallback must not loop. */
+	/** One shot only per attempt: a failing inline fallback must not loop. */
 	bool bTriedInlineFallback = false;
+
+	/**
+	 * True once ANY document has loaded successfully into this view.
+	 *
+	 * Only a log line depends on it, and it is worth a bool: AdoptDocument keeps the
+	 * previous document up when a load fails (VaCuusRmlDocumentHost.cpp:176-184), so
+	 * "the HUD stays empty" is true for a first load and false for every re-load -- and
+	 * telling someone who just saved a typo that their HUD is empty when it is showing
+	 * the last good version sends them looking in the wrong place.
+	 */
+	bool bAnyDocumentShown = false;
+
+	/** Subscription to UVaCuusSubsystem::OnDocumentsReloadRequested; see OnDocumentsReloadRequested. */
+	FDelegateHandle ReloadRequestedHandle;
 };
 
 static TUniquePtr<FState> GState;
@@ -152,6 +166,13 @@ static void TearDown()
 	TUniquePtr<FState> State = MoveTemp(GState);
 
 	FWorldDelegates::OnWorldBeginTearDown.Remove(State->WorldTearDownHandle);
+
+	// Before anything else: a live-reload flush landing after this point must not find a
+	// handler that reads GState (already moved out) or a view that is about to be retired.
+	if (UVaCuusSubsystem* Subsystem = State->Subsystem.Get())
+	{
+		Subsystem->OnDocumentsReloadRequested.Remove(State->ReloadRequestedHandle);
+	}
 
 	// Hand the mouse back to the game. Before the widget goes away, so nothing can
 	// arrive at a half-detached widget on the way out.
@@ -237,12 +258,19 @@ static void OnViewLoadCompleted(UVaCuusView* View, bool bSuccess)
 	if (bSuccess)
 	{
 		GState->bLoadingFromFile = false;
+		GState->bAnyDocumentShown = true;
 		return;
 	}
 
 	if (!GState->bLoadingFromFile || GState->bTriedInlineFallback)
 	{
-		UE_LOG(LogVaCuus, Error, TEXT("M1 HUD: document load failed and no fallback is left; the HUD stays empty"));
+		// Live reload made this branch reachable (it used to need a broken file AND a
+		// broken inline document): a fan-out reload of a document that now has a typo in it
+		// lands here, because bLoadingFromFile was cleared when the file last loaded fine.
+		UE_LOG(LogVaCuus, Error, TEXT("M1 HUD: document load failed and no fallback is left; %s"),
+			GState->bAnyDocumentShown
+				? TEXT("the reload failed and the previous document is still up")
+				: TEXT("the HUD stays empty"));
 		return;
 	}
 
@@ -253,6 +281,73 @@ static void OnViewLoadCompleted(UVaCuusView* View, bool bSuccess)
 		TEXT("M1 HUD: '%s' exists but failed to load; falling back to the inline document"),
 		GHudDocumentVfsPath);
 	View->LoadDocumentFromMemory(GTestDocumentRml);
+}
+
+/**
+ * Live reload's other entrance, and the one that matters when things are broken
+ * (bead VaCuus-akj.6.x review finding I4).
+ *
+ * THE HOLE IT FILLS: a view showing the inline fallback has no DocumentPath -- that is
+ * the view's invariant, DocumentPath describes what is SHOWING -- so
+ * UVaCuusSubsystem::ReloadAllDocuments() cannot reload it, and neither can
+ * vacuus.ReloadUI. Without this, "vacuus.M1HUD says m1_hud.rml is missing, so create it
+ * and save" reports `reloaded 0 view(s)` and nothing changes until the toggle is cycled
+ * off and on. Iterating on a document that is missing or broken is the single most
+ * valuable thing live reload does, so the owner of the fallback -- which is the only
+ * thing that knows which file it fell back FROM -- re-arms it here.
+ *
+ * Re-arming also resets bTriedInlineFallback, so a still-broken file falls back again
+ * rather than being reported as unrecoverable. That cannot loop: nothing re-arms except
+ * an explicit reload request.
+ */
+static void OnDocumentsReloadRequested(int32& InOutNumReloaded)
+{
+	if (!GState)
+	{
+		return;
+	}
+
+	UVaCuusView* View = GState->View.Get();
+	if (!View)
+	{
+		return;
+	}
+
+	if (!View->GetDocumentPath().IsEmpty())
+	{
+		// A view with a file document was already reloaded by the fan-out that broadcast
+		// this; re-issuing here would parse the same document twice.
+		return;
+	}
+
+	if (GState->bLoadingFromFile)
+	{
+		// A file load is still in flight (its OnLoadCompleted has not been polled yet).
+		// Re-issuing now would race the fallback decision that completion is about to make.
+		return;
+	}
+
+	const FString DocumentDiskPath = VaCuusContentPaths::ResolveExistingDocument(GHudDocumentVfsPath);
+	if (DocumentDiskPath.IsEmpty())
+	{
+		// Verbose, not Warning: every flush while the file is still absent would say this.
+		UE_LOG(LogVaCuus, Verbose,
+			TEXT("M1 HUD: reload requested, but '%s' still does not exist under any DevUI root"),
+			GHudDocumentVfsPath);
+		return;
+	}
+
+	GState->bLoadingFromFile = true;
+	GState->bTriedInlineFallback = false;
+
+	UE_LOG(LogVaCuus, Log,
+		TEXT("M1 HUD: '%s' ('%s') is loadable again; re-loading it over the inline fallback"),
+		GHudDocumentVfsPath, *DocumentDiskPath);
+
+	View->LoadDocument(GHudDocumentVfsPath);
+
+	// Counted, because the flush's log line reports "reloaded N view(s)" and this is one.
+	++InOutNumReloaded;
 }
 
 static void Toggle()
@@ -324,6 +419,11 @@ static void Toggle()
 	// Bound before the load is queued: the completion is polled from the
 	// subsystem's next tick, never earlier, but there is no reason to race it.
 	View->OnLoadCompleted.AddStatic(&OnViewLoadCompleted);
+
+	// Subscribed unconditionally, not just when the load below falls back: a document that
+	// loads fine now can be broken by the next save, fall back, and then need re-arming.
+	GState->ReloadRequestedHandle =
+		Subsystem->OnDocumentsReloadRequested.AddStatic(&OnDocumentsReloadRequested);
 
 	// Asynchronous by design: the document is loaded by the UI thread on its first
 	// frame. The view size rides along so the very first layout is at the right size.
