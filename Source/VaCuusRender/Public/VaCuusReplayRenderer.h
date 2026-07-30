@@ -75,10 +75,14 @@ public:
 	 * So any FUTURE path that drops the RT without also destroying the recorder -- or that
 	 * discards an unreplayed buffer -- produces a PERMANENTLY blank UI rather than a
 	 * one-frame glitch, and nothing will log a thing. What keeps it safe here is that this
-	 * runs with the recorder's own teardown, and the fresh recorder that replaces it starts
-	 * at generation 1 with no previous hash to compare against (asserted by
-	 * VaCuus.Render.IdleGate.PerRecorder). Anyone adding a partial release must either bring
+	 * runs with the recorder's own teardown, and the fresh recorder that replaces it publishes
+	 * its first frame unconditionally, at generation 1, with no previous hash to compare
+	 * against (the first-frame assertions in VaCuus.Render.IdleGate.UnchangedFrame, restated
+	 * for a fresh recorder in .PerRecorder). Anyone adding a partial release must either bring
 	 * the recorder with it or give the recorder a way to be told "republish next frame".
+	 *
+	 * Until then, vacuus.IdleGate 0 is the in-the-field workaround: it forces every recorded
+	 * frame to publish, so a UI blanked by a lost RT comes back on the next frame.
 	 */
 	void ReleaseResources();
 

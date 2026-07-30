@@ -32,10 +32,17 @@ class ElementDocument;
  * in the process happens on that one thread. The host does NOT boot or shut down
  * RmlUi itself -- the UI thread does that once for the process.
  *
- * RecordAndPublishFrame() publishes two things per frame, both without a
- * game-thread hop: the recorded command buffer to the Slate element via
- * ENQUEUE_RENDER_COMMAND, and the interactive-region snapshot to the game thread
- * through the shared FVaCuusViewStatus (see FVaCuusInteractiveSnapshot).
+ * RecordAndPublishFrame() publishes two things on two different cadences, neither with a
+ * game-thread hop:
+ *  - the interactive-region snapshot, ONCE PER RECORDED FRAME, to the game thread through
+ *    the shared FVaCuusViewStatus (see FVaCuusInteractiveSnapshot);
+ *  - the recorded command buffer, ONCE PER CHANGE, to the Slate element via
+ *    ENQUEUE_RENDER_COMMAND. Since the M2 Task 12 idle short-circuit a frame that draws
+ *    what the render thread already has is recorded and then withheld, so on a static
+ *    document this is a handful of publishes and then nothing.
+ *
+ * The difference between the two cadences is deliberate, not an oversight; the call site
+ * says why.
  */
 class FVaCuusRmlDocumentHost final : public IVaCuusDocumentHost
 {

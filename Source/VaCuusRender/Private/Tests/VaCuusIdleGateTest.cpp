@@ -323,9 +323,9 @@ bool FVaCuusIdleGateViewSizeTest::RunTest(const FString& Parameters)
 
 /**
  * The gate's state is per recorder, and a recorder is created per view
- * (FVaCuusRmlDocumentHost::Initialize) -- so one view going idle cannot suppress
- * another's publish, and a view that is torn down and recreated starts with no hash to
- * inherit.
+ * (FVaCuusRmlDocumentHost::Initialize) -- so one view going idle cannot suppress another's
+ * publish even when the two record byte-identical frames, and a fresh recorder has no hash
+ * to inherit from any of them.
  */
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusIdleGatePerRecorderTest, "VaCuus.Render.IdleGate.PerRecorder",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -383,16 +383,25 @@ bool FVaCuusIdleGatePerRecorderTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Busy view published every frame"), int32(Busy.GetNumFramesPublished()), 4);
 	TestEqual(TEXT("Busy view withheld nothing"), int32(Busy.GetNumFramesSkipped()), 0);
 
-	// Teardown and restart. A view's recorder is created in Initialize() and dropped
-	// with the host, so the fresh one below is what a restarted view gets: content
-	// identical to what the idle view last published, and it MUST still publish,
-	// because the render target it would be composited from does not exist any more.
+	// A THIRD RECORDER STANDING IN FOR A RESTARTED VIEW -- and labelled honestly, because it
+	// proves less than it looks like it does. A freshly constructed recorder has Generation 0
+	// and LastPublishedContentHash 0 by NSDMI, so the only thing that can decide its first
+	// frame is the `Generation > 0` guard that the UnchangedFrame test above already covers;
+	// this cannot fail for any reason specific to a restart. What it adds is that the guard
+	// still holds when the content is one a DIFFERENT live recorder has already published --
+	// i.e. that the gate's state cannot be reached across recorders even by collision.
+	//
+	// NOT COVERED HERE, deliberately: that a torn-down-and-recreated VIEW actually gets a new
+	// recorder. That is structural (FVaCuusRmlDocumentHost::Initialize constructs one per
+	// Initialize call and the host owns it), and driving it would need a real UI thread and a
+	// real Rml::Context, which this file has none of on purpose. VaCuus.UMG.Widget exercises
+	// the rebuild path through the production host.
 	FVaCuusRecordingRenderInterface Restarted;
 	Rml::CompiledGeometryHandle RestartedGeometry = 0;
 	const TUniquePtr<FVaCuusCommandBuffer> RestartedFirst = FirstFrame(Restarted, RestartedGeometry);
-	if (TestNotNull(TEXT("A restarted view publishes its first frame"), RestartedFirst.Get()))
+	if (TestNotNull(TEXT("A fresh recorder publishes its first frame"), RestartedFirst.Get()))
 	{
-		TestTrue(TEXT("...even though its content hashes the same as the idle view's last publish"),
+		TestTrue(TEXT("...even though its content hashes the same as another recorder's last publish"),
 			VaCuusHashFrameContent(*RestartedFirst) == VaCuusHashFrameContent(*IdleFirst));
 	}
 
@@ -576,9 +585,18 @@ bool FVaCuusIdleGateHashPaddingTest::RunTest(const FString& Parameters)
 	Resized.ViewSize = FIntPoint(1920, 1081);
 	TestTrue(TEXT("ViewSize is part of the frame hash"), VaCuusHashFrameContent(Resized) != Baseline);
 
+	// Appending a command changes the hash. NOT relabelled idly: this used to claim "the
+	// command count is part of the frame hash", which it cannot show. A second command adds
+	// another sizeof(FVaCuusCommandHashImage) == 112 bytes to the stream, so the hash moves
+	// whether or not the header carries a count, and the assertion passes either way.
+	//
+	// The header's count field is therefore pinned by NOTHING here, and cannot be until the
+	// image gains a variable-length field -- which is exactly the reason the count is in the
+	// header at all (see VaCuusHashFrameContent). Said out loud rather than left as a label
+	// that overstates its evidence.
 	FVaCuusCommandBuffer Longer = Clean;
 	FillCommand(Longer.Commands.AddDefaulted_GetRef());
-	TestTrue(TEXT("The command count is part of the frame hash"), VaCuusHashFrameContent(Longer) != Baseline);
+	TestTrue(TEXT("Appending a command changes the frame hash"), VaCuusHashFrameContent(Longer) != Baseline);
 
 	// Generation deliberately is NOT: it identifies the buffer, and hashing it would
 	// make every frame differ from every other and the gate would never fire.

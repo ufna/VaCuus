@@ -151,7 +151,14 @@ void FVaCuusPerfLog::AddUIFrame(bool bPublished)
 	FScopeLock ScopeLock(&State.Lock);
 	if (State.bEnabled)
 	{
-		bPublished ? ++State.WindowUIPublished : ++State.WindowUISkipped;
+		if (bPublished)
+		{
+			++State.WindowUIPublished;
+		}
+		else
+		{
+			++State.WindowUISkipped;
+		}
 	}
 }
 
@@ -219,18 +226,29 @@ void FVaCuusPerfLog::TickLog()
 		TotalElapsed, State.TotalFrames, double(State.TotalFrames) / TotalElapsed,
 		State.TotalReplays > 0 ? double(State.TotalDraws) / double(State.TotalReplays) : 0.0);
 
-	// The idle short-circuit, in one line: UI frames recorded, and how many of them
-	// the gate let through. `skipped` is what the Replay sample count below is missing.
+	// The idle short-circuit, in one line: UI frames recorded, and how many of them the gate
+	// let through.
+	//
+	// DO NOT READ `skipped` AS "the Replay sample count below is missing this many". That is
+	// not arithmetic; it happened to hold in the static case this was measured on and will
+	// mislead whoever reads the log on a busy UI. Draw_RenderThread emits ONE Replay scope per
+	// PAINT that found a buffer waiting, whatever the queue depth -- the older buffers
+	// surrender only their resource deltas, through a ConsumeResources call that has no scope
+	// (VaCuusSlateElement.cpp:70-84, VaCuusReplayRenderer.cpp:39-47). So a CHANGING UI at a
+	// ~220 Hz UI thread and a ~60 Hz paint reads published ~220/s, Replay samples ~60/s,
+	// skipped 0: that gap is COALESCING. The two numbers only track each other at the other
+	// extreme, an idle UI where the paint finds no buffer at all.
+	const auto IdlePercent = [](uint64 Published, uint64 Skipped)
+	{
+		const uint64 Total = Published + Skipped;
+		return Total > 0 ? 100.0 * double(Skipped) / double(Total) : 0.0;
+	};
 	UE_LOG(LogVaCuus, Log,
 		TEXT("PerfLog window UI frames published=%llu skipped=%llu (%.1f%% idle) | total published=%llu skipped=%llu (%.1f%% idle)"),
 		State.WindowUIPublished, State.WindowUISkipped,
-		(State.WindowUIPublished + State.WindowUISkipped) > 0
-			? 100.0 * double(State.WindowUISkipped) / double(State.WindowUIPublished + State.WindowUISkipped)
-			: 0.0,
+		IdlePercent(State.WindowUIPublished, State.WindowUISkipped),
 		State.TotalUIPublished, State.TotalUISkipped,
-		(State.TotalUIPublished + State.TotalUISkipped) > 0
-			? 100.0 * double(State.TotalUISkipped) / double(State.TotalUIPublished + State.TotalUISkipped)
-			: 0.0);
+		IdlePercent(State.TotalUIPublished, State.TotalUISkipped));
 
 	for (int32 Scope = 0; Scope < Num; ++Scope)
 	{

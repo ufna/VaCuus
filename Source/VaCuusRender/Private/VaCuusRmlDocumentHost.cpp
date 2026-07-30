@@ -250,16 +250,39 @@ void FVaCuusRmlDocumentHost::SetVisible(bool bVisible)
 		return;
 	}
 
-	// Hide() rather than "stop recording": the view keeps publishing frames, they
-	// are simply empty, which is what actually clears the composite. Skipping the
-	// frame would leave the last published content in this view's render target.
+	// HIDE THE DOCUMENT rather than stop recording the view. Hide still works, but not by
+	// the mechanism this comment used to describe, and the correction matters because the old
+	// wording sends a reader looking for a bug that is not there.
+	//
+	// WHAT HAPPENS: Hide() sets `visibility: hidden` on the document
+	// (ThirdParty/RmlUi/Source/Core/ElementDocument.cpp:406-419), so the next recorded frame's
+	// Render() emits nothing at all. An empty command list hashes differently from the last
+	// published frame's, so that ONE frame publishes; the replayer opens its render pass with
+	// ERenderTargetActions::Clear_Store (VaCuusReplayRenderer.cpp:233), and that clear with no
+	// draws behind it is what wipes this view's render target. Every hidden frame after it
+	// records the same empty list, hashes equal, and is WITHHELD by the idle gate.
+	//
+	// So: one empty publish, not one per frame. "The view keeps publishing frames, they are
+	// simply empty" has been false since M2 Task 12, and the warning that used to follow it --
+	// "skipping the frame would leave the last published content in this view's render target"
+	// -- describes exactly what the gate now does from the second hidden frame onward. That is
+	// safe for the reason the old comment had no way to state: the RT was already cleared by
+	// the frame before, so withholding a frame that would clear it again changes nothing.
+	//
+	// The alternative that warning was really aimed at is still ruled out. Skipping the frame
+	// ENTIRELY -- never recording, never publishing -- would leave the last VISIBLE content in
+	// the RT, because nothing would ever emit the empty frame that clears it. A hidden view
+	// therefore still pays a full Update() and a full record every frame; only the publish
+	// stops. It also stops claiming hit coverage without any extra work here, because the
+	// snapshot walk skips invisible elements (VaCuusInteractiveSnapshot.cpp:157-160).
 	if (bVisible)
 	{
 		// FocusFlag::Keep, not Document: Hide() ran UnfocusDocument() but left this
-		// document's own focus chain intact (ElementDocument.cpp:406-417), so Keep
-		// re-focuses the leaf the player was on (ElementDocument.cpp:389-392) and a
-		// hide/show round trip does not throw away where they were. It degrades to
-		// focusing the document when there was no leaf, which is the Document case.
+		// document's own focus chain intact (ElementDocument.cpp:415-418), so Keep
+		// re-focuses the leaf the player was on (ElementDocument.cpp:392-395, the
+		// focus_previous branch calling GetFocusLeafNode) and a hide/show round trip does
+		// not throw away where they were. It degrades to focusing the document when there
+		// was no leaf, which is the Document case.
 		Document->Show(Rml::ModalFlag::None, Rml::FocusFlag::Keep);
 	}
 	else
@@ -312,6 +335,24 @@ void FVaCuusRmlDocumentHost::RecordAndPublishFrame()
 	// Between Update() and Render(), and deliberately so: Update() is what leaves
 	// every element's absolute offset and box clean, which is the whole reason the
 	// walk is a field read per element rather than a layout pass.
+	//
+	// UNCONDITIONAL, AND BEFORE THE GATE: this publishes on EVERY recorded frame, including
+	// the ones whose command buffer is withheld. That is not an oversight and it must not be
+	// "optimised" to match the publish, because the DOM can change hit geometry with NO pixel
+	// change at all -- `pointer-events` toggled, `disabled` removed from a button whose
+	// styling does not move, an invisible overlay activated. Every one of those produces a
+	// byte-identical command list, so the gate withholds the frame; gating the snapshot on
+	// the same decision would freeze hit-testing on exactly the changes that only affect
+	// hit-testing, and clicks would land in the wrong place with nothing to show why.
+	//
+	// It costs a DFS over the visible tree per frame either way, which is what the Verbose
+	// timing line in PublishInteractiveSnapshot() is there to keep honest.
+	//
+	// PRE-EXISTING SKEW, unchanged by Task 12 and noted so nobody blames it: on a frame that
+	// DOES publish, the snapshot reaches the game thread through a triple buffer while the
+	// command buffer travels via ENQUEUE_RENDER_COMMAND, so the game thread can hit-test the
+	// new geometry a frame before the matching pixels land. The gate neither creates nor
+	// widens that; it is the cost of the two channels being independent.
 	PublishInteractiveSnapshot();
 
 	// The hash the idle gate compares is computed inside EndFrameAndPublish(), so its

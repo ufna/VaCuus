@@ -346,7 +346,8 @@ inline uint64 VaCuusHashFrameContent(const FVaCuusCommandBuffer& Buffer)
 
 	// Frame header. The command count is redundant today (fixed-size records mean
 	// equal byte lengths imply equal counts) and is here so it stays correct if a
-	// variable-length field is ever added to the image.
+	// variable-length field is ever added to the image. It follows that NO TEST CAN PIN IT
+	// until that day: appending a command lengthens the stream by a whole image either way.
 	const uint64 Header[3] = {uint64(uint32(Buffer.ViewSize.X)), uint64(uint32(Buffer.ViewSize.Y)), uint64(Buffer.Commands.Num())};
 	Builder.Update(Header, sizeof(Header));
 

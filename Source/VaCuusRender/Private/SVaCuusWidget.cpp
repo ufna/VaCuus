@@ -36,10 +36,44 @@ void SVaCuusWidget::Construct(const FArguments& InArgs,
 
 	SetCanTick(true);
 
-	// The UI thread publishes a command buffer per frame that only a paint drains,
-	// so the widget must repaint every frame even under Slate Global Invalidation —
-	// volatility guarantees that cadence (the element still bounds the queue
-	// defensively for any path this doesn't cover).
+	// VOLATILE SO THIS WIDGET PAINTS EVERY FRAME, and since the M2 Task 12 idle
+	// short-circuit that cadence carries the whole UI rather than one frame of catch-up.
+	//
+	// READ THIS BEFORE DELETING THE CALL. The comment that used to sit here justified it with
+	// "the UI thread publishes a command buffer per frame that only a paint drains", which is
+	// now FALSE — a static HUD records ~13,300 frames a minute and publishes ONE, because
+	// FVaCuusRecordingRenderInterface::EndFrameAndPublish withholds every frame that draws
+	// what the render thread already has. Anyone who notices that and concludes the reason is
+	// gone has it backwards: the withheld publishes are exactly why the per-view render target
+	// is now the ONLY copy of an idle UI's pixels, and why the recorder will never resend them.
+	// FVaCuusSlateElement::Draw_RenderThread is what puts them on screen with no buffer in
+	// flight at all — its replay sits inside `if (PendingBuffers.Num() > 0)`, the composite
+	// after it does not (VaCuusSlateElement.cpp:56-96).
+	//
+	// WHAT VOLATILITY BUYS, checked against the engine rather than asserted.
+	// ForceVolatile(true) makes SWidget::IsVolatile() true, and that does two things:
+	//  - the widget carries NeedsVolatilePaint (SWidget.cpp:878-881), which lands it in the
+	//    invalidation root's volatile update list (SlateInvalidationWidgetList.h:508-510,
+	//    drained into the post-update heap at SlateInvalidationRoot.cpp:1335-1345) and
+	//    repaints it every frame (WidgetProxy.cpp:63-66) even under Slate Global
+	//    Invalidation, which is also what keeps SetDestRect_RenderThread current;
+	//  - its draw elements stay OUT of Slate's element cache: FSlateWindowElementList's
+	//    bAllowCache is `... && !WidgetDrawStack.Top().bIsVolatile` (DrawElements.h:269) and
+	//    that flag is exactly IsVolatile() || IsVolatileIndirectly() (DrawElements.cpp:195).
+	//
+	// AND WHAT IT DOES NOT BUY, said out loud because the tempting counter-argument is "prove
+	// it breaks". It would not obviously break: a CACHED custom-drawer batch still reaches the
+	// render thread every frame. AddCustomElement stores the drawer ON the batch
+	// (ElementBatcher.cpp:3035-3046), a cached batch lives in FSlateCachedElementData::
+	// CachedBatches (DrawElements.h:204-206, "used to redraw when no invalidation occurs"),
+	// and AddCachedElements re-adds every cached batch each frame (ElementBatcher.cpp:578-580)
+	// while skipping only the RE-BATCHING of lists with new data (:528-553). So the honest
+	// claim is narrower than "the UI would disappear": dropping this call swaps a tested path
+	// for an untested one on the only code path here whose failure mode is now PERMANENT
+	// blankness rather than a one-frame glitch — and it saves nothing, because this is a
+	// full-screen leaf whose sole draw element is that custom drawer, so there is no cached
+	// vertex work to keep. The element also still bounds its queue defensively for any
+	// tick-without-paint path neither of these covers.
 	ForceVolatile(true);
 
 	// Hit-test visible, which it was NOT while this widget was render-only: without
