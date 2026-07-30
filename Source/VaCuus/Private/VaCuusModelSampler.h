@@ -71,10 +71,18 @@ class UScriptStruct;
  *   The UI thread's read becomes pure value data, which is the property every other kind
  *   already has.
  *
- * The obvious objection -- "a frozen display string will not follow a culture change" -- does
- * not hold: a culture change moves the LIVE text's display string, the next sample compares
- * display strings, sees the difference and republishes. The freeze costs one FString copy and
- * one small allocation per CHANGED text, never per frame.
+ * The obvious objection -- "a frozen display string will not follow a culture change" -- is
+ * answered by the NEXT SAMPLE, and only by it: a culture change moves the LIVE text's display
+ * string, the next Sample() compares display strings, sees the difference and republishes. The
+ * freeze costs one FString copy and one small allocation per CHANGED text, never per frame.
+ *
+ * SO IT IS A CONTRACT ON THE CALLER, NOT A FREE PROPERTY, and UVaCuusView::UpdateModel states
+ * it. A model pushed ONCE -- a settings menu that binds a struct of FText labels when it opens
+ * and never touches it again -- keeps its old-culture strings for the life of the view, with no
+ * log line anywhere, because the projected text genuinely cannot re-resolve itself: it has an
+ * empty TextId, so CanUpdateDisplayString returns false and Rebuild does nothing, exactly as
+ * spelled out above. That is the property this projection is FOR on the UI thread, and its
+ * price on the game thread.
  *
  *
  * THREADING. Game thread only, asserted, and the reason is not convention: instance data has

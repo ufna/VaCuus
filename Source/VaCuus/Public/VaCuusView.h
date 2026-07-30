@@ -270,6 +270,21 @@ public:
 	 * wrong number. The Blueprint node gets the type for free from its wildcard pin, so both
 	 * surfaces reach this same check.
 	 *
+	 * A MODEL CONTAINING FText MUST BE RE-PUSHED AFTER A CULTURE CHANGE, OR PUSHED EVERY FRAME.
+	 * That is a contract, not the recommendation above. An FText field is stored in the shadow
+	 * as FText::AsCultureInvariant(Live.ToString()) -- resolved once, HERE, on the game thread --
+	 * so that the UI thread never touches FTextLocalizationManager (FVaCuusModelSampler's header
+	 * carries that argument; it is what makes the design thread-safe at all). A projected text
+	 * has an empty TextId, so FTextHistory_Base::CanUpdateDisplayString returns false
+	 * (TextHistory.cpp:940-943) and it can NEVER re-resolve itself.
+	 *
+	 * A culture change is therefore invisible until the next call to this function. Push a
+	 * struct of FText labels once when a settings menu opens, let the player change language,
+	 * and every label stays in the old language for the life of the view -- with no log line,
+	 * because nothing on this path is wrong. Hang a re-push off
+	 * FInternationalization::Get().OnCultureChanged() (Internationalization.h:201), or just call
+	 * this every frame as everything else here assumes.
+	 *
 	 * Nothing is written, and one line is logged, for: a model that is not bound (Warning), a
 	 * type that is not the bound one (Error), or a null Data (Warning). A view that has been
 	 * invalidated drops the call at Verbose -- this runs at frame rate, and a louder level
