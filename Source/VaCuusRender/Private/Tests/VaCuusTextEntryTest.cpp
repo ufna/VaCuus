@@ -681,6 +681,121 @@ bool FVaCuusTextEntryTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("A mutation for a blurred field changes nothing"), Host->FieldValue, FString(TEXT("Ok")));
 	}
 
+	// 9. REGRESSION: AN ABANDONED COMPOSITION IS CLEARED IN RmlUi, NOT LEFT BEHIND.
+	//
+	// THE BUG THIS GUARDS. When RmlUi's OWN focus leaves a composing field -- Tab, a script
+	// Blur(), a Task-10 document swap -- nothing engine-side calls EndComposition. The cleanup
+	// used to be queued from FVaCuusImeHandler::DeactivateContext -> AbortComposition, stamped
+	// with the shadow generation; but by then the snapshot carries the RESET field state
+	// (Generation 0) while the UI-side handler has already bumped its generation past 0 in the
+	// same UI frame, so ApplyMutation dropped that cleanup EVERY time -- it could not, even in
+	// principle, carry a matching stamp. RmlUi's Blur handler does not reset
+	// ime_composition_begin/end_index either, and FormatText draws the composing underline
+	// whenever end > begin regardless of whether any OS is still composing, so a phantom
+	// underline survived until the value happened to change. The fix clears it directly on the
+	// UI thread in FVaCuusRmlTextInputHandler::OnDeactivate, where the live
+	// Rml::TextInputContext* is already in hand.
+	//
+	// HOW IT IS ASSERTED, AND WHY INDIRECTLY. RmlUi exposes NO public getter for a field's
+	// composition range: TextInputContext has SetCompositionRange and no counterpart, and the
+	// only getter that exists (WidgetTextInput::GetCompositionRange) is on an internal class no
+	// public header reaches. Asserting the PUBLISHED FVaCuusTextFieldState::CompositionBegin/End
+	// would prove nothing -- those come from our own handler's bookkeeping, which
+	// Clear() already zeroed on deactivate even with the bug present.
+	//
+	// So the probe is BEHAVIOURAL, and it reads RmlUi's internal range through the one public
+	// door that depends on it: CommitComposition TAKES NO ACTION when the composition range is
+	// [0, 0] (WidgetTextInput.cpp:128-131). Committing with an EMPTY passed range -- which
+	// ApplyMutation deliberately does not re-assert -- therefore does exactly one of two things:
+	//
+	//   bug present:  the internal range is still (0, 2) -> the commit replaces those bytes ->
+	//                 the value becomes "!!"
+	//   bug fixed:    the internal range is (0, 0)       -> the commit no-ops ->
+	//                 the value stays "Ok"
+	//
+	// Nothing between setting the range and the probe touches the value, which matters because
+	// OnValueAttributeChanged is the one other thing that resets the range
+	// (WidgetTextInput.cpp:265-268) and would otherwise mask the bug.
+	{
+		const TSet<FKey> LeftOnly = {EKeys::LeftMouseButton};
+		const TSet<FKey> NoButtons;
+		const FVaCuusModifierState NoModifiers;
+
+		// Back onto the field, which still holds "Ok".
+		Widget->OnMouseButtonDown(Geometry, MakePointerEvent(GFieldPoint, LeftOnly, EKeys::LeftMouseButton));
+		Widget->OnMouseButtonUp(Geometry, MakePointerEvent(GFieldPoint, NoButtons, EKeys::LeftMouseButton));
+		if (!TestTrue(TEXT("UI frame ran after refocusing the field"), RunFrames(*UIThread, 1)))
+		{
+			return false;
+		}
+		if (!TestEqual(TEXT("The field is focused again"), Host->FocusId, FString(TEXT("field"))))
+		{
+			return false;
+		}
+
+		View->PollStatus();
+
+		// Start a composition and give it a real span, so there is something to abandon.
+		ImeContext->BeginComposition();
+		ImeContext->UpdateCompositionRange(/*InBeginIndex=*/0, /*InLength=*/2);
+		if (!TestTrue(TEXT("UI frame ran after starting the composition"), RunFrames(*UIThread, 1)))
+		{
+			return false;
+		}
+
+		View->PollStatus();
+		if (!TestEqual(TEXT("The composing span reached RmlUi before the blur"),
+				View->GetSnapshot().TextField.CompositionEnd, 2))
+		{
+			return false;
+		}
+
+		// THE ABANDONMENT: Tab moves RmlUi's focus to the next field with no EndComposition
+		// anywhere. This is the exact path the bug lived on.
+		UIThread->EnqueueInput(ViewId, FVaCuusInputEvent::KeyEvent(/*bDown=*/true, EKeys::Tab, NoModifiers));
+		if (!TestTrue(TEXT("UI frame ran after Tab"), RunFrames(*UIThread, 1)))
+		{
+			return false;
+		}
+		TestNotEqual(TEXT("Tab moved RmlUi focus off the composing field"), Host->FocusId, FString(TEXT("field")));
+
+		// The engine-facing contract is deliberately UNTOUCHED by the RmlUi-side cleanup: TSF
+		// owns this flag and only EndComposition/AbortComposition may clear it. If the fix ever
+		// starts reaching across into the game-thread context, this is what catches it.
+		TestTrue(TEXT("The engine-side composition is still open (nothing called EndComposition)"),
+			ImeContext->IsComposing());
+
+		// Back onto the field for the probe. Focus changes no value, so RmlUi's internal
+		// composition range is whatever the blur left it as -- which is the thing under test.
+		Widget->OnMouseButtonDown(Geometry, MakePointerEvent(GFieldPoint, LeftOnly, EKeys::LeftMouseButton));
+		Widget->OnMouseButtonUp(Geometry, MakePointerEvent(GFieldPoint, NoButtons, EKeys::LeftMouseButton));
+		if (!TestTrue(TEXT("UI frame ran after refocusing for the probe"), RunFrames(*UIThread, 1)))
+		{
+			return false;
+		}
+		if (!TestEqual(TEXT("The field is focused for the probe"), Host->FocusId, FString(TEXT("field"))))
+		{
+			return false;
+		}
+		TestEqual(TEXT("Refocusing did not change the value"), Host->FieldValue, FString(TEXT("Ok")));
+
+		View->PollStatus();
+		const uint64 ProbeGeneration = View->GetSnapshot().TextField.Generation;
+
+		// An EMPTY range, so ApplyMutation does not re-assert one and CommitComposition is left
+		// reading RmlUi's own. See the block comment for the two outcomes.
+		UIThread->EnqueueInput(ViewId,
+			FVaCuusInputEvent::ImeCommitComposition(ProbeGeneration, /*RangeBegin=*/0, /*RangeEnd=*/0, TEXT("!!")));
+		if (!TestTrue(TEXT("UI frame ran after the probe commit"), RunFrames(*UIThread, 1)))
+		{
+			return false;
+		}
+
+		TestEqual(
+			TEXT("An abandoned composition was cleared in RmlUi on blur, so a commit against an empty range no-ops"),
+			Host->FieldValue, FString(TEXT("Ok")));
+	}
+
 	UIThread->EnqueueRemoveView(ViewId);
 	TestTrue(TEXT("A UI frame survives the view removal"), RunFrames(*UIThread, 2));
 

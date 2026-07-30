@@ -76,6 +76,40 @@ public:
 			return;
 		}
 
+		// AN ABANDONED COMPOSITION IS CLEARED HERE, ON THIS THREAD, AND NOT THROUGH THE
+		// STAMPED QUEUE. This is the fix for a structural drop, and the reasoning is worth
+		// spelling out because the broken version looked right:
+		//
+		// When RmlUi's OWN focus leaves a composing field -- Tab, a script Blur(), a document
+		// swap -- nothing engine-side calls EndComposition. The game thread only learns about
+		// it from the next published snapshot, which by then carries the RESET field state
+		// (Generation 0), so the cleanup FVaCuusImeHandler::DeactivateContext queues through
+		// AbortComposition is stamped 0 -- while this handler has already bumped Generation
+		// past 0 in the very same UI frame. ApplyMutation therefore dropped it every single
+		// time: the cleanup could not, even in principle, carry a stamp that would match.
+		//
+		// The consequence is confined to RmlUi's own bookkeeping, but it is real: the Blur
+		// handler never resets ime_composition_begin/end_index (the only writers are the
+		// constructor, SetCompositionRange, and OnValueAttributeChanged -- WidgetTextInput.cpp:
+		// 216,267,379-385), and FormatText draws the composing underline whenever
+		// end > begin regardless of whether any OS is still composing
+		// (GetLineIMEComposition, :1587-1600). So a phantom underline survives on the next
+		// format or refocus until the value happens to change. The engine-facing
+		// IsComposing() contract is NOT affected -- that is the game-thread context's own
+		// bool -- which is why this is a visual/internal defect rather than a corrupted model.
+		//
+		// Doing it here sidesteps the cross-thread race entirely: we already hold the live
+		// Rml::TextInputContext* on the thread that owns it. [0, 0] is RmlUi's own "no
+		// composition" value and the call is idempotent (SetCompositionRange collapses any
+		// end <= start to 0,0), so it is safe unconditionally -- no need to know whether a
+		// composition was in flight. It is also safe re-entrantly: RmlUi calls us at the TOP
+		// of its Blur handler and then runs ClearSelection()/FormatText()/ShowCursor(false)
+		// itself, so the element is fully alive and gets re-formatted immediately after.
+		//
+		// The QUEUED path stays for genuine game-thread-initiated composition changes
+		// (UpdateCompositionRange, EndComposition), where the stamp is exactly the right guard.
+		InContext->SetCompositionRange(0, 0);
+
 		Clear();
 		UE_LOG(LogVaCuus, Verbose, TEXT("IME: RmlUi deactivated the text field (field generation %llu)"), Generation);
 	}
@@ -87,6 +121,23 @@ public:
 			return;
 		}
 
+		// DELIBERATELY NO SetCompositionRange(0, 0) HERE, unlike OnDeactivate above -- it
+		// would be both unsafe and pointless.
+		//
+		// UNSAFE: WidgetTextInputContext is a UniquePtr MEMBER of WidgetTextInput
+		// (WidgetTextInput.h:279), so ~WidgetTextInputContext -- which is what calls us
+		// (WidgetTextInput.cpp:80-83) -- runs during that widget's MEMBER destruction, i.e.
+		// after ~WidgetTextInput's body has already completed and removed text_element,
+		// selected_text_element and selection_element from the parent. Routing back through
+		// owner->SetCompositionRange() -> FormatText() would format a half-destroyed widget.
+		//
+		// POINTLESS: the widget and every element that could draw a composing underline are
+		// going away with it, so there is no lingering visual state left to clear.
+		//
+		// Note also that ~WidgetTextInput removes the Blur listener before member destruction,
+		// so a destroyed focused element never gets a Blur and OnDeactivate is NOT guaranteed
+		// to precede us -- which is why Clear() has to stand on its own here.
+		//
 		// THE KillContext MOMENT: the object behind ActiveContext is being destructed right
 		// now, so nulling here is what keeps every later ApplyMutation from dereferencing it.
 		Clear();
@@ -382,6 +433,23 @@ void ApplyMutation(Rml::Context& Context, uint32 ViewId, const FVaCuusInputEvent
 		return;
 	}
 
+	// AND THE CONVERSE IS GUARANTEED, WHICH IS THE NON-OBVIOUS HALF: a mutation that DOES carry
+	// the current generation is guaranteed to find WidgetTextInput::IsFocused() == true, so the
+	// early-return above can never bite an event this guard let through. That falls out of
+	// RmlUi's own call order, and it is load-bearing rather than incidental:
+	//
+	//   Focus: ... ShowCursor(true);  then  handler->OnActivate(...)   (WidgetTextInput.cpp:661-678)
+	//   Blur:  handler->OnDeactivate(...);  then ... ShowCursor(false) (:680-692)
+	//
+	// IsFocused() is `cursor_timer > 0` (:504-507), and ShowCursor sets cursor_timer to
+	// CURSOR_BLINK_TIME on true and to -1 on false (:1159-1175). Since the generation is bumped
+	// INSIDE OnActivate (after cursor_timer went positive) and bumped again INSIDE OnDeactivate
+	// (before it goes negative), the window in which a given generation is current is a strict
+	// SUBSET of the window in which the element is focused. Were RmlUi ever to reorder either
+	// pair, a matching-generation SetSelectionRange could start being swallowed silently -- so
+	// this is the property to re-check on a vendored-RmlUi bump.
+
+
 	// The active context is process-wide (RmlUi's callbacks carry no context), so confirm the
 	// ROUTED view is the one holding a focused text control before touching it. Without this
 	// a mutation routed to view A could be applied to view B's field.
@@ -567,12 +635,25 @@ public:
 	{
 	}
 
-	/** The KillContext moment: after this every override answers as "empty and read-only". */
+	/**
+	 * The KillContext moment: after this every override answers as "empty and read-only".
+	 *
+	 * THE SURFACE GOES TOO, and it is not decoration. The platform system holds this object by
+	 * TSharedRef and can call into it after teardown; a retained Surface would make GetWindow()
+	 * keep handing out the native window of a widget that no longer exists, and GetScreenBounds()
+	 * keep describing where it used to be -- which is exactly the "answers as empty" promise
+	 * above being false in the two places it matters most. A default-constructed
+	 * FVaCuusImeSurface has a null window and a zero rect, i.e. "nowhere", which is the honest
+	 * answer for a dead context.
+	 */
 	void KillContext()
 	{
 		Owner = nullptr;
 		bIsComposing = false;
+		CompositionBeginIndex = 0;
+		CompositionEndIndex = 0;
 		State.Reset();
+		Surface = FVaCuusImeSurface();
 	}
 
 	/** Called once per game frame by the handler with the newest published shadow state. */
@@ -698,7 +779,14 @@ public:
 		OutSize = Surface.AbsoluteSize;
 	}
 
-	virtual TSharedPtr<FGenericWindow> GetWindow() override { return Surface.NativeWindow; }
+	virtual TSharedPtr<FGenericWindow> GetWindow() override
+	{
+		// The Owner guard every other override has. Redundant with KillContext() clearing the
+		// surface, and kept anyway: this is the one answer the platform acts on by attaching
+		// its document manager to an HWND, so "the context is dead" is worth stating twice
+		// rather than depending on a reset somewhere else staying correct.
+		return Owner != nullptr ? Surface.NativeWindow : nullptr;
+	}
 
 	virtual void BeginComposition() override
 	{

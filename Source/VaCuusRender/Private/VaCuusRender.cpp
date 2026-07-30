@@ -454,18 +454,30 @@ static void TypeTextIntoFocusedWidget(const FString& Text)
 	FSlateApplication& Slate = FSlateApplication::Get();
 	const int32 UserIndex = Slate.GetUserIndexForKeyboard();
 
-	int32 NumHandled = 0;
+	int32 NumConsumed = 0;
 	for (int32 Index = 0; Index < Text.Len(); ++Index)
 	{
 		const FCharacterEvent CharEvent(Text[Index], FModifierKeysState(), UserIndex, /*bIsRepeat=*/false);
 		if (Slate.ProcessKeyCharEvent(CharEvent))
 		{
-			++NumHandled;
+			++NumConsumed;
 		}
 	}
 
-	UE_LOG(LogVaCuus, Log, TEXT("Typed '%s' (%d UTF-16 unit(s), %d handled by a widget)"),
-		*Text, Text.Len(), NumHandled);
+	// TWO DIFFERENT FACTS, and the earlier version of this line conflated them into a
+	// "0 handled by a widget" that read as "nothing happened" while the text visibly landed in
+	// the field. What Slate reports is only whether the FReply CONSUMED the character, and
+	// SVaCuusWidget::OnKeyChar answers that from the cached snapshot's bWantsKeyboardFocus --
+	// which is one game frame stale. So a synthesized click-then-type burst inside a single
+	// frame is answered Unconsumed for every character even though every one of them was
+	// FORWARDED: OnKeyChar queues unconditionally and only the FReply depends on the snapshot.
+	// Consumption decides whether the game ALSO sees the key; delivery to the UI is unrelated.
+	UE_LOG(LogVaCuus, Log,
+		TEXT("Typed '%s': %d UTF-16 unit(s) forwarded to the focused widget, %d consumed by it ")
+		TEXT("(unconsumed means the character still reached the UI queue but also fell through to the game -- ")
+		TEXT("SVaCuusWidget::OnKeyChar answers Slate from the one-frame-stale snapshot, and a click plus typing in ")
+		TEXT("the SAME frame is answered before that snapshot knows a field took focus)"),
+		*Text, Text.Len(), NumConsumed);
 }
 
 static void SimulateMouseMove(const TArray<FString>& Args)
