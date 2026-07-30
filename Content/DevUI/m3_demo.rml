@@ -1,0 +1,69 @@
+<rml>
+<head>
+	<title>VaCuus M3 Data Binding Demo</title>
+	<link type="text/rcss" href="m3_demo.rcss"/>
+</head>
+
+<!-- `data-model="hud"` is resolved EXACTLY ONCE, in Element::SetParent, when this body is
+     parented into the context (ThirdParty/RmlUi/Source/Core/Element.cpp:2202-2219). A model
+     created after that attaches to nothing and the only diagnostic is a Log::LT_ERROR that is
+     compiled out in every configuration this project builds. vacuus.M3Demo therefore calls
+     BindModel BEFORE LoadDocument, and the queue being FIFO from one producer is what makes
+     that ordering hold across the thread boundary. -->
+<body data-model="hud">
+	<div id="m3-title">VaCuus M3 // DATA BINDING DEMO</div>
+
+	<!-- 1. TEXT SUBSTITUTION. `{{Field}}` is DataViewText: it evaluates the expression and
+	     calls ElementText::SetText only when the value actually CHANGED
+	     (DataViewDefault.cpp:354), which is the reason an unchanging model costs zero
+	     published frames and also the reason "0 published frames" alone cannot tell an idle
+	     model from one that dirties everything every frame. -->
+	<div id="p-scalars" data-class-alert="bAlert">
+		<div class="panel-title">1 &#183; SCALARS ({{Tick}} updates published)</div>
+		<div class="row"><span class="key">CallSign</span><span class="val">{{CallSign}}</span></div>
+		<div class="row"><span class="key">Ammo</span><span class="val">{{Ammo}}</span></div>
+		<div class="row"><span class="key">Stance</span><span class="val">{{Stance}}</span></div>
+		<div class="row"><span class="key">Zone</span><span class="val">{{Zone}}</span></div>
+		<div class="row"><span class="key">Objective</span><span class="val">{{Objective}}</span></div>
+	</div>
+
+	<!-- 2. A BOUND VALUE AS GEOMETRY. data-style-width writes the `width` property rather than
+	     text, so this bar MOVES -- which is what makes a screenshot evidence about the pipeline
+	     rather than about the font. Health is a float, and RmlUi renders a bound double through
+	     "%.3f" plus TrimTrailingDotZeros (TypeConverter.inl:282-295), so the label below reads
+	     three decimals at most while vacuus.DumpModel prints full precision. -->
+	<div id="p-bar">
+		<div class="panel-title">2 &#183; FLOAT AS GEOMETRY (data-style-width)</div>
+		<div id="bar-track">
+			<div id="bar-fill" data-style-width="Health + '%'"/>
+		</div>
+		<div class="row"><span class="key">Health</span><span class="val">{{Health}}</span></div>
+	</div>
+
+	<!-- 3. A FLATTENED NESTED STRUCT. `Target.Designation` and `Target.Distance` are two layout
+	     entries with one top-level name: RmlUi's DirtyVariable takes top-level names only
+	     (DataModel.cpp:325-331), so both leaves dirty `Target` and one re-evaluation serves
+	     them both. ParseAddress splits the dotted path and applies no name rule to the segments
+	     (DataModel.cpp:9-46), which is why `Size` would be legal here and not at the top. -->
+	<div id="p-nested">
+		<div class="panel-title">3 &#183; NESTED STRUCT (one top-level name, two leaves)</div>
+		<div class="row"><span class="key">Target.Designation</span><span class="val">{{Target.Designation}}</span></div>
+		<div class="row"><span class="key">Target.Distance</span><span class="val">{{Target.Distance}}</span></div>
+	</div>
+
+	<!-- 4. ATTRIBUTES AND ONE-WAY-NESS. data-attr writes an attribute, and it too skips the
+	     write when the value is unchanged (DataViewDefault.cpp:79).
+
+	     The button is the I3 probe: `data-event-click="Ammo = 0"` reaches
+	     VariableDefinition::Set, which FVaCuusScalarDefinition REFUSES -- it returns false, logs
+	     once, and both RmlUi call sites then skip their own DirtyVariable
+	     (DataControllerDefault.cpp:57-59, DataExpression.cpp:1185-1197). Click it and Ammo does
+	     NOT change; that is the whole of M3a's one-way contract, on screen. -->
+	<div id="p-write">
+		<div class="panel-title">4 &#183; WRITES ARE REFUSED (M3a is one-way)</div>
+		<div id="probe" data-attr-vacuus-ammo="Ammo">ammo mirrored into an attribute</div>
+		<button id="write-btn" class="m3-btn" data-event-click="Ammo = 0">try to set Ammo = 0</button>
+		<div class="hint">Nothing happens, by design: see vacuus.DumpModel and the LogVaCuus warning.</div>
+	</div>
+</body>
+</rml>

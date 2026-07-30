@@ -3,6 +3,7 @@
 #include "SVaCuusWidget.h"
 #include "VaCuusContentPaths.h"
 #include "VaCuusDefines.h"
+#include "VaCuusDemoModel.h"
 #include "VaCuusRecordingRenderInterface.h"
 #include "VaCuusRmlDocumentHost.h"
 #include "VaCuusSlateElement.h"
@@ -35,6 +36,14 @@ namespace VaCuusM1HUD
  */
 static const TCHAR* GM1HudVfsPath = TEXT("m1_hud.rml");
 static const TCHAR* GM2DemoVfsPath = TEXT("m2_demo.rml");
+static const TCHAR* GM3DemoVfsPath = TEXT("m3_demo.rml");
+
+/**
+ * The name m3_demo.rml's `data-model` attribute writes, and the name `vacuus.DumpModel hud`
+ * takes. One constant so the document, the bind and the dump cannot drift apart -- a mismatch
+ * here produces an inert document and RmlUi's only complaint about it is compiled out (spec 8).
+ */
+static const TCHAR* GM3ModelName = TEXT("hud");
 
 /**
  * Which document the toggle is showing, or will show next.
@@ -168,6 +177,32 @@ struct FState
 
 	/** Subscription to UVaCuusSubsystem::OnDocumentsReloadRequested; see OnDocumentsReloadRequested. */
 	FDelegateHandle ReloadRequestedHandle;
+
+	//~ ------------------------------------------------------- M3a data binding (plan Task 9.1)
+
+	/**
+	 * The live gameplay struct `vacuus.M3Demo` drives, standing in for whatever a real game
+	 * would push. Owned by the toggle, on the game thread, and never seen by the UI thread:
+	 * UpdateModel diffs it into the model's own shadow and only the shadow crosses over.
+	 */
+	FVaCuusDemoModel DemoModel;
+
+	/** OnBeginFrame subscription that pumps DemoModel; only bound while the M3 demo is up. */
+	FDelegateHandle ModelDriverHandle;
+
+	/** Seconds the driver has been running, so the animation is wall-clock and not frame-rate. */
+	double ModelDriverStartSeconds = 0.0;
+
+	/**
+	 * `vacuus.M3Demo.Freeze 1`: keep calling UpdateModel every frame with UNCHANGED data.
+	 *
+	 * THAT IS SPEC 9's IDLE ROW, ON A REAL SCREEN. "Nobody called UpdateModel" would be the
+	 * weaker case and the one that proves nothing; this is a game pushing its HUD struct every
+	 * tick, unchanged, which must cost zero published frames and zero applied fields. Both
+	 * numbers are readable while it is frozen -- UVaCuusView::GetFramesPublished through
+	 * vacuus.M1HUD.PerfLog, and the applied-field count through vacuus.DumpModel.
+	 */
+	bool bModelFrozen = false;
 };
 
 static TUniquePtr<FState> GState;
@@ -179,6 +214,15 @@ static void TearDown()
 		return;
 	}
 	TUniquePtr<FState> State = MoveTemp(GState);
+
+	// FIRST OF ALL, because it is the one subscription that runs every frame and reads GState:
+	// OnBeginFrame broadcasts from LaunchEngineLoop and would otherwise fire once more, after
+	// GState was moved out, on a view this function is about to retire.
+	if (State->ModelDriverHandle.IsValid())
+	{
+		FCoreDelegates::OnBeginFrame.Remove(State->ModelDriverHandle);
+		State->ModelDriverHandle.Reset();
+	}
 
 	FWorldDelegates::OnWorldBeginTearDown.Remove(State->WorldTearDownHandle);
 
@@ -366,6 +410,111 @@ static void OnDocumentsReloadRequested(int32& InOutNumReloaded)
 }
 
 /**
+ * One frame of the M3 demo: move the live struct, then hand it to the view.
+ *
+ * DRIVEN FROM WALL CLOCK, NOT FROM THE FRAME COUNTER, so the same elapsed time produces the
+ * same picture whatever the frame rate -- which is what lets a headless run schedule a
+ * screenshot at t+3s and assert what should be on it.
+ *
+ * Tick is the exception and counts CALLS: it is the liveness signal, and a HUD whose numbers
+ * happen to be stationary is exactly when you want to know the pump is still running.
+ */
+static void PumpDemoModel()
+{
+	if (!GState || !GState->View.IsValid())
+	{
+		return;
+	}
+
+	// FUNCTION-LOCAL STATIC, not a file-scope FName: FName's global table is built during
+	// module startup, so a file-scope FName constructed from a literal would depend on static
+	// initialisation order. This also keeps the per-frame cost to a load rather than a hash.
+	static const FName ModelName(GM3ModelName);
+
+	FVaCuusDemoModel& Model = GState->DemoModel;
+	++Model.Tick;
+
+	// UPDATED EVEN WHILE FROZEN, and that is the point of the frozen mode rather than an
+	// oversight: the idle row is about a game that pushes its struct every frame with nothing
+	// changed. Tick is rolled back so the struct really is byte-identical to the last one.
+	if (GState->bModelFrozen)
+	{
+		--Model.Tick;
+		GState->View->UpdateModel(ModelName, FVaCuusDemoModel::StaticStruct(), &Model);
+		return;
+	}
+
+	const double Elapsed = FPlatformTime::Seconds() - GState->ModelDriverStartSeconds;
+
+	// A 10-second sweep down and back up, so the bar is always moving and the alert class
+	// switches twice a cycle.
+	const double Phase = FMath::Fmod(Elapsed, 10.0);
+	Model.Health = float(Phase < 5.0 ? 100.0 - Phase * 20.0 : (Phase - 5.0) * 20.0);
+	Model.bAlert = Model.Health < 30.f;
+
+	Model.Ammo = 30 - (int32(Elapsed) % 31);
+
+	static const TCHAR* StanceNames[] = {TEXT("Standing"), TEXT("Crouched"), TEXT("Prone")};
+	const int32 StanceIndex = int32(Elapsed / 2.0) % UE_ARRAY_COUNT(StanceNames);
+	Model.Stance = static_cast<EVaCuusDemoStance>(StanceIndex);
+
+	// The three string-shaped kinds move on a slower beat than the numbers, so a screenshot
+	// catches a stable word rather than a blur -- and so that the FText and FName diff rules
+	// (spec 5) are exercised by a real change rather than by a value that never moves.
+	const int32 Beat = int32(Elapsed / 3.0);
+	Model.CallSign = FString::Printf(TEXT("VACUUS-%02d"), Beat % 100);
+	Model.Zone = FName(*FString::Printf(TEXT("Sector_%c"), TEXT('A') + (Beat % 4)));
+	Model.Objective = FText::AsCultureInvariant(FString::Printf(TEXT("Hold the line (beat %d)"), Beat));
+
+	Model.Target.Designation = FString::Printf(TEXT("BOGEY-%d"), Beat % 8);
+	Model.Target.Distance = 120 + (Beat % 9) * 35;
+
+	// ONE CALL WITH THE WHOLE STRUCT. The diff is inside: UpdateModel marks only what moved, and
+	// UVaCuusSubsystem::Tick turns whatever was marked into ONE publish for the frame.
+	GState->View->UpdateModel(ModelName, FVaCuusDemoModel::StaticStruct(), &Model);
+}
+
+/**
+ * Binds the demo model to a freshly created view and starts the pump.
+ *
+ * CALLED BEFORE THE VIEW'S FIRST LoadDocument, WHICH IS THE WHOLE CONTRACT. RmlUi reads
+ * `data-model` exactly once, in Element::SetParent (Element.cpp:2202-2219); a model created
+ * afterwards attaches to nothing, every `{{Field}}` resolves against no model, and the only
+ * complaint is a Log::LT_ERROR this project compiles out (spec 8). The queue is FIFO from a
+ * single producer, so a BindModel enqueued here is drained before the load Toggle() enqueues
+ * next -- the ordering survives the thread boundary because of that and nothing else.
+ *
+ * FROM OnBeginFrame RATHER THAN A TICKER, for the reason HoverShot spells out at length:
+ * OnBeginFrame broadcasts at LaunchEngineLoop.cpp:5682, BEFORE GEngine->Tick (:5859) where
+ * UVaCuusSubsystem::Tick publishes. A ticker fires at :6103, after that publish, so every
+ * update would sit in the channel for a frame -- one frame of latency between a gameplay write
+ * and the screen, permanently, for no reason.
+ */
+static void StartModelDriver(UVaCuusView* View)
+{
+	if (!GState || View == nullptr)
+	{
+		return;
+	}
+
+	if (!View->BindModel(FName(GM3ModelName), FVaCuusDemoModel::StaticStruct()))
+	{
+		// Already logged in detail by BindModel. The document will still load and will still be
+		// laid out; it will simply show nothing, which is precisely the failure this milestone
+		// is built against -- so say so here too rather than let the demo look merely empty.
+		UE_LOG(LogVaCuus, Error,
+			TEXT("vacuus.M3Demo: the data model could not be bound, so m3_demo.rml will load and show NOTHING. ")
+			TEXT("Run vacuus.DumpModel to see which side has the model"));
+		return;
+	}
+
+	GState->DemoModel = FVaCuusDemoModel();
+	GState->ModelDriverStartSeconds = FPlatformTime::Seconds();
+	GState->bModelFrozen = false;
+	GState->ModelDriverHandle = FCoreDelegates::OnBeginFrame.AddStatic(&PumpDemoModel);
+}
+
+/**
  * Brings the named document up, or takes it down if it is already the one showing.
  *
  * SWITCHING BETWEEN THE TWO DOCUMENTS IS A TEARDOWN PLUS A BRING-UP, not a reload, and
@@ -458,6 +607,15 @@ static void Toggle(const TCHAR* DocumentVfsPath)
 	// loads fine now can be broken by the next save, fall back, and then need re-arming.
 	GState->ReloadRequestedHandle =
 		Subsystem->OnDocumentsReloadRequested.AddStatic(&OnDocumentsReloadRequested);
+
+	// BEFORE THE LOAD BELOW, AND THAT ORDER IS RmlUi's REQUIREMENT RATHER THAN A PREFERENCE --
+	// see StartModelDriver. Guarded on the document rather than done unconditionally because a
+	// model bound to a view whose document has no matching `data-model` is a model whose values
+	// go nowhere, and this file's other two documents have none.
+	if (FCString::Strcmp(GDocumentVfsPath, GM3DemoVfsPath) == 0)
+	{
+		StartModelDriver(View);
+	}
 
 	// Asynchronous by design: the document is loaded by the UI thread on its first
 	// frame. The view size rides along so the very first layout is at the right size.
@@ -1325,6 +1483,53 @@ static FAutoConsoleCommand GM2DemoCommand(
 	TEXT("wheel-scrollable list, a text field, a vacuus-passthrough region and nav-annotated focusables. ")
 	TEXT("Shares every vacuus.M1HUD.* sub-command, because those are about the view and not the document."),
 	FConsoleCommandDelegate::CreateLambda([] { Toggle(GM2DemoVfsPath); }));
+
+static FAutoConsoleCommand GM3DemoCommand(
+	TEXT("vacuus.M3Demo"),
+	TEXT("Toggle the M3a data-binding demo (DevUI/m3_demo.rml): a USTRUCT carrying one property of every bound kind, ")
+	TEXT("driven every frame into a live RmlUi data model -- text substitution, a float as bar geometry, a flattened ")
+	TEXT("nested struct, a bound class, and a button whose write is refused. Pair it with vacuus.DumpModel and ")
+	TEXT("vacuus.M3Demo.Freeze."),
+	FConsoleCommandDelegate::CreateLambda([] { Toggle(GM3DemoVfsPath); }));
+
+/**
+ * Stops or restarts the demo's mutation while leaving UpdateModel running every frame.
+ *
+ * THE IDLE ROW, MADE OBSERVABLE ON A REAL SCREEN (spec 9). Frozen, the game thread pushes a
+ * byte-identical struct every frame: the differ marks nothing, the channel never swaps, the UI
+ * thread applies nothing, the DOM does not move, and the idle gate withholds every frame. The
+ * two numbers that say so are on different sides -- published frames (vacuus.M1HUD.PerfLog) and
+ * applied fields (vacuus.DumpModel) -- and spec 9 records why only both together discriminate.
+ */
+static void FreezeDemoModel(const TArray<FString>& Args)
+{
+	if (!GState || !GState->ModelDriverHandle.IsValid())
+	{
+		UE_LOG(LogVaCuus, Error, TEXT("vacuus.M3Demo.Freeze needs the M3 demo to be on"));
+		return;
+	}
+
+	// No argument means "freeze"; an explicit 0 thaws. Same convention as
+	// vacuus.M1HUD.PassThroughKey.
+	GState->bModelFrozen = Args.Num() == 0 || FCString::Atoi(*Args[0]) != 0;
+
+	if (!GState->bModelFrozen)
+	{
+		// Rebased so the sweep resumes from the top rather than jumping to wherever wall clock
+		// happens to be, which would look like a glitch rather than a resume.
+		GState->ModelDriverStartSeconds = FPlatformTime::Seconds();
+	}
+
+	UE_LOG(LogVaCuus, Display,
+		TEXT("vacuus.M3Demo.Freeze: the demo model is now %s -- UpdateModel is still called every frame either way"),
+		GState->bModelFrozen ? TEXT("FROZEN (nothing should publish, and nothing should be applied)") : TEXT("running"));
+}
+
+static FAutoConsoleCommand GM3FreezeCommand(
+	TEXT("vacuus.M3Demo.Freeze"),
+	TEXT("Freeze [1] or thaw [0] the M3 demo's values while UpdateModel keeps being called every frame. Frozen is ")
+	TEXT("spec 9's idle row: 0 published frames AND 0 fields applied."),
+	FConsoleCommandWithArgsDelegate::CreateStatic(&FreezeDemoModel));
 
 static void Wheel(const TArray<FString>& Args)
 {
