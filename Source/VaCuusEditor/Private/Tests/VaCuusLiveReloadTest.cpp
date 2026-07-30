@@ -117,6 +117,23 @@ static FString WhySkip()
 	}
 	return FString();
 }
+
+/**
+ * The precondition every test that starts a UI thread shares, and a FAILURE rather than a
+ * skip: it describes a session that is perfectly capable of running the test, in which
+ * somebody else has taken the one resource it needs.
+ *
+ * FVaCuusModule::GetOrStartUIThread() boots RmlUi on the worker it spawns and claims
+ * ownership of the library there (FVaCuusUIThread::Init), so a session that already holds
+ * it -- a PIE game with vacuus.M1HUD up, which is exactly the state somebody runs these
+ * from in the Session Frontend -- makes that boot fail. The test then gets a null thread
+ * and reports "UI thread" instead of the real reason, and its ON_SCOPE_EXIT
+ * Module.StopUIThread() would stop a thread it did not start.
+ */
+static bool TestRmlUiIsDown(FAutomationTestBase& Test)
+{
+	return Test.TestFalse(TEXT("RmlUi is down before the test"), FVaCuusEngine::Get().IsInitialized());
+}
 }	 // namespace VaCuusLiveReloadTest
 
 /**
@@ -430,6 +447,11 @@ bool FVaCuusLiveReloadDispatchTest::RunTest(const FString& Parameters)
 		return true;
 	}
 
+	if (!TestRmlUiIsDown(*this))
+	{
+		return false;
+	}
+
 	FVaCuusModule& Module = FVaCuusModule::Get();
 	FVaCuusUIThread* UIThread = Module.GetOrStartUIThread();
 	if (!TestNotNull(TEXT("UI thread"), UIThread))
@@ -540,6 +562,11 @@ bool FVaCuusLiveReloadAssetCachesTest::RunTest(const FString& Parameters)
 	{
 		AddInfo(FString::Printf(TEXT("Skipped: %s"), *SkipReason));
 		return true;
+	}
+
+	if (!TestRmlUiIsDown(*this))
+	{
+		return false;
 	}
 
 	FVaCuusModule& Module = FVaCuusModule::Get();
@@ -665,6 +692,11 @@ bool FVaCuusLiveReloadRearmTest::RunTest(const FString& Parameters)
 	{
 		AddInfo(FString::Printf(TEXT("Skipped: %s"), *SkipReason));
 		return true;
+	}
+
+	if (!TestRmlUiIsDown(*this))
+	{
+		return false;
 	}
 
 	FVaCuusModule& Module = FVaCuusModule::Get();
@@ -915,6 +947,11 @@ bool FVaCuusLiveReloadWatcherEventTest::RunTest(const FString& Parameters)
 		AddInfo(TEXT("Skipped the event half: no DevUI root exists, so there is nothing to write into"));
 		State->Reload.Shutdown();
 		return true;
+	}
+
+	if (!TestRmlUiIsDown(*this))
+	{
+		return false;
 	}
 
 	FVaCuusModule& Module = FVaCuusModule::Get();

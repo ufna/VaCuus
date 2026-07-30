@@ -368,7 +368,24 @@ bool FVaCuusUIThread::StartInline()
 	check(IsInGameThread());
 	checkf(Thread == nullptr, TEXT("StartInline() must not follow a successful Start()"));
 
-	// Everything Init() does -- publishing the thread id, booting RmlUi -- happens
+	// CLAIMABILITY TESTED BEFORE THE SCOPE, for the same reason Init() no longer publishes
+	// its id before its own claim. The scope makes this thread *be* the UI thread for its
+	// whole duration, so entering it while another thread owns RmlUi would make
+	// IsInUIThread() read false ON that thread -- and every check() guarding an RmlUi call
+	// there fire -- for as long as the doomed boot attempt takes. Init() would refuse anyway;
+	// this only stops us lying about who the UI thread is while it does.
+	//
+	// Not a lock, and it does not need to be: StartInline() is game-thread-only and only
+	// reached when Start() already failed for want of multithreading, so there is no second
+	// claimant to race with.
+	if (!Engine.IsClaimableOnThisThread())
+	{
+		UE_LOG(LogVaCuus, Error,
+			TEXT("VaCuus UI frames cannot run inline: RmlUi is already owned by another thread"));
+		return false;
+	}
+
+	// Everything Init() does -- booting RmlUi, then publishing the thread id -- happens
 	// on this thread, which therefore becomes the RmlUi owner for good.
 	FVaCuusInlineUIThreadScope InlineScope;
 	if (!Init())
@@ -656,27 +673,55 @@ bool FVaCuusUIThread::Init()
 	// inline scope). FRunnableThread::Create() waits for this to return, so
 	// everything published here is visible to the caller once Start() succeeds.
 	const uint32 CurrentThreadId = FPlatformTLS::GetCurrentThreadId();
-	ThreadId.store(CurrentThreadId, std::memory_order_release);
-	GVaCuusUIThreadId.store(CurrentThreadId, std::memory_order_release);
 
-	// RmlUi is process-global, so it boots here once for every view that will ever
-	// exist -- and this thread becomes its owner. Refusing rather than asserting
-	// when somebody else already owns it keeps an automation test that holds RmlUi
-	// on its own thread from turning into a check() crash.
+	// THE CLAIM COMES FIRST; NOTHING IS PUBLISHED UNTIL IT SUCCEEDS.
+	//
+	// RmlUi is process-global, so it boots here once for every view that will ever exist --
+	// and this thread becomes its owner. Refusing rather than asserting when somebody else
+	// already owns it keeps an automation test that holds RmlUi on its own thread from
+	// turning into a check() crash.
+	//
+	// THE ORDER IS THE POINT, and it used to be the other way round. GVaCuusUIThreadId is
+	// what backs every check(FVaCuusUIThread::IsInUIThread()) in the plugin -- i.e. it IS the
+	// enforcement of "every RmlUi call happens on the UI thread". Publishing this thread's id
+	// before earning the right to it had two consequences, both silent:
+	//
+	//  - a SECOND FVaCuusUIThread booting while a first one is live (only a test ever builds
+	//    two -- Tests/VaCuusUIThreadTest.cpp) took the identity away from the live UI thread
+	//    for the length of its boot attempt, so that thread's own guards read false in the
+	//    middle of a frame;
+	//  - and the failure path then stored 0 rather than the id it had displaced, so
+	//    IsInUIThread() stayed false on the REAL UI thread for the rest of the process. Where
+	//    DO_CHECK is 0 that is not an assert: it is every guard around RmlUi quietly
+	//    evaporating.
+	//
+	// With the claim first there is nothing to retract and nothing to restore -- a refused
+	// boot never touched the global. The inline path is the one case that genuinely has to
+	// publish before Init() runs at all, and it saves and restores for exactly that reason
+	// (FVaCuusInlineUIThreadScope).
 	const bool bBooted = Engine.IsClaimableOnThisThread() && Engine.Initialize();
 	if (!bBooted)
 	{
 		UE_LOG(LogVaCuus, Error,
 			TEXT("The VaCuus UI thread could not boot RmlUi (already owned by another thread?); no UI frames will run"));
 
-		// Exit() will NOT run when Init() fails, so this is the only chance to
-		// unwind. All there is to retract is the thread-id publication.
-		GVaCuusUIThreadId.store(0, std::memory_order_release);
-		ThreadId.store(0, std::memory_order_release);
-
+		// Exit() will NOT run when Init() fails, and there is nothing here for it to do:
+		// neither id below was ever published.
 		bInitSucceeded.store(false, std::memory_order_release);
 		return false;
 	}
+
+	// Now, and only now. The process-wide id goes last of the two because it is the one
+	// every OTHER thread reads; ThreadId is only ever read for diagnostics.
+	//
+	// The retraction is Exit()'s matching store(0), and it is guaranteed on both paths that
+	// get here: the platform thread proc runs Run() and then Exit() for exactly the case
+	// where Init() returned true (PThreadRunnableThread.cpp:16-33 -- and the else branch at
+	// :34-38 is why the failure path above must leave nothing behind), and inline mode sets
+	// bInlineMode only after a successful Init(), which is what makes the destructor call
+	// Exit(). So the publication and its retraction are paired by that contract, not here.
+	ThreadId.store(CurrentThreadId, std::memory_order_release);
+	GVaCuusUIThreadId.store(CurrentThreadId, std::memory_order_release);
 
 	// Set last, and before returning: Start() reads it as soon as Create() returns.
 	bInitSucceeded.store(true, std::memory_order_release);

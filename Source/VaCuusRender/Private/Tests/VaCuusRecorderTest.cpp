@@ -282,6 +282,15 @@ bool FVaCuusRecorderLoadTextureTest::RunTest(const FString& Parameters)
 	// library must be booted (installs FVaCuusFileInterface; absolute paths
 	// pass through). The null-file-interface early-out stays untested: it can
 	// only occur pre-boot and would require poking RmlUi globals directly.
+	//
+	// AND IT MUST BE OURS TO BOOT: an Initialize() from here while a live UI thread owns
+	// the library trips the owner-thread checkf inside FVaCuusEngine (VaCuusEngine.cpp:250)
+	// rather than failing politely, so the precondition is asserted instead of assumed.
+	if (!TestFalse(TEXT("RmlUi is down before the test"), FVaCuusEngine::Get().IsInitialized()))
+	{
+		return false;
+	}
+
 	FVaCuusEngine& Engine = FVaCuusEngine::Get();
 	if (!TestTrue(TEXT("Initialized"), Engine.Initialize()))
 	{
@@ -587,6 +596,14 @@ bool FVaCuusRecorderDecodeFailureTest::RunTest(const FString& Parameters)
 	//      trip the replayer's unknown-handle ensure on every subsequent frame, because
 	//      RmlUi still owns the handle and keeps drawing with it;
 	//   2. the failure is logged EXACTLY ONCE, not once per frame.
+	//
+	// Same precondition as LoadTexture above, and for the same reason: this test boots
+	// RmlUi on the test thread, which only works while nobody else owns it.
+	if (!TestFalse(TEXT("RmlUi is down before the test"), FVaCuusEngine::Get().IsInitialized()))
+	{
+		return false;
+	}
+
 	FVaCuusEngine& Engine = FVaCuusEngine::Get();
 	if (!TestTrue(TEXT("Initialized"), Engine.Initialize()))
 	{

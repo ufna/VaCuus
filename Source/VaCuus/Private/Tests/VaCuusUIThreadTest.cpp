@@ -22,6 +22,20 @@ bool FVaCuusUIThreadLifecycleTest::RunTest(const FString& Parameters)
 		return true;
 	}
 
+	// THE PRECONDITION THIS TEST NEEDS MOST, because of what it is about to build: a
+	// SECOND FVaCuusUIThread, while the module already owns one per process. Run it with
+	// RmlUi already booted -- a PIE session with vacuus.M1HUD up, say, which is exactly how
+	// somebody runs it from the Session Frontend -- and the worker below claims a library
+	// that is not free. It is refused, correctly, but the run then proves nothing about the
+	// lifecycle and everything about the refusal, and until the M2 fix in
+	// FVaCuusUIThread::Init() the attempt also left IsInUIThread() false on the real UI
+	// thread for the rest of the process. Refuse to start rather than report a confusing
+	// pass.
+	if (!TestFalse(TEXT("RmlUi is down before the test"), FVaCuusEngine::Get().IsInitialized()))
+	{
+		return false;
+	}
+
 	// Engine reference resolved here, on the game thread: the worker must never look
 	// the module up itself.
 	FVaCuusUIThread UIThread(FVaCuusEngine::Get());

@@ -11,6 +11,16 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusBootTest, "VaCuus.Core.Boot",
 
 bool FVaCuusBootTest::RunTest(const FString& Parameters)
 {
+	// This test BOOTS RmlUi on the test thread and owns it for its duration, so nobody
+	// else may hold it: a live UI thread (a PIE session with vacuus.M1HUD up) owns the
+	// library on its own thread, and Initialize() from here would then trip the
+	// owner-thread check() inside FVaCuusEngine rather than fail politely. Same
+	// precondition, same wording, as every other test that takes the library.
+	if (!TestFalse(TEXT("RmlUi is down before the test"), FVaCuusEngine::Get().IsInitialized()))
+	{
+		return false;
+	}
+
 	FVaCuusEngine& Engine = FVaCuusEngine::Get();
 	if (!TestTrue(TEXT("Initialized"), Engine.Initialize()))
 	{
