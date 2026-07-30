@@ -4,6 +4,7 @@
 
 #include "VaCuusModelLayout.h"
 #include "VaCuusModelLayoutTestTypes.h"
+#include "VaCuusModelShadow.h"
 
 #include "StructUtils/UserDefinedStruct.h"
 #include "UObject/StrongObjectPtr.h"
@@ -381,6 +382,120 @@ bool FVaCuusModelLayoutAuthoredNameTest::RunTest(const FString& Parameters)
 		// The point of the whole test: the wire name is the authored name, not GetName().
 		TestEqual(TEXT("under its authored name"), Layout.GetFields()[0].WireName, AuthoredName);
 		TestTrue(TEXT("which is not the mangled name"), Layout.GetFields()[0].WireName != RawName);
+	}
+
+	return true;
+}
+
+/**
+ * THE SHADOW BUFFER: a real UScriptStruct instance, addressable through the layout,
+ * constructed and destroyed exactly once.
+ *
+ * The three claims, each with its own observable:
+ *
+ *  1. It is a REAL INSTANCE, not a zeroed block -- proved by a field whose C++ default is
+ *     non-zero. InitializeStruct memzeroes and then constructs (Class.cpp:3783, :3798), so
+ *     "allocated and zeroed" and "allocated and constructed" differ exactly here.
+ *  2. EVERY FProperty ACCESSOR WORKS AGAINST IT unchanged, which is the whole reason for
+ *     spec 3.1 -- including a nested leaf reached through FVaCuusModelField::ContainerPtr,
+ *     because Offset_Internal means the same thing in this buffer as in a stack instance.
+ *  3. IT IS DESTROYED, ONCE. A missing DestroyStruct leaks every heap-owning member and is
+ *     otherwise completely silent, so the counted destructor is the only way to see it.
+ *
+ * Counters are read as deltas: linking a type may construct a throwaway instance, so the
+ * value at entry is not knowable.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusModelShadowTest, "VaCuus.Model.Shadow",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusModelShadowTest::RunTest(const FString& Parameters)
+{
+	using namespace VaCuusModelLayoutTest;
+
+	const FVaCuusModelLayout Layout(FVaCuusShadowProbeModel::StaticStruct());
+	if (!TestTrue(TEXT("the layout resolved the probe struct"), Layout.IsValid()))
+	{
+		return false;
+	}
+
+	const FVaCuusModelField* Ratio = Layout.FindField(TEXT("Ratio"));
+	const FVaCuusModelField* Title = Layout.FindField(TEXT("Title"));
+	const FVaCuusModelField* OriginY = Layout.FindField(TEXT("Origin.Y"));
+	if (!TestNotNull(TEXT("Ratio is bound"), Ratio) || !TestNotNull(TEXT("Title is bound"), Title)
+		|| !TestNotNull(TEXT("Origin.Y is bound"), OriginY))
+	{
+		return false;
+	}
+
+	const int32 ConstructedBefore = VaCuusShadowProbe::NumConstructed;
+	const int32 DestructedBefore = VaCuusShadowProbe::NumDestructed;
+
+	const FFloatProperty* RatioProperty = CastField<FFloatProperty>(Ratio->Property);
+	const FStrProperty* TitleProperty = CastField<FStrProperty>(Title->Property);
+	const FFloatProperty* OriginYProperty = CastField<FFloatProperty>(OriginY->Property);
+	if (!TestNotNull(TEXT("Ratio is a float"), RatioProperty) || !TestNotNull(TEXT("Title is a string"), TitleProperty)
+		|| !TestNotNull(TEXT("Origin.Y is a float"), OriginYProperty))
+	{
+		return false;
+	}
+
+	static const TCHAR* LongString = TEXT("a string long enough that FString cannot inline it");
+
+	{
+		FVaCuusModelShadow Shadow(FVaCuusShadowProbeModel::StaticStruct());
+
+		if (!TestTrue(TEXT("the shadow is valid"), Shadow.IsValid()) || !TestNotNull(TEXT("and has a buffer"), Shadow.GetData()))
+		{
+			return false;
+		}
+		TestTrue(TEXT("it remembers its type"), Shadow.GetStruct() == FVaCuusShadowProbeModel::StaticStruct());
+
+		// (1) InitializeStruct ran the C++ constructor, exactly once.
+		TestEqual(TEXT("the instance was constructed once"), VaCuusShadowProbe::NumConstructed - ConstructedBefore, 1);
+		TestEqual(TEXT("and destroyed no times yet"), VaCuusShadowProbe::NumDestructed - DestructedBefore, 0);
+
+		// ...so the C++ default survived. A memzeroed block reads 0.f here.
+		TestEqual(TEXT("a non-zero C++ default survived into the buffer"),
+			RatioProperty->GetPropertyValue_InContainer(Ratio->ContainerPtr(Shadow.GetData())), 0.5f);
+
+		// (2) Write and read back through the layout's own addressing -- the top-level
+		// heap-owning field and the nested leaf, which is the one that needs ContainerOffset.
+		TitleProperty->SetPropertyValue_InContainer(Title->ContainerPtr(Shadow.GetData()), LongString);
+		TestEqual(TEXT("an FString written through the layout reads back"),
+			TitleProperty->GetPropertyValue_InContainer(Title->ContainerPtr(Shadow.GetData())), FString(LongString));
+
+		OriginYProperty->SetPropertyValue_InContainer(OriginY->ContainerPtr(Shadow.GetData()), 42.f);
+		TestEqual(TEXT("a nested leaf written through the layout reads back"),
+			OriginYProperty->GetPropertyValue_InContainer(OriginY->ContainerPtr(Shadow.GetData())), 42.f);
+
+		// ...and did not land on top of its sibling: Origin.Y's Offset_Internal is relative
+		// to FVaCuusTestPoint, so without ContainerOffset this write hits Ratio.
+		TestEqual(TEXT("and did not overwrite a sibling"),
+			RatioProperty->GetPropertyValue_InContainer(Ratio->ContainerPtr(Shadow.GetData())), 0.5f);
+
+		// MOVE. The moved-from shadow must not destroy the buffer the moved-to now owns --
+		// a double DestroyStruct on an FString member is a double free, not a leak.
+		FVaCuusModelShadow Moved(MoveTemp(Shadow));
+		TestFalse(TEXT("the moved-from shadow is empty"), Shadow.IsValid());
+		TestNull(TEXT("and holds no buffer"), Shadow.GetData());
+		TestTrue(TEXT("the moved-to shadow owns it"), Moved.IsValid());
+		TestEqual(TEXT("with its values intact"),
+			TitleProperty->GetPropertyValue_InContainer(Title->ContainerPtr(Moved.GetData())), FString(LongString));
+		TestEqual(TEXT("and still exactly one live instance"), VaCuusShadowProbe::NumDestructed - DestructedBefore, 0);
+	}
+
+	// (3) Both shadows left scope; exactly one instance existed, so exactly one destruction.
+	TestEqual(TEXT("the instance was destroyed exactly once"), VaCuusShadowProbe::NumDestructed - DestructedBefore, 1);
+	TestEqual(TEXT("and no extra instance was constructed on the way"),
+		VaCuusShadowProbe::NumConstructed - ConstructedBefore, 1);
+
+	// A null type is a caller bug: diagnosed, empty, and safe to destroy.
+	AddExpectedMessagePlain(TEXT("VaCuus model shadow: no struct type was given"), ELogVerbosity::Error,
+		EAutomationExpectedMessageFlags::Contains, 1);
+	{
+		FVaCuusModelShadow Empty(nullptr);
+		TestFalse(TEXT("a null type yields an empty shadow"), Empty.IsValid());
+		TestNull(TEXT("with no buffer"), Empty.GetData());
 	}
 
 	return true;

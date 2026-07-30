@@ -198,6 +198,66 @@ struct FVaCuusLayoutTestNestedReservedModel
 	FVaCuusLayoutTestNestedReservedInner Panel;
 };
 
+/**
+ * Construction/destruction counters for FVaCuusShadowProbeModel below.
+ *
+ * THE INVARIANT THIS EXISTS TO MAKE OBSERVABLE: FVaCuusModelShadow really runs
+ * UScriptStruct::InitializeStruct and UScriptStruct::DestroyStruct on its buffer. Without
+ * a counter the only symptom of a missing DestroyStruct is a leak of every FString /
+ * FText / FSoftObjectPtr in the model -- no crash, no log, and nothing an automation test
+ * can see. `inline` at namespace scope so the header needs no .cpp of its own.
+ *
+ * Read as DELTAS, never as absolutes: the reflection system is free to construct a
+ * throwaway instance of any type while linking it, so the count at test entry is not
+ * knowable.
+ */
+namespace VaCuusShadowProbe
+{
+inline int32 NumConstructed = 0;
+inline int32 NumDestructed = 0;
+}	 // namespace VaCuusShadowProbe
+
+/**
+ * The shadow-buffer fixture: counted construction and destruction, a non-zero default, a
+ * heap-owning member and a nested struct.
+ *
+ * Ratio's 0.5f default is the "it is a real instance, not a memzeroed block" assertion:
+ * UScriptStruct::InitializeStruct memzeroes and THEN calls the C++ constructor
+ * (Class.cpp:3783, :3798), so a buffer that was only zeroed reads 0.f here.
+ *
+ * The explicit copy constructor exists only so a copy is counted too -- an implicitly
+ * generated one would leave NumConstructed behind and make the destruction balance look
+ * wrong for a reason that has nothing to do with the shadow.
+ */
+USTRUCT()
+struct FVaCuusShadowProbeModel
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	float Ratio = 0.5f;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	FString Title;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	FVaCuusTestPoint Origin;
+
+	FVaCuusShadowProbeModel() { ++VaCuusShadowProbe::NumConstructed; }
+
+	FVaCuusShadowProbeModel(const FVaCuusShadowProbeModel& Other)
+		: Ratio(Other.Ratio)
+		, Title(Other.Title)
+		, Origin(Other.Origin)
+	{
+		++VaCuusShadowProbe::NumConstructed;
+	}
+
+	FVaCuusShadowProbeModel& operator=(const FVaCuusShadowProbeModel&) = default;
+
+	~FVaCuusShadowProbeModel() { ++VaCuusShadowProbe::NumDestructed; }
+};
+
 /** A nested struct with no exposed member: contributes nothing, and must say so. */
 USTRUCT()
 struct FVaCuusLayoutTestEmptyInner
