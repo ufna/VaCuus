@@ -300,7 +300,7 @@ it holds for `data-attr`, `data-class`, `data-style` and `data-if` alike.
 | Stage | Thread | Why |
 |---|---|---|
 | Build layout | any | Type descriptors are immutable once linked. **But** `UUserDefinedStruct` / `UBlueprintGeneratedClass` are not native and are collectable — a layout over a Blueprint type holds a strong reference or is rebuilt on recompile. **[unverified]**: recompiling a BP struct under a live layout. Experiment: bind, edit the struct in the editor, recompile, observe. |
-| Sample + diff | **game thread only** | Instance data has zero engine synchronisation. Must be driven from `UVaCuusSubsystem::Tick` to land inside the existing `GameTick` perf scope; from an actor tick or a Blueprint node it is outside every scope. |
+| Sample + diff | **game thread only** | Instance data has zero engine synchronisation. **Corrected after implementation:** "drive the sampler from `UVaCuusSubsystem::Tick`" is not implementable as stated — the only pointer to the live struct VaCuus ever sees is `UpdateModel`'s argument, and a Blueprint wildcard pin's pointer dies with the call. Deferring the diff to `Tick` would need a *third* full-struct buffer and a `CopyScriptStruct` per update, roughly doubling the budget this row covers. Split instead: the **sample** happens in `UpdateModel` under its own `ModelSample (GT)` scope, and the **publish** runs in `Tick` inside `GameTick` — which also coalesces N `UpdateModel` calls into one swap. The stated purpose, that no part of it sits outside every measurement, holds either way. |
 | Ship | any | Value copy, owns its strings, retains no `UObject*`. |
 | Apply + dirty | **UI thread only** | Everything RmlUi. Asserted. |
 
@@ -343,7 +343,11 @@ initialisation and the view is discarded if it does not resolve. The failure is 
 which is invisible (§8) — plus an inert document.
 
 **Model lifetime: created once, never removed.** `RemoveDataModel` is a one-way door and there is
-**no unbind API**; re-binding a name warns and keeps the stale pointer. The API therefore offers no
+**no unbind API**. Re-binding a name does not "warn" as v2 said — `Context::CreateDataModel` logs an
+**error** and returns a falsy constructor, so the second bind does not happen at all and the existing
+model keeps the old shadow pointer. That is worse in practice, not better: an outright refusal
+reported through a channel that is compiled out. `UVaCuusView::BindModel` refuses duplicates itself,
+so RmlUi's path is never reached. The API therefore offers no
 unbind, and the header says why.
 
 **On document reload, do nothing.** The context, model and values all survive; only element-attached
@@ -377,12 +381,26 @@ must ship the tool that shows the pipeline is alive.
 | Game-thread sample + diff, 64 scalar fields | ≤0.02 ms | inside the existing ≤0.10 ms gate, not additional to it — and that gate is itself met by inference from margin, not complete coverage |
 | UI-thread copy + `DirtyVariable` | ≤0.02 ms | **[unverified]**: the "~0.7 µs per variable" in the v1 spec cites nothing and no research document supports it. Experiment: dirty N variables in a real context and measure. |
 | **UI-thread re-evaluation caused by dirtying** | ≤0.05 ms | the dominant new cost, and v1 budgeted it nowhere. It runs inside `Context::Update()`, is `O(views under every dirtied name)`, and each expression run constructs a fresh variant stack |
-| Idle (no field changed) | **0 published frames** | |
+| Idle (no field changed) | **0 published frames** *and* 0 fields applied | see below — the first half alone is not a sufficient test |
 
 The last row is a correctness gate wearing a performance costume: if merely *having* a model
 publishes every frame, the milestone has silently undone M2's central result. It is achievable —
 with no dirty variables the view update runs once over an empty vector and exits, nothing writes the
 DOM, the hash is unchanged and there is no resource traffic.
+
+**But "0 published frames" measured at the render level is not a sufficient test, and v2's version of
+this row was wrong to imply it is.** Found by experiment during Task 6/7: forcing *every field dirty
+every frame* — so every frame published, applied and dirtied every variable — left the render-level
+idle test passing with **identical numbers**, while the apply-level test failed seven assertions.
+The reason is that RmlUi's `DataViewText::Update` skips `SetText` when the value is unchanged, and
+`DataViewAttribute::Update` skips `SetAttribute` the same way. So the DOM never changes, the frame
+hashes identical, and the idle gate correctly withholds — while the re-evaluation cost inside
+`Context::Update()`, which is the *dominant* new cost in this table, is paid in full every frame and
+nothing downstream notices.
+
+The row is therefore two assertions, at two layers: **0 published frames** (render) **and 0 fields
+applied** (model). A design that dirties everything every frame passes the first and fails the
+second, which is exactly the discrimination the budget needs.
 
 `RunFrame()` currently has **no perf scope at all**, so the apply would land where nothing is
 measured. Adding those scopes is a **prerequisite task**, not a follow-up.
