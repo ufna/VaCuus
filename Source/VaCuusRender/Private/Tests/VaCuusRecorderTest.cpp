@@ -65,16 +65,58 @@ bool SaveVaCuusProbePng(const FString& Path, FIntPoint Size, uint8 Alpha, TArray
 	return FFileHelper::SaveArrayToFile(Encoder->GetCompressed(), *Path);
 }
 
-/** Independent restatement of the recorder's premultiply contract: round-to-nearest (c*a + 127)/255. */
+/**
+ * Writes an opaque baseline JPEG. Lossy, so the caller cannot predict the decoded colour
+ * bytes — the point is the ALPHA byte, which the JPEG path has to supply itself.
+ */
+bool SaveVaCuusProbeJpeg(const FString& Path, FIntPoint Size)
+{
+	TArray<uint8> Pixels;
+	Pixels.SetNumUninitialized(Size.X * Size.Y * 4);
+	for (int32 Index = 0; Index < Pixels.Num(); ++Index)
+	{
+		Pixels[Index] = (Index % 4 == 3) ? 255 : uint8(Index * 7 + 3);
+	}
+
+	IImageWrapperModule& ImageWrapperModule = FModuleManager::LoadModuleChecked<IImageWrapperModule>("ImageWrapper");
+	const TSharedPtr<IImageWrapper> Encoder = ImageWrapperModule.CreateImageWrapper(EImageFormat::JPEG);
+	if (!Encoder.IsValid() ||
+		!Encoder->SetRaw(Pixels.GetData(), Pixels.Num(), Size.X, Size.Y, ERGBFormat::RGBA, 8))
+	{
+		return false;
+	}
+
+	return FFileHelper::SaveArrayToFile(Encoder->GetCompressed(90), *Path);
+}
+
+/**
+ * INDEPENDENT oracle for the recorder's premultiply — deliberately NOT the production
+ * expression restated. Production computes the integer (c*a + 127) / 255; this computes
+ * round(c*a / 255.0) in floating point.
+ *
+ * The two are EXACTLY equal, which is what makes this a real check rather than a
+ * different-looking copy: round(n/255) == floor((n + 127.5)/255), and
+ * floor((n + 127.5)/255) == floor((n + 127)/255) for every integer n because no integer
+ * lies in the half-open interval (n+127, n+127.5]. The rounding mode is therefore
+ * irrelevant too — a tie would need c*a == 255k + 127.5, which is not an integer, so no
+ * halfway case can arise. Nor can the divide's rounding error matter: c*a <= 65025 is
+ * exact in a double and the true quotient is at least 0.5/255 away from any half-integer.
+ *
+ * The point of the rewrite: the previous version was character-for-character identical to
+ * the production line, so it could only ever fail on the loop SHAPE (stride, which
+ * channels) — swap production to a truncating (c*a)/255 and it still passed. This version
+ * disagrees on every value where truncation and rounding differ.
+ */
 TArray<uint8> PremultiplyVaCuusProbe(const TArray<uint8>& Straight)
 {
 	TArray<uint8> Result = Straight;
 	for (int32 Index = 0; Index + 3 < Result.Num(); Index += 4)
 	{
-		const uint32 A = Result[Index + 3];
-		Result[Index + 0] = uint8((Result[Index + 0] * A + 127u) / 255u);
-		Result[Index + 1] = uint8((Result[Index + 1] * A + 127u) / 255u);
-		Result[Index + 2] = uint8((Result[Index + 2] * A + 127u) / 255u);
+		const double A = double(Result[Index + 3]);
+		for (int32 Channel = 0; Channel < 3; ++Channel)
+		{
+			Result[Index + Channel] = uint8(FMath::RoundToInt32(double(Result[Index + Channel]) * A / 255.0));
+		}
 	}
 	return Result;
 }
@@ -221,12 +263,14 @@ bool FVaCuusRecorderLoadTextureTest::RunTest(const FString& Parameters)
 	const FString AlphaPngPath = TestDir / TEXT("recorder_alpha.png");
 	const FString ReleasedPngPath = TestDir / TEXT("recorder_released.png");
 	const FString FakePngPath = TestDir / TEXT("recorder_fake.png");
+	const FString JpegPath = TestDir / TEXT("recorder_probe.jpg");
 	ON_SCOPE_EXIT
 	{
 		IFileManager::Get().Delete(*PngPath);
 		IFileManager::Get().Delete(*AlphaPngPath);
 		IFileManager::Get().Delete(*ReleasedPngPath);
 		IFileManager::Get().Delete(*FakePngPath);
+		IFileManager::Get().Delete(*JpegPath);
 		IFileManager::Get().DeleteDirectory(*TestDir);
 	};
 
@@ -239,7 +283,8 @@ bool FVaCuusRecorderLoadTextureTest::RunTest(const FString& Parameters)
 	TArray<uint8> ReleasedPixels;
 	if (!TestTrue(TEXT("Opaque probe PNG saved"), SaveVaCuusProbePng(PngPath, ProbeSize, 255, OpaquePixels)) ||
 		!TestTrue(TEXT("Translucent probe PNG saved"), SaveVaCuusProbePng(AlphaPngPath, ProbeSize, 128, AlphaPixels)) ||
-		!TestTrue(TEXT("Released-probe PNG saved"), SaveVaCuusProbePng(ReleasedPngPath, ProbeSize, 255, ReleasedPixels)))
+		!TestTrue(TEXT("Released-probe PNG saved"), SaveVaCuusProbePng(ReleasedPngPath, ProbeSize, 255, ReleasedPixels)) ||
+		!TestTrue(TEXT("Probe JPEG saved"), SaveVaCuusProbeJpeg(JpegPath, FIntPoint(8, 8))))
 	{
 		return false;
 	}
@@ -258,6 +303,13 @@ bool FVaCuusRecorderLoadTextureTest::RunTest(const FString& Parameters)
 	const Rml::TextureHandle AlphaHandle = Recorder.LoadTexture(AlphaDimensions, Rml::String(TCHAR_TO_UTF8(*AlphaPngPath)));
 	TestTrue(TEXT("Translucent load returns non-zero handle"), AlphaHandle != Rml::TextureHandle(0));
 	TestTrue(TEXT("Translucent dimensions are probed synchronously (4x2)"), AlphaDimensions.x == 4 && AlphaDimensions.y == 2);
+
+	// JPEG: the only format whose decoder does not write the A byte at all. Asserted
+	// below that every alpha byte comes back 255.
+	Rml::Vector2i JpegDimensions(0, 0);
+	const Rml::TextureHandle JpegHandle = Recorder.LoadTexture(JpegDimensions, Rml::String(TCHAR_TO_UTF8(*JpegPath)));
+	TestTrue(TEXT("JPEG load returns non-zero handle"), JpegHandle != Rml::TextureHandle(0));
+	TestTrue(TEXT("JPEG dimensions are probed synchronously (8x8)"), JpegDimensions.x == 8 && JpegDimensions.y == 8);
 
 	// Release-before-arrival: retired in the very frame that started its decode,
 	// so the completion below must be dropped rather than resurrecting a texture
@@ -294,17 +346,28 @@ bool FVaCuusRecorderLoadTextureTest::RunTest(const FString& Parameters)
 		return false;
 	}
 
-	TestEqual(TEXT("Three placeholders recorded, nothing for the failed loads"), First->NewTextures.Num(), 3);
+	TestEqual(TEXT("Four placeholders recorded, nothing for the failed loads"), First->NewTextures.Num(), 4);
+
+	// BOTH placeholders are checked, not just the first: a load path that decoded
+	// synchronously on its second call would otherwise slip through with the 4x2 payload
+	// already in this buffer.
+	const auto TestIsPlaceholder = [this](const TCHAR* Label, const FVaCuusTextureData* Entry)
+	{
+		if (!TestNotNull(Label, Entry))
+		{
+			return;
+		}
+		TestTrue(FString::Printf(TEXT("%s is 1x1"), Label), Entry->Size == FIntPoint(1, 1));
+		TestEqual(FString::Printf(TEXT("%s is one texel"), Label), Entry->RGBA.Num(), 4);
+		const bool bTransparent = Entry->RGBA.Num() == 4 && Entry->RGBA[0] == 0 &&
+			Entry->RGBA[1] == 0 && Entry->RGBA[2] == 0 && Entry->RGBA[3] == 0;
+		TestTrue(FString::Printf(TEXT("%s texel is premultiplied transparent (0,0,0,0)"), Label), bTransparent);
+	};
 
 	const FVaCuusTextureData* Placeholder = First->NewTextures.Find(FVaCuusTextureHandle(Handle));
-	if (TestNotNull(TEXT("Placeholder stored under the returned handle"), Placeholder))
-	{
-		TestTrue(TEXT("Placeholder is 1x1"), Placeholder->Size == FIntPoint(1, 1));
-		TestEqual(TEXT("Placeholder is one texel"), Placeholder->RGBA.Num(), 4);
-		const bool bTransparent = Placeholder->RGBA.Num() == 4 && Placeholder->RGBA[0] == 0 &&
-			Placeholder->RGBA[1] == 0 && Placeholder->RGBA[2] == 0 && Placeholder->RGBA[3] == 0;
-		TestTrue(TEXT("Placeholder texel is premultiplied transparent (0,0,0,0)"), bTransparent);
-	}
+	TestIsPlaceholder(TEXT("Opaque-probe placeholder"), Placeholder);
+	TestIsPlaceholder(TEXT("Translucent-probe placeholder"),
+		First->NewTextures.Find(FVaCuusTextureHandle(AlphaHandle)));
 
 	const FVaCuusCommand* Draw = First->Commands.FindByPredicate(
 		[](const FVaCuusCommand& Command) { return Command.Type == EVaCuusCommandType::DrawGeometry; });
@@ -334,7 +397,16 @@ bool FVaCuusRecorderLoadTextureTest::RunTest(const FString& Parameters)
 		return false;
 	}
 
-	TestTrue(TEXT("Payloads arrive in a strictly later buffer"), Second->Generation > First->Generation);
+	// "Placeholder in this buffer, payload in the next" is deterministic HERE only
+	// because every load above happened inside a BeginFrame/EndFrameAndPublish pair,
+	// which puts the drain that installs the payload strictly after this frame's
+	// publish. It is NOT a general invariant: out-of-frame loads (RmlUi's lazy
+	// FileTextureDatabase::EnsureLoaded during Document->Show()) can land the payload
+	// in the same buffer as the placeholder. See DrainCompletedDecodes.
+	//
+	// Pinned so that a spurious extra arrival — or a payload for the released handle —
+	// cannot go unnoticed: three loads survive to be decoded, the fourth was released.
+	TestEqual(TEXT("Exactly the three surviving payloads arrive"), Second->NewTextures.Num(), 3);
 
 	const FVaCuusTextureData* Opaque = Second->NewTextures.Find(FVaCuusTextureHandle(Handle));
 	if (TestNotNull(TEXT("Opaque payload lands under the same handle"), Opaque))
@@ -349,12 +421,217 @@ bool FVaCuusRecorderLoadTextureTest::RunTest(const FString& Parameters)
 	{
 		TestTrue(TEXT("Translucent payload size is 4x2"), Translucent->Size == FIntPoint(4, 2));
 		TestTrue(TEXT("A<255 is premultiplied with round-to-nearest"), Translucent->RGBA == PremultiplyVaCuusProbe(AlphaPixels));
+
+		// One value stated as ground truth by hand, so the test does not depend on ANY
+		// implementation of the formula: the fixture's texel 0 red is Index*7+3 = 3 with
+		// A = 128, and 3*128/255 = 1.5059, which rounds to 2 and truncates to 1. This
+		// single byte is what separates round-to-nearest from the biased alternative.
+		if (Translucent->RGBA.Num() == 32)
+		{
+			TestEqual(TEXT("Texel 0 red: c=3, A=128 -> 2 (hand-computed)"), int32(Translucent->RGBA[0]), 2);
+		}
+	}
+
+	// JPEG supplies no alpha: RawData is AddUninitialized and libjpeg-turbo maps RGBA to
+	// TJPF_RGBA, which "does not actually read/write A" (JpegImageWrapper.cpp:47-48). The
+	// recorder therefore stamps 255 rather than trusting the byte.
+	//
+	// HONEST LIMIT OF THIS ASSERTION: libjpeg-turbo's extended-RGB converter currently
+	// stores 0xFF in the X byte anyway, so deleting the stamp would not make this fail
+	// today. What it does buy is coverage of the JPEG branch itself (a stamp that
+	// corrupted colours, skipped texels or mis-strided would fail on the non-alpha bytes
+	// below) and a tripwire for the day the filler value changes. Colours are only
+	// sanity-checked, not pinned: JPEG is lossy.
+	const FVaCuusTextureData* Jpeg = Second->NewTextures.Find(FVaCuusTextureHandle(JpegHandle));
+	if (TestNotNull(TEXT("JPEG payload lands under the same handle"), Jpeg))
+	{
+		TestTrue(TEXT("JPEG payload size is 8x8"), Jpeg->Size == FIntPoint(8, 8));
+		TestEqual(TEXT("JPEG payload is 256 bytes"), Jpeg->RGBA.Num(), 8 * 8 * 4);
+		if (Jpeg->RGBA.Num() == 8 * 8 * 4)
+		{
+			int32 OpaqueTexels = 0;
+			int32 NonBlackChannels = 0;
+			for (int32 Index = 0; Index + 3 < Jpeg->RGBA.Num(); Index += 4)
+			{
+				OpaqueTexels += (Jpeg->RGBA[Index + 3] == 255) ? 1 : 0;
+				NonBlackChannels += (Jpeg->RGBA[Index] != 0 || Jpeg->RGBA[Index + 1] != 0 || Jpeg->RGBA[Index + 2] != 0) ? 1 : 0;
+			}
+			TestEqual(TEXT("Every JPEG texel is opaque (A=255), so premultiply is a no-op"), OpaqueTexels, 64);
+			TestEqual(TEXT("The JPEG actually decoded (no texel left black)"), NonBlackChannels, 64);
+		}
 	}
 
 	// The leak this guards: installing this payload would create an RHI texture
 	// whose ReleasedTextures entry was already consumed by the first buffer.
 	TestFalse(TEXT("A handle released while in flight never receives its payload"),
 		Second->NewTextures.Contains(FVaCuusTextureHandle(ReleasedHandle)));
+
+	return true;
+}
+
+/**
+ * Base that drops LogImageWrapper from the automation log capture.
+ *
+ * A file that parses but will not decode makes libpng and FImageWrapperBase log — at
+ * Error verbosity, FROM THE DECODE WORKER. The harness attributes any thread's log to
+ * whatever test is CurTest when the line is written (AutomationTest.cpp:229-230), so an
+ * Error we cannot prevent would fail this test. AddExpectedError is the usual answer and
+ * is the WRONG one here: it matches per test, not per thread, and it asserts an
+ * occurrence count over messages whose number and wording are libpng's business, not
+ * ours (PngImageWrapper.cpp:723 per libpng error, :421 after the longjmp,
+ * ImageWrapperBase.cpp:68 for the GetRaw failure, PngImageWrapper.cpp:691 per short
+ * read). Dropping the whole category at the capture gate
+ * (AutomationTest.cpp:232-234, ShouldCaptureLogCategory at :234) is wording-, count- and
+ * thread-independent, and it still leaves LogVaCuus captured, which is what the test
+ * actually asserts on.
+ */
+class FVaCuusImageWrapperQuietTest : public FAutomationTestBase
+{
+public:
+	FVaCuusImageWrapperQuietTest(const FString& InName, const bool bInComplexTask)
+		: FAutomationTestBase(InName, bInComplexTask)
+	{
+	}
+
+	virtual bool ShouldCaptureLogCategory(const FName& Category) const override
+	{
+		return Category != TEXT("LogImageWrapper");
+	}
+};
+
+IMPLEMENT_CUSTOM_SIMPLE_AUTOMATION_TEST(FVaCuusRecorderDecodeFailureTest, FVaCuusImageWrapperQuietTest,
+	"VaCuus.Render.Recorder.DecodeFailure",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusRecorderDecodeFailureTest::RunTest(const FString& Parameters)
+{
+	// The one NEW user-visible failure mode async decode introduced: a file that reads
+	// and PARSES — so LoadTexture returns a live handle and real dimensions, and RmlUi
+	// lays the element out — but will not decode. Two decisions are pinned here:
+	//   1. the handle KEEPS its 1x1 transparent placeholder forever; retiring it would
+	//      trip the replayer's unknown-handle ensure on every subsequent frame, because
+	//      RmlUi still owns the handle and keeps drawing with it;
+	//   2. the failure is logged EXACTLY ONCE, not once per frame.
+	FVaCuusEngine& Engine = FVaCuusEngine::Get();
+	if (!TestTrue(TEXT("Initialized"), Engine.Initialize()))
+	{
+		return false;
+	}
+	ON_SCOPE_EXIT
+	{
+		Engine.Shutdown();
+	};
+
+	const FString TestDir = FPaths::ConvertRelativePathToFull(FPaths::ProjectSavedDir() / TEXT("VaCuusTest"));
+	const FString TruncatedPngPath = TestDir / TEXT("recorder_truncated.png");
+	ON_SCOPE_EXIT
+	{
+		IFileManager::Get().Delete(*TruncatedPngPath);
+		IFileManager::Get().DeleteDirectory(*TestDir);
+	};
+
+	// Fixture: a valid RGBA8 PNG cut so that IHDR survives and IDAT does not. The cut is
+	// made at the IDAT chunk TAG plus 8 bytes (the rest of the 8-byte chunk header, then
+	// 4 bytes of deflate data) rather than at a fixed offset, because the chunks libpng
+	// writes before IDAT are libpng's choice, not ours.
+	//
+	// What each stage then does: DetectImageFormat passes on the 8-byte signature;
+	// SetCompressed -> LoadPNGHeader passes because png_read_info only needs IHDR and the
+	// IDAT header; GetRaw -> UncompressPNGData then reads past the end, which
+	// user_read_compressed refuses with SetError (PngImageWrapper.cpp:689-694) — so GetRaw
+	// returns false on the non-empty LastError (ImageWrapperBase.cpp:66-70) whether or not
+	// libpng itself longjmps first. Failure is therefore deterministic, not
+	// libpng-version-dependent.
+	TArray<uint8> WholePixels;
+	const FString WholePngPath = TestDir / TEXT("recorder_whole_for_truncation.png");
+	if (!TestTrue(TEXT("Source PNG saved"), SaveVaCuusProbePng(WholePngPath, FIntPoint(16, 16), 255, WholePixels)))
+	{
+		return false;
+	}
+	TArray<uint8> PngBytes;
+	const bool bLoaded = FFileHelper::LoadFileToArray(PngBytes, *WholePngPath);
+	IFileManager::Get().Delete(*WholePngPath);
+	if (!TestTrue(TEXT("Source PNG read back"), bLoaded))
+	{
+		return false;
+	}
+
+	int32 IdatTagIndex = INDEX_NONE;
+	for (int32 Index = 0; Index + 4 <= PngBytes.Num(); ++Index)
+	{
+		if (PngBytes[Index] == 'I' && PngBytes[Index + 1] == 'D' && PngBytes[Index + 2] == 'A' && PngBytes[Index + 3] == 'T')
+		{
+			IdatTagIndex = Index;
+			break;
+		}
+	}
+	if (!TestTrue(TEXT("IDAT chunk found in the fixture"), IdatTagIndex != INDEX_NONE) ||
+		!TestTrue(TEXT("IDAT is followed by more data than the truncation keeps"), PngBytes.Num() > IdatTagIndex + 8))
+	{
+		return false;
+	}
+	PngBytes.SetNum(IdatTagIndex + 8, EAllowShrinking::No);
+	if (!TestTrue(TEXT("Truncated PNG saved"), FFileHelper::SaveArrayToFile(PngBytes, *TruncatedPngPath)))
+	{
+		return false;
+	}
+
+	// The property under test, asserted through the harness: one line, not one per frame.
+	// Registered as an expectation rather than merely tolerated, so a drain that logged
+	// twice (or not at all) fails the test on the count.
+	AddExpectedMessagePlain(TEXT("LoadTexture: async decode of"), ELogVerbosity::Warning,
+		EAutomationExpectedMessageFlags::Contains, 1);
+
+	FVaCuusRecordingRenderInterface Recorder;
+	Recorder.BeginFrame(FIntPoint(64, 64));
+
+	Rml::Vector2i Dimensions(0, 0);
+	const Rml::TextureHandle Handle = Recorder.LoadTexture(Dimensions, Rml::String(TCHAR_TO_UTF8(*TruncatedPngPath)));
+	if (!TestTrue(TEXT("A parseable file still yields a live handle"), Handle != Rml::TextureHandle(0)))
+	{
+		Recorder.EndFrameAndPublish();
+		return false;
+	}
+	TestTrue(TEXT("The header probe still reports the real size (16x16)"), Dimensions.x == 16 && Dimensions.y == 16);
+
+	const TUniquePtr<FVaCuusCommandBuffer> First = Recorder.EndFrameAndPublish();
+	if (!TestNotNull(TEXT("First published buffer"), First.Get()))
+	{
+		return false;
+	}
+
+	const FVaCuusTextureData* Placeholder = First->NewTextures.Find(FVaCuusTextureHandle(Handle));
+	if (TestNotNull(TEXT("Placeholder recorded for the doomed handle"), Placeholder))
+	{
+		TestTrue(TEXT("Placeholder is 1x1"), Placeholder->Size == FIntPoint(1, 1));
+	}
+
+	if (!TestTrue(TEXT("The failing decode finished within the timeout"),
+			Recorder.WaitForTextureDecodes(FTimespan::FromSeconds(30.0))))
+	{
+		return false;
+	}
+
+	// Frame 2 drains the failure: no payload, and no release either.
+	Recorder.BeginFrame(FIntPoint(64, 64));
+	const TUniquePtr<FVaCuusCommandBuffer> Second = Recorder.EndFrameAndPublish();
+	if (!TestNotNull(TEXT("Second published buffer"), Second.Get()))
+	{
+		return false;
+	}
+	TestEqual(TEXT("A failed decode contributes no texture payload"), Second->NewTextures.Num(), 0);
+	TestFalse(TEXT("A failed decode does NOT retire the handle"),
+		Second->ReleasedTextures.Contains(FVaCuusTextureHandle(Handle)));
+
+	// Frame 3 proves the log is not per-frame: the drain forgot the handle in frame 2, so
+	// there is nothing left to report. The Occurrences=1 expectation above fails if this
+	// frame produces a second line.
+	Recorder.BeginFrame(FIntPoint(64, 64));
+	const TUniquePtr<FVaCuusCommandBuffer> Third = Recorder.EndFrameAndPublish();
+	if (TestNotNull(TEXT("Third published buffer"), Third.Get()))
+	{
+		TestEqual(TEXT("Still no payload a frame later"), Third->NewTextures.Num(), 0);
+	}
 
 	return true;
 }
