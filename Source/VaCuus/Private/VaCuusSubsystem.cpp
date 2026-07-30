@@ -10,6 +10,7 @@
 #include "VaCuusView.h"
 #include "VaCuusViewStatus.h"
 
+#include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
 
 UVaCuusSubsystem::UVaCuusSubsystem()
@@ -176,6 +177,81 @@ void UVaCuusSubsystem::DestroyView(UVaCuusView* View)
 
 	View->Invalidate();
 	Views.Remove(View);
+}
+
+int32 UVaCuusSubsystem::ClearAssetCachesAndReloadAllViews(const TCHAR* Reason)
+{
+	check(IsInGameThread());
+
+	// FIRST, AND WITHOUT REGARD TO WHETHER ANY VIEW IS FOUND BELOW. RmlUi's parsed
+	// stylesheet and template caches are process-global statics keyed on file name that
+	// OUTLIVE a PIE session -- Deinitialize() deliberately leaves the UI thread running,
+	// only FVaCuusModule::ShutdownModule stops it -- so an .rcss edited while nothing is
+	// live must still drop them. Otherwise the next Play re-reads the RML from disk and
+	// takes the previous session's stylesheet, silently, and RML edits appear to
+	// live-reload while RCSS edits do not.
+	//
+	// One clear serves every load queued behind it: single-producer FIFO, so this drains
+	// ahead of the loads the fan-out below enqueues.
+	//
+	// GetPtr(), not Get(): a reload can be asked for on a teardown path, where reloading
+	// the module would be worse than answering "no thread, nothing cached to drop".
+	const FVaCuusModule* Module = FVaCuusModule::GetPtr();
+	FVaCuusUIThread* UIThread = Module ? Module->GetUIThread() : nullptr;
+	if (UIThread != nullptr)
+	{
+		UIThread->EnqueueClearAssetCaches();
+	}
+
+	if (GEngine == nullptr)
+	{
+		return 0;
+	}
+
+	int32 NumReloaded = 0;
+	int32 NumSubsystems = 0;
+
+	// GetWorldContexts(), not GEditor->PlayWorld or GetPIEWorldContext(): both of those see
+	// only PIE instance 0 (EditorEngine.cpp:6401-6412, and the doc comment saying so is at
+	// EditorEngine.h:2599-2603), so a multi-client PIE session would get one window reloaded
+	// and the others left stale. Those two are also unreachable from this Runtime module,
+	// which is the point of it living here -- but a future editor-only shortcut is exactly
+	// the edit this note is for. Re-resolved on every call rather than cached, because a
+	// game instance and its subsystems are destroyed on EndPIE and a kept pointer would
+	// dangle into the next session.
+	for (const FWorldContext& Context : GEngine->GetWorldContexts())
+	{
+		// NO WorldType FILTER, deliberately, and it is not an oversight left over from the
+		// editor-only version this replaces. That version accepted PIE and Game and
+		// justified the narrowing by saying a `-game` process could never reach the code at
+		// all (VaCuusEditor is EHostType::Editor, so it is not loaded there) -- which stops
+		// being true the moment the dispatch lives in a Runtime module, as it now does. The
+		// subsystem lookup below IS the test: a context that owns a game instance carrying a
+		// UVaCuusSubsystem owns views a reload must reach, whatever the world is called, and
+		// any coarser proxy can only LOSE views -- the same silent "nothing happened" this
+		// whole entry point exists to prevent.
+		//
+		// NO Context.World() != nullptr CHECK either, which the research note calls universal
+		// engine precedent -- deliberately, so nobody "restores" it and quietly narrows this:
+		// nothing here dereferences the world, and UGameInstance::GetSubsystem tolerates a
+		// null game instance. A context that has a game instance but no world yet (early PIE)
+		// still has views worth reloading.
+		UVaCuusSubsystem* Subsystem = UGameInstance::GetSubsystem<UVaCuusSubsystem>(Context.OwningGameInstance);
+		if (Subsystem == nullptr)
+		{
+			// Legitimate: a context can exist before or after its world during PIE
+			// start/teardown, and the subsystem may simply not have been created.
+			continue;
+		}
+
+		++NumSubsystems;
+		NumReloaded += Subsystem->ReloadAllDocuments();
+	}
+
+	UE_LOG(LogVaCuus, Verbose, TEXT("Reload (%s): %d view(s) across %d game instance(s)%s"),
+		Reason, NumReloaded, NumSubsystems,
+		UIThread != nullptr ? TEXT("; RmlUi asset caches dropped") : TEXT("; no UI thread, nothing cached to drop"));
+	return NumReloaded;
 }
 
 int32 UVaCuusSubsystem::ReloadAllDocuments()

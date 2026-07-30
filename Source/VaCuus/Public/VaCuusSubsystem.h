@@ -82,36 +82,34 @@ public:
 	void DestroyView(UVaCuusView* View);
 
 	/**
-	 * Re-issues the last file load on every view of this game instance that has one.
-	 * Returns how many views were reloaded. Game thread. See UVaCuusView::ReloadDocument().
+	 * THE ONE DOOR FOR A WHOLE RELOAD, and it is process-wide: drop RmlUi's parsed
+	 * stylesheet/template caches, then re-issue the last file load on every view of every
+	 * game instance in this process. Returns how many views were reloaded. Game thread.
 	 *
-	 * THE FAN-OUT LIVES HERE, not in the editor watcher (controller decision D21): the
-	 * watcher has a changed FILE and no way to find views, and it must not become the thing
-	 * that keeps a registry of them. Views is that registry and it is private, so this is
-	 * the one door FOR THE FAN-OUT -- which also keeps "which views does a reload reach"
-	 * answerable in one place rather than at every call site.
+	 * BOTH HALVES OR NEITHER, WHICH IS WHY THIS IS A FUNCTION AND NOT A COMMENT. M2 shipped
+	 * the RML half on its own and an .rcss edit silently did nothing: Rml::Factory keys
+	 * parsed stylesheets and templates on FILE NAME, in process-global statics that outlive
+	 * a PIE session (Deinitialize() deliberately leaves the UI thread running), so a re-read
+	 * takes the previous session's stylesheet back. Dropping those caches therefore has to
+	 * happen even when the fan-out reaches ZERO views -- "stop PIE, edit the .rcss, press
+	 * Play" is the case -- so it can never be a step inside a per-view or per-instance
+	 * reload. It is FVaCuusUIThread::EnqueueClearAssetCaches(), enqueued ONCE, first.
 	 *
-	 * BUT IT IS NOT THE WHOLE RELOAD, AND CALLING ONLY THIS IS THE BUG WE ALREADY SHIPPED
-	 * ONCE. An RML re-read alone shows STALE CSS: Rml::Factory keys parsed stylesheets and
-	 * templates on file name, in process-global statics that outlive a PIE session, so the
-	 * re-read takes the cached stylesheet back. Dropping those caches is a process-wide act
-	 * that must happen even when this fan-out reaches zero views (an .rcss edited between
-	 * PIE sessions), so it cannot live here -- it is
-	 * FVaCuusUIThread::EnqueueClearAssetCaches(), enqueued ONCE before the fan-out.
+	 * The per-instance fan-out is PRIVATE so that pairing cannot be skipped: this static is
+	 * a member, so it reaches the private fan-out without friendship, and nothing outside
+	 * the class can. A runtime reload hook -- M3's data binding, a gameplay debug command --
+	 * gets the clear whether or not its author knew there was one to get. (The same warning
+	 * at the view level is on UVaCuusView::ReloadDocument(), which is public because a
+	 * caller who wants ONE view re-read and nothing else is asking a coherent question.)
 	 *
-	 * Today the only caller that does both is FVaCuusLiveReload::ReloadAllLiveViews(), which
-	 * is EDITOR-ONLY. A runtime reload hook -- a gameplay debug command, a data-binding hot
-	 * reload -- that calls this because it reads as the sanctioned entry point reintroduces
-	 * that bug verbatim: RML edits apply, RCSS edits silently do not. Whatever calls this
-	 * must enqueue the clear first, or move the pairing into the runtime module so there IS
-	 * one door for both halves (see UVaCuusView::ReloadDocument() for the same warning at
-	 * the view level).
+	 * Reason is diagnostic only: it names the trigger in this call's log line ("file
+	 * change", "vacuus.ReloadUI", ...).
 	 */
-	int32 ReloadAllDocuments();
+	static int32 ClearAssetCachesAndReloadAllViews(const TCHAR* Reason);
 
 	/**
-	 * Broadcast at the END of every ReloadAllDocuments() fan-out, for owners of views that
-	 * the fan-out could not reach.
+	 * Broadcast at the END of every per-instance fan-out (see ReloadAllDocuments below),
+	 * for owners of views that the fan-out could not reach.
 	 *
 	 * THE CASE IT EXISTS FOR is a view showing an INLINE FALLBACK: its DocumentPath is
 	 * empty by design (see UVaCuusView::GetDocumentPath), so ReloadDocument() refuses it,
@@ -128,6 +126,25 @@ public:
 	FVaCuusUIThread* GetUIThread() const;
 
 private:
+	/**
+	 * Re-issues the last file load on every view of THIS game instance that has one, then
+	 * broadcasts OnDocumentsReloadRequested. Returns how many views were reloaded.
+	 * See UVaCuusView::ReloadDocument().
+	 *
+	 * THE FAN-OUT LIVES HERE, not in the editor watcher (controller decision D21): the
+	 * watcher has a changed FILE and no way to find views, and it must not become the thing
+	 * that keeps a registry of them. Views is that registry, it is private, and keeping the
+	 * fan-out beside it keeps "which views does a reload reach" answerable in one place.
+	 *
+	 * PRIVATE BECAUSE IT IS HALF A RELOAD -- the RML re-read without the process-wide cache
+	 * drop, which is the bug M2 shipped once. ClearAssetCachesAndReloadAllViews() is the
+	 * only caller and is the only thing that can be: it is a static member of this class, so
+	 * it needs no friendship, and nothing outside the class has access. Do not make this
+	 * public "for a caller who only wants one game instance" -- that caller still needs the
+	 * clear, so what it wants is a second correctly-paired door, not this one.
+	 */
+	int32 ReloadAllDocuments();
+
 	/** Views created by this game instance; dropped in Deinitialize(). */
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<UVaCuusView>> Views;

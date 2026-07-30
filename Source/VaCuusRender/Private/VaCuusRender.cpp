@@ -304,7 +304,7 @@ static void OnViewLoadCompleted(UVaCuusView* View, bool bSuccess)
  *
  * THE HOLE IT FILLS: a view showing the inline fallback has no DocumentPath -- that is
  * the view's invariant, DocumentPath describes what is SHOWING -- so
- * UVaCuusSubsystem::ReloadAllDocuments() cannot reload it, and neither can
+ * UVaCuusSubsystem::ClearAssetCachesAndReloadAllViews() cannot reload it, and neither can
  * vacuus.ReloadUI. Without this, "vacuus.M1HUD says m1_hud.rml is missing, so create it
  * and save" reports `reloaded 0 view(s)` and nothing changes until the toggle is cycled
  * off and on. Iterating on a document that is missing or broken is the single most

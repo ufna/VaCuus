@@ -2,16 +2,11 @@
 
 #include "VaCuusLiveReload.h"
 
-#include "VaCuus.h"
 #include "VaCuusContentPaths.h"
 #include "VaCuusDefines.h"
 #include "VaCuusSubsystem.h"
-#include "VaCuusUIThread.h"
 
 #include "DirectoryWatcherModule.h"
-#include "Engine/Engine.h"
-#include "Engine/EngineTypes.h"
-#include "Engine/GameInstance.h"
 #include "HAL/FileManager.h"
 #include "HAL/IConsoleManager.h"
 #include "Misc/Paths.h"
@@ -329,77 +324,18 @@ int32 FVaCuusLiveReload::ReloadAllLiveViews(const TCHAR* Reason)
 {
 	check(IsInGameThread());
 
-	// FIRST, AND WITHOUT REGARD TO WHETHER ANY VIEW IS FOUND BELOW. RmlUi's parsed
-	// stylesheet and template caches are process-global statics keyed on file name that
-	// OUTLIVE a PIE session -- UVaCuusSubsystem::Deinitialize deliberately leaves the UI
-	// thread running, only FVaCuusModule::ShutdownModule stops it -- so an .rcss edited
-	// while nothing is live must still drop them. Otherwise the next Play re-reads the RML
-	// from disk and takes the previous session's stylesheet, silently, and RML edits appear
-	// to live-reload while RCSS edits do not.
+	// THE DISPATCH ITSELF IS NOT HERE ANY MORE, and moving it was the point rather than
+	// tidying: the cache clear and the fan-out have to happen together (bead
+	// VaCuus-akj.6.34), and while the only thing that paired them was this EDITOR-only
+	// function, a runtime reload hook that called UVaCuusSubsystem's per-instance fan-out
+	// because it read as the sanctioned entry point re-shipped the M2 bug verbatim -- RML
+	// edits apply, RCSS edits silently do not. The pairing now lives in the runtime module
+	// with the fan-out private behind it, so that call cannot be written at all.
 	//
-	// One clear serves every load queued behind it: single-producer FIFO, so this drains
-	// ahead of the loads the fan-out below enqueues.
-	const FVaCuusModule* Module = FVaCuusModule::GetPtr();
-	FVaCuusUIThread* UIThread = Module ? Module->GetUIThread() : nullptr;
-	if (UIThread != nullptr)
-	{
-		UIThread->EnqueueClearAssetCaches();
-	}
-
-	if (GEngine == nullptr)
-	{
-		return 0;
-	}
-
-	int32 NumReloaded = 0;
-	int32 NumSubsystems = 0;
-
-	// GetWorldContexts(), not GEditor->PlayWorld or GetPIEWorldContext(): both of those
-	// see only PIE instance 0 (EditorEngine.cpp:6401-6412, and the doc comment saying so is
-	// at EditorEngine.h:2599-2603), so a multi-client PIE session would get one window
-	// reloaded and the others left stale. Re-resolved on every flush rather than cached,
-	// because a game instance and its subsystems are destroyed on EndPIE and a kept pointer
-	// would dangle into the next session.
-	for (const FWorldContext& Context : GEngine->GetWorldContexts())
-	{
-		// PIE is the case this feature exists for. EWorldType::Game is accepted for exactly
-		// one reason, and it is not `-game`: a `-game` process cannot reach this code at all
-		// (it clears GIsEditor, so VaCuusEditor -- EHostType::Editor -- is never loaded, and
-		// there is no UEditorEngine to pump the watcher; see this class's header).
-		// UGameInstance::InitializeStandalone() creates an EWorldType::Game context
-		// (GameInstance.cpp:193), and that is what lets an automation test drive this real
-		// GetWorldContexts() walk instead of a hand-fed subsystem.
-		//
-		// The consequence, stated rather than hidden: the PIE-specific half of this
-		// condition is not covered by any headless test. The loop body is identical either
-		// way, so this is a documented limit rather than a gap -- and Proof.LiveReload.PIE
-		// covers it live, with a real PIE session.
-		if (Context.WorldType != EWorldType::PIE && Context.WorldType != EWorldType::Game)
-		{
-			continue;
-		}
-
-		// NO Context.World() != nullptr CHECK, which the research note calls universal
-		// engine precedent -- deliberately, so nobody "restores" it and quietly narrows
-		// this: nothing here dereferences the world, and UGameInstance::GetSubsystem
-		// tolerates a null game instance. A context that has a game instance but no world
-		// yet (early PIE) still has views worth reloading.
-		UVaCuusSubsystem* Subsystem = UGameInstance::GetSubsystem<UVaCuusSubsystem>(Context.OwningGameInstance);
-		if (Subsystem == nullptr)
-		{
-			// Legitimate: a context can exist before or after its world during PIE
-			// start/teardown, and the subsystem may simply not have been created.
-			continue;
-		}
-
-		++NumSubsystems;
-		NumReloaded += Subsystem->ReloadAllDocuments();
-	}
-
-	UE_LOG(LogVaCuus, Verbose, TEXT("Live reload (%s): %d view(s) across %d game instance(s)%s"),
-		Reason, NumReloaded, NumSubsystems,
-		UIThread != nullptr ? TEXT("; RmlUi asset caches dropped") : TEXT("; no UI thread, nothing cached to drop"));
-	return NumReloaded;
+	// What is left here is what is genuinely editor-shaped: the watcher, the debounce, and
+	// vacuus.ReloadUI. This wrapper stays because both of those call it by name and because
+	// "live views" is the editor's word for the same set.
+	return UVaCuusSubsystem::ClearAssetCachesAndReloadAllViews(Reason);
 }
 
 namespace VaCuusLiveReloadPrivate

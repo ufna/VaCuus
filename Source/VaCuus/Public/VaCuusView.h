@@ -157,8 +157,14 @@ public:
 	 * the cached one back. Dropping that cache is a PROCESS-WIDE act that must also happen
 	 * when no view is live at all (an .rcss edited between PIE sessions), so it belongs to
 	 * the dispatcher -- FVaCuusUIThread::EnqueueClearAssetCaches(), which
-	 * FVaCuusLiveReload::ReloadAllLiveViews() enqueues once before fanning out over the
-	 * views. Calling this directly, without that clear, re-reads the RML only.
+	 * UVaCuusSubsystem::ClearAssetCachesAndReloadAllViews() enqueues once before fanning out
+	 * over the views. Calling this directly, without that clear, re-reads the RML only.
+	 *
+	 * STILL PUBLIC, unlike the per-instance fan-out that sits behind that entry point, and
+	 * the difference is real rather than an inconsistency: "re-read THIS view's document"
+	 * is a coherent request an owner can have for its own reasons (the fallback re-arm in
+	 * VaCuusRender is one), while "fan out over every view but skip the caches" is only ever
+	 * half of the thing the caller meant.
 	 *
 	 * Returns false when there is nothing to reload (invalid view, or no file document).
 	 */

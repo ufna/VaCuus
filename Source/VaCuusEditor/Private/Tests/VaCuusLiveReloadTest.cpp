@@ -517,149 +517,19 @@ bool FVaCuusLiveReloadDispatchTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Nothing is reloadable after Close()"),
 		FVaCuusLiveReload::ReloadAllLiveViews(TEXT("automation")), 0);
 
-	// The subsystem's own fan-out, which is what the dispatcher calls per game instance.
+	// Every view with a document, not just the first one found. Asked through the runtime
+	// door rather than the subsystem's own fan-out, which is private now (bead
+	// VaCuus-akj.6.34); one standalone instance exists, so the two answer identically.
 	FileView->LoadDocument(TEXT("m1_hud.rml"));
 	EmptyView->LoadDocument(TEXT("m1_hud.rml"));
-	TestEqual(TEXT("The subsystem reloads every view that has a document"), Subsystem->ReloadAllDocuments(), 2);
+	TestEqual(TEXT("The fan-out reloads every view that has a document"),
+		FVaCuusLiveReload::ReloadAllLiveViews(TEXT("automation")), 2);
 
 	// An invalidated view is inert, so a flush racing PIE teardown cannot reach a dead one.
 	Subsystem->DestroyView(FileView);
 	TestFalse(TEXT("A destroyed view does not reload"), FileView->ReloadDocument());
-	TestEqual(TEXT("Only the surviving view reloads"), Subsystem->ReloadAllDocuments(), 1);
-
-	return true;
-}
-
-/**
- * THE CACHE CLEAR, which is what actually makes an RCSS edit visible -- and which used to
- * ride as a flag on a per-view load command, behind the drain's FindHost() gate.
- *
- * The two properties that bug violated, and that this test exists to keep:
- *
- *  1. A FLUSH THAT REACHES ZERO LIVE VIEWS STILL CLEARS. RmlUi's parsed-stylesheet and
- *     template caches are process-global statics keyed on file name, and they outlive a PIE
- *     session (UVaCuusSubsystem::Deinitialize leaves the UI thread running). So "stop PIE,
- *     edit the .rcss, press Play" must not re-load the RML from disk and then take the
- *     PREVIOUS session's stylesheet. With the clear on the load command, that flush enqueued
- *     nothing and cleared nothing -- silently, and only for RCSS, which is the edit people
- *     make most.
- *  2. ONE FAN-OUT IS ONE CLEAR, not one per view. Three reloaded views used to clear three
- *     times, and clears 2 and 3 discarded the stylesheet view 1 had just re-parsed.
- *
- * Observed through FVaCuusUIThread::GetNumAssetCacheClears() because RmlUi offers nothing to
- * ask about its caches. Polled rather than slept on: nothing else wakes the UI thread here
- * (no world is ticking the subsystem), so each poll re-arms Trigger().
- */
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusLiveReloadAssetCachesTest, "VaCuus.LiveReload.AssetCaches",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
-
-bool FVaCuusLiveReloadAssetCachesTest::RunTest(const FString& Parameters)
-{
-	using namespace VaCuusLiveReloadTest;
-
-	const FString SkipReason = WhySkip();
-	if (!SkipReason.IsEmpty())
-	{
-		AddInfo(FString::Printf(TEXT("Skipped: %s"), *SkipReason));
-		return true;
-	}
-
-	if (!TestRmlUiIsDown(*this))
-	{
-		return false;
-	}
-
-	FVaCuusModule& Module = FVaCuusModule::Get();
-	FVaCuusUIThread* UIThread = Module.GetOrStartUIThread();
-	if (!TestNotNull(TEXT("UI thread"), UIThread))
-	{
-		return false;
-	}
-
-	ON_SCOPE_EXIT
-	{
-		Module.StopUIThread();
-	};
-
-	// How many clears the UI thread applied since Before, once at least one has landed AND
-	// the frame that applied it has finished.
-	//
-	// WAITING ON THE COUNTER, NOT ON A FRAME, and the difference is a real (if narrow) race
-	// rather than a style preference. Trigger() is a coalescing auto-reset latch
-	// (FVaCuusUIThread::Trigger, VaCuusUIThread.cpp:469-475), so a latch left set by
-	// something else can grant a frame that drains nothing of ours; and FrameCount is
-	// incremented AFTER RunFrame() returns (:698-699). So a frame that had already passed
-	// DrainCommands() but not yet the increment when FrameBefore was sampled satisfies
-	// FrameBefore + 1 while our clear is still queued -- red on a correct product. The
-	// counter is the thing under test and is directly observable, so wait on it.
-	//
-	// THE SECOND HALF IS WHY THIS DOES NOT JUST RETURN 1: property 2 below is "one fan-out
-	// is ONE clear", so the count has to be read when it cannot still grow. The queue is a
-	// single-producer FIFO and one DrainCommands() pops everything present, so every clear
-	// the fan-out enqueued is applied within one frame -- but a second one's counter bump
-	// happens a few instructions after the first's. FrameCount sampled the moment the first
-	// clear is visible is <= the index of the frame doing the draining, so waiting for it to
-	// advance by one is a hard barrier past that whole drain.
-	const auto ClearsApplied = [this, UIThread](uint64 Before) -> uint64
-	{
-		const double Deadline = FPlatformTime::Seconds() + 10.0;
-		while (UIThread->GetNumAssetCacheClears() <= Before)
-		{
-			if (FPlatformTime::Seconds() > Deadline)
-			{
-				TestTrue(TEXT("An asset-cache clear was applied within 10 s"), false);
-				return 0;
-			}
-			UIThread->Trigger();
-			FPlatformProcess::Sleep(0.001f);
-		}
-
-		const uint64 FrameAtObservation = UIThread->GetFrameCount();
-		UIThread->Trigger();
-		if (!TestTrue(TEXT("The frame that applied the clear finished"),
-				UIThread->WaitForFrameCount(FrameAtObservation + 1, 10.0)))
-		{
-			return 0;
-		}
-
-		return UIThread->GetNumAssetCacheClears() - Before;
-	};
-
-	//~ (1) NO VIEWS AT ALL. No game instance exists yet, so the fan-out finds nothing --
-	//~ which is exactly the "edited the CSS between PIE sessions" case.
-	{
-		const uint64 ClearsBefore = UIThread->GetNumAssetCacheClears();
-		TestEqual(TEXT("(1) With no game instance, no view is reloaded"),
-			FVaCuusLiveReload::ReloadAllLiveViews(TEXT("automation")), 0);
-		TestEqual(TEXT("(1) ...and the RmlUi asset caches are dropped anyway"),
-			ClearsApplied(ClearsBefore), static_cast<uint64>(1));
-	}
-
-	//~ (2) TWO VIEWS, ONE CLEAR.
-	{
-		FStandaloneInstance Instance;
-		UVaCuusSubsystem* Subsystem = Instance.Subsystem;
-		if (!TestNotNull(TEXT("UVaCuusSubsystem on the standalone game instance"), Subsystem))
-		{
-			return false;
-		}
-
-		UVaCuusView* FirstView = Subsystem->CreateView(MakeUnique<FStubHost>(), FIntPoint(320, 200));
-		UVaCuusView* SecondView = Subsystem->CreateView(MakeUnique<FStubHost>(), FIntPoint(320, 200));
-		if (!TestNotNull(TEXT("First view"), FirstView) || !TestNotNull(TEXT("Second view"), SecondView))
-		{
-			return false;
-		}
-
-		FirstView->LoadDocument(TEXT("m1_hud.rml"));
-		SecondView->LoadDocument(TEXT("m1_hud.rml"));
-
-		const uint64 ClearsBefore = UIThread->GetNumAssetCacheClears();
-		TestEqual(TEXT("(2) Both views reloaded"),
-			FVaCuusLiveReload::ReloadAllLiveViews(TEXT("automation")), 2);
-		TestEqual(TEXT("(2) ...at the cost of exactly one cache clear, not one per view"),
-			ClearsApplied(ClearsBefore), static_cast<uint64>(1));
-	}
+	TestEqual(TEXT("Only the surviving view reloads"),
+		FVaCuusLiveReload::ReloadAllLiveViews(TEXT("automation")), 1);
 
 	return true;
 }
@@ -728,7 +598,8 @@ bool FVaCuusLiveReloadRearmTest::RunTest(const FString& Parameters)
 	View->LoadDocument(TEXT("m1_hud.rml"));
 	View->LoadDocumentFromMemory(TEXT("<rml><body/></rml>"));
 	TestTrue(TEXT("The fallback left no document path"), View->GetDocumentPath().IsEmpty());
-	TestEqual(TEXT("So the fan-out on its own reaches nothing"), Subsystem->ReloadAllDocuments(), 0);
+	TestEqual(TEXT("So the fan-out on its own reaches nothing"),
+		UVaCuusSubsystem::ClearAssetCachesAndReloadAllViews(TEXT("automation")), 0);
 
 	// The owner's re-arm, exactly as vacuus.M1HUD does it: only when the view is showing the
 	// fallback, and counted.
@@ -750,7 +621,8 @@ bool FVaCuusLiveReloadRearmTest::RunTest(const FString& Parameters)
 	};
 
 	const uint64 SerialBefore = View->GetLastRequestedLoadSerial();
-	TestEqual(TEXT("An owner re-arm is reported as a reload"), Subsystem->ReloadAllDocuments(), 1);
+	TestEqual(TEXT("An owner re-arm is reported as a reload"),
+		UVaCuusSubsystem::ClearAssetCachesAndReloadAllViews(TEXT("automation")), 1);
 	TestEqual(TEXT("...the handler ran once"), NumHandlerRuns, 1);
 	TestTrue(TEXT("...a load was actually issued"), View->GetLastRequestedLoadSerial() > SerialBefore);
 	TestEqual(TEXT("...and the view is describing the file again"),
@@ -759,7 +631,8 @@ bool FVaCuusLiveReloadRearmTest::RunTest(const FString& Parameters)
 	// And now the ordinary path takes over: the fan-out reloads it, the owner stands down, so
 	// the same flush cannot load one document twice.
 	const uint64 SerialAfterRearm = View->GetLastRequestedLoadSerial();
-	TestEqual(TEXT("Once re-armed, the fan-out reloads it exactly once"), Subsystem->ReloadAllDocuments(), 1);
+	TestEqual(TEXT("Once re-armed, the fan-out reloads it exactly once"),
+		UVaCuusSubsystem::ClearAssetCachesAndReloadAllViews(TEXT("automation")), 1);
 	TestEqual(TEXT("...the handler ran again but did nothing"), NumHandlerRuns, 2);
 	TestEqual(TEXT("...so exactly one load was issued"),
 		View->GetLastRequestedLoadSerial(), SerialAfterRearm + 1);

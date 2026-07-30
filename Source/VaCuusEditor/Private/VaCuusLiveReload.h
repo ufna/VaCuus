@@ -152,23 +152,23 @@ public:
 	int32 FlushAt(double Now);
 
 	/**
-	 * D21's dispatch: reload every live view in every PIE (and `-game`-in-editor) world.
+	 * D21's dispatch, which is now one call to
+	 * UVaCuusSubsystem::ClearAssetCachesAndReloadAllViews() -- read that declaration for
+	 * what a whole reload is and why the cache clear and the fan-out are inseparable.
 	 *
 	 * GRANULARITY IS "EVERY VIEW WITH A FILE DOCUMENT", not "views whose document is the
 	 * changed file", and that is a correctness choice rather than the lazy one: the
 	 * commonest edit by far is to an .rcss, which is never equal to any view's document
 	 * path -- RmlUi pulls it in through a <link> the game thread never sees. Matching on
 	 * the path would therefore make the main use case silently do nothing. Reloading a
-	 * document that did not change costs one re-parse and re-layout of one document.
+	 * document that did not change costs one re-parse and re-layout of one document. That
+	 * rule is the WATCHER's, which is why it is documented here and not on the runtime
+	 * entry point: what FlushAt() knows is a set of changed files, and it deliberately
+	 * throws that set away.
 	 *
-	 * It also drops RmlUi's parsed stylesheet/template caches ONCE, before the fan-out and
-	 * whether or not any view is found -- see FVaCuusUIThread::EnqueueClearAssetCaches() for
-	 * why that cannot ride on a per-view load command.
-	 *
-	 * WHICH MAKES THIS THE ONLY THING IN THE TREE THAT DOES A WHOLE RELOAD, and it is
-	 * EDITOR-ONLY. A runtime caller cannot reach it, and UVaCuusSubsystem::ReloadAllDocuments()
-	 * on its own is the RML half without the cache drop; the warning on that declaration is
-	 * the other end of this note.
+	 * NO LONGER THE ONLY THING IN THE TREE THAT DOES A WHOLE RELOAD, and that was the fix
+	 * (bead VaCuus-akj.6.34): while it was, a runtime hook that wanted a reload had nothing
+	 * correct to call.
 	 *
 	 * Returns how many views were reloaded. Static: it holds no state and vacuus.ReloadUI
 	 * calls it directly.
