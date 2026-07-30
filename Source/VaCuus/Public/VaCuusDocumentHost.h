@@ -72,17 +72,38 @@ public:
 	/** Replaces the current document with one parsed from RML source text. */
 	virtual void LoadDocumentFromMemory(const FString& RmlSource, uint64 LoadSerial) = 0;
 
-	/** Closes the current document, if any. The host stays initialized. */
+	/**
+	 * Closes the current document, if any. The host stays initialized.
+	 *
+	 * A HOST THAT OWNS A RENDER TARGET OWES ONE MORE FRAME AFTER THIS. Since the M2 Task
+	 * 12 idle gate the render target is the only copy of an idle UI's pixels -- withheld
+	 * frames are never resent, and the Slate element composites the RT whether or not a
+	 * buffer arrived -- so a host that let HasView() go false here would leave the closed
+	 * document composited forever. FVaCuusRmlDocumentHost keeps HasView() true for exactly
+	 * one post-close frame; the empty frame it records is what clears the RT, and its
+	 * Update() is also what makes RmlUi actually free the document. A host with no render
+	 * target of its own (the multi-view test's probe) owes nothing.
+	 */
 	virtual void CloseDocument() = 0;
 
 	/**
-	 * Shows or hides the current document. A hidden view keeps producing frames
-	 * (they are simply empty), which is what clears it off the screen -- skipping
-	 * the frame instead would leave the last published content in the view's RT.
+	 * Shows or hides the current document.
+	 *
+	 * A hidden view keeps RECORDING frames, which is what clears it off the screen --
+	 * skipping the frame instead would leave the last visible content in the view's RT,
+	 * because nothing would ever emit the empty frame that clears it. It does NOT keep
+	 * publishing them: the first hidden frame records an empty command list and publishes
+	 * it, and every hidden frame after that hashes equal and is withheld by the idle gate.
+	 * That is safe precisely because the RT was already cleared by the frame before. (This
+	 * sentence used to claim the empty frames keep publishing; that has been false since M2
+	 * Task 12 -- see FVaCuusRmlDocumentHost::SetVisible.)
 	 */
 	virtual void SetVisible(bool bVisible) = 0;
 
-	/** True when a frame can be produced: a document is loaded and the view size is valid. */
+	/**
+	 * True when a frame must be produced this tick: normally "a document is loaded and the
+	 * view size is valid", plus the one post-close frame CloseDocument() owes.
+	 */
 	virtual bool HasView() const = 0;
 
 	/**

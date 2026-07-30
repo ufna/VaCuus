@@ -168,7 +168,12 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "VaCuus")
 	void LoadDocumentFromMemory(const FString& RmlSource);
 
-	/** Closes the current document; the view (and its context) stays alive. */
+	/**
+	 * Closes the current document; the view (and its context) stays alive and can load
+	 * another. The view goes blank on the next UI frame -- the one the close still owes,
+	 * which clears the render target and is also what makes RmlUi free the document
+	 * (IVaCuusDocumentHost::CloseDocument).
+	 */
 	UFUNCTION(BlueprintCallable, Category = "VaCuus")
 	void Close();
 

@@ -125,6 +125,19 @@ private:
 	bool bLoggedFirstFrame = false;
 
 	/**
+	 * Set by CloseDocument(), consumed by the next RecordAndPublishFrame(): the one frame a
+	 * closed view still owes, which HasView() stays true for.
+	 *
+	 * WHY A VIEW WITH NO DOCUMENT MUST STILL RECORD ONCE: since the M2 Task 12 idle gate the
+	 * render target is the only copy of an idle UI's pixels, and the Slate element composites
+	 * it whether or not a buffer arrived. A view that simply stopped recording would leave
+	 * its last frame on screen for good. The clearing frame's Update() is also what drains
+	 * RmlUi's `unloaded_documents`, i.e. what actually frees the closed document. See
+	 * CloseDocument() for the whole argument.
+	 */
+	bool bOwesClearingFrame = false;
+
+	/**
 	 * Whether the last recorded frame's publish was withheld by the idle gate. Kept only to
 	 * turn a per-frame condition into a per-TRANSITION log line; see RecordAndPublishFrame.
 	 * Starts false because a view's first frame always publishes.

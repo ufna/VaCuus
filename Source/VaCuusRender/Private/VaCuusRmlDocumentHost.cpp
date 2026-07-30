@@ -85,10 +85,17 @@ void FVaCuusRmlDocumentHost::Shutdown()
 
 	if (Document)
 	{
-		// Queues the document unload; RmlUi processes it during RemoveContext.
+		// Queues the document unload; RmlUi processes it during RemoveContext (the
+		// context destructor owns `unloaded_documents`, so nothing is left behind).
 		Document->Close();
 		Document = nullptr;
 
+		// NO CLEARING FRAME HERE, unlike CloseDocument(), and the difference is that this
+		// path takes the render target away rather than needing something drawn into it:
+		// the ENQUEUE_RENDER_COMMAND below releases it (ReleaseResources_RenderThread), and
+		// FVaCuusSlateElement::Draw_RenderThread draws nothing without one. Recording a
+		// frame here would be impossible anyway -- RemoveContext runs immediately after.
+		//
 		// Same retraction as CloseDocument(): nothing is interactive any more, and no
 		// future frame will say so on our behalf.
 		PublishEmptyInteractiveSnapshot();
@@ -230,13 +237,49 @@ void FVaCuusRmlDocumentHost::CloseDocument()
 
 	if (Document)
 	{
-		// Queues the unload; RmlUi processes it in the context's next update.
+		// QUEUES the unload -- it does not perform it. Close() only calls
+		// Context::UnloadDocument (ElementDocument.cpp:421-425), which moves the document
+		// into the context's `unloaded_documents` list; the elements, their compiled
+		// geometry and their textures are not freed until the context's next Update()
+		// reaches ReleaseUnloadedDocuments (Context.cpp:216-217). So a close with no
+		// further Update() leaks the whole document tree on both sides until
+		// Rml::RemoveContext.
 		Document->Close();
 		Document = nullptr;
 
-		// HasView() is false from here, so no frame will be recorded and no snapshot
-		// rebuilt -- the game thread would keep answering Handled from the closed
-		// document's geometry forever. This is the retraction.
+		// THE ONE FRAME THIS VIEW STILL OWES, and the reason HasView() below has a second
+		// clause. It is not an optimisation; without it the closed document stays on screen
+		// forever.
+		//
+		// On an idle UI the render target is the ONLY copy of the pixels -- the idle gate
+		// withholds every frame that draws what the render thread already has, so the
+		// recorder will never resend them -- and FVaCuusSlateElement::Draw_RenderThread
+		// composites that RT unconditionally, outside its `PendingBuffers.Num() > 0` branch
+		// (VaCuusSlateElement.cpp:56-96). Any path that stops recording must therefore emit
+		// one CLEARING frame first: an empty command list hashes differently from the last
+		// published one, so it publishes, and the replayer opens its pass with
+		// ERenderTargetActions::Clear_Store (VaCuusReplayRenderer.cpp:233) -- that clear with
+		// no draws behind it is what wipes the view.
+		//
+		// Before this flag existed, HasView() went false the moment Document did, the UI
+		// thread's record loop skipped this view for good (VaCuusUIThread.cpp:812-818), and
+		// the player was left with a pixel-perfect ghost of a dead document: clicks fall
+		// through (the empty snapshot below), the cursor reverts, focus is released, and
+		// nothing dismisses it short of loading another document, hiding the widget or
+		// destroying the view. SetVisible(false) had this right all along -- see the comment
+		// there, which describes this exact failure and rules it out for the hide path.
+		//
+		// The frame it buys is also the Update() that drains `unloaded_documents`, so it
+		// discharges both debts at once.
+		bOwesClearingFrame = true;
+
+		// The snapshot retraction, separately and immediately: hit coverage must stop
+		// NOW, not one frame later, or the game thread keeps answering Handled from the
+		// closed document's geometry for a frame. It is also the only retraction that
+		// survives the one path where the clearing frame cannot run -- an in-band Shutdown
+		// closes every document and then leaves the loop (VaCuusUIThread.cpp:836-859) --
+		// and there the render side is retracted by Shutdown()'s
+		// ReleaseResources_RenderThread instead, which drops the RT outright.
 		PublishEmptyInteractiveSnapshot();
 	}
 }
@@ -296,7 +339,20 @@ void FVaCuusRmlDocumentHost::SetVisible(bool bVisible)
 bool FVaCuusRmlDocumentHost::HasView() const
 {
 	check(FVaCuusUIThread::IsInUIThread());
-	return Context != nullptr && Document != nullptr && ViewSize.X > 0 && ViewSize.Y > 0;
+
+	// bOwesClearingFrame is what keeps a just-closed view recordable for exactly one more
+	// frame. See CloseDocument() for why that frame is mandatory; the short version is that
+	// the render target is the only copy of an idle UI's pixels, so a view that stops being
+	// recorded stops being erasable.
+	//
+	// Context and ViewSize are still hard requirements: with no context there is nothing to
+	// Update() or Render(), and at a degenerate size the replayer skips its draw pass
+	// entirely (VaCuusReplayRenderer.cpp:53-74) so the clearing frame would clear nothing.
+	// Neither case can leave a ghost anyway -- a view that never had a size never published
+	// pixels, and a view whose context is gone has been through Shutdown(), which released
+	// the render target itself.
+	return Context != nullptr && (Document != nullptr || bOwesClearingFrame) &&
+		ViewSize.X > 0 && ViewSize.Y > 0;
 }
 
 Rml::Context* FVaCuusRmlDocumentHost::GetContext() const
@@ -324,6 +380,17 @@ void FVaCuusRmlDocumentHost::RecordAndPublishFrame()
 			ViewId, FPlatformTLS::GetCurrentThreadId(), GGameThreadId,
 			IsInGameThread() ? TEXT("true") : TEXT("false"));
 	}
+
+	// ONE SHOT, CLEARED HERE RATHER THAN ON THE CLOSE PATH, because ANY frame discharges the
+	// debt and only this function knows one ran. Two cases, both correct by the same rule:
+	//
+	//  - nothing was loaded in between, so this frame records an empty context: the publish
+	//    clears the render target, which is the debt;
+	//  - a load landed first (AdoptDocument() calls CloseDocument() before adopting), so this
+	//    frame records the NEW document and overwrites the render target with it. The old
+	//    pixels are gone either way, and clearing first would only add a one-frame blank
+	//    between two documents.
+	bOwesClearingFrame = false;
 
 	Recorder->BeginFrame(ViewSize);
 
