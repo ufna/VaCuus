@@ -739,7 +739,7 @@ struct FWatcherEventState
  *
  * Tick(-1.0f) reads the inotify fd and fires every FDirectoryChanged delegate INLINE on the
  * calling thread -- the Linux backend ignores DeltaSeconds entirely
- * (DirectoryWatcherLinux.cpp:111-124 -> FDirectoryWatchRequestLinux::ProcessNotifications).
+ * (DirectoryWatcherLinux.cpp:111-123 -> FDirectoryWatchRequestLinux::ProcessNotifications).
  * Engine code does exactly this when it needs changes now: AssetRegistry.cpp:2039,
  * WorldPartitionEditorModule.cpp:719 ('Force a directory watcher tick'),
  * EditorBuildUtils.cpp:1113.
