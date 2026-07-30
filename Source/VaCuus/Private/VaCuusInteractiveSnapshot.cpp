@@ -134,13 +134,20 @@ struct FSnapshotWalk
 	{
 	}
 
-	void Visit(Rml::Element* Element, const FIntRect& Clip);
+	/**
+	 * bFocusBlocked mirrors RmlUi's CanFocus::NoAndNoChildren: `focus: none` prunes an
+	 * element AND its whole subtree from tab and spatial navigation
+	 * (ElementDocument.cpp:34-38), so it has to be carried down rather than tested per
+	 * element. Unlike pointer-events -- which RmlUi does re-evaluate per element after
+	 * descending -- this one really is inherited-by-pruning.
+	 */
+	void Visit(Rml::Element* Element, const FIntRect& Clip, bool bFocusBlocked);
 
 	FVaCuusInteractiveSnapshot& Out;
 	int32 NumElementsVisited = 0;
 };
 
-void FSnapshotWalk::Visit(Rml::Element* Element, const FIntRect& Clip)
+void FSnapshotWalk::Visit(Rml::Element* Element, const FIntRect& Clip, bool bFocusBlocked)
 {
 	++NumElementsVisited;
 
@@ -208,9 +215,24 @@ void FSnapshotWalk::Visit(Rml::Element* Element, const FIntRect& Clip)
 		(Computed.tab_index() == Rml::Style::TabIndex::Auto || IsKnownInteractiveTag(Element->GetTagName()) ||
 			Markers.bInteractive);
 
+	// `focus: none` blocks this element and everything under it (see Visit's comment).
+	// Evaluated before the flag below so an element that blocks focus is not itself
+	// reported focusable.
+	bFocusBlocked = bFocusBlocked || Computed.focus() == Rml::Style::Focus::None;
+
+	// RmlUi's own focusability rule, not a proxy for it: visible (already true -- an
+	// invisible element returned above), no `focus: none` anywhere up the chain, and
+	// computed tab-index auto. Same three tests as ElementDocument's private
+	// CanFocusElement (ElementDocument.cpp:30-43), which is what Tab, the arrow keys and
+	// a mouse press all resolve focus through.
+	const bool bFocusable = !bFocusBlocked && Computed.tab_index() == Rml::Style::TabIndex::Auto;
+
 	if (bInteractive && Rect.Area() > 0)
 	{
+		// Both arrays, always together: the index is the only thing that pairs a rect
+		// with its flags (see FVaCuusInteractiveSnapshot::RectFlags).
 		Out.InteractiveRects.Add(Rect);
+		Out.RectFlags.Add(EVaCuusRectFlags::Interactive | (bFocusable ? EVaCuusRectFlags::Focusable : EVaCuusRectFlags::None));
 	}
 
 	// Does this element clip its descendants? Same test RmlUi uses to build a
@@ -253,7 +275,7 @@ void FSnapshotWalk::Visit(Rml::Element* Element, const FIntRect& Clip)
 	{
 		if (Rml::Element* Child = Element->GetChild(Index))
 		{
-			Visit(Child, ChildClip);
+			Visit(Child, ChildClip, bFocusBlocked);
 		}
 	}
 }
@@ -305,7 +327,11 @@ FVaCuusSnapshotBuildStats BuildVaCuusInteractiveSnapshot(
 				bFocusIsRealElement = false;
 			}
 
-			Walk.Visit(Document, ViewRect);
+			// bFocusBlocked starts false: `focus` defaults to auto and is inherited
+			// (StyleSheetSpecification.cpp:375), so a document is focusable until an
+			// author says otherwise -- and RmlUi relies on that, since Show() focuses the
+			// document element itself.
+			Walk.Visit(Document, ViewRect, /*bFocusBlocked=*/false);
 		}
 	}
 

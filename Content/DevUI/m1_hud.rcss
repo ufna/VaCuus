@@ -22,6 +22,43 @@ body
 	font-family: LatoLatin;
 	font-size: 16px;
 	color: #D2E9F2;
+
+	/* THE NAVIGATION BOOTSTRAP, and it is load-bearing. At load the document element
+	   itself holds focus (Show(FocusFlag::Document)) -- that is what makes
+	   ElementDocument::ProcessDefaultAction run at all -- so the FIRST direction key
+	   reads nav-* off *this* element. RmlUi short-cuts that case to tab order
+	   (`current_element == this` -> FindNextTabElement, ElementDocument.cpp:795-796),
+	   which is how a pad enters the UI; every press after that navigates spatially from
+	   the focused element. Without this rule the first press is a silent no-op and the
+	   HUD looks dead to a controller. */
+	nav: auto;
+}
+
+/* ------------------------------------------------------------------ */
+/* M2 spatial navigation (Task 7)                                      */
+/*                                                                     */
+/* PER-ELEMENT BY NECESSITY, not by style: all four nav-* properties    */
+/* are registered with inherited=false (StyleSheetSpecification.cpp:    */
+/* 378-381) and ElementDocument reads them with GetLocalProperty        */
+/* (ElementDocument.cpp:626), which sees only inline styles and the     */
+/* element's OWN matched definition. `body { nav: auto }` above         */
+/* therefore does nothing for anything inside body -- every focusable   */
+/* element needs its own rule, which is what this is.                   */
+/*                                                                     */
+/* tab-index: auto comes along because it is RmlUi's focusability       */
+/* requirement (CanFocusElement, ElementDocument.cpp:30-43): without it */
+/* an element is skipped by Tab, by the arrow keys and by the pad, and  */
+/* Enter/Return will not click it either.                              */
+/*                                                                     */
+/* An explicit graph is available where auto guesses wrong -- e.g.      */
+/* `#demo-btn { nav-right: "#ability-bar"; }`. The leading '#' is       */
+/* REQUIRED; without it RmlUi logs a warning and navigates nowhere      */
+/* (ElementDocument.cpp:757-767).                                      */
+/* ------------------------------------------------------------------ */
+button, input, .slot
+{
+	nav: auto;
+	tab-index: auto;
 }
 
 /* ------------------------------------------------------------------ */
@@ -268,6 +305,16 @@ body
 	background-color: #FF6A2A;
 	border-color: #FFC44D;
 }
+/* Keyboard/pad focus. A DIFFERENT colour from :hover on purpose -- focus and hover
+   are different states and a player navigating with a pad has no cursor to tell
+   them apart. RmlUi sets both `focus` and `focus-visible` from Element::Focus(true),
+   which is what its own Tab and nav handlers call (Element.cpp:2033-2035). */
+#demo-btn:focus
+{
+	color: #FFFFFF;
+	background-color: #7A2A8F;
+	border-color: #FF6AF0;
+}
 
 /* ------------------------------------------------------------------ */
 /* Ability bar (bottom-center); slot 3 on cooldown                     */
@@ -299,12 +346,23 @@ body
 	/* M2: `tab-index: auto` is what the interactive-region snapshot's predicate
 	   matches on for a plain <div>, so this is what makes a slot claim its pixels
 	   from the game -- and it is also RmlUi's own focusability requirement
-	   (ElementDocument's CanFocusElement), so the slots are keyboard-reachable. */
+	   (ElementDocument's CanFocusElement), so the slots are keyboard-reachable.
+	   Task 7's `button, input, .slot` rule adds `nav: auto` on top, which is what
+	   makes the arrows and the pad move BETWEEN them. */
 	tab-index: auto;
 	cursor: pointer;
 }
 .slot:hover { border-color: #7DE6FF; background-color: #12262E; }
 .slot:active { border-color: #FFC44D; background-color: #1B3038; }
+
+/* The pad/keyboard focus ring. Magenta so a screenshot cannot confuse it with the
+   cyan :hover or the amber :active -- this is the visual proof that spatial
+   navigation moved the focus, taken with no pointer anywhere near the slot. */
+.slot:focus
+{
+	border-color: #FF6AF0;
+	background-color: #4A1050;
+}
 .slot.last { margin-right: 0; }
 .slot-icon
 {

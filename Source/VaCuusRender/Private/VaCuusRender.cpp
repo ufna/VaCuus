@@ -409,6 +409,138 @@ static FAutoConsoleCommand GSimulateMouseCommand(
 	TEXT("Move the pointer to <x> <y> (window pixels) through Slate's real routing. Headless hover verification."),
 	FConsoleCommandWithArgsDelegate::CreateStatic(&SimulateMouseMove));
 
+/**
+ * Sends one key press to the focused widget through Slate's real routing.
+ *
+ * LIKE MoveMouseTo, THIS GOES THROUGH FSlateApplication ON PURPOSE: the whole point
+ * of a headless nav check is that the key survives the parts a unit test cannot
+ * reach -- Slate's navigation config (which would otherwise swallow every arrow
+ * before OnKeyDown, controller decision D12), the focus path, and the widget's own
+ * pass-through set. ProcessKeyDownEvent/ProcessKeyUpEvent are public engine API and
+ * the same calls the platform layer makes.
+ */
+static bool SendKeyToFocusedWidget(const FKey& Key)
+{
+	if (!FSlateApplication::IsInitialized())
+	{
+		UE_LOG(LogVaCuus, Error, TEXT("Synthesizing a key needs Slate (nothing to do under -nullrhi -unattended)"));
+		return false;
+	}
+
+	FSlateApplication& Slate = FSlateApplication::Get();
+	const FKeyEvent KeyEvent(
+		Key, FModifierKeysState(), Slate.GetUserIndexForKeyboard(), /*bIsRepeat=*/false, /*CharacterCode=*/0, /*KeyCode=*/0);
+
+	const bool bHandled = Slate.ProcessKeyDownEvent(KeyEvent);
+	Slate.ProcessKeyUpEvent(KeyEvent);
+
+	UE_LOG(LogVaCuus, Log, TEXT("Key '%s' sent; Slate reports the press %s"),
+		*Key.ToString(), bHandled ? TEXT("handled by a widget") : TEXT("unhandled (it fell through)"));
+	return bHandled;
+}
+
+/**
+ * Gives the HUD widget Slate's keyboard focus and sends a sequence of keys.
+ *
+ * The focus step is not optional: OnKeyDown only reaches a widget that holds user
+ * focus, and in a headless session nothing has clicked anything.
+ */
+static void SendNavSequence(const TArray<FString>& KeyNames)
+{
+	if (!GState || !GState->Widget.IsValid() || !FSlateApplication::IsInitialized())
+	{
+		UE_LOG(LogVaCuus, Error, TEXT("vacuus.M1HUD.Nav needs the HUD to be on"));
+		return;
+	}
+
+	FSlateApplication& Slate = FSlateApplication::Get();
+	Slate.SetUserFocus(Slate.GetUserIndexForKeyboard(), GState->Widget, EFocusCause::SetDirectly);
+	UE_LOG(LogVaCuus, Log, TEXT("vacuus.M1HUD.Nav: HUD widget has Slate focus; navigation config overridden: %s"),
+		GState->Widget->IsNavigationConfigOverridden_Debug() ? TEXT("yes") : TEXT("no"));
+
+	for (const FString& KeyName : KeyNames)
+	{
+		const FKey Key(*KeyName);
+		if (!Key.IsValid())
+		{
+			UE_LOG(LogVaCuus, Error, TEXT("vacuus.M1HUD.Nav: '%s' is not a known FKey name"), *KeyName);
+			continue;
+		}
+
+		SendKeyToFocusedWidget(Key);
+	}
+}
+
+static void Nav(const TArray<FString>& Args)
+{
+	if (Args.Num() == 0)
+	{
+		UE_LOG(LogVaCuus, Error,
+			TEXT("vacuus.M1HUD.Nav expects one or more FKey names, e.g. 'Gamepad_DPad_Right Gamepad_DPad_Right'"));
+		return;
+	}
+
+	SendNavSequence(Args);
+}
+
+static FAutoConsoleCommand GNavCommand(
+	TEXT("vacuus.M1HUD.Nav"),
+	TEXT("Focus the HUD widget and send FKeys to it through Slate's real routing, e.g. ")
+	TEXT("'vacuus.M1HUD.Nav Gamepad_DPad_Right Gamepad_DPad_Right'. Headless navigation verification."),
+	FConsoleCommandWithArgsDelegate::CreateStatic(&Nav));
+
+/**
+ * Adds or removes a pass-through key at runtime (controller decision D12: the set is
+ * a member the console can extend, not a hard-coded constant).
+ */
+static void PassThroughKey(const TArray<FString>& Args)
+{
+	if (!GState || !GState->Widget.IsValid())
+	{
+		UE_LOG(LogVaCuus, Error, TEXT("vacuus.M1HUD.PassThroughKey needs the HUD to be on"));
+		return;
+	}
+
+	if (Args.Num() == 0)
+	{
+		TArray<FString> Names;
+		for (const FKey& Key : GState->Widget->GetPassThroughKeys())
+		{
+			Names.Add(Key.ToString());
+		}
+		Names.Sort();
+
+		UE_LOG(LogVaCuus, Log, TEXT("Pass-through keys (%d): %s"), Names.Num(), *FString::Join(Names, TEXT(", ")));
+		return;
+	}
+
+	const FKey Key(*Args[0]);
+	if (!Key.IsValid())
+	{
+		UE_LOG(LogVaCuus, Error, TEXT("vacuus.M1HUD.PassThroughKey: '%s' is not a known FKey name"), *Args[0]);
+		return;
+	}
+
+	// Second argument absent means "add"; explicit 0 removes.
+	const bool bAdd = Args.Num() < 2 || FCString::Atoi(*Args[1]) != 0;
+	if (bAdd)
+	{
+		GState->Widget->AddPassThroughKey(Key);
+		UE_LOG(LogVaCuus, Log, TEXT("'%s' now passes through to the game"), *Key.ToString());
+	}
+	else
+	{
+		const bool bRemoved = GState->Widget->RemovePassThroughKey(Key);
+		UE_LOG(LogVaCuus, Log, TEXT("'%s' %s"), *Key.ToString(),
+			bRemoved ? TEXT("no longer passes through; the UI may consume it") : TEXT("was not in the pass-through set"));
+	}
+}
+
+static FAutoConsoleCommand GPassThroughKeyCommand(
+	TEXT("vacuus.M1HUD.PassThroughKey"),
+	TEXT("List the keys the UI never consumes, or add/remove one: <KeyName> [0 to remove]."),
+	FConsoleCommandWithArgsDelegate::CreateStatic(&PassThroughKey));
+
 /** When HoverShot parks the pointer, and when it shoots. Ordered, and both after the widget exists. */
 static constexpr float GHoverShotMoveSeconds = 2.0f;
 static constexpr float GHoverShotShotSeconds = 3.0f;
@@ -484,6 +616,64 @@ static FAutoConsoleCommand GHoverShotCommand(
 	TEXT("vacuus.M1HUD.HoverShot"),
 	TEXT("Park the pointer at [x y] after 2s, then take a UI screenshot at 3s. No arguments: screenshot only."),
 	FConsoleCommandWithArgsDelegate::CreateStatic(&HoverShot));
+
+/**
+ * The navigation twin of HoverShot: focus the HUD, send a key sequence, shoot.
+ *
+ * Same two-step timing and the same reason for it -- every `-ExecCmds` command runs on
+ * one early tick, before the widget has ever been arranged, so keys sent there reach a
+ * widget with no geometry and no published snapshot. The pointer is deliberately never
+ * moved, which is what makes the resulting screenshot proof of NAVIGATION focus rather
+ * than of hover.
+ */
+static void NavShot(const TArray<FString>& Args)
+{
+	static FDelegateHandle NavHandle;
+	static double NavDeadline = 0.0;
+	static TArray<FString> PendingKeys;
+
+	// Default sequence: two steps right. The first enters the document in tab order
+	// (the document element holds focus at load and its `nav: auto` short-cuts to tab
+	// order), the second navigates spatially from there.
+	PendingKeys = Args.Num() > 0 ? Args : TArray<FString>{TEXT("Gamepad_DPad_Right"), TEXT("Gamepad_DPad_Right")};
+	NavDeadline = FPlatformTime::Seconds() + GHoverShotMoveSeconds;
+
+	if (NavHandle.IsValid())
+	{
+		FCoreDelegates::OnBeginFrame.Remove(NavHandle);
+	}
+
+	NavHandle = FCoreDelegates::OnBeginFrame.AddLambda(
+		[]
+		{
+			if (FPlatformTime::Seconds() < NavDeadline)
+			{
+				return;
+			}
+
+			FCoreDelegates::OnBeginFrame.Remove(NavHandle);
+			NavHandle.Reset();
+			SendNavSequence(PendingKeys);
+		});
+
+	FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda(
+		[](float)
+		{
+			UE_LOG(LogVaCuus, Log, TEXT("vacuus.M1HUD.NavShot: requesting a UI screenshot"));
+			FScreenshotRequest::RequestScreenshot(/*bInShowUI=*/true);
+			return false;
+		}),
+		GHoverShotShotSeconds);
+
+	UE_LOG(LogVaCuus, Log, TEXT("vacuus.M1HUD.NavShot: keys [%s] at t+%.1fs, screenshot at t+%.1fs"),
+		*FString::Join(PendingKeys, TEXT(" ")), GHoverShotMoveSeconds, GHoverShotShotSeconds);
+}
+
+static FAutoConsoleCommand GNavShotCommand(
+	TEXT("vacuus.M1HUD.NavShot"),
+	TEXT("Focus the HUD and send a key sequence after 2s, then take a UI screenshot at 3s. ")
+	TEXT("No arguments: two DPad-right steps."),
+	FConsoleCommandWithArgsDelegate::CreateStatic(&NavShot));
 
 static FAutoConsoleCommand GToggleCommand(
 	TEXT("vacuus.M1HUD"),

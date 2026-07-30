@@ -13,6 +13,13 @@
 #include "HAL/RunnableThread.h"
 
 #include <RmlUi/Core/Context.h>
+#include <RmlUi/Core/Element.h>
+
+// ElementDocument, complete rather than forward-declared: the Back handler asks
+// "is the focused element a document element?" by comparing GetOwnerDocument()
+// against the element itself, and that derived-to-base pointer conversion needs the
+// full type.
+#include <RmlUi/Core/ElementDocument.h>
 
 namespace
 {
@@ -179,6 +186,44 @@ void DispatchInputEvent(Rml::Context& Context, const FVaCuusInputEvent& Event)
 			// silently swallow all non-ASCII typing.
 			Context.ProcessTextInput(Rml::Character(Event.CodePoint));
 			break;
+
+		case EVaCuusInputEventKind::NavigateBack:
+		{
+			// The pad's Back button (controller decision D13). Not a key: RmlUi has no
+			// identifier and no default action for "cancel", so this is handled here
+			// rather than dispatched.
+			Rml::Element* const Focus = Context.GetFocusElement();
+
+			// The same "is this a REAL focus" rule the snapshot uses (D9): the context
+			// root and a document element both hold focus routinely -- Show() focuses the
+			// document itself -- and neither is something a player can back out of.
+			// Blurring one of them would push focus onto the context root, where
+			// ProcessKeyDown has no default action at all and the UI's keyboard goes dead.
+			const bool bRealFocus = Focus != nullptr && Focus != Context.GetRootElement() &&
+				Focus->GetOwnerDocument() != Focus;
+			if (!bRealFocus)
+			{
+				UE_LOG(LogVaCuus, Verbose, TEXT("View %u: Back with nothing focused inside a document; ignored"),
+					Event.ViewId);
+				break;
+			}
+
+			// Blur() hands focus to the parent chain, which lands on the document (a
+			// document element is always focusable: Element::Focus only requires
+			// `focus != none`, Element.cpp:2003-2008). So the view keeps a valid focus
+			// element while no longer claiming the keyboard.
+			const Rml::String BlurredId = Focus->GetId();
+			Focus->Blur();
+
+			// Log, not silence: for M2 this is ALL that Back does, and a player pressing B
+			// and seeing only "the highlight went away" deserves to be explainable. A real
+			// Back binding (close the menu, pop a screen) is game-side policy.
+			UE_LOG(LogVaCuus, Log,
+				TEXT("View %u: Back blurred the focused element ('%s'); the keyboard returns to the game. ")
+				TEXT("Any further Back semantics are the game's own binding."),
+				Event.ViewId, UTF8_TO_TCHAR(BlurredId.c_str()));
+			break;
+		}
 
 		case EVaCuusInputEventKind::None:
 		default:

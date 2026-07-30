@@ -104,6 +104,21 @@ public:
 
 	uint32 GetViewId() const { return ViewId; }
 
+	/**
+	 * How many input events this handle has queued for the UI thread.
+	 *
+	 * This is the ONLY observable that can answer "was that event forwarded at all",
+	 * and one decision needs it: controller decision D12's pass-through key set is
+	 * defined as keys the widget neither consumes nor enqueues, and an event that was
+	 * dropped on the game thread leaves no other trace anywhere. Counted here rather
+	 * than in the widget because this is the single choke point every event goes
+	 * through, widget or not.
+	 *
+	 * Counts events ACCEPTED for the queue: an event dropped because the view is already
+	 * invalid does not increment it.
+	 */
+	uint64 GetNumInputEventsQueued() const { return NumInputEventsQueued; }
+
 	/** Frames this view has published to the render thread. Useful for headless waits. */
 	uint64 GetFramesPublished() const;
 
@@ -217,6 +232,9 @@ private:
 
 	/** Cleared by Invalidate(); gates every enqueue. */
 	bool bRegistered = false;
+
+	/** Backs GetNumInputEventsQueued(); game thread only, like everything else here. */
+	uint64 NumInputEventsQueued = 0;
 
 	/** Next load's serial. Strictly increasing, so a stale completion cannot be mistaken for a new one. */
 	uint64 NextLoadSerial = 1;

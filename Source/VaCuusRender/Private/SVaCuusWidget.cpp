@@ -9,6 +9,8 @@
 #include "VaCuusStats.h"
 #include "VaCuusView.h"
 
+#include "Framework/Application/NavigationConfig.h"
+#include "Framework/Application/SlateApplication.h"
 #include "HAL/IConsoleManager.h"
 #include "Rendering/DrawElements.h"
 #include "RenderingThread.h"
@@ -46,12 +48,63 @@ void SVaCuusWidget::Construct(const FArguments& InArgs,
 	// so this can be called but never overridden -- another reason the pass-through
 	// decision has to live in the handlers.
 	SetVisibility(EVisibility::Visible);
+
+	// The default pass-through set (controller decision D12). Every key here reaches
+	// the game whether or not a document has focus, because a UI that can swallow them
+	// is a UI the player cannot escape from:
+	//
+	//   Escape  -- the universal "get me out". Task 6 answered Handled for it whenever
+	//              a document held focus, which meant a focused text field could trap
+	//              the player in the menu with no way back.
+	//   F1-F12  -- debug and engine bindings (stat, screenshots, profiling).
+	//   Tilde   -- the console. UE resolves the actual console key from
+	//              Engine.Console's ConsoleKey/ConsoleKeys (Input.ini) and Tilde is the
+	//              default; a project that rebinds it should extend this set.
+	//
+	// Note this set is keyed on FKey and therefore only affects OnKeyDown/OnKeyUp.
+	// OnKeyChar has no FKey to test, but none of these keys produces a character the
+	// text path would keep anyway -- they are all C0 controls or non-printing, and
+	// OnKeyChar already drops those. Typing `~` into a field still works, because that
+	// arrives as a CHARACTER while the key event is what passes through.
+	static const FKey DefaultPassThroughKeys[] = {EKeys::Escape, EKeys::Tilde, EKeys::F1, EKeys::F2, EKeys::F3,
+		EKeys::F4, EKeys::F5, EKeys::F6, EKeys::F7, EKeys::F8, EKeys::F9, EKeys::F10, EKeys::F11, EKeys::F12};
+	PassThroughKeys.Reserve(UE_ARRAY_COUNT(DefaultPassThroughKeys));
+	for (const FKey& Key : DefaultPassThroughKeys)
+	{
+		PassThroughKeys.Add(Key);
+	}
+}
+
+SVaCuusWidget::~SVaCuusWidget()
+{
+	// Last line of defence for the navigation config: a widget destroyed while it still
+	// holds focus never gets an OnFocusLost, and a leaked FNullNavigationConfig would
+	// disable arrow-key navigation for every other widget in the application -- with
+	// nothing left pointing at us to explain why.
+	RestoreNavigationConfig();
+}
+
+void SVaCuusWidget::AddPassThroughKey(const FKey& Key)
+{
+	check(IsInGameThread());
+	PassThroughKeys.Add(Key);
+}
+
+bool SVaCuusWidget::RemovePassThroughKey(const FKey& Key)
+{
+	check(IsInGameThread());
+	return PassThroughKeys.Remove(Key) > 0;
 }
 
 void SVaCuusWidget::DetachView()
 {
 	check(IsInGameThread());
 	View.Reset();
+
+	// The view is going away, so there is no document left to navigate: stop suppressing
+	// Slate's own navigation immediately rather than waiting for a focus change that may
+	// never come (the widget is usually pulled out of the viewport right after this).
+	RestoreNavigationConfig();
 }
 
 void SVaCuusWidget::Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime)
@@ -75,6 +128,10 @@ void SVaCuusWidget::Tick(const FGeometry& AllottedGeometry, const double InCurre
 	// No trigger here: UVaCuusSubsystem::Tick is the once-per-frame pulse, which is
 	// a better slot than a widget's Tick (and the only one that works for views
 	// without a widget).
+
+	// The analog stick's repeat clock (D13). Here rather than in OnAnalogValueChanged
+	// because a held stick stops producing events.
+	TickAnalogNavigation(InCurrentTime);
 
 	TickAutoShot();
 	FVaCuusPerfLog::TickLog();
@@ -218,15 +275,22 @@ FReply SVaCuusWidget::OnMouseButtonDown(const FGeometry& MyGeometry, const FPoin
 		Reply.CaptureMouse(SharedThis(this));
 	}
 
-	// Keyboard focus only when a REAL focusable element already holds RmlUi focus
-	// (controller decision D9). Anything looser -- "the document is up" -- would take
-	// the keyboard away from the game on the first click on any button.
+	// Keyboard focus on the FIRST click, which is what controller decision D11 buys.
 	//
-	// The known cost: the snapshot is one frame old, so the click that first focuses
-	// a text field does not know it did, and typing needs the click after it. Buttons
-	// are unaffected (RmlUi drives those entirely UI-side); see
-	// FVaCuusInteractiveSnapshot::bWantsKeyboardFocus.
-	if (Snapshot.bWantsKeyboardFocus)
+	// The question asked here is about the rect, not about the view: "would a click on
+	// this take RmlUi focus". That is a property of the published GEOMETRY -- a frame
+	// old, but a focusable element's rect is already in the snapshot before anyone
+	// clicks it -- so the answer is right on the click that focuses the field.
+	//
+	// Task 6 asked the view-wide bWantsKeyboardFocus instead, which describes whether
+	// something focusable ALREADY had focus: true only from the frame AFTER the click,
+	// so a fresh <input> needed two clicks before it would accept a keystroke.
+	//
+	// Note what does NOT happen here: a click on a non-focusable interactive rect does
+	// not clear Slate focus. If a text field had it, RmlUi's own press handling decides
+	// whether the field keeps RmlUi focus, and holding Slate focus while it does is
+	// exactly right.
+	if (Snapshot.IsFocusableAt(Position))
 	{
 		Reply.SetUserFocus(SharedThis(this), EFocusCause::Mouse);
 	}
@@ -362,26 +426,65 @@ FCursorReply SVaCuusWidget::OnCursorQuery(const FGeometry& MyGeometry, const FPo
 
 FReply SVaCuusWidget::OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent)
 {
-	SendInput(FVaCuusInputEvent::KeyEvent(/*bDown=*/true, InKeyEvent.GetKey(), ToModifierState(InKeyEvent)));
+	const FKey Key = InKeyEvent.GetKey();
+
+	// The pass-through set (controller decision D12): not consumed AND not queued, so
+	// the document never even hears about it. Checked first, before anything else can
+	// have an opinion.
+	if (PassThroughKeys.Contains(Key))
+	{
+		return FReply::Unhandled();
+	}
 
 	// Answered from the snapshot exactly like pointer events are: keys are consumed
 	// only while a real focusable element holds RmlUi focus. Otherwise they bubble on
 	// -- so a document that merely happens to hold Slate focus cannot swallow the
-	// game's Escape or its movement keys.
+	// game's movement keys.
 	//
-	// Note this is a per-view verdict, not a per-key one: RmlUi's own "was it
-	// consumed" answer arrives on the UI thread, frames later in queue terms, and
-	// cannot be waited for here.
+	// Note this is a per-view verdict, not a per-key one, and it cannot be anything
+	// else: RmlUi's own "was it consumed" answer is produced on the UI thread, frames
+	// later in queue terms, and Slate needs an answer now. That asymmetry is precisely
+	// why the pass-through set above exists as a declared contract.
 	const bool bConsumeKeys = GetSnapshot().bWantsKeyboardFocus;
-	return bConsumeKeys ? FReply::Handled() : FReply::Unhandled();
+	const FReply Reply = bConsumeKeys ? FReply::Handled() : FReply::Unhandled();
+
+	// The pad's Back button (D13). Not a key: RmlUi has no identifier for "cancel" and
+	// no default action that would consume one, so it becomes an event of its own that
+	// the UI thread answers by blurring the focused element.
+	if (Key == EKeys::Gamepad_FaceButton_Right)
+	{
+		SendInput(FVaCuusInputEvent::NavigateBack());
+		return Reply;
+	}
+
+	// Everything else, gamepad included, is a plain key: the DPad and FaceButton_Bottom
+	// are in the FKey -> KeyIdentifier map (VaCuusInputMap), so no special case belongs
+	// here. That is the point of putting the pad in the map rather than in the widget.
+	SendInput(FVaCuusInputEvent::KeyEvent(/*bDown=*/true, Key, ToModifierState(InKeyEvent)));
+	return Reply;
 }
 
 FReply SVaCuusWidget::OnKeyUp(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent)
 {
-	SendInput(FVaCuusInputEvent::KeyEvent(/*bDown=*/false, InKeyEvent.GetKey(), ToModifierState(InKeyEvent)));
+	const FKey Key = InKeyEvent.GetKey();
+
+	if (PassThroughKeys.Contains(Key))
+	{
+		return FReply::Unhandled();
+	}
 
 	const bool bConsumeKeys = GetSnapshot().bWantsKeyboardFocus;
-	return bConsumeKeys ? FReply::Handled() : FReply::Unhandled();
+	const FReply Reply = bConsumeKeys ? FReply::Handled() : FReply::Unhandled();
+
+	// Back was fully handled on the press; there is no "un-blur" and no key identifier
+	// to send, so the release is answered but not queued.
+	if (Key == EKeys::Gamepad_FaceButton_Right)
+	{
+		return Reply;
+	}
+
+	SendInput(FVaCuusInputEvent::KeyEvent(/*bDown=*/false, Key, ToModifierState(InKeyEvent)));
+	return Reply;
 }
 
 FReply SVaCuusWidget::OnKeyChar(const FGeometry& MyGeometry, const FCharacterEvent& InCharacterEvent)
@@ -445,12 +548,219 @@ FReply SVaCuusWidget::OnKeyChar(const FGeometry& MyGeometry, const FCharacterEve
 	return Reply;
 }
 
+FReply SVaCuusWidget::OnAnalogValueChanged(const FGeometry& MyGeometry, const FAnalogInputEvent& InAnalogInputEvent)
+{
+	const FKey Key = InAnalogInputEvent.GetKey();
+	const float Value = InAnalogInputEvent.GetAnalogValue();
+
+	// LEFT STICK ONLY. The right stick and the trigger axes are left entirely to the
+	// game: a camera stick that also moved the UI focus would be unusable, and there is
+	// no second navigation axis for it to drive.
+	if (Key == EKeys::Gamepad_LeftX)
+	{
+		AnalogAxisX = Value;
+	}
+	else if (Key == EKeys::Gamepad_LeftY)
+	{
+		AnalogAxisY = Value;
+	}
+	else
+	{
+		return FReply::Unhandled();
+	}
+
+	// Latched, not acted on: the press is emitted from Tick, where the repeat clock
+	// lives (see TickAnalogNavigation).
+	//
+	// Handled while the UI owns the keyboard, so the same deflection does not also drive
+	// the game's camera. Below the dead zone the deflection is not ours at all, and a
+	// stick resting at 0.02 must not be reported as consumed.
+	const bool bPastDeadZone = ResolveAnalogNavDirection() != EAnalogNavDirection::None;
+	return (bPastDeadZone && GetSnapshot().bWantsKeyboardFocus) ? FReply::Handled() : FReply::Unhandled();
+}
+
+SVaCuusWidget::EAnalogNavDirection SVaCuusWidget::ResolveAnalogNavDirection() const
+{
+	const float AbsX = FMath::Abs(AnalogAxisX);
+	const float AbsY = FMath::Abs(AnalogAxisY);
+
+	// DOMINANT AXIS, not both: a diagonal push would otherwise emit two directions per
+	// step and send the focus somewhere the player did not aim. Vertical wins a tie only
+	// because something has to; at exactly 45 degrees there is no right answer.
+	if (AbsY >= AnalogNavDeadZone && AbsY >= AbsX)
+	{
+		// UE's gamepad Y is positive UP (the reason MoveForward binds LeftY at +1).
+		return AnalogAxisY > 0.0f ? EAnalogNavDirection::Up : EAnalogNavDirection::Down;
+	}
+	if (AbsX >= AnalogNavDeadZone)
+	{
+		return AnalogAxisX > 0.0f ? EAnalogNavDirection::Right : EAnalogNavDirection::Left;
+	}
+
+	return EAnalogNavDirection::None;
+}
+
+FKey SVaCuusWidget::AnalogNavDirectionToKey(EAnalogNavDirection Direction)
+{
+	// The DIGITAL left-stick keys, which VaCuusInputMap maps onto KI_UP/DOWN/LEFT/RIGHT.
+	// Going through an FKey rather than reaching for a KeyIdentifier here keeps every
+	// RmlUi-facing decision in the one file that owns them.
+	switch (Direction)
+	{
+		case EAnalogNavDirection::Up:
+			return EKeys::Gamepad_LeftStick_Up;
+		case EAnalogNavDirection::Down:
+			return EKeys::Gamepad_LeftStick_Down;
+		case EAnalogNavDirection::Left:
+			return EKeys::Gamepad_LeftStick_Left;
+		case EAnalogNavDirection::Right:
+			return EKeys::Gamepad_LeftStick_Right;
+		default:
+			return FKey();
+	}
+}
+
+void SVaCuusWidget::SendAnalogNavKey(EAnalogNavDirection Direction)
+{
+	const FKey Key = AnalogNavDirectionToKey(Direction);
+	if (!Key.IsValid())
+	{
+		return;
+	}
+
+	// A down AND an up per step. RmlUi keeps no key state of its own, so the up changes
+	// nothing there -- but a document (or M4's script) listening for keyup would
+	// otherwise see presses that never end, and a stream of unmatched downs is the kind
+	// of asymmetry that is very hard to explain later.
+	const FVaCuusModifierState NoModifiers;
+	SendInput(FVaCuusInputEvent::KeyEvent(/*bDown=*/true, Key, NoModifiers));
+	SendInput(FVaCuusInputEvent::KeyEvent(/*bDown=*/false, Key, NoModifiers));
+
+	++NumAnalogNavKeys;
+}
+
+void SVaCuusWidget::TickAnalogNavigation(double InCurrentTime)
+{
+	const EAnalogNavDirection Direction = ResolveAnalogNavDirection();
+
+	if (Direction == EAnalogNavDirection::None)
+	{
+		// Back inside the dead zone: forget the hold, so the next deflection fires
+		// immediately instead of waiting out a stale repeat deadline.
+		HeldAnalogDirection = EAnalogNavDirection::None;
+		return;
+	}
+
+	if (Direction != HeldAnalogDirection)
+	{
+		// A new direction fires at once -- including a direction CHANGE while the stick
+		// stays deflected, which is what makes flicking from right to down feel
+		// immediate. The delay below is only for the second step of the same direction.
+		HeldAnalogDirection = Direction;
+		SendAnalogNavKey(Direction);
+		NextAnalogNavTime = InCurrentTime + AnalogNavInitialRepeatSeconds;
+		return;
+	}
+
+	if (InCurrentTime >= NextAnalogNavTime)
+	{
+		SendAnalogNavKey(Direction);
+
+		// Relative to NOW, not to the previous deadline: a frame hitch must not produce
+		// a burst of catch-up steps.
+		NextAnalogNavTime = InCurrentTime + AnalogNavRepeatIntervalSeconds;
+	}
+}
+
+void SVaCuusWidget::OverrideNavigationConfig()
+{
+	check(IsInGameThread());
+
+	if (InstalledNavigationConfig.IsValid())
+	{
+		// Already ours. OnFocusReceived can fire more than once for the same focus
+		// (different users, a re-focus within the same widget), and saving the config a
+		// second time would save our own null config as the thing to restore.
+		return;
+	}
+
+	if (!FSlateApplication::IsInitialized())
+	{
+		return;
+	}
+
+	FSlateApplication& Slate = FSlateApplication::Get();
+
+	// SAVED, NEVER ASSUMED. The engine default is one possibility among several: the
+	// editor installs its own, CommonUI installs FCommonAnalogCursor's, a game may
+	// install FTwinStickNavigationConfig. Restoring "the default" would silently break
+	// whichever of those was there.
+	SavedNavigationConfig = Slate.GetNavigationConfig();
+
+	const TSharedRef<FNullNavigationConfig> NullConfig = MakeShared<FNullNavigationConfig>();
+	InstalledNavigationConfig = NullConfig;
+	Slate.SetNavigationConfig(NullConfig);
+
+	// WHY THIS IS NOT OPTIONAL: FSlateApplication resolves a navigation direction from
+	// the key event and, if it finds one, turns the event into a navigation attempt
+	// BEFORE OnKeyDown is offered the key. RmlUi's nav-* graph would therefore never see
+	// an arrow, and a pad would move Slate's focus between engine widgets instead of the
+	// document's. FNullNavigationConfig turns all three sources off (tab, key, analog).
+	UE_LOG(LogVaCuus, Verbose,
+		TEXT("VaCuus widget installed FNullNavigationConfig while focused (previous config '%s'); ")
+		TEXT("RmlUi's nav-* graph now owns arrows, Tab and the stick"),
+		*SavedNavigationConfig->ToString());
+}
+
+void SVaCuusWidget::RestoreNavigationConfig()
+{
+	if (!InstalledNavigationConfig.IsValid())
+	{
+		return;
+	}
+
+	// Taken out of the members first, so every exit below leaves the override flag
+	// cleared -- a half-restored state that still reports "overridden" would never be
+	// retried.
+	const TSharedPtr<FNavigationConfig> Installed = MoveTemp(InstalledNavigationConfig);
+	const TSharedPtr<FNavigationConfig> Saved = MoveTemp(SavedNavigationConfig);
+	InstalledNavigationConfig.Reset();
+	SavedNavigationConfig.Reset();
+
+	if (!FSlateApplication::IsInitialized() || !Saved.IsValid())
+	{
+		// Slate is already down (engine shutdown): there is nothing left to restore into.
+		return;
+	}
+
+	FSlateApplication& Slate = FSlateApplication::Get();
+	if (&Slate.GetNavigationConfig().Get() != Installed.Get())
+	{
+		// Somebody installed a config after us. Putting ours back would stomp theirs, and
+		// theirs is newer -- so leave it alone and say so, because the alternative is a
+		// silent fight over a global.
+		UE_LOG(LogVaCuus, Warning,
+			TEXT("VaCuus widget will not restore the navigation config: another config was installed after ours ")
+			TEXT("(now '%s'); leaving it in place"),
+			*Slate.GetNavigationConfig()->ToString());
+		return;
+	}
+
+	Slate.SetNavigationConfig(Saved.ToSharedRef());
+	UE_LOG(LogVaCuus, Verbose, TEXT("VaCuus widget restored the previous navigation config ('%s')"),
+		*Saved->ToString());
+}
+
 FReply SVaCuusWidget::OnFocusReceived(const FGeometry& MyGeometry, const FFocusEvent& InFocusEvent)
 {
 	// Nothing is pushed into RmlUi: its focus is its own state, already set by the
 	// click that brought us here. This exists so the transition is observable (and,
 	// in Task 9, so the IME context can be activated).
 	UE_LOG(LogVaCuus, Verbose, TEXT("VaCuus widget received Slate focus (cause %d)"), int32(InFocusEvent.GetCause()));
+
+	// Controller decision D12: while we own the keyboard, Slate must stop eating
+	// directions before OnKeyDown sees them.
+	OverrideNavigationConfig();
 	return FReply::Handled();
 }
 
@@ -464,6 +774,17 @@ void SVaCuusWidget::OnFocusLost(const FFocusEvent& InFocusEvent)
 	// The surrogate pair state does get dropped: its second half will never arrive
 	// now, and keeping it would splice it onto whatever is typed next.
 	PendingHighSurrogate = 0;
+
+	// The stick state does too, and for the same reason: a deflection held while focus
+	// moves away would otherwise still be "held" when focus returns, and the first Tick
+	// after that would repeat a direction the player is no longer pushing.
+	AnalogAxisX = 0.0f;
+	AnalogAxisY = 0.0f;
+	HeldAnalogDirection = EAnalogNavDirection::None;
+
+	// Hand navigation back. Not conditional on anything: whoever has focus now owns
+	// arrow keys, and it is not us.
+	RestoreNavigationConfig();
 
 	UE_LOG(LogVaCuus, Verbose, TEXT("VaCuus widget lost Slate focus (cause %d)"), int32(InFocusEvent.GetCause()));
 }

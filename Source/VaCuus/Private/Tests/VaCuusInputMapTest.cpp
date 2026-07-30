@@ -72,16 +72,64 @@ bool FVaCuusInputMapTest::RunTest(const FString& Parameters)
 			int32(VaCuusInput::ToRmlKey(Expectation.Key)), int32(Expectation.Expected));
 	}
 
+	// GAMEPAD (controller decision D13). RmlUi has zero pad support at this SHA -- not a
+	// key identifier, not a mention of one -- so navigation only works because these
+	// entries translate a pad into the keys RmlUi's own default actions read. Each one
+	// is a silent-dead-controller bug if it is wrong or missing, which is exactly the
+	// class of bug a table test is for.
+	//
+	// The LeftStick_* entries are the digital keys SVaCuusWidget SYNTHESIZES from the
+	// analog axes after applying its dead zone and repeat throttle; they are in the same
+	// table as the DPad on purpose, so a pad's two ways of pointing cannot diverge.
+	const FKeyExpectation GamepadKeys[] = {
+		{EKeys::Gamepad_DPad_Up, KI_UP, TEXT("Gamepad_DPad_Up")},
+		{EKeys::Gamepad_DPad_Down, KI_DOWN, TEXT("Gamepad_DPad_Down")},
+		{EKeys::Gamepad_DPad_Left, KI_LEFT, TEXT("Gamepad_DPad_Left")},
+		{EKeys::Gamepad_DPad_Right, KI_RIGHT, TEXT("Gamepad_DPad_Right")},
+		{EKeys::Gamepad_LeftStick_Up, KI_UP, TEXT("Gamepad_LeftStick_Up")},
+		{EKeys::Gamepad_LeftStick_Down, KI_DOWN, TEXT("Gamepad_LeftStick_Down")},
+		{EKeys::Gamepad_LeftStick_Left, KI_LEFT, TEXT("Gamepad_LeftStick_Left")},
+		{EKeys::Gamepad_LeftStick_Right, KI_RIGHT, TEXT("Gamepad_LeftStick_Right")},
+
+		// Accept. RmlUi's KI_RETURN handler is the one that calls Element::Click()
+		// (ElementDocument.cpp:641-648), which is what "A activates the button" means.
+		{EKeys::Gamepad_FaceButton_Bottom, KI_RETURN, TEXT("Gamepad_FaceButton_Bottom (accept)")},
+	};
+
+	for (const FKeyExpectation& Expectation : GamepadKeys)
+	{
+		TestEqual(FString::Printf(TEXT("%s maps to its RmlUi key identifier"), Expectation.Description),
+			int32(VaCuusInput::ToRmlKey(Expectation.Key)), int32(Expectation.Expected));
+	}
+
 	// Everything RmlUi has no identifier for must land on KI_UNKNOWN rather than on
 	// whatever happens to be next in the enum. Printable oddities from localized
 	// layouts still reach the document through ProcessTextInput; axes and the
 	// catch-all pseudo-key have no business being sent at all.
+	//
+	// THE GAMEPAD ENTRIES BELOW WERE ADDED DELIBERATELY, not left over: Task 6 kept
+	// gamepad keys out of this table entirely, and Task 7 mapped some of them. The three
+	// that stay unmapped are the interesting ones, because each is a decision:
+	//
+	//   FaceButton_Right -- "Back". Deliberately NOT a key: RmlUi has no identifier for
+	//       cancel and no default action that would consume one, so SVaCuusWidget turns
+	//       it into EVaCuusInputEventKind::NavigateBack. Mapping it onto KI_ESCAPE would
+	//       look tidier and be wrong -- Escape reaches a document as a real key that text
+	//       fields and script may act on.
+	//   Gamepad_LeftX  -- an axis, delivered through OnAnalogValueChanged; the widget
+	//       converts a past-the-dead-zone deflection into the LeftStick_* keys above.
+	//   LeftShoulder   -- unmapped because focus cycling with the shoulders is a game
+	//       design decision, not something a translation table should impose (RmlUi
+	//       exposes ElementDocument::FindNextTabElement publicly for anyone who wants it).
 	const FKeyExpectation Unmapped[] = {
 		{EKeys::Ampersand, KI_UNKNOWN, TEXT("Ampersand (AZERTY, no KI_ equivalent)")},
 		{EKeys::Section, KI_UNKNOWN, TEXT("Section")},
 		{EKeys::MouseX, KI_UNKNOWN, TEXT("MouseX (an axis)")},
 		{EKeys::AnyKey, KI_UNKNOWN, TEXT("AnyKey (a pseudo-key)")},
 		{FKey(), KI_UNKNOWN, TEXT("An invalid FKey")},
+		{EKeys::Gamepad_FaceButton_Right, KI_UNKNOWN, TEXT("Gamepad_FaceButton_Right (Back is not a key)")},
+		{EKeys::Gamepad_LeftX, KI_UNKNOWN, TEXT("Gamepad_LeftX (an axis, not a key)")},
+		{EKeys::Gamepad_LeftShoulder, KI_UNKNOWN, TEXT("Gamepad_LeftShoulder (cycling is game policy)")},
 	};
 
 	for (const FKeyExpectation& Expectation : Unmapped)

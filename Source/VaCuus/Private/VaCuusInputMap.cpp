@@ -112,6 +112,60 @@ TMap<FKey, KeyIdentifier> BuildKeyMap()
 	Map.Add(EKeys::RightBracket, KI_OEM_6);
 	Map.Add(EKeys::Apostrophe, KI_OEM_7);
 
+	// GAMEPAD, WHICH RmlUi DOES NOT HAVE. There is not one mention of a pad,
+	// joystick or stick anywhere in Include/ or Source/Core/ at 0ae381e, and no key
+	// identifier for one: RmlUi's whole navigation vocabulary is arrows, Tab and
+	// Return/Space, dispatched from ElementDocument::ProcessDefaultAction. So the pad
+	// is not "supported", it is TRANSLATED -- controller decision D13 -- and this is
+	// where the translation lives, next to the keyboard's so the two cannot drift.
+	//
+	// KI_FIRST_CUSTOM_KEY (177..250) is deliberately NOT used for these. A custom
+	// identifier would reach a document intact but would mean nothing to RmlUi's own
+	// default actions, i.e. navigation would still not work; and a document that wants
+	// raw buttons is an M4 (script) concern, not an M2 one.
+	static const FKey DPad[] = {EKeys::Gamepad_DPad_Up, EKeys::Gamepad_DPad_Down, EKeys::Gamepad_DPad_Left,
+		EKeys::Gamepad_DPad_Right};
+	static const FKey LeftStick[] = {EKeys::Gamepad_LeftStick_Up, EKeys::Gamepad_LeftStick_Down,
+		EKeys::Gamepad_LeftStick_Left, EKeys::Gamepad_LeftStick_Right};
+	static const KeyIdentifier Arrows[] = {KI_UP, KI_DOWN, KI_LEFT, KI_RIGHT};
+	static_assert(UE_ARRAY_COUNT(DPad) == UE_ARRAY_COUNT(Arrows), "DPad and arrow tables must line up");
+	static_assert(UE_ARRAY_COUNT(LeftStick) == UE_ARRAY_COUNT(Arrows), "Stick and arrow tables must line up");
+
+	for (int32 Index = 0; Index < UE_ARRAY_COUNT(Arrows); ++Index)
+	{
+		Map.Add(DPad[Index], Arrows[Index]);
+
+		// The digital left-stick keys, which the embedder synthesises from the ANALOG
+		// axes: UE reports a stick as Gamepad_LeftX/LeftY through OnAnalogValueChanged,
+		// and SVaCuusWidget converts a past-the-dead-zone deflection into repeats of
+		// these keys (RmlUi does no key repeat of its own). Mapping them here rather
+		// than mapping the axes means the widget speaks FKeys throughout and this file
+		// stays the only place that knows what an arrow is.
+		Map.Add(LeftStick[Index], Arrows[Index]);
+	}
+
+	// Accept. KI_RETURN and not KI_SPACE, although RmlUi's handler treats them
+	// identically (ElementDocument.cpp:641-648): Return is what a text field also
+	// wants, Space would be typed into it.
+	Map.Add(EKeys::Gamepad_FaceButton_Bottom, KI_RETURN);
+
+	// DELIBERATELY ABSENT, and this is the interesting half of D13:
+	//
+	// Gamepad_FaceButton_Right ("Back"/B) has no RmlUi meaning at all -- there is no
+	// KI_ identifier for "cancel" and no default action that would consume one -- so it
+	// is not a key here. SVaCuusWidget turns it into EVaCuusInputEventKind::NavigateBack
+	// instead, which the UI thread answers by blurring the focused element. Mapping it
+	// onto KI_ESCAPE would look tidier and be wrong: Escape reaches a document as a
+	// *key*, which text fields and future script handlers may act on.
+	//
+	// Gamepad_LeftX/LeftY/RightX/RightY are axes, not keys; they arrive through
+	// OnAnalogValueChanged and become the LeftStick_* keys above.
+	//
+	// The shoulder buttons are unmapped on purpose too: cycling focus with them is a
+	// game-design decision (and RmlUi already exposes ElementDocument::FindNextTabElement
+	// publicly for anyone who wants it), not something a translation table should
+	// impose.
+
 	return Map;
 }
 

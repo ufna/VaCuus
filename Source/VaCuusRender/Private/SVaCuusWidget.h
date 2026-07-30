@@ -4,9 +4,11 @@
 
 #include "CoreMinimal.h"
 
+#include "InputCoreTypes.h"
 #include "UObject/WeakObjectPtr.h"
 #include "Widgets/SLeafWidget.h"
 
+class FNavigationConfig;
 class FVaCuusSlateElement;
 class UVaCuusView;
 struct FVaCuusInputEvent;
@@ -42,6 +44,27 @@ struct FVaCuusModifierState;
  * The widget is EVisibility::Visible (it was HitTestInvisible while it was
  * render-only in Task 4) and SupportsKeyboardFocus() is true; without either, none
  * of the handlers below would ever be called.
+ *
+ * KEYBOARD ARBITRATION (controller decision D12) has two halves, both of them here
+ * because both are Slate-side policy:
+ *
+ *  - While this widget holds Slate focus it installs FNullNavigationConfig. Slate's
+ *    navigation config consumes arrows and analog sticks in
+ *    ProcessKeyDownEvent/ProcessAnalogInputEvent BEFORE OnKeyDown is ever reached, so
+ *    without this RmlUi's own nav-* graph would simply never see a direction key. The
+ *    previous config is saved and restored exactly, on focus loss and on teardown.
+ *
+ *  - A PASS-THROUGH KEY SET the UI never consumes even while focused (Escape, F1-F12,
+ *    the console key). This exists because the per-key answer is unobtainable: RmlUi
+ *    reports consumption on the UI thread, a frame later in queue terms, and Slate
+ *    needs Handled/Unhandled now -- so the honest contract is a set of keys declared
+ *    up front rather than a guess per event.
+ *
+ * GAMEPAD (controller decision D13) is synthesized, because RmlUi has no pad support
+ * whatsoever: DPad and the left stick become arrow keys, FaceButton_Bottom becomes
+ * Return (RmlUi's handler clicks the focused element), FaceButton_Right becomes a
+ * Back event. The stick needs a dead zone and repeat throttling on this side --
+ * RmlUi does no key repeat -- which is what Tick drives.
  */
 class SVaCuusWidget : public SLeafWidget
 {
@@ -50,6 +73,23 @@ public:
 	{
 	}
 	SLATE_END_ARGS()
+
+	//~ Analog navigation tuning (controller decision D13). Public and constexpr so the
+	//~ VaCuus.Input.SlateRouting assertions are written against the real values and
+	//~ cannot drift from them.
+
+	/**
+	 * Deflection at which the left stick starts navigating, on the dominant axis.
+	 * 0.5 is deliberately high for a dead zone: this is not analog movement, it is a
+	 * discrete direction, and a low threshold makes a resting stick creep the focus.
+	 */
+	static constexpr float AnalogNavDeadZone = 0.5f;
+
+	/** Delay between the first nav step and the second, i.e. the "did you mean it" grace. */
+	static constexpr double AnalogNavInitialRepeatSeconds = 0.4;
+
+	/** Interval between later steps while the stick stays deflected. */
+	static constexpr double AnalogNavRepeatIntervalSeconds = 0.12;
 
 	/**
 	 * InView is a handle, not an owner: the subsystem owns the view and the console
@@ -60,8 +100,23 @@ public:
 		UVaCuusView* InView,
 		const TSharedRef<FVaCuusSlateElement>& InElement);
 
+	/** Restores Slate's navigation config if this widget is destroyed while still focused. */
+	virtual ~SVaCuusWidget() override;
+
 	/** Teardown step 1: stop queueing commands so the view can be retired. */
 	void DetachView();
+
+	//~ Pass-through keys (controller decision D12): keys the UI never consumes and
+	//~ never forwards, even while a document holds focus. The default set is Escape,
+	//~ F1-F12 and the console key; a game (or the debug console command) extends it.
+
+	/** Adds a key the UI must never take. Idempotent. */
+	void AddPassThroughKey(const FKey& Key);
+
+	/** Removes a key from the set; returns false if it was not in it. */
+	bool RemovePassThroughKey(const FKey& Key);
+
+	const TSet<FKey>& GetPassThroughKeys() const { return PassThroughKeys; }
 
 	//~ Begin SWidget
 	virtual void Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime) override;
@@ -85,6 +140,7 @@ public:
 	virtual FReply OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent) override;
 	virtual FReply OnKeyUp(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent) override;
 	virtual FReply OnKeyChar(const FGeometry& MyGeometry, const FCharacterEvent& InCharacterEvent) override;
+	virtual FReply OnAnalogValueChanged(const FGeometry& MyGeometry, const FAnalogInputEvent& InAnalogInputEvent) override;
 	virtual FReply OnFocusReceived(const FGeometry& MyGeometry, const FFocusEvent& InFocusEvent) override;
 	virtual void OnFocusLost(const FFocusEvent& InFocusEvent) override;
 	//~ End SWidget
@@ -105,7 +161,36 @@ public:
 	 */
 	bool IsTrackingMouseCapture_Debug() const { return bHasMouseCapture; }
 
+	/**
+	 * Whether this widget currently has Slate's navigation config replaced with
+	 * FNullNavigationConfig (controller decision D12).
+	 *
+	 * Exposed for VaCuus.Input.SlateRouting: the swap has to happen on focus and be
+	 * undone on focus loss, and a leaked override would silently kill arrow-key
+	 * navigation for every other widget in the application.
+	 */
+	bool IsNavigationConfigOverridden_Debug() const { return InstalledNavigationConfig.IsValid(); }
+
+	/**
+	 * How many navigation key presses the analog throttle has synthesized.
+	 *
+	 * Exposed for VaCuus.Input.SlateRouting, which drives Tick's clock by hand: the
+	 * dead zone, the initial delay and the repeat interval are all timing behaviour that
+	 * a real pad cannot reproduce deterministically, and a count is what makes "exactly
+	 * one press on the first frame" an assertion rather than an observation.
+	 */
+	int32 GetNumAnalogNavKeys_Debug() const { return NumAnalogNavKeys; }
+
 private:
+	/** Which way the left stick is currently pushed, once the dead zone has been applied. */
+	enum class EAnalogNavDirection : uint8
+	{
+		None,
+		Up,
+		Down,
+		Left,
+		Right
+	};
 	/**
 	 * Single source of truth for the widget's window-space pixel rect: Tick asks
 	 * the view to lay out at this rect's SIZE and OnPaint composites into this
@@ -150,6 +235,37 @@ private:
 	/** Services the vacuus.M1HUD.AutoShot debug screenshot on the game thread. */
 	void TickAutoShot();
 
+	/** The left stick's latched deflection as a direction, or None inside the dead zone. */
+	EAnalogNavDirection ResolveAnalogNavDirection() const;
+
+	/**
+	 * Turns a held stick deflection into discrete navigation presses (D13).
+	 *
+	 * DRIVEN FROM TICK, NOT FROM THE ANALOG EVENT, and that is the whole design: UE
+	 * delivers an analog event when the value CHANGES, so a stick held at a constant
+	 * deflection stops producing events entirely -- repeat has to come from a clock. It
+	 * also means the test can drive that clock.
+	 */
+	void TickAnalogNavigation(double InCurrentTime);
+
+	/** Queues one synthesized nav press (down and up) and counts it. */
+	void SendAnalogNavKey(EAnalogNavDirection Direction);
+
+	/** The FKey a synthesized stick direction is queued as; the UI thread maps it to KI_*. */
+	static FKey AnalogNavDirectionToKey(EAnalogNavDirection Direction);
+
+	/**
+	 * Installs FNullNavigationConfig, saving the exact config that was there (D12).
+	 * Idempotent, and a no-op without Slate.
+	 */
+	void OverrideNavigationConfig();
+
+	/**
+	 * Puts the saved config back -- but only if ours is still the installed one, so a
+	 * config somebody else swapped in meanwhile is not stomped.
+	 */
+	void RestoreNavigationConfig();
+
 	/** Nulled by DetachView() so a late Tick is a no-op. */
 	TWeakObjectPtr<UVaCuusView> View;
 
@@ -179,6 +295,42 @@ private:
 	 * the halves are joined here rather than forwarded.
 	 */
 	uint32 PendingHighSurrogate = 0;
+
+	/**
+	 * Keys the UI never consumes and never forwards, even while a document holds focus
+	 * (controller decision D12). Populated in Construct(); see the class comment for
+	 * why a declared set is the honest contract here.
+	 */
+	TSet<FKey> PassThroughKeys;
+
+	/**
+	 * Slate's navigation config as it was before we replaced it, and the
+	 * FNullNavigationConfig we put in its place.
+	 *
+	 * BOTH, not just a bool: the previous config must be restored EXACTLY (an editor
+	 * session, CommonUI or a game may all have installed their own -- never assume the
+	 * engine default), and keeping our own instance is what lets RestoreNavigationConfig
+	 * check that it is still the installed one before stomping whatever is there now.
+	 * InstalledNavigationConfig being valid is also the "override is active" flag.
+	 */
+	TSharedPtr<FNavigationConfig> SavedNavigationConfig;
+	TSharedPtr<FNavigationConfig> InstalledNavigationConfig;
+
+	//~ Left-stick navigation state (D13). Latched from OnAnalogValueChanged, consumed by
+	//~ Tick -- see TickAnalogNavigation for why the clock and not the event drives it.
+
+	/** Newest raw axis values, in UE's convention: +Y is UP, +X is RIGHT. */
+	float AnalogAxisX = 0.0f;
+	float AnalogAxisY = 0.0f;
+
+	/** Direction currently held past the dead zone; a change is what emits immediately. */
+	EAnalogNavDirection HeldAnalogDirection = EAnalogNavDirection::None;
+
+	/** Slate time at which the held direction may fire again. */
+	double NextAnalogNavTime = 0.0;
+
+	/** Synthesized nav presses so far; diagnostics and VaCuus.Input.SlateRouting. */
+	int32 NumAnalogNavKeys = 0;
 
 	bool bAutoShotDone = false;
 };

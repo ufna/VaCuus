@@ -5,11 +5,53 @@
 #include "CoreMinimal.h"
 
 #include "GenericPlatform/ICursor.h"
+#include "Misc/EnumClassFlags.h"
 
 namespace Rml
 {
 class Context;
 }
+
+/**
+ * What one reported rect is, beyond "the UI wants pointer events here".
+ *
+ * A PARALLEL BYTE ARRAY, NOT A FIELD ON A STRUCT (controller decision D11). The
+ * rects are scanned linearly on the game thread for every pointer event, and an
+ * FIntRect is exactly 16 bytes -- four per cache line. Folding a uint8 into the
+ * element would pad the struct to 20 (or 32 once anything else joins it) and make
+ * the common query, "is this point covered at all", touch bytes it does not need.
+ * Two arrays that grow together keep the hot scan dense and let a rarer question
+ * ("...and is it focusable?") index the same position.
+ */
+enum class EVaCuusRectFlags : uint8
+{
+	None = 0,
+
+	/**
+	 * Set on EVERY reported rect -- it is the reason the rect exists at all (see the
+	 * interactive predicate on FVaCuusInteractiveSnapshot). Kept explicit rather than
+	 * implied so the flags byte is self-describing and never zero, which is a cheap
+	 * invariant to assert on.
+	 */
+	Interactive = 1 << 0,
+
+	/**
+	 * A click here would move RmlUi's focus onto this element, by RmlUi's own rule:
+	 * visible, computed `focus` != none on the element AND on every ancestor, and
+	 * computed `tab-index: auto` (ElementDocument.cpp's CanFocusElement, 30-43).
+	 *
+	 * WHY IT IS PER RECT AND NOT PER VIEW: this is the fix for a real UX bug found in
+	 * Task 6. bWantsKeyboardFocus below describes whether a focusable element ALREADY
+	 * holds focus, which is a fact about the previous published frame -- so the click
+	 * that first focuses a text field could not know it had, and typing needed a second
+	 * click. Focusability is a property of the GEOMETRY, which is a frame old but
+	 * correct, so asking "is the rect under this point focusable" answers on the FIRST
+	 * click.
+	 */
+	Focusable = 1 << 1
+};
+
+ENUM_CLASS_FLAGS(EVaCuusRectFlags)
 
 /**
  * Where a view is interactive, as a fully detached value type.
@@ -73,6 +115,12 @@ class Context;
  * without this a drag on a scrollbar read as pass-through and scrolled the game
  * instead of the list.
  *
+ * FOCUSABILITY, BY CONTRAST, IS EXACT. Each reported rect also carries whether a
+ * click on it would take RmlUi focus (EVaCuusRectFlags::Focusable), computed with
+ * RmlUi's own rule rather than a proxy -- because unlike "does this have a click
+ * listener", focusability IS queryable: visible, computed `focus` != none on the
+ * element and every ancestor, and computed `tab-index: auto`.
+ *
  * KNOWN GAP (not silent): only an element's MAIN box is measured, so fragmented
  * inline content under-reports. RmlUi's own hit test unions all of an element's
  * boxes (Element.cpp:546-565); a HUD's interactive elements are block-level, so
@@ -94,6 +142,15 @@ struct FVaCuusInteractiveSnapshot
 	TArray<FIntRect> InteractiveRects;
 
 	/**
+	 * One byte per entry in InteractiveRects, same index (controller decision D11).
+	 *
+	 * INVARIANT: RectFlags.Num() == InteractiveRects.Num(), and no entry is
+	 * EVaCuusRectFlags::None. Both arrays are only ever appended to together, by the
+	 * one DFS in BuildVaCuusInteractiveSnapshot.
+	 */
+	TArray<EVaCuusRectFlags> RectFlags;
+
+	/**
 	 * Cursor shape the UI wants, for SVaCuusWidget::OnCursorQuery. RmlUi pushes
 	 * cursor changes through SystemInterface::SetMouseCursor and only on change, so
 	 * the source is a latch (GetVaCuusLatchedMouseCursor) that the host samples right
@@ -104,20 +161,23 @@ struct FVaCuusInteractiveSnapshot
 	EMouseCursor::Type Cursor = EMouseCursor::Default;
 
 	/**
-	 * True when a REAL focusable element inside a document holds RmlUi focus --
-	 * neither the context root nor a document element itself (controller decision
-	 * D9). SVaCuusWidget takes Slate user focus on a click only when this is set.
+	 * True when a REAL focusable element inside a document HOLDS RmlUi focus right now
+	 * -- neither the context root nor a document element itself (controller decision
+	 * D9). This is what the KEY handlers answer Slate from: keys are consumed only
+	 * while the UI actually owns the keyboard.
 	 *
 	 * WHY EXCLUDE THE DOCUMENT ELEMENT: ElementDocument::Show() focuses the document
-	 * itself when nothing inside it carries `autofocus` (FocusFlag::Auto), so "a
-	 * document is up" would otherwise read as "the UI wants the keyboard" and every
-	 * click anywhere on an interactive rect would steal focus from the game.
+	 * itself (that is what makes Tab/arrow/Enter run at all, since
+	 * ProcessDefaultAction lives on the document), so "a document is up" would
+	 * otherwise read as "the UI wants the keyboard" and every loaded HUD would take the
+	 * keyboard away from the game.
 	 *
-	 * CONSEQUENCE, and it is real: this describes the focus state of the PREVIOUS
-	 * published frame, so the click that first focuses a text field cannot know it did
-	 * -- the widget only takes Slate focus on the click AFTER that. Fine for buttons
-	 * (RmlUi handles those entirely UI-side), a wart for typing, and the reason Task 9
-	 * will want per-rect focusability in the snapshot rather than one view-wide bool.
+	 * NOT DERIVABLE FROM RectFlags, and the distinction is the whole of D11: a
+	 * Focusable rect says "a click HERE WOULD take focus" (geometry, one frame old but
+	 * correct), while this says "something focusable HAS focus" (UI-thread state, one
+	 * frame old and therefore behind the click that changed it). Different questions
+	 * with different staleness -- which is why the click path uses IsFocusableAt() and
+	 * the key path uses this.
 	 */
 	bool bWantsKeyboardFocus = false;
 
@@ -141,7 +201,35 @@ struct FVaCuusInteractiveSnapshot
 	}
 
 	/**
-	 * Back to "nothing is interactive", keeping InteractiveRects' allocation. The
+	 * Would a click at this point take keyboard focus? One pass, same scan as
+	 * Contains().
+	 *
+	 * PERMISSIVE ON OVERLAP, on purpose: rects are a union with no painter order (see
+	 * the class comment), so when a focusable button's rect and its non-focusable
+	 * parent panel's rect both cover the point, the answer is yes. That matches what
+	 * RmlUi will actually do -- its hit test walks front to back and lands on the
+	 * button -- and it errs the same way the rest of this type errs, towards "the UI
+	 * takes it".
+	 */
+	bool IsFocusableAt(FIntPoint Point) const
+	{
+		// Index-based rather than ranged: the flags live in a parallel array, and the
+		// index is the only thing that ties the two together.
+		const int32 NumRects = FMath::Min(InteractiveRects.Num(), RectFlags.Num());
+		for (int32 Index = 0; Index < NumRects; ++Index)
+		{
+			if (InteractiveRects[Index].Contains(Point) &&
+				EnumHasAnyFlags(RectFlags[Index], EVaCuusRectFlags::Focusable))
+			{
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	/**
+	 * Back to "nothing is interactive", keeping both arrays' allocations. The
 	 * publisher rotates through three of these forever, so reusing the arrays is
 	 * what makes a steady-state UI frame allocation-free.
 	 */
@@ -150,6 +238,7 @@ struct FVaCuusInteractiveSnapshot
 		Generation = 0;
 		ViewSize = FIntPoint::ZeroValue;
 		InteractiveRects.Reset();
+		RectFlags.Reset();
 		Cursor = EMouseCursor::Default;
 		bWantsKeyboardFocus = false;
 	}

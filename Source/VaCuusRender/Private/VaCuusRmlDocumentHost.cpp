@@ -185,7 +185,24 @@ void FVaCuusRmlDocumentHost::AdoptDocument(Rml::ElementDocument* NewDocument, co
 
 	CloseDocument();
 	Document = NewDocument;
-	Document->Show();
+
+	// FocusFlag::Document, spelled out rather than left to the default, because
+	// keyboard and pad navigation are DEAD without it. Tab, the arrow keys and
+	// Return/Space all live in ElementDocument::ProcessDefaultAction, which only runs
+	// when the keydown was dispatched to something inside a document -- and
+	// Context::ProcessKeyDown falls back to the context ROOT when nothing holds focus
+	// (Context.cpp:533-537). The root is not an ElementDocument and has no default
+	// action, so every arrow key would be silently swallowed.
+	//
+	// NOT FocusFlag::Auto (the library default), and that is a policy choice: Auto
+	// additionally focuses the first element carrying `autofocus`
+	// (ElementDocument.cpp:371-388), which would make a freshly loaded HUD take the
+	// keyboard away from the game the moment it appears -- exactly what controller
+	// decision D9 exists to prevent. Focus lands on the document itself, which
+	// bWantsKeyboardFocus deliberately does not count, so navigation works while the
+	// game keeps its keys until the player actually moves the focus. Honouring
+	// `autofocus` for a modal dialog is a per-view opt-in for a later milestone.
+	Document->Show(Rml::ModalFlag::None, Rml::FocusFlag::Document);
 
 	UE_LOG(LogVaCuus, Log, TEXT("View %u loaded the %s document (%dx%d)"),
 		ViewId, *Description, ViewSize.X, ViewSize.Y);
@@ -238,7 +255,12 @@ void FVaCuusRmlDocumentHost::SetVisible(bool bVisible)
 	// frame would leave the last published content in this view's render target.
 	if (bVisible)
 	{
-		Document->Show();
+		// FocusFlag::Keep, not Document: Hide() ran UnfocusDocument() but left this
+		// document's own focus chain intact (ElementDocument.cpp:406-417), so Keep
+		// re-focuses the leaf the player was on (ElementDocument.cpp:389-392) and a
+		// hide/show round trip does not throw away where they were. It degrades to
+		// focusing the document when there was no leaf, which is the Document case.
+		Document->Show(Rml::ModalFlag::None, Rml::FocusFlag::Keep);
 	}
 	else
 	{

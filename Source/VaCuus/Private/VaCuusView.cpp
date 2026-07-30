@@ -146,6 +146,7 @@ void UVaCuusView::SendInput(const FVaCuusInputEvent& Event)
 		return;
 	}
 
+	++NumInputEventsQueued;
 	UIThread->EnqueueInput(ViewId, Event);
 }
 

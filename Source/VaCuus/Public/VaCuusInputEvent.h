@@ -34,7 +34,24 @@ enum class EVaCuusInputEventKind : uint8
 	KeyUp,
 
 	/** CodePoint. The typing path, and the only one that produces characters. */
-	TextInput
+	TextInput,
+
+	/**
+	 * No payload. "Back out of the UI": blurs whatever holds RmlUi focus.
+	 *
+	 * NOT A KEY, because RmlUi has nothing to route it to -- there is no KI_ identifier
+	 * for cancel and no default action that consumes one (ElementDocument handles Tab,
+	 * the arrows and Return/Space, and nothing else). Controller decision D13 makes it
+	 * an event of its own so the pad's B button has somewhere to go without inventing a
+	 * key identifier a document could not interpret.
+	 *
+	 * SCOPE FOR M2 -- blur only, and the log line says so. Blurring has one real
+	 * consequence the caller should know about: with nothing focusable focused, the
+	 * view stops claiming the keyboard (FVaCuusInteractiveSnapshot::bWantsKeyboardFocus
+	 * goes false) and keys reach the game again. "Close the menu", "pop the screen" and
+	 * every other Back semantic is game-side policy and belongs to whatever binds it.
+	 */
+	NavigateBack
 };
 
 /**
@@ -151,6 +168,13 @@ struct FVaCuusInputEvent
 		Event.Kind = bDown ? EVaCuusInputEventKind::KeyDown : EVaCuusInputEventKind::KeyUp;
 		Event.Key = InKey;
 		Event.Modifiers = InModifiers;
+		return Event;
+	}
+
+	static FVaCuusInputEvent NavigateBack()
+	{
+		FVaCuusInputEvent Event;
+		Event.Kind = EVaCuusInputEventKind::NavigateBack;
 		return Event;
 	}
 
