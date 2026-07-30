@@ -26,3 +26,13 @@ Thumbs.db
 *.db
 .beads-credential-key
 .beads/proxieddb/
+
+# Automation probe files written INSIDE the tracked Content/DevUI tree. They have to be
+# there: VaCuus.LiveReload.WatcherEvent needs a real inotify event under a watched root,
+# and VaCuus.Core.ContentRoots needs the same relative name under both DevUI roots to
+# prove precedence. Both delete their probe, and both pre-delete in case a previous run
+# died -- but a run aborted between the write and the delete leaves an UNTRACKED file
+# here, and this worktree is shared, so `git add -A` would commit it. Matched by name so
+# the pattern holds wherever the probe lands.
+vacuus_livereload_probe.rcss
+vacuus_root_order_probe.rml.tmptest

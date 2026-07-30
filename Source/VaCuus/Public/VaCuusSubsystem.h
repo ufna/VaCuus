@@ -88,8 +88,24 @@ public:
 	 * THE FAN-OUT LIVES HERE, not in the editor watcher (controller decision D21): the
 	 * watcher has a changed FILE and no way to find views, and it must not become the thing
 	 * that keeps a registry of them. Views is that registry and it is private, so this is
-	 * the one door -- which also keeps "which views does a reload reach" answerable in one
-	 * place rather than at every call site.
+	 * the one door FOR THE FAN-OUT -- which also keeps "which views does a reload reach"
+	 * answerable in one place rather than at every call site.
+	 *
+	 * BUT IT IS NOT THE WHOLE RELOAD, AND CALLING ONLY THIS IS THE BUG WE ALREADY SHIPPED
+	 * ONCE. An RML re-read alone shows STALE CSS: Rml::Factory keys parsed stylesheets and
+	 * templates on file name, in process-global statics that outlive a PIE session, so the
+	 * re-read takes the cached stylesheet back. Dropping those caches is a process-wide act
+	 * that must happen even when this fan-out reaches zero views (an .rcss edited between
+	 * PIE sessions), so it cannot live here -- it is
+	 * FVaCuusUIThread::EnqueueClearAssetCaches(), enqueued ONCE before the fan-out.
+	 *
+	 * Today the only caller that does both is FVaCuusLiveReload::ReloadAllLiveViews(), which
+	 * is EDITOR-ONLY. A runtime reload hook -- a gameplay debug command, a data-binding hot
+	 * reload -- that calls this because it reads as the sanctioned entry point reintroduces
+	 * that bug verbatim: RML edits apply, RCSS edits silently do not. Whatever calls this
+	 * must enqueue the clear first, or move the pairing into the runtime module so there IS
+	 * one door for both halves (see UVaCuusView::ReloadDocument() for the same warning at
+	 * the view level).
 	 */
 	int32 ReloadAllDocuments();
 

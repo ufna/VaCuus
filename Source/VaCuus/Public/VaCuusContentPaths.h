@@ -41,8 +41,9 @@
  * (PluginManager.cpp:406-409) in the Runtime `Projects` module, so a packaged game
  * resolves the same root. Loose DevUI files still have to be STAGED for that to find
  * anything, and that is NOT YET CONFIGURED: Config/FilterPlugin.ini is still the stock
- * template (comments only, no [FilterPlugin] entries), so a packaged build ships none of
- * these documents today. Tracked separately -- it is a packaging task, not a path one.
+ * template -- a [FilterPlugin] section header (:1) and comments, and no entries under it --
+ * so a packaged build ships none of these documents today. Tracked separately: it is a
+ * packaging task, not a path one.
  */
 namespace VaCuusContentPaths
 {

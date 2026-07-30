@@ -12,17 +12,20 @@
  *
  * WHY IT LIVES IN THE EDITOR MODULE AND NOWHERE ELSE (controller decision D20):
  * IDirectoryWatcher is 100% pull-based -- its Tick() is what reads the inotify fd and
- * fires the delegates -- and the only thing that ticks it in a NORMAL RUNNING SESSION is
- * UEditorEngine::Tick (EditorEngine.cpp:1948; the other ~16 callers are one-shot flushes
- * from asset-registry, build and commandlet code). Nothing ticks it in a packaged game or
- * in a `-game` standalone process. Registering a watch from a Runtime module would
- * therefore appear to work (a valid handle comes back) and never deliver a single event.
- * The watcher is editor-only by construction, not by policy, so it lives in the module
- * that only exists in the editor.
+ * fires the delegates -- and the only thing that ticks it in a NORMAL RUNNING EDITOR
+ * SESSION is UEditorEngine::Tick (EditorEngine.cpp:1948). There are 14 call sites outside
+ * the DirectoryWatcher module itself; the other 13 are all editor, commandlet or Program
+ * code, and NOT all one-shot flushes -- SlateFileDlgWindow.cpp:1297 is a per-frame Slate
+ * widget Tick (only while that file dialog is open) and UserInterfaceCommand.cpp:117 is
+ * UnrealFrontend's own main loop. What matters is that none of them exists in a packaged
+ * game or a `-game` standalone process, so nothing there ticks the watcher at all.
+ * Registering a watch from a Runtime module would therefore appear to work (a valid handle
+ * comes back) and never deliver a single event. The watcher is editor-only by
+ * construction, not by policy, so it lives in the module that only exists in the editor.
  *
  * NOT the same claim as "no test can drive it": Tick(-1.0f) drains inotify and fires the
  * delegates INLINE on the calling thread, and engine code does exactly that when it needs
- * changes now (AssetRegistry.cpp:2039, WorldPartitionEditorModule.cpp:719,
+ * changes now (AssetRegistry.cpp:2039, WorldPartitionEditorModule.cpp:717-719,
  * EditorBuildUtils.cpp:1113). VaCuus.LiveReload.WatcherEvent uses it.
  *
  * THREADING: everything here is game thread. The Linux backend checkf(IsInGameThread())
@@ -42,7 +45,18 @@
 class FVaCuusLiveReload
 {
 public:
+	FVaCuusLiveReload() = default;
 	~FVaCuusLiveReload();
+
+	//~ NEITHER COPYABLE NOR MOVABLE, and not for tidiness: Start() hands raw `this` to
+	//~ IDirectoryWatcher::FDirectoryChanged::CreateRaw and ArmDebounce() captures it in an
+	//~ FTSTicker lambda, so a copy would give two objects the same two registrations and the
+	//~ second Shutdown() (or destructor, which calls it) would unregister a watch and remove
+	//~ a ticker the first one already dropped. Nothing copies one today -- the editor module
+	//~ holds a TSharedPtr, the tests hold locals and one member -- which is exactly when to
+	//~ make it impossible rather than after somebody does.
+	FVaCuusLiveReload(const FVaCuusLiveReload&) = delete;
+	FVaCuusLiveReload& operator=(const FVaCuusLiveReload&) = delete;
 
 	/**
 	 * Registers a watch on every DevUI root that EXISTS. Game thread.
@@ -118,21 +132,22 @@ public:
 	bool IsDebouncePending() const { return DebounceTickerHandle.IsValid(); }
 
 	/**
-	 * Flushes the pending batch now, whatever the debounce thinks. Returns views reloaded.
-	 * Game thread.
+	 * Flushes the pending batch as of the given time, whatever the debounce thinks, and
+	 * returns how many views reloaded. Game thread. THE ONLY FLUSH: TickDebounceAt() calls
+	 * this directly, and so does the one test that flushes out of band.
 	 *
-	 * DISARMS THE DEBOUNCE TOO, so "now" means now: an armed ticker left behind would keep
-	 * polling and then flush an empty batch. Safe even when the caller IS that ticker's
-	 * delegate -- see the note at the top of the definition.
-	 */
-	int32 FlushNow();
-
-	/**
-	 * FlushNow with the clock injected -- the third of the trio with NoteChangeAt() and
-	 * TickDebounceAt(), and needed for the same reason plus one: the flush REPORTS how long
-	 * the debounce held the batch, and a flush driven by injected timestamps but timed
-	 * against the wall clock logs a nonsense figure into the one diagnostic line live reload
-	 * has.
+	 * The clock is a parameter for the same reason NoteChangeAt()'s is, plus one of its own:
+	 * the flush REPORTS how long the debounce held the batch, and a flush driven by injected
+	 * timestamps but timed against the wall clock logs a nonsense figure into the one
+	 * diagnostic line live reload has.
+	 *
+	 * DISARMS THE DEBOUNCE FIRST, so "flush" means now: an armed ticker left behind would
+	 * keep polling and then flush an empty batch. Safe when the caller IS that ticker's
+	 * delegate, which TickDebounceAt() is -- see the note at the top of the definition.
+	 *
+	 * There was a FlushNow() wrapper here that read FPlatformTime::Seconds() for you. It had
+	 * no production caller (the ticker calls this) and one test caller, so it was a second
+	 * documented entry point to the same code; deleted rather than kept for symmetry.
 	 */
 	int32 FlushAt(double Now);
 
@@ -150,19 +165,22 @@ public:
 	 * whether or not any view is found -- see FVaCuusUIThread::EnqueueClearAssetCaches() for
 	 * why that cannot ride on a per-view load command.
 	 *
+	 * WHICH MAKES THIS THE ONLY THING IN THE TREE THAT DOES A WHOLE RELOAD, and it is
+	 * EDITOR-ONLY. A runtime caller cannot reach it, and UVaCuusSubsystem::ReloadAllDocuments()
+	 * on its own is the RML half without the cache drop; the warning on that declaration is
+	 * the other end of this note.
+	 *
 	 * Returns how many views were reloaded. Static: it holds no state and vacuus.ReloadUI
 	 * calls it directly.
 	 */
 	static int32 ReloadAllLiveViews(const TCHAR* Reason);
 
-	//~ Debounce parameters. Public so VaCuus.LiveReload.Debounce can assert the timing
-	//~ contract against the same numbers instead of hard-coding a copy of them.
+	//~ The two debounce THRESHOLDS. Public because VaCuus.LiveReload.Debounce asserts the
+	//~ timing contract against these very numbers rather than a hard-coded copy of them --
+	//~ the poll INTERVAL is not one of them and is private below.
 
 	/** Quiet time before a flush. One editor save is a BURST of IN_MODIFY events. */
 	static constexpr double QuietSeconds = 0.15;
-
-	/** How often the armed ticker asks "is it quiet yet". */
-	static constexpr float DebouncePollSeconds = 0.05f;
 
 	/**
 	 * Hard cap from the FIRST change of a batch, so a file being rewritten continuously
@@ -181,6 +199,15 @@ public:
 	bool TickDebounceAt(double Now);
 
 private:
+	/**
+	 * How often the armed ticker asks "is it quiet yet". Private, unlike the two thresholds
+	 * above: it is a sampling rate, not part of the contract. No test asserts it and none
+	 * should -- TickDebounceAt() is judged at times the test chooses, so the interval at
+	 * which the real ticker happens to call it cannot change any answer, only the latency of
+	 * getting it. Its one use is the AddTicker() call in ArmDebounce().
+	 */
+	static constexpr float DebouncePollSeconds = 0.05f;
+
 	/** The FDirectoryChanged delegate body. Game thread (Linux asserts it). */
 	void OnDirectoryChanged(const TArray<FFileChangeData>& Changes);
 

@@ -277,11 +277,6 @@ bool FVaCuusLiveReload::TickDebounceAt(double Now)
 	return false;
 }
 
-int32 FVaCuusLiveReload::FlushNow()
-{
-	return FlushAt(FPlatformTime::Seconds());
-}
-
 int32 FVaCuusLiveReload::FlushAt(double Now)
 {
 	check(IsInGameThread());

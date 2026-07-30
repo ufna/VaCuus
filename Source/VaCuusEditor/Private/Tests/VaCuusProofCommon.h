@@ -45,7 +45,7 @@ inline const TCHAR* GDoneMarker = TEXT("VACUUS_PROOF_DONE");
  *
  * NOT EAutomationTestFlags::Disabled, which is the obvious-looking alternative and is wrong:
  * FAutomationTestFramework::GetValidTestNames() skips a Disabled test outright
- * (AutomationTest.cpp:869-870, flag at AutomationTest.h:111), and that is the same
+ * (AutomationTest.cpp:870-871, flag at AutomationTest.h:111), and that is the same
  * enumeration the automation worker answers a controller's test-list request with
  * (AutomationWorkerModule.cpp:388) -- so the explicit `Automation RunTests Proof.<name>`
  * invocation each harness documents would stop resolving at all. A run-time gate keeps the

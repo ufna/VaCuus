@@ -213,10 +213,12 @@ bool FVaCuusLiveReloadFilterTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("A filtered event does not add a pending path"), Reload.GetNumPendingChanges(), 2);
 
 		// No PIE world here, so this reloads nothing -- what is being asserted is that the
-		// flush CONSUMES the batch (a batch left behind would reload forever).
-		Reload.FlushNow();
+		// flush CONSUMES the batch (a batch left behind would reload forever). The real
+		// clock rather than an injected one because nothing here depends on the value: the
+		// TIMING contract is VaCuus.LiveReload.Debounce's, driven through TickDebounceAt().
+		Reload.FlushAt(FPlatformTime::Seconds());
 		TestEqual(TEXT("Flush consumes the batch"), Reload.GetNumPendingChanges(), 0);
-		TestEqual(TEXT("Flushing an empty batch is a no-op"), Reload.FlushNow(), 0);
+		TestEqual(TEXT("Flushing an empty batch is a no-op"), Reload.FlushAt(FPlatformTime::Seconds()), 0);
 
 		Reload.Shutdown();
 		TestFalse(TEXT("Shutdown drops the debounce ticker"), Reload.IsDebouncePending());
@@ -523,8 +525,8 @@ bool FVaCuusLiveReloadDispatchTest::RunTest(const FString& Parameters)
  *     times, and clears 2 and 3 discarded the stylesheet view 1 had just re-parsed.
  *
  * Observed through FVaCuusUIThread::GetNumAssetCacheClears() because RmlUi offers nothing to
- * ask about its caches. Trigger()+WaitForFrameCount() rather than a sleep: nothing else wakes
- * the UI thread here (no world is ticking the subsystem).
+ * ask about its caches. Polled rather than slept on: nothing else wakes the UI thread here
+ * (no world is ticking the subsystem), so each poll re-arms Trigger().
  */
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusLiveReloadAssetCachesTest, "VaCuus.LiveReload.AssetCaches",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -552,15 +554,47 @@ bool FVaCuusLiveReloadAssetCachesTest::RunTest(const FString& Parameters)
 		Module.StopUIThread();
 	};
 
-	// Drives one UI frame and returns how many clears it applied since Before.
-	const auto ClearsAfterOneFrame = [this, UIThread](uint64 Before) -> uint64
+	// How many clears the UI thread applied since Before, once at least one has landed AND
+	// the frame that applied it has finished.
+	//
+	// WAITING ON THE COUNTER, NOT ON A FRAME, and the difference is a real (if narrow) race
+	// rather than a style preference. Trigger() is a coalescing auto-reset latch
+	// (FVaCuusUIThread::Trigger, VaCuusUIThread.cpp:469-475), so a latch left set by
+	// something else can grant a frame that drains nothing of ours; and FrameCount is
+	// incremented AFTER RunFrame() returns (:698-699). So a frame that had already passed
+	// DrainCommands() but not yet the increment when FrameBefore was sampled satisfies
+	// FrameBefore + 1 while our clear is still queued -- red on a correct product. The
+	// counter is the thing under test and is directly observable, so wait on it.
+	//
+	// THE SECOND HALF IS WHY THIS DOES NOT JUST RETURN 1: property 2 below is "one fan-out
+	// is ONE clear", so the count has to be read when it cannot still grow. The queue is a
+	// single-producer FIFO and one DrainCommands() pops everything present, so every clear
+	// the fan-out enqueued is applied within one frame -- but a second one's counter bump
+	// happens a few instructions after the first's. FrameCount sampled the moment the first
+	// clear is visible is <= the index of the frame doing the draining, so waiting for it to
+	// advance by one is a hard barrier past that whole drain.
+	const auto ClearsApplied = [this, UIThread](uint64 Before) -> uint64
 	{
-		const uint64 FrameBefore = UIThread->GetFrameCount();
+		const double Deadline = FPlatformTime::Seconds() + 10.0;
+		while (UIThread->GetNumAssetCacheClears() <= Before)
+		{
+			if (FPlatformTime::Seconds() > Deadline)
+			{
+				TestTrue(TEXT("An asset-cache clear was applied within 10 s"), false);
+				return 0;
+			}
+			UIThread->Trigger();
+			FPlatformProcess::Sleep(0.001f);
+		}
+
+		const uint64 FrameAtObservation = UIThread->GetFrameCount();
 		UIThread->Trigger();
-		if (!TestTrue(TEXT("A UI frame ran"), UIThread->WaitForFrameCount(FrameBefore + 1, 10.0)))
+		if (!TestTrue(TEXT("The frame that applied the clear finished"),
+				UIThread->WaitForFrameCount(FrameAtObservation + 1, 10.0)))
 		{
 			return 0;
 		}
+
 		return UIThread->GetNumAssetCacheClears() - Before;
 	};
 
@@ -571,7 +605,7 @@ bool FVaCuusLiveReloadAssetCachesTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("(1) With no game instance, no view is reloaded"),
 			FVaCuusLiveReload::ReloadAllLiveViews(TEXT("automation")), 0);
 		TestEqual(TEXT("(1) ...and the RmlUi asset caches are dropped anyway"),
-			ClearsAfterOneFrame(ClearsBefore), static_cast<uint64>(1));
+			ClearsApplied(ClearsBefore), static_cast<uint64>(1));
 	}
 
 	//~ (2) TWO VIEWS, ONE CLEAR.
@@ -597,7 +631,7 @@ bool FVaCuusLiveReloadAssetCachesTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("(2) Both views reloaded"),
 			FVaCuusLiveReload::ReloadAllLiveViews(TEXT("automation")), 2);
 		TestEqual(TEXT("(2) ...at the cost of exactly one cache clear, not one per view"),
-			ClearsAfterOneFrame(ClearsBefore), static_cast<uint64>(1));
+			ClearsApplied(ClearsBefore), static_cast<uint64>(1));
 	}
 
 	return true;
@@ -741,7 +775,8 @@ struct FWatcherEventState
  * calling thread -- the Linux backend ignores DeltaSeconds entirely
  * (DirectoryWatcherLinux.cpp:111-123 -> FDirectoryWatchRequestLinux::ProcessNotifications).
  * Engine code does exactly this when it needs changes now: AssetRegistry.cpp:2039,
- * WorldPartitionEditorModule.cpp:719 ('Force a directory watcher tick'),
+ * WorldPartitionEditorModule.cpp:717-719 (the call is at :719, the comment 'Force a
+ * directory watcher tick for the asset registry to get notified of the changes' at :717),
  * EditorBuildUtils.cpp:1113.
  *
  * Latent rather than a loop inside RunTest because inotify DELIVERY is asynchronous: the
@@ -807,17 +842,20 @@ bool FVaCuusVerifyWatcherEventCommand::Update()
  *
  * This was previously asserted to be untestable ("no automation test can make a real
  * DirectoryWatcher event arrive"), on the grounds that only UEditorEngine::Tick pumps the
- * watcher. Both halves are false: there are ~17 callers of IDirectoryWatcher::Tick, and
- * Tick(-1.0f) fires the delegates inline on the calling thread -- the project's own research
- * note documents it as 'Force a synchronous watcher flush'. What IS true is that this needs a
- * LATENT command: inotify delivery is asynchronous and the debounce is time-based, so the
- * test writes, polls, and then waits out the quiet window.
+ * watcher. Both halves are false: IDirectoryWatcher::Tick has 14 call sites outside the
+ * DirectoryWatcher module (EditorEngine.cpp:1948 is only the per-frame editor one), and
+ * Tick(-1.0f) fires the delegates inline on the calling thread. What IS true is that this
+ * needs a LATENT command: inotify delivery is asynchronous and the debounce is time-based,
+ * so the test writes, polls, and then waits out the quiet window.
  *
  * It writes a REAL .rcss, because the filter must accept it -- the '.tmptest' extension
- * VaCuus.Core.FileInterface uses to stay invisible to the watcher would prove the opposite of
- * what this asserts. Consequence in an interactive editor: this test causes one genuine
- * reload of whatever is on screen. That is a file changing under a watched root, which is
- * what live reload is for.
+ * VaCuus.Core.ContentRoots uses to stay invisible to the watcher would prove the opposite of
+ * what this asserts. Two consequences, both stated rather than hidden:
+ *  - in an interactive editor this test causes one genuine reload of whatever is on screen.
+ *    That is a file changing under a watched root, which is what live reload is for;
+ *  - the probe lands in a GIT-TRACKED directory, so its name is in the plugin's .gitignore.
+ *    The last latent command deletes it and RunTest() pre-deletes, but a run aborted in
+ *    between would otherwise leave an untracked file for someone's `git add -A`.
  */
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusLiveReloadWatcherEventTest, "VaCuus.LiveReload.WatcherEvent",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
