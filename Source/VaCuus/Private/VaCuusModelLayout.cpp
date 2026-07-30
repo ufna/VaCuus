@@ -149,15 +149,40 @@ static bool ClassifyProperty(const FProperty* Property, EVaCuusFieldKind& OutKin
 		return true;
 	}
 
-	// Value types with no GC ownership: an FSoftObjectPtr is a path plus a cached weak
-	// pointer and an FWeakObjectPtr is an index/serial pair, so neither keeps anything
-	// alive and neither needs the collector to know the shadow buffer exists. Sampled as
-	// a path string, never resolved -- LoadObjectPropertyValue synchronously LOADS
+	// A value type with no GC ownership AND no resolution: an FSoftObjectPtr already IS a
+	// path, so ToString() is GetUniqueID().ToString() (SoftObjectPtr.h:96-105) -- two FNames
+	// and a subpath string, no GUObjectArray read and nothing the collector can move. That is
+	// what makes it readable from the shadow buffer on the UI thread, and it is why
+	// LoadObjectPropertyValue is never called: that one synchronously LOADS
 	// (UnrealType.h:3435), which on a per-frame path is a hitch.
-	if (CastField<FSoftObjectProperty>(Property) != nullptr || CastField<FWeakObjectProperty>(Property) != nullptr)
+	//
+	// FSoftClassProperty derives from FSoftObjectProperty (UnrealType.h:3550), so it is in.
+	if (CastField<FSoftObjectProperty>(Property) != nullptr)
 	{
 		OutKind = EVaCuusFieldKind::ObjectPath;
 		return true;
+	}
+
+	// FWeakObjectProperty IS REFUSED, WHICH CORRECTS SPEC 3.4 AND THIS FILE'S FIRST VERSION.
+	//
+	// Both said "projected to a path string at sample time". There is nowhere to project it
+	// TO: the shadow is a real UScriptStruct instance (spec 3.1), so this field is an
+	// FWeakObjectPtr in the shadow just as it is in the live struct -- an index/serial pair
+	// with no path inside it. Producing a path therefore means resolving the object, and
+	// WeakObjectPtr.h:295-296 says outright that a weak pointer cannot be tested from another
+	// thread, "as it will incorrectly return false during the mark phase of the GC". Worse
+	// than a wrong answer: GetPathName() then walks the object's Outer chain while the purge
+	// phase may be destroying it, which is the same use-after-free the shadow buffer exists
+	// to prevent.
+	//
+	// Refused here rather than handled in the adapter because a field that binds and then
+	// reads as empty forever is exactly this milestone's signature failure.
+	if (CastField<FWeakObjectProperty>(Property) != nullptr)
+	{
+		OutReason = TEXT("a weak object reference cannot be turned into a path without resolving it, and a weak pointer cannot be "
+						 "resolved off the game thread (WeakObjectPtr.h:295-296) -- use a TSoftObjectPtr, which already carries "
+						 "its path");
+		return false;
 	}
 
 	// ---- Refusals, each with the reason rather than a generic "unsupported". ----

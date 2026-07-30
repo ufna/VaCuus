@@ -211,7 +211,7 @@ bool FVaCuusModelLayoutRefusalsTest::RunTest(const FString& Parameters)
 	// (AutomationTest.cpp:1376 ANDs in HasMetExpectedMessages), so each line below is the
 	// assertion that this refusal was diagnosed -- exactly once, at Warning, naming the
 	// property. Without them "skipped it" and "skipped it silently" are the same result.
-	for (const TCHAR* Refused : {TEXT("Numbers"), TEXT("Lookup"), TEXT("Names"), TEXT("Owner"), TEXT("Fixed")})
+	for (const TCHAR* Refused : {TEXT("Numbers"), TEXT("Lookup"), TEXT("Names"), TEXT("Owner"), TEXT("Watcher"), TEXT("Fixed")})
 	{
 		AddExpectedMessagePlain(FString::Printf(TEXT("property '%s'"), Refused), ELogVerbosity::Warning,
 			EAutomationExpectedMessageFlags::Contains, 1);
@@ -232,6 +232,13 @@ bool FVaCuusModelLayoutRefusalsTest::RunTest(const FString& Parameters)
 	TestNull(TEXT("TMap is not bound"), Layout.FindField(TEXT("Lookup")));
 	TestNull(TEXT("TSet is not bound"), Layout.FindField(TEXT("Names")));
 	TestNull(TEXT("a hard object reference is not bound"), Layout.FindField(TEXT("Owner")));
+
+	// AND NEITHER IS A WEAK ONE, which corrects spec 3.4's "projected to a path string at
+	// sample time". There is nowhere to project it to: the shadow is a real instance of the
+	// model type (spec 3.1), so the field is still an FWeakObjectPtr in it -- an index/serial
+	// pair carrying no path. Producing one means resolving the object on the UI thread, which
+	// WeakObjectPtr.h:295-296 rules out. A soft reference has no such problem, and stays.
+	TestNull(TEXT("a weak object reference is not bound"), Layout.FindField(TEXT("Watcher")));
 	TestNull(TEXT("a fixed-size C array is not bound"), Layout.FindField(TEXT("Fixed")));
 	TestNull(TEXT("an unexposed property is not bound"), Layout.FindField(TEXT("Hidden")));
 

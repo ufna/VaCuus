@@ -74,10 +74,16 @@ enum class EVaCuusFieldKind : uint8
 	Enum,
 
 	/**
-	 * FSoftObjectProperty (which FSoftClassProperty derives from) and
-	 * FWeakObjectProperty, projected to a path string at sample time. These are value
-	 * types with no GC ownership, which is the whole reason they are in and a hard
-	 * FObjectProperty is out -- see FVaCuusModelLayout's note on the shadow buffer.
+	 * FSoftObjectProperty, which FSoftClassProperty derives from. Read as its path
+	 * string, never resolved.
+	 *
+	 * SOFT ONLY -- FWeakObjectProperty is refused, correcting spec 3.4. An FSoftObjectPtr
+	 * already IS a path (ToString() is GetUniqueID().ToString(), SoftObjectPtr.h:96-105),
+	 * so no GC-visible state is touched and no ownership is implied, which is the whole
+	 * reason it is in where a hard FObjectProperty is out. An FWeakObjectPtr is an
+	 * index/serial pair with no path in it, and turning one into a path means resolving
+	 * the object -- which WeakObjectPtr.h:295-296 says cannot be done from another
+	 * thread. See the classifier for the full argument.
 	 */
 	ObjectPath,
 };

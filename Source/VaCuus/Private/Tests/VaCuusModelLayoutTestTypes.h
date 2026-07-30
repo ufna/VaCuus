@@ -142,6 +142,15 @@ struct FVaCuusLayoutTestRefusedModel
 	UPROPERTY(EditAnywhere, Category = "Test")
 	TObjectPtr<UObject> Owner;
 
+	/**
+	 * Weak reference: an index/serial pair with no path in it, so the UI thread would have
+	 * to RESOLVE it to render anything -- and WeakObjectPtr.h:295-296 says a weak pointer
+	 * cannot be tested from another thread. A soft reference is the supported form because
+	 * it already carries its path.
+	 */
+	UPROPERTY(EditAnywhere, Category = "Test")
+	TWeakObjectPtr<UObject> Watcher;
+
 	/** Fixed-size C array: one FProperty with ArrayDim 4, and only element 0 is addressable. */
 	UPROPERTY(EditAnywhere, Category = "Test")
 	int32 Fixed[4];
