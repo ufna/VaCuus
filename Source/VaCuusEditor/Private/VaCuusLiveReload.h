@@ -12,19 +12,25 @@
  *
  * WHY IT LIVES IN THE EDITOR MODULE AND NOWHERE ELSE (controller decision D20):
  * IDirectoryWatcher is 100% pull-based -- its Tick() is what reads the inotify fd and
- * fires the delegates -- and the ONLY engine caller of that Tick is UEditorEngine::Tick
- * (EditorEngine.cpp:1948). Nothing ticks it in a packaged game or in a `-game`
- * standalone process. Registering a watch from a Runtime module would therefore appear
- * to work (a valid handle comes back) and never deliver a single event. The watcher is
- * editor-only by construction, not by policy, so it lives in the module that only
- * exists in the editor.
+ * fires the delegates -- and the only thing that ticks it in a NORMAL RUNNING SESSION is
+ * UEditorEngine::Tick (EditorEngine.cpp:1948; the other ~16 callers are one-shot flushes
+ * from asset-registry, build and commandlet code). Nothing ticks it in a packaged game or
+ * in a `-game` standalone process. Registering a watch from a Runtime module would
+ * therefore appear to work (a valid handle comes back) and never deliver a single event.
+ * The watcher is editor-only by construction, not by policy, so it lives in the module
+ * that only exists in the editor.
+ *
+ * NOT the same claim as "no test can drive it": Tick(-1.0f) drains inotify and fires the
+ * delegates INLINE on the calling thread, and engine code does exactly that when it needs
+ * changes now (AssetRegistry.cpp:2039, WorldPartitionEditorModule.cpp:719,
+ * EditorBuildUtils.cpp:1113). VaCuus.LiveReload.WatcherEvent uses it.
  *
  * THREADING: everything here is game thread. The Linux backend checkf(IsInGameThread())
- * in Init, WatchDirectoryTree, UnwatchDirectoryTree and ProcessNotifications
- * (DirectoryWatchRequestLinux.cpp:79, 144, 210, 300), so registration, unregistration
- * AND the callback are all game-thread by assertion -- which also means the handler
- * needs no marshaling hop, and adding one "for safety" would only delay the reload by a
- * frame.
+ * in Init (DirectoryWatchRequestLinux.cpp:79), ProcessNotifications (:144),
+ * WatchDirectoryTree (:210) and UnwatchDirectoryTree (:300), so registration,
+ * unregistration AND the callback are all game-thread by assertion -- which also means
+ * the handler needs no marshaling hop, and adding one "for safety" would only delay the
+ * reload by a frame.
  *
  * WHAT IS DELIBERATELY NOT DONE: textures are not released. Rml::ReleaseTextures() would
  * drop the font atlases along with the images, forcing a re-upload through a render
@@ -49,12 +55,21 @@ public:
 	/** Unregisters every watch and drops the debounce ticker. Game thread; safe twice. */
 	void Shutdown();
 
-	/** Roots this instance actually registered a watch on (absolute). Empty until Start(). */
+	/**
+	 * Roots this instance actually registered a watch on (absolute). Empty until Start().
+	 *
+	 * This is how the existence-check skip in Start() is asserted directly rather than by
+	 * inference (VaCuus.LiveReload.WatcherEvent), and it is where that test writes its
+	 * probe file -- watching a root nobody watches would prove nothing.
+	 */
 	const TArray<FString>& GetWatchedRoots() const { return WatchedRoots; }
 
-	//~ The debounce/filter half, split out from the watcher so it is testable without one:
-	//~ nothing ticks IDirectoryWatcher outside UEditorEngine::Tick, so a headless
-	//~ automation test can never make a real event arrive.
+	//~ The debounce/filter half, split out from the watcher so most of it is testable
+	//~ without one -- synchronously, with no latent command and no real file I/O.
+	//~ The link to a REAL inotify event is covered separately and does need a latent
+	//~ command (VaCuus.LiveReload.WatcherEvent): delivery is asynchronous and the debounce
+	//~ is time-based, so that test writes a file, pumps IDirectoryWatcher::Tick(-1.0f)
+	//~ until the change shows up, and then waits out the quiet period.
 
 	/**
 	 * Is this change one live reload cares about?
@@ -72,9 +87,10 @@ public:
 	 * NOT COSMETIC. The FFileChangeData constructor runs FPaths::MakeStandardFilename
 	 * (IDirectoryWatcher.h:23), so what arrives is typically RELATIVE
 	 * ('../../../VcHost/Content/DevUI/x.rml') -- while a path that cannot be made relative
-	 * to the engine root stays absolute (Paths.cpp:1445-1455). Both forms turn up in the
-	 * same session here, because the plugin root is outside the project tree and the
-	 * project root is inside it, so every incoming name goes through this.
+	 * to the engine root stays absolute (FPaths::CreateStandardFilename, which
+	 * MakeStandardFilename delegates to: Paths.cpp:1445-1455, called from :1510-1513). Both
+	 * forms turn up in the same session here, because the plugin root is outside the project
+	 * tree and the project root is inside it, so every incoming name goes through this.
 	 */
 	static FString NormalizeChangedPath(const FString& Filename);
 
@@ -84,14 +100,41 @@ public:
 	 */
 	bool NoteChange(const FFileChangeData& Change);
 
+	/**
+	 * NoteChange with the clock injected. Game thread.
+	 *
+	 * The pair with TickDebounceAt() is what makes the debounce TIMING testable rather than
+	 * only its set behaviour: a batch's meaning is entirely in the distance between the
+	 * timestamps recorded here and the one a tick is judged at, so a test that cannot choose
+	 * both cannot assert the quiet window, the hard cap or the batch boundary without
+	 * sleeping -- and a sleeping test asserts the scheduler, not this arithmetic.
+	 */
+	bool NoteChangeAt(const FFileChangeData& Change, double Now);
+
 	/** Changed paths collected but not yet flushed. */
 	int32 GetNumPendingChanges() const { return PendingChanges.Num(); }
 
 	/** True while the debounce ticker is armed. */
 	bool IsDebouncePending() const { return DebounceTickerHandle.IsValid(); }
 
-	/** Flushes now, whatever the debounce thinks. Returns views reloaded. Game thread. */
+	/**
+	 * Flushes the pending batch now, whatever the debounce thinks. Returns views reloaded.
+	 * Game thread.
+	 *
+	 * DISARMS THE DEBOUNCE TOO, so "now" means now: an armed ticker left behind would keep
+	 * polling and then flush an empty batch. Safe even when the caller IS that ticker's
+	 * delegate -- see the note at the top of the definition.
+	 */
 	int32 FlushNow();
+
+	/**
+	 * FlushNow with the clock injected -- the third of the trio with NoteChangeAt() and
+	 * TickDebounceAt(), and needed for the same reason plus one: the flush REPORTS how long
+	 * the debounce held the batch, and a flush driven by injected timestamps but timed
+	 * against the wall clock logs a nonsense figure into the one diagnostic line live reload
+	 * has.
+	 */
+	int32 FlushAt(double Now);
 
 	/**
 	 * D21's dispatch: reload every live view in every PIE (and `-game`-in-editor) world.
@@ -112,7 +155,8 @@ public:
 	 */
 	static int32 ReloadAllLiveViews(const TCHAR* Reason);
 
-	//~ Debounce parameters. Public so the test can assert against the same numbers.
+	//~ Debounce parameters. Public so VaCuus.LiveReload.Debounce can assert the timing
+	//~ contract against the same numbers instead of hard-coding a copy of them.
 
 	/** Quiet time before a flush. One editor save is a BURST of IN_MODIFY events. */
 	static constexpr double QuietSeconds = 0.15;
@@ -126,15 +170,22 @@ public:
 	 */
 	static constexpr double MaxDeferSeconds = 1.0;
 
+	/**
+	 * The ticker body, with the clock injected: flushes once the batch has been quiet for
+	 * QuietSeconds, or once MaxDeferSeconds have passed since its FIRST change. Returns
+	 * "keep ticking". Game thread.
+	 *
+	 * Public, unlike the ticker that calls it, because it holds the only arithmetic in this
+	 * feature and the whole timing contract is asserted through it (see NoteChangeAt).
+	 */
+	bool TickDebounceAt(double Now);
+
 private:
 	/** The FDirectoryChanged delegate body. Game thread (Linux asserts it). */
 	void OnDirectoryChanged(const TArray<FFileChangeData>& Changes);
 
 	/** Arms the debounce ticker if it is not already armed. */
 	void ArmDebounce();
-
-	/** Ticker body: flushes once it has been quiet long enough. Returns "keep ticking". */
-	bool TickDebounce();
 
 	/**
 	 * Absolute roots with a live watch, and the delegate handles for them.

@@ -7,16 +7,13 @@
 #include "VaCuusDefines.h"
 #include "VaCuusSubsystem.h"
 #include "VaCuusUIThread.h"
-#include "VaCuusView.h"
 
 #include "DirectoryWatcherModule.h"
 #include "Engine/Engine.h"
 #include "Engine/EngineTypes.h"
 #include "Engine/GameInstance.h"
-#include "Engine/World.h"
 #include "HAL/FileManager.h"
 #include "HAL/IConsoleManager.h"
-#include "Misc/CommandLine.h"
 #include "Misc/Paths.h"
 #include "Modules/ModuleManager.h"
 
@@ -55,16 +52,17 @@ void FVaCuusLiveReload::Start()
 		return;
 	}
 
-	if (!FModuleManager::Get().IsModuleLoaded(TEXT("DirectoryWatcher")) &&
-		!FModuleManager::Get().LoadModule(TEXT("DirectoryWatcher")))
+	// GetModulePtr, not IsModuleLoaded + LoadModule: DirectoryWatcher is a
+	// PrivateDependencyModuleNames entry of this module, so it is loaded before
+	// StartupModule() runs and a load attempt here could never do anything.
+	FDirectoryWatcherModule* WatcherModule = FModuleManager::GetModulePtr<FDirectoryWatcherModule>(TEXT("DirectoryWatcher"));
+	if (WatcherModule == nullptr)
 	{
-		UE_LOG(LogVaCuus, Warning, TEXT("Live reload unavailable: the DirectoryWatcher module could not be loaded"));
+		UE_LOG(LogVaCuus, Warning, TEXT("Live reload unavailable: the DirectoryWatcher module is not loaded"));
 		return;
 	}
 
-	FDirectoryWatcherModule& WatcherModule =
-		FModuleManager::GetModuleChecked<FDirectoryWatcherModule>(TEXT("DirectoryWatcher"));
-	IDirectoryWatcher* Watcher = WatcherModule.Get();
+	IDirectoryWatcher* Watcher = WatcherModule->Get();
 	if (Watcher == nullptr)
 	{
 		// The proxy is never null once the module started, but engine consumers all
@@ -76,8 +74,10 @@ void FVaCuusLiveReload::Start()
 	for (const FString& Root : VaCuusContentPaths::GetDocumentRoots())
 	{
 		// THE EXISTENCE CHECK IS THE LOAD-BEARING LINE ON LINUX, not a tidiness one.
-		// FDirectoryWatchRequestLinux::Init returns true unconditionally and only warns when
-		// inotify_add_watch fails (DirectoryWatchRequestLinux.cpp:114-117, :279), so
+		// FDirectoryWatchRequestLinux::Init fails only on an empty directory string
+		// (DirectoryWatchRequestLinux.cpp:81-85) and on inotify_init1 (:99-110); for a
+		// non-existent but non-empty directory it walks the tree and returns true
+		// (:114-116), because inotify_add_watch failures only warn (:268-282). So
 		// RegisterDirectoryChangedCallback_Handle hands back a VALID HANDLE for a directory
 		// that does not exist and live reload silently never fires. Windows returns false
 		// there because CreateFile fails, which is exactly why the bool below cannot be
@@ -100,6 +100,10 @@ void FVaCuusLiveReload::Start()
 			// directory-level adds/removes, which is what live reload wants.
 			0);
 
+		// One case, not two, and nothing is unregistered here: the mixed state is
+		// unreachable. FDirectoryWatcherLinux assigns OutHandle and returns true in the same
+		// two statements (DirectoryWatcherLinux.cpp:72-74), so a false return leaves nothing
+		// registered to hand back. Do not "fix" this into an unregister call.
 		if (!bRegistered || !Handle.IsValid())
 		{
 			UE_LOG(LogVaCuus, Warning, TEXT("Live reload could not watch '%s'"), *Root);
@@ -123,8 +127,10 @@ void FVaCuusLiveReload::Start()
 
 void FVaCuusLiveReload::Shutdown()
 {
-	// No IsInGameThread() check: this also runs from the destructor on a module-unload
-	// path, and asserting there would turn a tidy-up into a crash.
+	// Asserted like every other entry point here, including the destructor's path: module
+	// unload runs on the game thread, and Unwatch/RemoveTicker below both require it
+	// (DirectoryWatchRequestLinux.cpp:300 checkf's it outright).
+	check(IsInGameThread());
 
 	if (WatchHandles.Num() > 0)
 	{
@@ -166,8 +172,10 @@ bool FVaCuusLiveReload::ShouldTrackChange(FFileChangeData::EFileChangeAction Act
 	{
 		// FCA_Removed is the temp half of a write-then-rename (and a genuine delete, which
 		// has nothing to reload to); FCA_RescanRequired carries no usable filename, and the
-		// Linux backend never produces it anyway -- IN_Q_OVERFLOW is dropped outright
-		// (DirectoryWatchRequestLinux.cpp:542-543), which is why vacuus.ReloadUI exists.
+		// Linux backend never produces it anyway -- IN_Q_OVERFLOW is skipped outright by
+		// ProcessAllINotifyChanges (DirectoryWatchRequestLinux.cpp:496; the string
+		// FCA_RescanRequired appears nowhere in that backend), which is why vacuus.ReloadUI
+		// exists.
 		return false;
 	}
 
@@ -177,12 +185,14 @@ bool FVaCuusLiveReload::ShouldTrackChange(FFileChangeData::EFileChangeAction Act
 		return false;
 	}
 
-	// Editor temp/swap files, in the three shapes that actually turn up: a dotfile
-	// (vim's .name.swp, and anything hidden), a trailing tilde (emacs, gedit, kate
-	// backups), and a .tmp/.swp/#name# temp which the extension whitelist below rejects
-	// on its own. Checked by name rather than by extension because '.m1_hud.rcss' has a
-	// perfectly good extension and is still not the file anyone edited.
-	if (BaseFilename.StartsWith(TEXT("."), ESearchCase::CaseSensitive) || BaseFilename.EndsWith(TEXT("~")))
+	// THE ONE TEMP-FILE SHAPE THE EXTENSION WHITELIST BELOW CANNOT CATCH: a dotfile whose
+	// extension is perfectly good ('.m1_hud.rcss' -- what vim leaves behind, and anything
+	// else hidden). Every other shape is already rejected down there, because the extension
+	// is the LAST dot-suffix: 'm1_hud.rcss~' has extension 'rcss~', '.m1_hud.rcss.swp' has
+	// 'swp', 'm1_hud.rcss.tmp' has 'tmp'. A trailing-tilde test was here too and was
+	// provably dead for the same reason -- a name ending in '~' can never have extension
+	// 'rml' or 'rcss'.
+	if (BaseFilename.StartsWith(TEXT("."), ESearchCase::CaseSensitive))
 	{
 		return false;
 	}
@@ -197,6 +207,11 @@ FString FVaCuusLiveReload::NormalizeChangedPath(const FString& Filename)
 
 bool FVaCuusLiveReload::NoteChange(const FFileChangeData& Change)
 {
+	return NoteChangeAt(Change, FPlatformTime::Seconds());
+}
+
+bool FVaCuusLiveReload::NoteChangeAt(const FFileChangeData& Change, double Now)
+{
 	check(IsInGameThread());
 
 	if (!ShouldTrackChange(Change.Action, Change.Filename))
@@ -204,7 +219,6 @@ bool FVaCuusLiveReload::NoteChange(const FFileChangeData& Change)
 		return false;
 	}
 
-	const double Now = FPlatformTime::Seconds();
 	if (PendingChanges.Num() == 0)
 	{
 		FirstChangeSeconds = Now;
@@ -240,13 +254,16 @@ void FVaCuusLiveReload::ArmDebounce()
 		return;
 	}
 
+	// The real clock is read HERE and nowhere below, which is what makes the whole
+	// debounce contract testable: TickDebounceAt() is pure arithmetic over the timestamps
+	// NoteChangeAt() recorded, and the test drives both with numbers it chose.
 	DebounceTickerHandle = FTSTicker::GetCoreTicker().AddTicker(
-		TEXT("VaCuus.LiveReload.Debounce"), DebouncePollSeconds, [this](float) { return TickDebounce(); });
+		TEXT("VaCuus.LiveReload.Debounce"), DebouncePollSeconds,
+		[this](float) { return TickDebounceAt(FPlatformTime::Seconds()); });
 }
 
-bool FVaCuusLiveReload::TickDebounce()
+bool FVaCuusLiveReload::TickDebounceAt(double Now)
 {
-	const double Now = FPlatformTime::Seconds();
 	const bool bQuiet = (Now - LastChangeSeconds) >= QuietSeconds;
 	const bool bDeferredTooLong = (Now - FirstChangeSeconds) >= MaxDeferSeconds;
 
@@ -255,28 +272,53 @@ bool FVaCuusLiveReload::TickDebounce()
 		return true;
 	}
 
-	// Cleared BEFORE the flush: the reload enqueues commands and can log, and re-entering
-	// ArmDebounce() from anything that happens in there must be able to arm a fresh batch
-	// rather than find a handle that is about to be reset.
-	DebounceTickerHandle.Reset();
-	FlushNow();
+	// FlushAt() disarms us, so returning false is only belt and braces.
+	FlushAt(Now);
 	return false;
 }
 
 int32 FVaCuusLiveReload::FlushNow()
 {
+	return FlushAt(FPlatformTime::Seconds());
+}
+
+int32 FVaCuusLiveReload::FlushAt(double Now)
+{
 	check(IsInGameThread());
+
+	// DISARMED FIRST, unconditionally, and it is three things at once:
+	//  - it makes this function's name honest -- an armed ticker left behind would keep
+	//    polling and then flush an empty batch;
+	//  - it happens BEFORE the reload, because the reload enqueues commands and logs, and
+	//    anything in there that calls back into ArmDebounce() must be able to arm a FRESH
+	//    batch rather than find a handle that is about to be dropped;
+	//  - it keeps "the handle is valid exactly when a ticker is registered" true even when
+	//    this is called from inside that very ticker's own delegate, which is what
+	//    TickDebounceAt() does. FTSTicker::RemoveTicker handles self-removal explicitly: it
+	//    spin-waits for a mid-flight delegate only when that delegate is on ANOTHER thread
+	//    (Ticker.cpp:50-55), so this cannot deadlock. Without it, an out-of-band
+	//    TickDebounceAt() would leave a registered ticker holding a raw `this` that nothing
+	//    has a handle to unregister.
+	if (DebounceTickerHandle.IsValid())
+	{
+		FTSTicker::RemoveTicker(DebounceTickerHandle);
+		DebounceTickerHandle.Reset();
+	}
 
 	if (PendingChanges.Num() == 0)
 	{
 		return 0;
 	}
 
+	// DIAGNOSTIC ONLY, and worth saying because the shape invites the opposite reading:
+	// this set does NOT drive which views reload. ReloadAllLiveViews() takes a reason
+	// string and reloads every view that has a file document -- the granularity rule and
+	// the reason for it live on that function's declaration.
 	TArray<FString> Changed = PendingChanges.Array();
 	Changed.Sort();
 	PendingChanges.Empty();
 
-	const double WaitedMs = (FPlatformTime::Seconds() - FirstChangeSeconds) * 1000.0;
+	const double WaitedMs = (Now - FirstChangeSeconds) * 1000.0;
 
 	// The one line the live proof reads: what changed, how long the debounce held it, and
 	// how many views it reached.
@@ -318,21 +360,35 @@ int32 FVaCuusLiveReload::ReloadAllLiveViews(const TCHAR* Reason)
 	int32 NumSubsystems = 0;
 
 	// GetWorldContexts(), not GEditor->PlayWorld or GetPIEWorldContext(): both of those
-	// see only PIE instance 0 (EditorEngine.cpp:6401-6412 and its own doc comment), so a
-	// multi-client PIE session would get one window reloaded and the others left stale.
-	// Re-resolved on every flush rather than cached, because a game instance and its
-	// subsystems are destroyed on EndPIE and a kept pointer would dangle into the next
-	// session.
+	// see only PIE instance 0 (EditorEngine.cpp:6401-6412, and the doc comment saying so is
+	// at EditorEngine.h:2599-2603), so a multi-client PIE session would get one window
+	// reloaded and the others left stale. Re-resolved on every flush rather than cached,
+	// because a game instance and its subsystems are destroyed on EndPIE and a kept pointer
+	// would dangle into the next session.
 	for (const FWorldContext& Context : GEngine->GetWorldContexts())
 	{
-		// Game as well as PIE: `-game` in the editor process and the standalone game
-		// instance an automation test builds with InitializeStandalone() are both
-		// EWorldType::Game, and there is no reason a live view there should not reload.
+		// PIE is the case this feature exists for. EWorldType::Game is accepted for exactly
+		// one reason, and it is not `-game`: a `-game` process cannot reach this code at all
+		// (it clears GIsEditor, so VaCuusEditor -- EHostType::Editor -- is never loaded, and
+		// there is no UEditorEngine to pump the watcher; see this class's header).
+		// UGameInstance::InitializeStandalone() creates an EWorldType::Game context
+		// (GameInstance.cpp:193), and that is what lets an automation test drive this real
+		// GetWorldContexts() walk instead of a hand-fed subsystem.
+		//
+		// The consequence, stated rather than hidden: the PIE-specific half of this
+		// condition is not covered by any headless test. The loop body is identical either
+		// way, so this is a documented limit rather than a gap -- and Proof.LiveReload.PIE
+		// covers it live, with a real PIE session.
 		if (Context.WorldType != EWorldType::PIE && Context.WorldType != EWorldType::Game)
 		{
 			continue;
 		}
 
+		// NO Context.World() != nullptr CHECK, which the research note calls universal
+		// engine precedent -- deliberately, so nobody "restores" it and quietly narrows
+		// this: nothing here dereferences the world, and UGameInstance::GetSubsystem
+		// tolerates a null game instance. A context that has a game instance but no world
+		// yet (early PIE) still has views worth reloading.
 		UVaCuusSubsystem* Subsystem = UGameInstance::GetSubsystem<UVaCuusSubsystem>(Context.OwningGameInstance);
 		if (Subsystem == nullptr)
 		{
@@ -354,15 +410,20 @@ int32 FVaCuusLiveReload::ReloadAllLiveViews(const TCHAR* Reason)
 namespace VaCuusLiveReloadPrivate
 {
 /**
- * THE ESCAPE HATCH, and it is not optional: the Linux backend drops IN_Q_OVERFLOW events
+ * THE ESCAPE HATCH, and it is not optional: the Linux backend skips IN_Q_OVERFLOW events
  * outright instead of turning them into FCA_RescanRequired
- * (DirectoryWatchRequestLinux.cpp:542-543), so after a bulk operation -- a git checkout, a
- * tool that rewrites the whole DevUI tree -- changes are silently lost. The watcher is not
- * lossless and must not be presented as such.
+ * (DirectoryWatchRequestLinux.cpp:496 -- `(Event->wd != -1) && (Event->mask &
+ * IN_Q_OVERFLOW) == 0`, with no log; FCA_RescanRequired appears nowhere in that backend),
+ * so after a bulk operation -- a git checkout, a tool that rewrites the whole DevUI tree --
+ * changes are silently lost. The watcher is not lossless and must not be presented as such.
  *
- * Unconditional by design: it does not consult the pending set, the debounce or the
- * watcher at all, so it is also the thing that still works when the watch root was created
- * after the editor started (Linux registers a watch per directory at registration time).
+ * Unconditional by design: it does not consult the pending set, the debounce or the watcher
+ * at all, so it is also the thing that still works when a watch ROOT did not exist when
+ * Start() ran. That gap is OURS, not the engine's -- Start() skips a missing root and never
+ * retries it. The backend itself keeps up with a growing tree: on IN_CREATE|IN_ISDIR it
+ * calls WatchDirectoryTree on the new subtree and synthesizes FCA_Added for the directory
+ * and everything under it (:391-400, :225, :246-249), so a SUBDIRECTORY created while the
+ * editor runs is watched.
  */
 static void ReloadUICommand()
 {

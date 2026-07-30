@@ -3,6 +3,7 @@
 #include "Misc/AutomationTest.h"
 
 #include "VaCuus.h"
+#include "VaCuusContentPaths.h"
 #include "VaCuusDocumentHost.h"
 #include "VaCuusEngine.h"
 #include "VaCuusLiveReload.h"
@@ -18,6 +19,7 @@
 #include "Framework/Application/SlateApplication.h"
 #include "HAL/FileManager.h"
 #include "HAL/PlatformProcess.h"
+#include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "Misc/ScopeExit.h"
 #include "Modules/ModuleManager.h"
@@ -118,16 +120,12 @@ static FString WhySkip()
 }	 // namespace VaCuusLiveReloadTest
 
 /**
- * The filter, the path normalisation and the debounce coalescing -- the whole half of
- * live reload that can be tested at all headlessly.
+ * The filter, the path normalisation and the debounce COALESCING -- the set behaviour.
  *
- * WHAT IS NOT COVERED HERE, AND WHY IT CANNOT BE: no automation test can make a real
- * DirectoryWatcher event arrive. IDirectoryWatcher::Tick is what reads the inotify fd
- * and fires the delegates, and the only engine caller of it is UEditorEngine::Tick
- * (EditorEngine.cpp:1948) -- which does not run inside a test, and cannot be provoked
- * into running one frame of itself. So this test drives NoteChange() directly, exactly
- * as the delegate does, and the "did an inotify event actually arrive" link is verified
- * live (see the Task 10 report) rather than here.
+ * Its two neighbours cover the rest: VaCuus.LiveReload.Debounce asserts the TIMING
+ * contract (the same batch, judged at chosen times), and VaCuus.LiveReload.WatcherEvent
+ * asserts that a real inotify event arrives at all. This one drives NoteChange() directly,
+ * exactly as the delegate does, and needs neither a watcher nor a clock.
  */
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusLiveReloadFilterTest, "VaCuus.LiveReload.Filter",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -149,14 +147,18 @@ bool FVaCuusLiveReloadFilterTest::RunTest(const FString& Parameters)
 		FVaCuusLiveReload::ShouldTrackChange(EAction::FCA_Unknown, TEXT("DevUI/m1_hud.rcss")));
 
 	//~ Editor temp/swap files. Each of these is a shape a real editor produces next to the
-	//~ file you actually saved, and reloading on one costs a re-parse for nothing.
-	TestFalse(TEXT("Trailing-tilde backup is skipped"),
+	//~ file you actually saved, and reloading on one costs a re-parse for nothing. Labelled
+	//~ by WHICH RULE rejects each one, because three of the four never reach the dotfile
+	//~ test: the extension is the last dot-suffix, so 'rcss~', 'tmp' and 'swp' all fail the
+	//~ whitelist first. Only the dotfile with a good extension exercises the dotfile rule --
+	//~ which is why that rule is the one that has to exist.
+	TestFalse(TEXT("Emacs/gedit backup is skipped -- extension is 'rcss~', not on the whitelist"),
 		FVaCuusLiveReload::ShouldTrackChange(EAction::FCA_Modified, TEXT("DevUI/m1_hud.rcss~")));
-	TestFalse(TEXT(".tmp is skipped"),
+	TestFalse(TEXT(".tmp is skipped -- extension is 'tmp', not on the whitelist"),
 		FVaCuusLiveReload::ShouldTrackChange(EAction::FCA_Modified, TEXT("DevUI/m1_hud.rcss.tmp")));
-	TestFalse(TEXT("vim swap file is skipped"),
+	TestFalse(TEXT("vim swap file is skipped -- extension is 'swp', not on the whitelist"),
 		FVaCuusLiveReload::ShouldTrackChange(EAction::FCA_Added, TEXT("DevUI/.m1_hud.rcss.swp")));
-	TestFalse(TEXT("A dotfile with a good extension is still skipped"),
+	TestFalse(TEXT("THE DOTFILE RULE: a hidden file whose extension IS on the whitelist is still skipped"),
 		FVaCuusLiveReload::ShouldTrackChange(EAction::FCA_Modified, TEXT("DevUI/.m1_hud.rcss")));
 
 	//~ Extensions. Images are excluded on purpose: textures are not released on reload
@@ -222,10 +224,12 @@ bool FVaCuusLiveReloadFilterTest::RunTest(const FString& Parameters)
 
 	//~ THE LINUX PITFALL, verified rather than quoted: RegisterDirectoryChangedCallback_Handle
 	//~ hands back a VALID HANDLE for a directory that does not exist, because
-	//~ FDirectoryWatchRequestLinux::Init returns true unconditionally and inotify_add_watch
-	//~ failures only warn. That is why FVaCuusLiveReload::Start() calls DirectoryExists()
-	//~ itself and never treats this bool as a health check. If a future engine version fixes
-	//~ this, this test is where it shows up.
+	//~ FDirectoryWatchRequestLinux::Init rejects only an empty path and an inotify_init1
+	//~ failure (DirectoryWatchRequestLinux.cpp:81-85, :99-110) -- for a non-existent
+	//~ directory it walks the tree and returns true (:114-116), and inotify_add_watch
+	//~ failures only warn (:268-282). That is why FVaCuusLiveReload::Start() calls
+	//~ DirectoryExists() itself and never treats this bool as a health check. If a future
+	//~ engine version fixes this, this test is where it shows up.
 	{
 		FDirectoryWatcherModule& WatcherModule =
 			FModuleManager::LoadModuleChecked<FDirectoryWatcherModule>(TEXT("DirectoryWatcher"));
@@ -255,6 +259,145 @@ bool FVaCuusLiveReloadFilterTest::RunTest(const FString& Parameters)
 				Watcher->UnregisterDirectoryChangedCallback_Handle(Missing, Handle);
 			}
 		}
+	}
+
+	return true;
+}
+
+/**
+ * THE DEBOUNCE TIMING CONTRACT -- the only arithmetic in this feature, and until this test
+ * existed the only part of it that was unexercised (VaCuus.LiveReload.Filter asserts the
+ * SET behaviour, which is a different thing).
+ *
+ * NO SLEEPING, and that is the point: the clock is injected through NoteChangeAt() and
+ * TickDebounceAt(), so what is asserted is the arithmetic rather than the scheduler. A test
+ * that slept for QuietSeconds would pass on a loaded machine only by luck and would say
+ * nothing about the batch boundary at all.
+ *
+ * Times are relative to a T0 far from zero, so nothing here can pass by accident because a
+ * timestamp defaulted to 0.0.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusLiveReloadDebounceTest, "VaCuus.LiveReload.Debounce",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusLiveReloadDebounceTest::RunTest(const FString& Parameters)
+{
+	using EAction = FFileChangeData::EFileChangeAction;
+
+	const FString Rcss = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir() / TEXT("DevUI/m1_hud.rcss"));
+	const FString Rml = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir() / TEXT("DevUI/m1_hud.rml"));
+	const double T0 = 10000.0;
+
+	// Nudges a "just past the boundary" time past it. The thresholds are >=, but T0 + a + b
+	// is not exactly T0 + (a + b) in doubles, so landing exactly ON a boundary would assert
+	// the rounding of one addition rather than the rule.
+	const double Epsilon = 0.001;
+
+	//~ (a) NOT YET QUIET: the ticker keeps polling and the batch is still pending. This is
+	//~ the case a burst of IN_MODIFY events for one save lands in.
+	{
+		FVaCuusLiveReload Reload;
+		ON_SCOPE_EXIT
+		{
+			Reload.Shutdown();
+		};
+
+		TestTrue(TEXT("(a) The change is tracked"), Reload.NoteChangeAt(FFileChangeData(Rcss, EAction::FCA_Modified), T0));
+		TestTrue(TEXT("(a) A tracked change arms the ticker"), Reload.IsDebouncePending());
+
+		const double NotQuietYet = T0 + FVaCuusLiveReload::QuietSeconds * 0.5;
+		TestTrue(TEXT("(a) Still inside the quiet window: keep ticking"), Reload.TickDebounceAt(NotQuietYet));
+		TestEqual(TEXT("(a) ...and the batch is untouched"), Reload.GetNumPendingChanges(), 1);
+		TestTrue(TEXT("(a) ...and the ticker is still armed"), Reload.IsDebouncePending());
+	}
+
+	//~ (b) QUIET: flushes exactly once, consumes the batch, and retires the ticker.
+	{
+		FVaCuusLiveReload Reload;
+		ON_SCOPE_EXIT
+		{
+			Reload.Shutdown();
+		};
+
+		Reload.NoteChangeAt(FFileChangeData(Rcss, EAction::FCA_Modified), T0);
+		Reload.NoteChangeAt(FFileChangeData(Rml, EAction::FCA_Modified), T0 + 0.01);
+		TestEqual(TEXT("(b) Two distinct paths in one batch"), Reload.GetNumPendingChanges(), 2);
+
+		const double Quiet = T0 + 0.01 + FVaCuusLiveReload::QuietSeconds + Epsilon;
+		TestFalse(TEXT("(b) Quiet: the ticker retires itself"), Reload.TickDebounceAt(Quiet));
+		TestEqual(TEXT("(b) ...having consumed the whole batch"), Reload.GetNumPendingChanges(), 0);
+		TestFalse(TEXT("(b) ...and disarmed"), Reload.IsDebouncePending());
+
+		// Once, not once per poll: a second tick has nothing left to flush. (A batch left
+		// behind would reload forever, which is what VaCuus.LiveReload.Filter also guards.)
+		TestFalse(TEXT("(b) A tick after the flush finds nothing and retires"), Reload.TickDebounceAt(Quiet + 1.0));
+		TestEqual(TEXT("(b) Nothing pending after that either"), Reload.GetNumPendingChanges(), 0);
+	}
+
+	//~ (c) THE HARD CAP, which is the case the quiet window alone cannot serve: a file being
+	//~ rewritten continuously (a generator, a long `git checkout`) never goes quiet, so
+	//~ MaxDeferSeconds from the FIRST change of the batch forces it to the screen.
+	{
+		FVaCuusLiveReload Reload;
+		ON_SCOPE_EXIT
+		{
+			Reload.Shutdown();
+		};
+
+		double Now = T0;
+		Reload.NoteChangeAt(FFileChangeData(Rcss, EAction::FCA_Modified), Now);
+
+		// Changes keep streaming in at half the quiet window, so it is never quiet.
+		const double Step = FVaCuusLiveReload::QuietSeconds * 0.5;
+		int32 NumTicks = 0;
+		while (Now < T0 + FVaCuusLiveReload::MaxDeferSeconds - Step)
+		{
+			Now += Step;
+			Reload.NoteChangeAt(FFileChangeData(Rcss, EAction::FCA_Modified), Now);
+			if (!Reload.TickDebounceAt(Now))
+			{
+				break;
+			}
+			++NumTicks;
+		}
+
+		TestTrue(TEXT("(c) It never went quiet, so nothing flushed early"), Reload.GetNumPendingChanges() == 1);
+		TestTrue(TEXT("(c) ...and it really did keep ticking"), NumTicks > 0);
+
+		// Still not quiet -- the change is 1 ms old -- but the batch is now over the cap.
+		Now = T0 + FVaCuusLiveReload::MaxDeferSeconds;
+		Reload.NoteChangeAt(FFileChangeData(Rcss, EAction::FCA_Modified), Now);
+		TestFalse(TEXT("(c) Over the cap while changes are still streaming: flush anyway"),
+			Reload.TickDebounceAt(Now + 0.001));
+		TestEqual(TEXT("(c) ...and the batch is consumed"), Reload.GetNumPendingChanges(), 0);
+	}
+
+	//~ (d) THE BATCH BOUNDARY, and the subtle one: a change arriving long after a flush must
+	//~ be judged against ITS OWN batch start. If FirstChangeSeconds were left at the previous
+	//~ batch's value, this change would look "deferred too long" the instant it arrived and
+	//~ every later edit would flush with no debounce at all.
+	{
+		FVaCuusLiveReload Reload;
+		ON_SCOPE_EXIT
+		{
+			Reload.Shutdown();
+		};
+
+		Reload.NoteChangeAt(FFileChangeData(Rcss, EAction::FCA_Modified), T0);
+		const double FirstFlush = T0 + FVaCuusLiveReload::QuietSeconds + Epsilon;
+		TestFalse(TEXT("(d) First batch flushes"), Reload.TickDebounceAt(FirstFlush));
+
+		// Far more than MaxDeferSeconds later, so a stale batch start would be decisive.
+		const double Later = FirstFlush + FVaCuusLiveReload::MaxDeferSeconds * 5.0;
+		Reload.NoteChangeAt(FFileChangeData(Rml, EAction::FCA_Modified), Later);
+		TestTrue(TEXT("(d) The new change re-arms the ticker"), Reload.IsDebouncePending());
+		TestTrue(TEXT("(d) It is judged against a FRESH batch start, so it still debounces"),
+			Reload.TickDebounceAt(Later + FVaCuusLiveReload::QuietSeconds * 0.5));
+		TestEqual(TEXT("(d) ...and is still pending"), Reload.GetNumPendingChanges(), 1);
+
+		TestFalse(TEXT("(d) ...until its own quiet window passes"),
+			Reload.TickDebounceAt(Later + FVaCuusLiveReload::QuietSeconds + Epsilon));
+		TestEqual(TEXT("(d) ...then it flushes"), Reload.GetNumPendingChanges(), 0);
 	}
 
 	return true;
@@ -555,6 +698,236 @@ bool FVaCuusLiveReloadRearmTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("...so exactly one load was issued"),
 		View->GetLastRequestedLoadSerial(), SerialAfterRearm + 1);
 
+	return true;
+}
+
+namespace VaCuusLiveReloadTest
+{
+/**
+ * Everything VaCuus.LiveReload.WatcherEvent's latent commands share, kept alive by a
+ * TSharedPtr the commands copy.
+ *
+ * Teardown belongs to the LAST command, not to RunTest(): RunTest only queues the commands
+ * and returns, so an ON_SCOPE_EXIT there would tear the world down before the first Update().
+ */
+struct FWatcherEventState
+{
+	FAutomationTestBase* Test = nullptr;
+	IDirectoryWatcher* Watcher = nullptr;
+
+	/** Our own watcher+debounce instance, separate from the editor module's live one. */
+	FVaCuusLiveReload Reload;
+
+	TUniquePtr<FStandaloneInstance> Instance;
+	UVaCuusView* View = nullptr;
+
+	/** Absolute path of the probe file, deleted by the last command. */
+	FString ProbePath;
+
+	uint64 SerialBefore = 0;
+	int32 NumWatcherTicks = 0;
+	bool bChangeSeen = false;
+	bool bReloadSeen = false;
+
+	/** Absolute FPlatformTime::Seconds() budgets, generous: a miss must not hang the suite. */
+	double PumpDeadline = 0.0;
+	double FlushDeadline = 0.0;
+};
+
+/**
+ * Pumps IDirectoryWatcher until the probe write turns into a tracked change.
+ *
+ * Tick(-1.0f) reads the inotify fd and fires every FDirectoryChanged delegate INLINE on the
+ * calling thread -- the Linux backend ignores DeltaSeconds entirely
+ * (DirectoryWatcherLinux.cpp:111-124 -> FDirectoryWatchRequestLinux::ProcessNotifications).
+ * Engine code does exactly this when it needs changes now: AssetRegistry.cpp:2039,
+ * WorldPartitionEditorModule.cpp:719 ('Force a directory watcher tick'),
+ * EditorBuildUtils.cpp:1113.
+ *
+ * Latent rather than a loop inside RunTest because inotify DELIVERY is asynchronous: the
+ * kernel has to queue the event before any tick can read it.
+ */
+DEFINE_LATENT_AUTOMATION_COMMAND_ONE_PARAMETER(FVaCuusPumpWatcherCommand, TSharedPtr<FWatcherEventState>, State);
+bool FVaCuusPumpWatcherCommand::Update()
+{
+	++State->NumWatcherTicks;
+	State->Watcher->Tick(-1.0f);
+
+	// "Tracked" is read from EITHER the pending batch or an already-advanced load serial: the
+	// debounce ticker runs between our Updates, so a slow frame can let it flush the batch
+	// before we look at it -- and a flush is proof the change was tracked.
+	if (State->Reload.GetNumPendingChanges() > 0 || State->View->GetLastRequestedLoadSerial() > State->SerialBefore)
+	{
+		State->bChangeSeen = true;
+		return true;
+	}
+
+	return FPlatformTime::Seconds() > State->PumpDeadline;
+}
+
+/** Waits out the debounce's quiet window and for a view to actually reload. */
+DEFINE_LATENT_AUTOMATION_COMMAND_ONE_PARAMETER(FVaCuusAwaitReloadCommand, TSharedPtr<FWatcherEventState>, State);
+bool FVaCuusAwaitReloadCommand::Update()
+{
+	if (State->View->GetLastRequestedLoadSerial() > State->SerialBefore)
+	{
+		State->bReloadSeen = true;
+		return true;
+	}
+
+	return FPlatformTime::Seconds() > State->FlushDeadline;
+}
+
+/** Asserts what the two commands above observed, then tears everything down in order. */
+DEFINE_LATENT_AUTOMATION_COMMAND_ONE_PARAMETER(FVaCuusVerifyWatcherEventCommand, TSharedPtr<FWatcherEventState>, State);
+bool FVaCuusVerifyWatcherEventCommand::Update()
+{
+	FAutomationTestBase& Test = *State->Test;
+
+	Test.AddInfo(FString::Printf(TEXT("Pumped IDirectoryWatcher::Tick(-1.0f) %d time(s)"), State->NumWatcherTicks));
+
+	Test.TestTrue(TEXT("A REAL inotify event reached the debounce (the whole feature rests on this link)"),
+		State->bChangeSeen);
+	Test.TestTrue(TEXT("...and the flush it triggered re-issued a live view's load"), State->bReloadSeen);
+
+	IFileManager::Get().Delete(*State->ProbePath, /*bRequireExists=*/false);
+
+	// Order matters: the watch goes first (its delegate points into this state), then the
+	// world (its subsystem enqueues view removals), then the thread they went to.
+	State->Reload.Shutdown();
+	State->Instance.Reset();
+	FVaCuusModule::Get().StopUIThread();
+	return true;
+}
+}	 // namespace VaCuusLiveReloadTest
+
+/**
+ * THE ONE LINK THE WHOLE FEATURE RESTS ON: a file written under a watched root becomes a
+ * real inotify event, becomes a tracked change, and re-issues a live view's load.
+ *
+ * This was previously asserted to be untestable ("no automation test can make a real
+ * DirectoryWatcher event arrive"), on the grounds that only UEditorEngine::Tick pumps the
+ * watcher. Both halves are false: there are ~17 callers of IDirectoryWatcher::Tick, and
+ * Tick(-1.0f) fires the delegates inline on the calling thread -- the project's own research
+ * note documents it as 'Force a synchronous watcher flush'. What IS true is that this needs a
+ * LATENT command: inotify delivery is asynchronous and the debounce is time-based, so the
+ * test writes, polls, and then waits out the quiet window.
+ *
+ * It writes a REAL .rcss, because the filter must accept it -- the '.tmptest' extension
+ * VaCuus.Core.FileInterface uses to stay invisible to the watcher would prove the opposite of
+ * what this asserts. Consequence in an interactive editor: this test causes one genuine
+ * reload of whatever is on screen. That is a file changing under a watched root, which is
+ * what live reload is for.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusLiveReloadWatcherEventTest, "VaCuus.LiveReload.WatcherEvent",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusLiveReloadWatcherEventTest::RunTest(const FString& Parameters)
+{
+	using namespace VaCuusLiveReloadTest;
+
+	const FString SkipReason = WhySkip();
+	if (!SkipReason.IsEmpty())
+	{
+		AddInfo(FString::Printf(TEXT("Skipped: %s"), *SkipReason));
+		return true;
+	}
+
+	FDirectoryWatcherModule* WatcherModule = FModuleManager::GetModulePtr<FDirectoryWatcherModule>(TEXT("DirectoryWatcher"));
+	IDirectoryWatcher* Watcher = WatcherModule ? WatcherModule->Get() : nullptr;
+	if (Watcher == nullptr)
+	{
+		AddInfo(TEXT("Skipped: this platform has no directory watcher"));
+		return true;
+	}
+
+	TSharedPtr<FWatcherEventState> State = MakeShared<FWatcherEventState>();
+	State->Test = this;
+	State->Watcher = Watcher;
+
+	//~ WHICH ROOTS ARE WATCHED, asserted directly rather than inferred. This is the only
+	//~ check of Start()'s existence skip that does not go through "no events arrived", and it
+	//~ is also what makes the probe path below meaningful: writing into a root nobody watches
+	//~ would prove nothing.
+	State->Reload.Start();
+	const TArray<FString>& WatchedRoots = State->Reload.GetWatchedRoots();
+	const TArray<FString>& DocumentRoots = VaCuusContentPaths::GetDocumentRoots();
+
+	int32 NumExistingRoots = 0;
+	for (const FString& Root : DocumentRoots)
+	{
+		NumExistingRoots += IFileManager::Get().DirectoryExists(*Root) ? 1 : 0;
+	}
+
+	TestEqual(TEXT("Start() watches exactly the DevUI roots that exist"), WatchedRoots.Num(), NumExistingRoots);
+	for (const FString& Root : WatchedRoots)
+	{
+		TestTrue(TEXT("A watched root exists on disk"), IFileManager::Get().DirectoryExists(*Root));
+		TestTrue(TEXT("A watched root is one of the DevUI roots"), DocumentRoots.Contains(Root));
+	}
+	if (DocumentRoots.Num() > 0 && IFileManager::Get().DirectoryExists(*DocumentRoots[0]))
+	{
+		// Plugin-first precedence (D19), carried through into what the watcher watches.
+		TestEqual(TEXT("The first watched root is the first DevUI root (the plugin's)"),
+			WatchedRoots.Num() > 0 ? WatchedRoots[0] : FString(), DocumentRoots[0]);
+	}
+
+	if (WatchedRoots.Num() == 0)
+	{
+		AddInfo(TEXT("Skipped the event half: no DevUI root exists, so there is nothing to write into"));
+		State->Reload.Shutdown();
+		return true;
+	}
+
+	FVaCuusModule& Module = FVaCuusModule::Get();
+	if (!TestNotNull(TEXT("UI thread"), Module.GetOrStartUIThread()))
+	{
+		State->Reload.Shutdown();
+		return false;
+	}
+
+	State->Instance = MakeUnique<FStandaloneInstance>();
+	UVaCuusSubsystem* Subsystem = State->Instance->Subsystem;
+	if (!TestNotNull(TEXT("UVaCuusSubsystem on the standalone game instance"), Subsystem))
+	{
+		State->Reload.Shutdown();
+		State->Instance.Reset();
+		Module.StopUIThread();
+		return false;
+	}
+
+	State->View = Subsystem->CreateView(MakeUnique<FStubHost>(), FIntPoint(320, 200));
+	if (!TestNotNull(TEXT("View"), State->View))
+	{
+		State->Reload.Shutdown();
+		State->Instance.Reset();
+		Module.StopUIThread();
+		return false;
+	}
+
+	State->View->LoadDocument(TEXT("m1_hud.rml"));
+	State->SerialBefore = State->View->GetLastRequestedLoadSerial();
+
+	// Written AFTER Start(), or the watch would not exist yet. Deleted first in case an
+	// earlier crashed run left one behind -- a leftover would produce no IN_CREATE.
+	State->ProbePath = WatchedRoots[0] / TEXT("vacuus_livereload_probe.rcss");
+	IFileManager::Get().Delete(*State->ProbePath, /*bRequireExists=*/false);
+	if (!TestTrue(TEXT("The probe .rcss was written under the watched root"),
+			FFileHelper::SaveStringToFile(TEXT("/* VaCuus live-reload probe */\n"), *State->ProbePath)))
+	{
+		State->Reload.Shutdown();
+		State->Instance.Reset();
+		Module.StopUIThread();
+		return false;
+	}
+
+	const double Now = FPlatformTime::Seconds();
+	State->PumpDeadline = Now + 5.0;
+	State->FlushDeadline = Now + 12.0;
+
+	ADD_LATENT_AUTOMATION_COMMAND(FVaCuusPumpWatcherCommand(State));
+	ADD_LATENT_AUTOMATION_COMMAND(FVaCuusAwaitReloadCommand(State));
+	ADD_LATENT_AUTOMATION_COMMAND(FVaCuusVerifyWatcherEventCommand(State));
 	return true;
 }
 
