@@ -748,16 +748,16 @@ publish on the frame a texture lands.
 
 **Files:** `Source/VaCuus/Private/VaCuusFileInterface.cpp`, `Source/VaCuusRender/VaCuusRender.Build.cs`.
 
-- [ ] **Step 13.1: EOF quirk (`6.1`).** `FFileHandleUnix::Seek` clamps a read-mode seek to
+- [x] **Step 13.1: EOF quirk (`6.1`).** `FFileHandleUnix::Seek` clamps a read-mode seek to
       `FileSize-1`, so seeking to exact EOF under-reports `Tell()`. Track the logical
       position in our own member (clamped to `[0, Size]`) and answer `Tell()` from it rather
       than from the handle. Extend `VaCuus.Core.FileInterface` with an exact-EOF case:
       `Seek(0, SEEK_END)` then `Tell() == Size`, and a subsequent `Read` returns 0.
-- [ ] **Step 13.2: Build.cs dep (`6.4`).** No public header of `VaCuusRender` includes RmlUi
+- [x] **Step 13.2: Build.cs dep (`6.4`).** No public header of `VaCuusRender` includes RmlUi
       any more (the recorder header moved to Private in M1's wrap-up) — move `VaCuusRml` from
       `PublicDependencyModuleNames` to `PrivateDependencyModuleNames` and delete the stale
       comment. Rebuild to confirm.
-- [ ] **Step 13.3: Task 10 re-review follow-ups (`VaCuus-akj.6.29`).** Added mid-flight; the
+- [x] **Step 13.3: Task 10 re-review follow-ups (`VaCuus-akj.6.29`).** Added mid-flight; the
       re-review of Task 10's fixes approved with five minor items, and this is the right task to
       absorb them. The one that matters is a **contract gap, not a bug**: after the C1 fix the RmlUi
       cache clear lives in the **editor-only** `FVaCuusLiveReload::ReloadAllLiveViews`, while
@@ -770,7 +770,19 @@ publish on the frame a texture lands.
       `.gitignore` line (it must be written inside a watched root, which is git-tracked);
       `DebouncePollSeconds` is still public under a claim no test honours (I5 left one constant
       behind); and `FlushNow()` now has no production caller. Nits listed on the bead.
-- [ ] **Step 13.4: Commit:** `git commit -am "fix: exact-EOF Tell(); private VaCuusRml dep; task 10 review follow-ups (closes VaCuus-akj.6.1, VaCuus-akj.6.4, VaCuus-akj.6.29)"`
+
+⚠️ **Correction to a fix I prescribed.** The Task 12 review's completeness tripwire was to be
+closed by "four more `offsetof` clauses". That does not work, and the finding is worse than stated:
+a `uint32` between `Type` and `Geometry` occupies offsets 4–7 and shifts **nothing** — `sizeof` stays
+112 and every other member keeps its offset — so `offsetof` is *structurally incapable* of seeing a
+field that fits existing padding. Built both ways to confirm. What catches it is a **member-count**
+check: `FVaCuusCommand` is an aggregate, so brace-initialising it with one initialiser too many is
+ill-formed inside a `requires`-expression. The offset clauses were kept for a different purpose than
+I gave them — they catch **reordering**, which leaves both `sizeof` and the member count intact.
+Rule of thumb now recorded: `sizeof` catches growth, `offsetof` catches reordering, member count
+catches insertion into padding; a "every field is handled somewhere" guard needs all three.
+
+- [x] **Step 13.4: Commit:** `git commit -am "fix: exact-EOF Tell(); private VaCuusRml dep; task 10 review follow-ups (closes VaCuus-akj.6.1, VaCuus-akj.6.4, VaCuus-akj.6.29)"`
 
 ---
 
