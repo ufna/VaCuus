@@ -790,22 +790,30 @@ catches insertion into padding; a "every field is handled somewhere" guard needs
 
 **Files:** `Content/DevUI/m2_demo.rml|.rcss` (interactive document), spec §11 row updates.
 
-- [ ] **Step 14.1: Demo document** — buttons with `:hover`/`:active` styling, a scrollable
+- [x] **Step 14.1: Demo document** — buttons with `:hover`/`:active` styling, a scrollable
       list (wheel), a text `<input>`, a pass-through region marked `vacuus-passthrough`, and
       `nav`-annotated focusables for pad navigation. Console command `vacuus.M2Demo`.
-- [ ] **Step 14.2: Acceptance run (spec §14 M2)** — in PIE:
+- [x] **Step 14.2: Acceptance run (spec §14 M2)** — in PIE:
   1. Mouse hover/click/drag/wheel work; clicks outside interactive rects reach the game.
   2. Keyboard types into the input; Tab moves focus; Shift-Tab moves back.
   3. Gamepad (or synthesized) spatial nav moves focus and activates.
   4. Live reload: edit the RCSS, UI updates without leaving PIE.
   5. `stat vacuus` shows **zero** game-thread RmlUi cost (Update/Record now on the UI thread)
      and no hitches on document load.
-- [ ] **Step 14.3: Measure** at 1920×1080 for 60 s with `vacuus.M1HUD.PerfLog 1`: game-thread
+- [x] **Step 14.3: Measure** at 1920×1080 for 60 s with `vacuus.M1HUD.PerfLog 1`: game-thread
       cost (input + snapshot read) must be ≤0.10 ms (spec §11 gate); UI-thread frame cost;
       render replay unchanged. Capture an Insights trace and confirm **no game-thread wait on
       any VaCuus lock** and no `FlushRenderingCommands`.
-- [ ] **Step 14.4: Update spec §11** rows with measured M2 numbers (game-thread row, idle row).
-- [ ] **Step 14.5: Commit + merge:**
+- [x] **Step 14.4: Update spec §11** rows with measured M2 numbers (game-thread row, idle row).
+**Step 14.1's packaging premise was wrong** — recorded here because the plan asserted it.
+`Config/FilterPlugin.ini` has exactly **one** consumer in the engine (`RunUAT BuildPlugin`), appears
+in no other AutomationTool file, and `/Content/...` is already in that command's **default** filter.
+It could never have affected a cooked game. The real staging mechanism is `RuntimeDependencies` in
+`VaCuus.Build.cs`, expanded by UBT into the build receipt — verified empirically by building the
+game target and finding all six loose files in `VcHost.target` as `UFS`. A full cook+stage+pak was
+not run; the receipt (staging's exact input) and the source chain were.
+
+- [x] **Step 14.5: Commit + merge:**
 
 ```bash
 git commit -am "feat: M2 interaction demo + measured acceptance"
@@ -814,7 +822,7 @@ cd /w/Unreal/VaCuus && git merge --ff-only m2-ui-thread
 bd close VaCuus-akj.6 --reason="M2 accepted: <numbers>" --suggest-next
 ```
 
-- [ ] **Step 14.6: File follow-ups** for anything deferred (Windows IME validation, world-space
+- [x] **Step 14.6: File follow-ups** for anything deferred (Windows IME validation, world-space
       input, JS-side input hooks) as beads under M3.
 
 ---

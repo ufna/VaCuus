@@ -313,13 +313,13 @@ budgets are asserted from M3.
 
 | Metric | Budget | Status |
 |---|---|---|
-| Game-thread cost (input+snapshots) | ≤0.10 ms/frame | gate |
-| UI-thread Update + command record (reference HUD) | ≤0.50 ms/frame | gate |
+| Game-thread cost (input+snapshots) | ≤0.10 ms/frame | gate — **measured M2: 0.004 ms typical, 0.011 ms p99-sum @1080p (2026-07-30)**. Three scopes now cover the whole game-thread path: `GameTick` (subsystem tick — snapshot poll + UI-thread pulse), `SlateTick` (per view), `Input` (per input *event*, whole handler incl. the snapshot scan). 60 s soaks, both documents. **Honest exception: 1 frame in 13,073** on the M1 run had a 0.182 ms `GameTick` sample (and one 0.132 ms), both in fully idle windows with no VaCuus activity — they read as OS scheduling blips rather than VaCuus work, but they are above the gate and are recorded rather than smoothed. 25× headroom in the typical case |
+| UI-thread Update + command record (reference HUD) | ≤0.50 ms/frame | gate — **measured M2: 0.052 ms avg / 0.113 ms p99 (M1 HUD), 0.023 ms avg / 0.060 ms p99 (M2 demo) @1080p (2026-07-30)**, Update+Record summed, 13k frames each. Note this is the M1/M2 subset, not the full reference HUD (~10× the element count, animated), so the ~4× headroom is not the final margin |
 | Render-thread replay (re-replay frames) | ≤0.50 ms @1080p | gate — **measured M1: 0.03 ms avg / 0.07 ms p99 @1080p, 97 draws (2026-07-29)**. M1 static HUD subset, 100 s `-RenderOffscreen` soak, 15,324 replays, Linux Vulkan; steady-state max ≤0.37 ms, single 1.48 ms outlier on the first replay (font-atlas + image upload). Budget kept at 0.50 ms: ~7x p99 headroom for the full reference HUD (~10x the M1 element count, animated) |
-| Composite-only frames (idle UI) | ≤0.05 ms | gate — measured M1 composite section: 0.004 ms avg / 0.008 ms p99 (2026-07-29; render-thread graph-build cost of the composite pass — true idle frames need M2 dirty-detection, M1 re-records every frame) |
+| Composite-only frames (idle UI) | ≤0.05 ms | gate — **measured M2 on genuinely idle frames: 0.004 ms avg / 0.010–0.013 ms p99 (2026-07-30)**. M1 could only measure the composite *section* because it re-recorded and re-published every frame; M2's idle short-circuit makes true idle frames exist, and on a static HUD **13,072 of 13,074 frames published nothing at all** (M2 demo: 13,496 of 13,571, 99.4% idle). On those frames `Replay` is not called — it produces **zero samples**, not a small cost — so the composite is the entire per-frame render-thread cost of an idle UI. 12× under gate |
 | Added RAM (reference HUD, incl. JS heap ≤16 MB cap) | ≤32 MB | gate |
 | Added disk (Win64 shipping) | ≤10 MB | gate |
-| Frame-drop on document load (async path) | 0 hitches >1 ms on game thread | gate |
+| Frame-drop on document load (async path) | 0 hitches >1 ms on game thread | gate — **measured M2 (2026-07-30)**: game-thread max across the load window 0.033 ms; window fps 209.1 vs 208.3–234.2 steady. Separately stress-tested with a deliberately pathological image (6000×6000, 144 MB decoded, 150 KB on disk so the read and the dimension probe stay trivial): the UI thread's `Update` max was 0.095 ms, **indistinguishable from steady state**. The cost moved to the render thread as expected — one 36.6 ms `UpdateTexture2D`, never recurring — because M2 made the *decode* async and deliberately left the *upload* synchronous (`VaCuus-akj.6.25`, gated on a measurement: ~1 ms of render thread per 4 MB) |
 
 ## 12. Testing
 
