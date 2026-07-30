@@ -53,10 +53,10 @@ struct FVaCuusCommand
  * uint8, uint16 or uint32 between Type and Geometry puts it in the seven bytes of padding
  * at offsets 1..7. It shifts NOTHING -- sizeof stays 112 and every other member keeps its
  * offset -- so a layout tripwire built only from sizeof and offsetof compiles it silently,
- * however many offsets it pins. The field then never reaches
- * FVaCuusCommandHashImage, the hash cannot see it change, and the gate reports "unchanged"
- * for a frame that is not: a UI frozen on stale pixels with no diagnostic anywhere. That is
- * the one failure mode the idle short-circuit must not have, so it is asserted directly.
+ * however many offsets it pins. The field then never reaches FVaCuusCommandHashImage, the
+ * hash cannot see it change, and the gate reports "unchanged" for a frame that is not: a UI
+ * frozen on stale pixels with no diagnostic anywhere. That is the one failure mode the idle
+ * short-circuit must not have, so it is asserted directly.
  *
  * FVaCuusCommand is an aggregate (no user-declared constructors, no bases, no private
  * members; the default member initialisers do not change that in C++14 and later), so its
@@ -67,8 +67,14 @@ struct FVaCuusCommand
  */
 namespace VaCuusCommandLayout
 {
-/** Stands in for any member's type: converts to whatever the member happens to be. */
-struct FAnyMember
+/**
+ * Stands in for any member's type: converts to whatever that member happens to be, so the
+ * count below does not have to be kept in step with the member TYPES as well.
+ *
+ * Declared and never defined, which is all it needs: it is only ever named inside the
+ * unevaluated requires-expression below.
+ */
+struct FAny
 {
 	template <typename T>
 	constexpr operator T() const;
@@ -76,12 +82,11 @@ struct FAnyMember
 
 /** Can FVaCuusCommand be brace-initialised from exactly this many initialisers? */
 template <typename... TInitialisers>
-constexpr bool bTakes = requires { FVaCuusCommand{TInitialisers{}...}; };
+constexpr bool bTakesInitialisers = requires { FVaCuusCommand{TInitialisers{}...}; };
 
-using FAny = FAnyMember;
-
-constexpr bool bHasExactlySixMembers = bTakes<FAny, FAny, FAny, FAny, FAny, FAny> &&	//
-									   !bTakes<FAny, FAny, FAny, FAny, FAny, FAny, FAny>;
+constexpr bool bHasExactlySixMembers =
+	bTakesInitialisers<FAny, FAny, FAny, FAny, FAny, FAny> &&
+	!bTakesInitialisers<FAny, FAny, FAny, FAny, FAny, FAny, FAny>;
 } // namespace VaCuusCommandLayout
 
 /**
