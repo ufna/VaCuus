@@ -649,7 +649,16 @@ the value, so the replayer needs no change — that *is* the swap Step 11.3 desc
 Three reasons: **(1)** the out-of-band path breaks Task 12 — a texture arriving while the idle
 short-circuit is publishing nothing would be installed but never re-replayed, leaving the
 placeholder on screen until an unrelated change dirtied the frame; an in-band arrival is a
-non-empty `NewTextures`, which is exactly the signal that gate reads. **(2)** `FVaCuusCommandBuffer`
+non-empty `NewTextures`, which is the signal that gate **will have to** read.
+
+⚠️ **Wording correction (mine).** The original phrasing above said "the signal that gate already
+reads", present tense. That was about Task 12's *design*, but it propagated into a Task 11 code
+comment as an assertion that an idle short-circuit exists in the plugin **today** — it does not,
+and the Task 11 quality review caught it (`grep -rn "idle"` in `VaCuusRender` matched only that
+comment). Today every UI frame is published unconditionally and the newest buffer is always fully
+replayed, so a late payload forces a re-replay for a completely different reason. Cite the reason
+that exists; note the future requirement as a future requirement. This is the third comment on this
+milestone whose justification named something that wasn't there, and the first one I authored. **(2)** `FVaCuusCommandBuffer`
 documents itself as the single channel for all resource traffic; a second private channel means
 two orderings to reason about. **(3)** the replayer is a by-value member of the Slate element,
 so reaching it from a worker task needs a weak pointer across two modules plus
@@ -692,6 +701,16 @@ RmlUi exposes **no** dirty signal (`Update`/`Render` return unconditional `true`
 `IsLayoutDirty` is protected/private; `RenderManager` has no version counter;
 `GetNextUpdateDelay` is a *timer* hint, not a change flag). So: record as usual, then gate
 publication on a content hash.
+
+**HARD CONSTRAINT from Task 11 — gate the publish, never the record.** Task 11 drains completed
+async texture decodes at the end of `BeginFrame()`, and that drain is what turns a finished decode
+into a `NewTextures` entry. If the idle short-circuit skips `RecordAndPublishFrame()` (or
+`BeginFrame`) instead of skipping only the *publish*, the drain never runs and a loaded image stays
+a transparent 1×1 placeholder **forever** — precisely the failure the in-band transport was chosen
+to avoid, just moved one level up. Record every frame; decide only whether to publish. Because the
+drain runs before `Context::Update()`, an arrival is already sitting in `NewTextures` by the time
+the gate evaluates the resource deltas, so the "arrays are all empty" test correctly forces a
+publish on the frame a texture lands.
 
 - [ ] **Step 12.1: Hash field-by-field.** `FXxHash64Builder` over each `FVaCuusCommand`'s
       members — **never** a raw `HashBuffer` over the array: `EVaCuusCommandType` (uint8) at
