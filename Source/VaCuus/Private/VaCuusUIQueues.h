@@ -11,6 +11,7 @@
 #include "Templates/SharedPointer.h"
 #include "Templates/UniquePtr.h"
 
+class FVaCuusBoundModel;
 class IVaCuusDocumentHost;
 
 /** What a queued command asks the UI thread to do. */
@@ -54,6 +55,19 @@ enum class EVaCuusCommandKind : uint8
 
 	/** Carries only ViewSize; see the note below on coalescing. */
 	Resize,
+
+	/**
+	 * Creates one data model on the view's context and binds its variables to the model's
+	 * UI-side shadow (M3a). Carries the shared FVaCuusBoundModel.
+	 *
+	 * ROUTED, AND IT MUST REACH THE CONTEXT BEFORE ANY LOAD DOES. `data-model` is read
+	 * exactly once, in Element::SetParent (Element.cpp:2202-2219), so a model created after
+	 * its document loaded never attaches -- and the failure is an RmlUi LT_ERROR, which is
+	 * compiled out in every configuration this plugin builds (spec 8), plus an inert
+	 * document. The ordering is the producer's to get right; the queue is FIFO from a single
+	 * producer, so a BindModel enqueued before a LoadDocument* is drained before it.
+	 */
+	BindModel,
 
 	/** Shows or hides the view's document per bVisible. */
 	SetVisible,
@@ -105,6 +119,17 @@ struct FVaCuusUICommand
 
 	/** AddView only: the status object the host reports load results through. */
 	TSharedPtr<FVaCuusViewStatus> Status;
+
+	/**
+	 * BindModel only: the model both threads share.
+	 *
+	 * SHARED, NOT HANDED OVER (unlike Host above), because the game thread keeps sampling and
+	 * publishing into it for the rest of the view's life. The UI thread takes its own
+	 * reference when it drains this, and drops it in RemoveView() -- after the host's
+	 * Shutdown() has destroyed the Rml::Context that holds a raw pointer into the model's
+	 * shadow.
+	 */
+	TSharedPtr<FVaCuusBoundModel> Model;
 };
 
 /**
