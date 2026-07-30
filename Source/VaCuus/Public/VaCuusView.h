@@ -12,6 +12,7 @@
 
 class FVaCuusUIThread;
 class UVaCuusSubsystem;
+struct FVaCuusInputEvent;
 struct FVaCuusViewStatus;
 
 /**
@@ -92,6 +93,15 @@ public:
 	/** Queues a re-layout at this pixel size. Only sent when the size actually changed. */
 	void Resize(FIntPoint ViewSize);
 
+	/**
+	 * Queues one input event for this view's context. Never blocks, never fails: a
+	 * dead view drops it.
+	 *
+	 * The single choke point for input on the game thread, which is also why the
+	 * frame-ordering diagnostic below lives here rather than in the widget.
+	 */
+	void SendInput(const FVaCuusInputEvent& Event);
+
 	uint32 GetViewId() const { return ViewId; }
 
 	/** Frames this view has published to the render thread. Useful for headless waits. */
@@ -119,14 +129,24 @@ public:
 	 * "does the UI want this pointer event" -- which is what lets SVaCuusWidget
 	 * return Handled/Unhandled without ever asking the UI thread anything.
 	 *
-	 * LIFETIME: the reference is to this object's own cache and stays valid until
-	 * the NEXT PollStatus(), i.e. for the rest of the game frame. That is
-	 * deliberate: PollStatus() runs from UVaCuusSubsystem::Tick, inside the world
-	 * tick, and Slate ticks and dispatches input later in the same frame
-	 * (FSlateApplication::Tick runs after GEngine->Tick), so every input handler in
-	 * one frame tests against ONE stable geometry. The alternative -- reading the
-	 * triple buffer per event -- would let the answer change between a mouse-down
-	 * and the mouse-up that releases its capture.
+	 * LIFETIME: the reference is to this object's own cache and stays valid until the
+	 * NEXT PollStatus(), i.e. for the rest of the game frame. That is the guarantee
+	 * that matters -- ONE STABLE SNAPSHOT PER DISPATCH BATCH, AT MOST ONE FRAME OLD --
+	 * because it is what keeps the answer from changing between a mouse-down and the
+	 * mouse-up that releases its capture. Reading the triple buffer per event would
+	 * not.
+	 *
+	 * THE ACTUAL ORDERING, measured rather than assumed (bead VaCuus-akj.6.13): input
+	 * is dispatched BEFORE this cache is refreshed, so a handler sees the snapshot
+	 * polled in the PREVIOUS game frame. On Linux, SDL events are processed
+	 * synchronously inside FPlatformApplicationMisc::PumpMessages
+	 * (LaunchEngineLoop.cpp:5784) -- FLinuxApplication::AddPendingEvent only defers
+	 * when GPumpingMessagesOutsideOfMainLoop is set, and that flag is set on Windows
+	 * only (WindowsPlatformMisc.cpp:4439) -- while PollStatus() runs from
+	 * UVaCuusSubsystem::Tick inside GEngine->Tick (LaunchEngineLoop.cpp:5859), 75
+	 * lines later. So the ordering is: dispatch input (frame N) -> refresh cache
+	 * (frame N) -> dispatch input (frame N+1). One frame of staleness, and the
+	 * per-frame stability above is unaffected.
 	 *
 	 * Before the first published frame this is the default snapshot: Generation 0,
 	 * no rects, nothing interactive.
@@ -144,6 +164,13 @@ public:
 private:
 	/** Copies the newest published snapshot into CachedSnapshot, if there is a newer one. */
 	void RefreshSnapshot();
+
+	/**
+	 * Logs the one line of evidence for the ordering claim on GetSnapshot(): what the
+	 * frame's first input event saw versus what this frame's poll produced. Once per
+	 * session, Verbose -- it answers a design question, not a per-frame one.
+	 */
+	void LogFrameOrderingOnce();
 
 	/** The UI thread through the subsystem, or null once invalidated / after module shutdown. */
 	FVaCuusUIThread* GetUIThread() const;
@@ -165,6 +192,25 @@ private:
 	 * frame and the TArray keeps its allocation.
 	 */
 	FVaCuusInteractiveSnapshot CachedSnapshot;
+
+	/** GFrameCounter when CachedSnapshot last took a NEW generation. */
+	uint64 SnapshotCachedOnFrame = 0;
+
+	//~ Frame-ordering evidence for bead VaCuus-akj.6.13, logged once per session
+	//~ (Verbose) the first time input and a poll happen in the same frame. Recording
+	//~ what the FIRST event of a frame saw, because that is the one whose staleness
+	//~ the ordering claim is about.
+
+	/** GFrameCounter of the frame whose first input event is recorded below. */
+	uint64 InputObservedFrame = 0;
+
+	/** Snapshot generation that first event answered from, and when it was cached. */
+	uint64 InputObservedGeneration = 0;
+	uint64 InputObservedCachedOnFrame = 0;
+
+	/** Set by SendInput(), consumed by the next PollStatus() in the same frame. */
+	bool bInputOrderingLogPending = false;
+	bool bLoggedFrameOrdering = false;
 
 	/** Process-unique; allocated by the UI thread and stamped into every command. */
 	uint32 ViewId = 0;

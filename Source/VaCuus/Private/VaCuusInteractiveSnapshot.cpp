@@ -96,12 +96,19 @@ static FMarkerAttributes ReadMarkerAttributes(const Rml::Element& Element)
  * The tag half of the interactive predicate (see the header for the whole rule).
  * These are exactly the tags RmlUi ships interactive behaviour for, plus `a`,
  * which is not a built-in element but is the universal "clickable" convention in
- * RML documents. Tags are compared lowercase because the XML parser lowercases
- * them before instancing (XMLParser.cpp:61,74).
+ * RML documents. Tags really are lowercase here: unlike attribute names, element
+ * names ARE lowercased by the parser before instancing (XMLParser.cpp:136,167).
+ *
+ * The three scrollbar tags are controller decision D8. They are the names
+ * ElementScroll instances its non-DOM children under (ElementScroll.cpp:193,213),
+ * they have no tab-index and carry no attribute, and the DFS already walks them --
+ * so before this a drag on a scrollbar was reported as pass-through and scrolled
+ * the game instead of the list under the cursor.
  */
 static bool IsKnownInteractiveTag(const Rml::String& Tag)
 {
-	return Tag == "button" || Tag == "input" || Tag == "select" || Tag == "textarea" || Tag == "a";
+	return Tag == "button" || Tag == "input" || Tag == "select" || Tag == "textarea" || Tag == "a" ||
+		Tag == "scrollbarvertical" || Tag == "scrollbarhorizontal" || Tag == "scrollbarcorner";
 }
 
 /** Window-space AABB of an element's box area, snapped outwards to whole pixels. */
@@ -271,9 +278,9 @@ FVaCuusSnapshotBuildStats BuildVaCuusInteractiveSnapshot(
 	// already knows. What it cannot know is whether keys will land on an element --
 	// Context::ProcessKeyDown dispatches to `focus`, or to the context root if there
 	// is none, and the root is not a document and has no default action, so nothing
-	// happens (Context.cpp:533-537). Root == "no document wants the keyboard".
+	// happens (Context.cpp:533-537).
 	Rml::Element* const Focus = Context.GetFocusElement();
-	OutSnapshot.bWantsKeyboardFocus = Focus != nullptr && Focus != Context.GetRootElement();
+	bool bFocusIsRealElement = Focus != nullptr && Focus != Context.GetRootElement();
 
 	FSnapshotWalk Walk(OutSnapshot);
 
@@ -287,9 +294,22 @@ FVaCuusSnapshotBuildStats BuildVaCuusInteractiveSnapshot(
 	{
 		if (Rml::ElementDocument* Document = Context.GetDocument(Index))
 		{
+			// Controller decision D9: a document element holding focus is not a reason to
+			// take Slate's keyboard focus away from the game. Show() focuses the document
+			// itself whenever nothing inside it carries `autofocus` (FocusFlag::Auto), so
+			// without this test every shown document would claim the keyboard. Compared
+			// against the documents we are already iterating rather than cast or
+			// tag-matched -- this is the exact set of document elements in the context.
+			if (Document == Focus)
+			{
+				bFocusIsRealElement = false;
+			}
+
 			Walk.Visit(Document, ViewRect);
 		}
 	}
+
+	OutSnapshot.bWantsKeyboardFocus = bFocusIsRealElement;
 
 	FVaCuusSnapshotBuildStats Stats;
 	Stats.NumDocuments = NumDocuments;

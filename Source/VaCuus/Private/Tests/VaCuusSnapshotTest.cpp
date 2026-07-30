@@ -143,6 +143,12 @@ public:
 		return Context != nullptr && RmlDocument != nullptr && ViewSize.X > 0 && ViewSize.Y > 0;
 	}
 
+	virtual Rml::Context* GetContext() const override
+	{
+		check(FVaCuusUIThread::IsInUIThread());
+		return Context;
+	}
+
 	virtual void RecordAndPublishFrame() override
 	{
 		check(FVaCuusUIThread::IsInUIThread());
@@ -389,8 +395,15 @@ bool FVaCuusSnapshotTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("An upper-case VACUUS-INTERACTIVE div is reported"),
 		Snapshot.InteractiveRects.Contains(FIntRect(280, 250, 340, 280)));
 
-	// 6. A document holding focus is what makes keyboard input reach the UI at all.
-	TestTrue(TEXT("A shown document wants the keyboard"), Snapshot.bWantsKeyboardFocus);
+	// 6. Controller decision D9: a document element holding focus is NOT "the UI wants
+	// the keyboard". Show() focuses the document itself when nothing inside it carries
+	// `autofocus` (FocusFlag::Auto), and none of the elements above is focusable, so
+	// this document holds focus without any real focus target -- and must not make a
+	// click steal Slate focus from the game. The positive case (a genuinely focused
+	// element flips this to true) is proven in VaCuus.Input.Routing, which can move
+	// focus by clicking.
+	TestFalse(TEXT("A document that only focuses itself does not want the keyboard"),
+		Snapshot.bWantsKeyboardFocus);
 
 	// 7. Hiding the document empties the snapshot: IsVisible() prunes at the root, so
 	// the game thread stops claiming coverage on the very next frame.

@@ -58,6 +58,7 @@ public:
 	virtual void CloseDocument() override;
 	virtual void SetVisible(bool bVisible) override;
 	virtual bool HasView() const override;
+	virtual Rml::Context* GetContext() const override;
 	virtual void RecordAndPublishFrame() override;
 	//~ End IVaCuusDocumentHost
 
@@ -122,6 +123,17 @@ private:
 	 * the previous buffer handed back again, so it must never repeat or reset.
 	 */
 	uint64 SnapshotGeneration = 0;
+
+	/**
+	 * This view's cursor, and the global latch serial it was taken from.
+	 *
+	 * Held per host because the latch is process-wide (there is one RmlUi
+	 * SystemInterface) while `cursor` is per context: sampling right after our own
+	 * Update() and adopting only on a serial change is what attributes a push to the
+	 * view that caused it. See GetVaCuusLatchedMouseCursor().
+	 */
+	EMouseCursor::Type LatchedCursor = EMouseCursor::Default;
+	uint64 LatchedCursorSerial = 0;
 
 	/** Published snapshots, for the throttled perf log below. */
 	uint64 NumSnapshotsPublished = 0;

@@ -3,9 +3,12 @@
 #include "VaCuusView.h"
 
 #include "VaCuusDefines.h"
+#include "VaCuusInputEvent.h"
 #include "VaCuusSubsystem.h"
 #include "VaCuusUIThread.h"
 #include "VaCuusViewStatus.h"
+
+#include "CoreGlobals.h"
 
 void UVaCuusView::InitializeView(UVaCuusSubsystem* InSubsystem, uint32 InViewId,
 	const TSharedRef<FVaCuusViewStatus>& InStatus, FIntPoint InInitialViewSize)
@@ -117,6 +120,35 @@ void UVaCuusView::Resize(FIntPoint ViewSize)
 	UE_LOG(LogVaCuus, Verbose, TEXT("View %u: queued resize to %dx%d"), ViewId, ViewSize.X, ViewSize.Y);
 }
 
+void UVaCuusView::SendInput(const FVaCuusInputEvent& Event)
+{
+	check(IsInGameThread());
+
+	// Recorded before the enqueue, and only for the first event of each frame: this
+	// is the frame-ordering evidence for bead VaCuus-akj.6.13. What matters is which
+	// snapshot the handler that produced this event answered Slate from -- see
+	// PollStatus() for the log line and GetSnapshot() for the conclusion.
+	if (InputObservedFrame != GFrameCounter)
+	{
+		InputObservedFrame = GFrameCounter;
+		InputObservedGeneration = CachedSnapshot.Generation;
+		InputObservedCachedOnFrame = SnapshotCachedOnFrame;
+		bInputOrderingLogPending = true;
+	}
+
+	FVaCuusUIThread* UIThread = GetUIThread();
+	if (!UIThread)
+	{
+		// Ordinary: a widget can outlive its view by a frame during teardown. Verbose
+		// rather than Warning because input arrives dozens of times per second and a
+		// louder level would bury the log.
+		UE_LOG(LogVaCuus, Verbose, TEXT("Input event on an invalid view is ignored"));
+		return;
+	}
+
+	UIThread->EnqueueInput(ViewId, Event);
+}
+
 uint64 UVaCuusView::GetFramesPublished() const
 {
 	return Status.IsValid() ? Status->FramesPublished.load(std::memory_order_acquire) : 0;
@@ -152,6 +184,33 @@ void UVaCuusView::RefreshSnapshot()
 	}
 
 	CachedSnapshot = Published;
+	SnapshotCachedOnFrame = GFrameCounter;
+}
+
+void UVaCuusView::LogFrameOrderingOnce()
+{
+	if (!bInputOrderingLogPending)
+	{
+		return;
+	}
+	bInputOrderingLogPending = false;
+
+	if (bLoggedFrameOrdering)
+	{
+		return;
+	}
+	bLoggedFrameOrdering = true;
+
+	// The measurement behind the ordering claim on GetSnapshot(): both numbers are
+	// from the SAME game frame -- what the frame's first input event answered from,
+	// and what this frame's poll has just made available. If the first is older, input
+	// ran before the poll.
+	UE_LOG(LogVaCuus, Verbose,
+		TEXT("View %u frame ordering: game frame %llu dispatched its first input event against snapshot generation %llu ")
+		TEXT("(cached on game frame %llu); PollStatus on frame %llu now caches generation %llu. ")
+		TEXT("Input therefore runs BEFORE the poll -- one frame of snapshot staleness."),
+		ViewId, InputObservedFrame, InputObservedGeneration, InputObservedCachedOnFrame,
+		GFrameCounter, CachedSnapshot.Generation);
 }
 
 void UVaCuusView::PollStatus()
@@ -166,6 +225,9 @@ void UVaCuusView::PollStatus()
 	// First, and unconditionally: the snapshot is refreshed every frame whether or
 	// not a load completed, and the load-result path below returns early most frames.
 	RefreshSnapshot();
+
+	// Immediately after, so the log line can print both halves of the comparison.
+	LogFrameOrderingOnce();
 
 	// Acquire pairs with the host's release store, so the result read below belongs
 	// to this serial and not to the load before it.

@@ -65,11 +65,18 @@ class Context;
  * are the observable proxies. `vacuus-interactive` is the escape hatch for
  * anything the proxies miss -- a plain <div> wired up from script, most obviously.
  *
- * KNOWN GAPS (Task 6 territory, not silent): RmlUi's non-DOM scrollbar children
- * (`scrollbarvertical`/`scrollbarhorizontal`/`scrollbarcorner`) are traversed but
- * match none of the three clauses, so a drag on a scrollbar is not reported as
- * interactive; and only an element's MAIN box is measured, so fragmented inline
- * content under-reports.
+ * The known-interactive tag list includes RmlUi's three non-DOM scrollbar tags
+ * (`scrollbarvertical`, `scrollbarhorizontal`, `scrollbarcorner` -- the names
+ * ElementScroll instances them under, ElementScroll.cpp:193,213). Controller
+ * decision D8: the DFS already walks them, because it passes
+ * include_non_dom_elements, but they carry no tab-index and no attribute, so
+ * without this a drag on a scrollbar read as pass-through and scrolled the game
+ * instead of the list.
+ *
+ * KNOWN GAP (not silent): only an element's MAIN box is measured, so fragmented
+ * inline content under-reports. RmlUi's own hit test unions all of an element's
+ * boxes (Element.cpp:546-565); a HUD's interactive elements are block-level, so
+ * this is deferred rather than solved.
  */
 struct FVaCuusInteractiveSnapshot
 {
@@ -88,16 +95,29 @@ struct FVaCuusInteractiveSnapshot
 
 	/**
 	 * Cursor shape the UI wants, for SVaCuusWidget::OnCursorQuery. RmlUi pushes
-	 * cursor changes through SystemInterface::SetMouseCursor (and only on change),
-	 * so the source has to be latched there -- that is Task 6; until then this
-	 * stays Default.
+	 * cursor changes through SystemInterface::SetMouseCursor and only on change, so
+	 * the source is a latch (GetVaCuusLatchedMouseCursor) that the host samples right
+	 * after its own Context::Update(); the value is carried here rather than queried,
+	 * because OnCursorQuery is a const game-thread call that cannot ask the UI thread
+	 * anything.
 	 */
 	EMouseCursor::Type Cursor = EMouseCursor::Default;
 
 	/**
-	 * True when something inside a document holds RmlUi focus, i.e. keys sent to
-	 * this view will reach an element. Task 6 uses it to decide whether a click on
-	 * an interactive rect should also take Slate user focus.
+	 * True when a REAL focusable element inside a document holds RmlUi focus --
+	 * neither the context root nor a document element itself (controller decision
+	 * D9). SVaCuusWidget takes Slate user focus on a click only when this is set.
+	 *
+	 * WHY EXCLUDE THE DOCUMENT ELEMENT: ElementDocument::Show() focuses the document
+	 * itself when nothing inside it carries `autofocus` (FocusFlag::Auto), so "a
+	 * document is up" would otherwise read as "the UI wants the keyboard" and every
+	 * click anywhere on an interactive rect would steal focus from the game.
+	 *
+	 * CONSEQUENCE, and it is real: this describes the focus state of the PREVIOUS
+	 * published frame, so the click that first focuses a text field cannot know it did
+	 * -- the widget only takes Slate focus on the click AFTER that. Fine for buttons
+	 * (RmlUi handles those entirely UI-side), a wart for typing, and the reason Task 9
+	 * will want per-rect focusability in the snapshot rather than one view-wide bool.
 	 */
 	bool bWantsKeyboardFocus = false;
 
@@ -159,3 +179,19 @@ struct FVaCuusSnapshotBuildStats
  */
 VACUUS_API FVaCuusSnapshotBuildStats BuildVaCuusInteractiveSnapshot(
 	Rml::Context& Context, FIntPoint ViewSize, uint64 Generation, FVaCuusInteractiveSnapshot& OutSnapshot);
+
+/**
+ * The cursor RmlUi last asked for, and a serial that only moves when it did.
+ *
+ * The source of FVaCuusInteractiveSnapshot::Cursor, and it has to be a latch:
+ * RmlUi pushes the cursor name through SystemInterface::SetMouseCursor from inside
+ * Context::Update, only when the name changed (Context.cpp:1315-1327), and offers
+ * nothing to query. There is one system interface for the whole process but a
+ * cursor per context, so a host must sample this IMMEDIATELY after its own
+ * Update() and adopt the value only when the serial moved -- that is what
+ * attributes a change to the view that caused it. Sample it later, or without the
+ * serial test, and N views inherit each other's cursor.
+ *
+ * UI thread only (asserted): it is written from inside RmlUi.
+ */
+VACUUS_API EMouseCursor::Type GetVaCuusLatchedMouseCursor(uint64& OutSerial);

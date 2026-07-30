@@ -5,11 +5,14 @@
 #include "VaCuusDefines.h"
 #include "VaCuusDocumentHost.h"
 #include "VaCuusEngine.h"
+#include "VaCuusInputMap.h"
 #include "VaCuusUIQueues.h"
 
 #include "HAL/PlatformProcess.h"
 #include "HAL/PlatformTime.h"
 #include "HAL/RunnableThread.h"
+
+#include <RmlUi/Core/Context.h>
 
 namespace
 {
@@ -50,6 +53,140 @@ struct FVaCuusInlineUIThreadScope
 
 	uint32 Previous = 0;
 };
+
+/**
+ * Applies one input event to one context.
+ *
+ * RETURN VALUES ARE DELIBERATELY IGNORED, all of them, and that is not laziness:
+ * RmlUi's are not one concept. ProcessKeyDown/KeyUp/TextInput/MouseWheel return
+ * "the event was NOT consumed" (false means an element called StopPropagation),
+ * while ProcessMouseMove/ButtonDown/ButtonUp/MouseLeave return
+ * `!IsMouseInteracting()` -- a hover/active STATE hint evaluated after dispatch,
+ * not consumption (Context.cpp:849). Collapsing the two into a single "handled"
+ * bit is how embedders get this wrong. There is also nowhere for the answer to go:
+ * Slate was answered synchronously on the game thread from the published snapshot,
+ * frames ago in queue terms, and it cannot be un-answered now.
+ */
+void DispatchInputEvent(Rml::Context& Context, const FVaCuusInputEvent& Event)
+{
+	const int32 Modifiers = VaCuusInput::ToRmlModifiers(Event.Modifiers);
+
+	switch (Event.Kind)
+	{
+		case EVaCuusInputEventKind::MouseMove:
+			Context.ProcessMouseMove(Event.Position.X, Event.Position.Y, Modifiers);
+			break;
+
+		case EVaCuusInputEventKind::MouseDown:
+		case EVaCuusInputEventKind::MouseUp:
+		{
+			const int32 Button = VaCuusInput::ToRmlMouseButton(Event.Key);
+			if (Button == INDEX_NONE)
+			{
+				// Thumb buttons and the like: RmlUi gives no meaning to indices above 2,
+				// so this is dropped rather than dispatched under a made-up number.
+				UE_LOG(LogVaCuus, Verbose, TEXT("View %u: mouse button '%s' has no RmlUi index; event dropped"),
+					Event.ViewId, *Event.Key.ToString());
+				break;
+			}
+
+			// Position first. RmlUi's button handling resolves against its LAST
+			// processed mouse position (there is no position argument), and Slate can
+			// deliver a press with no move before it -- a click on a widget that just
+			// appeared under the cursor, a window that just took focus, or a
+			// synthesized event. Redundant when a move did precede it, and cheap:
+			// ProcessMouseMove guards its mousemove dispatch on the position actually
+			// having changed (Context.cpp:586-601), so this costs one hit test and
+			// emits no spurious events.
+			Context.ProcessMouseMove(Event.Position.X, Event.Position.Y, Modifiers);
+
+			if (Event.Kind == EVaCuusInputEventKind::MouseDown)
+			{
+				Context.ProcessMouseButtonDown(Button, Modifiers);
+			}
+			else
+			{
+				Context.ProcessMouseButtonUp(Button, Modifiers);
+			}
+			break;
+		}
+
+		case EVaCuusInputEventKind::MouseWheel:
+			// Same reason as above: the scroll target is derived from the hover element,
+			// i.e. from the last processed position.
+			Context.ProcessMouseMove(Event.Position.X, Event.Position.Y, Modifiers);
+
+			// TWO conversions in one line, both easy to get wrong:
+			//
+			// SIGN -- RmlUi documents positive Y as DOWN (Context.h:198) while UE's
+			// FPointerEvent::GetWheelDelta() is positive for wheel-UP. Hence the negation.
+			//
+			// UNIT -- RmlUi's 1.0 is UNIT_SCROLL_LENGTH (80.f) * the context's
+			// density-independent pixel ratio (Context.cpp:28,827), NOT one pixel. UE's
+			// delta is already in notches (1.0 per click), so it maps onto RmlUi's unit
+			// 1:1 and needs no scaling -- but passing a pixel delta here would scroll
+			// eighty times too far, which is why this is spelled out rather than assumed.
+			//
+			// The Vector2f overload, never the float one: ProcessMouseWheel(float, int)
+			// is the single @deprecated declaration in Context.h (line 195-196).
+			Context.ProcessMouseWheel(Rml::Vector2f(0.0f, -Event.WheelDelta), Modifiers);
+			break;
+
+		case EVaCuusInputEventKind::MouseLeave:
+			// Not optional: without it `mouse_active` stays set, the hover chain is never
+			// cleared and `:hover` styling sticks forever (Context.cpp:839-846). The next
+			// ProcessMouseMove re-arms the context.
+			Context.ProcessMouseLeave();
+			break;
+
+		case EVaCuusInputEventKind::KeyDown:
+		{
+			const Rml::Input::KeyIdentifier KeyId = VaCuusInput::ToRmlKey(Event.Key);
+			if (KeyId == Rml::Input::KI_UNKNOWN)
+			{
+				// Normal for localized punctuation and pseudo-keys: the character still
+				// arrives through the TextInput path, which is where it belongs.
+				break;
+			}
+
+			Context.ProcessKeyDown(KeyId, Modifiers);
+
+			// RmlUi does NOT synthesise a newline text-input from Return, so multiline
+			// controls stay empty unless the embedder sends one -- exactly what the SDL
+			// backend does (RmlUi_Platform_SDL.cpp:207-210). The `char` overload is safe
+			// here and only here: it silently drops any byte above 127 (Context.cpp:553-557)
+			// and '\n' is 10.
+			if (KeyId == Rml::Input::KI_RETURN || KeyId == Rml::Input::KI_NUMPADENTER)
+			{
+				Context.ProcessTextInput('\n');
+			}
+			break;
+		}
+
+		case EVaCuusInputEventKind::KeyUp:
+		{
+			const Rml::Input::KeyIdentifier KeyId = VaCuusInput::ToRmlKey(Event.Key);
+			if (KeyId != Rml::Input::KI_UNKNOWN)
+			{
+				Context.ProcessKeyUp(KeyId, Modifiers);
+			}
+			break;
+		}
+
+		case EVaCuusInputEventKind::TextInput:
+			// The Rml::Character (UTF-32) overload. Never ProcessTextInput(char): it
+			// returns false without dispatching for every byte above 127, so it would
+			// silently swallow all non-ASCII typing.
+			Context.ProcessTextInput(Rml::Character(Event.CodePoint));
+			break;
+
+		case EVaCuusInputEventKind::None:
+		default:
+			UE_LOG(LogVaCuus, Error, TEXT("An input event for view %u reached the drain with no kind set; dropped"),
+				Event.ViewId);
+			break;
+	}
+}
 }	 // namespace
 
 FVaCuusUIThread::FVaCuusUIThread(FVaCuusEngine& InEngine)
@@ -329,6 +466,23 @@ void FVaCuusUIThread::EnqueueShutdown()
 	Enqueue(MoveTemp(Command));
 }
 
+void FVaCuusUIThread::EnqueueInput(uint32 ViewId, FVaCuusInputEvent Event)
+{
+	// Same rule as commands: once a stop is requested the queues are closed, so
+	// nothing can be pushed behind the drain that the worker will never see.
+	if (bStopRequested.load(std::memory_order_acquire))
+	{
+		UE_LOG(LogVaCuus, Verbose, TEXT("Input event dropped: the UI thread is stopping"));
+		return;
+	}
+
+	Event.ViewId = ViewId;
+	Queues->Input.Enqueue(MoveTemp(Event));
+
+	// No Trigger() here on purpose -- see the header. The frame that consumes this is
+	// the one UVaCuusSubsystem::Tick asks for later in this same game frame.
+}
+
 void FVaCuusUIThread::Enqueue(FVaCuusUICommand&& Command)
 {
 	// Spec §4 teardown order starts with "stop accepting commands": once a stop is
@@ -499,8 +653,12 @@ void FVaCuusUIThread::RunFrame()
 	// accidental cross-thread call is caught here rather than inside RmlUi.
 	check(IsInUIThread());
 
+	// Commands first, then input: a view that was registered, resized or reloaded by
+	// this frame's commands receives this frame's input against its new state, never
+	// against the previous one.
 	DrainCommands();
-	// (input drain: Task 6; data snapshots: M3)
+	DrainInput();
+	// (data snapshots: M3)
 
 	// One recorded frame per view, each publishing its own command buffer straight to
 	// the render thread and its own interactive-region snapshot straight to the game
@@ -609,6 +767,44 @@ void FVaCuusUIThread::DrainCommands()
 				checkNoEntry();
 				break;
 		}
+	}
+}
+
+void FVaCuusUIThread::DrainInput()
+{
+	check(IsInUIThread());
+
+	// A stopping thread has already closed every document (the in-band Shutdown
+	// command does that), so there is nothing left for an event to reach. Drained
+	// anyway rather than left behind, so the loss is uniform with the command queue's.
+	const bool bStopping = bStopRequested.load(std::memory_order_acquire);
+
+	while (TOptional<FVaCuusInputEvent> Event = Queues->Input.Dequeue())
+	{
+		if (bStopping)
+		{
+			continue;
+		}
+
+		IVaCuusDocumentHost* Host = FindHost(Event->ViewId);
+		if (Host == nullptr)
+		{
+			// Ordinary during teardown, and ordinary for a stale widget: the view was
+			// removed while its input was still in flight.
+			UE_LOG(LogVaCuus, Verbose, TEXT("Input event for unknown view %u dropped"), Event->ViewId);
+			continue;
+		}
+
+		Rml::Context* Context = Host->GetContext();
+		if (Context == nullptr)
+		{
+			// A live view whose context is gone (mid-shutdown). Nothing to dispatch to;
+			// dropping is the only option and the snapshot has already been emptied, so
+			// the game thread has stopped claiming this region anyway.
+			continue;
+		}
+
+		DispatchInputEvent(*Context, *Event);
 	}
 }
 

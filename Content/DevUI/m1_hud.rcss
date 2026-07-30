@@ -228,6 +228,48 @@ body
 .kf-victim { color: #2020FF; } /* blue team accent */
 
 /* ------------------------------------------------------------------ */
+/* M2 interaction probe (bottom-left)                                  */
+/*                                                                     */
+/* RCSS only -- no script anywhere in M2. The point of the colour jump  */
+/* between the three states is that it is unmistakable in a screenshot: */
+/* dark slate -> bright amber on :hover -> orange on :active. Stays     */
+/* inside the M1 renderer subset (solid fills, 1px border,              */
+/* border-radius, text); no transitions, which are M5.                  */
+/* ------------------------------------------------------------------ */
+#demo-btn
+{
+	display: block;
+	position: absolute;
+	left: 16px;
+	bottom: 18px;
+	width: 200px;
+	height: 48px;
+	line-height: 46px;
+	text-align: center;
+	font-size: 17px;
+	color: #9FDCEF;
+	background-color: #0D1B22;
+	border: 1px #2F5566;
+	border-radius: 8px;
+
+	/* Latched by FVaCuusSystemInterface::SetMouseCursor and published in the
+	   snapshot, which is what SVaCuusWidget::OnCursorQuery answers from. */
+	cursor: pointer;
+}
+#demo-btn:hover
+{
+	color: #05090C;
+	background-color: #FFC44D;
+	border-color: #FFE9AE;
+}
+#demo-btn:active
+{
+	color: #FFFFFF;
+	background-color: #FF6A2A;
+	border-color: #FFC44D;
+}
+
+/* ------------------------------------------------------------------ */
 /* Ability bar (bottom-center); slot 3 on cooldown                     */
 /* ------------------------------------------------------------------ */
 #ability-bar
@@ -253,7 +295,16 @@ body
 	border-radius: 6px;
 	background-color: #0A1519;
 	vertical-align: top;
+
+	/* M2: `tab-index: auto` is what the interactive-region snapshot's predicate
+	   matches on for a plain <div>, so this is what makes a slot claim its pixels
+	   from the game -- and it is also RmlUi's own focusability requirement
+	   (ElementDocument's CanFocusElement), so the slots are keyboard-reachable. */
+	tab-index: auto;
+	cursor: pointer;
 }
+.slot:hover { border-color: #7DE6FF; background-color: #12262E; }
+.slot:active { border-color: #FFC44D; background-color: #1B3038; }
 .slot.last { margin-right: 0; }
 .slot-icon
 {

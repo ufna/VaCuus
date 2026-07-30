@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 
+#include "VaCuusInputEvent.h"
 #include "VaCuusViewStatus.h"
 
 #include "Containers/SpscQueue.h"
@@ -106,9 +107,37 @@ struct FVaCuusUICommand
 using FVaCuusCommandQueue = TSpscQueue<FVaCuusUICommand>;
 
 /**
+ * Input transport. Same container and same single-producer rule as the command
+ * queue: Slate dispatches input on the game thread and nowhere else.
+ *
+ * ONE SHARED QUEUE, NOT ONE PER VIEW (and the payload carries its ViewId exactly
+ * like a command does). Three reasons:
+ *
+ *  - Order is preserved GLOBALLY, not just within a view. Mouse capture, hover
+ *    and focus are all sequences, and with several views (multi-PIE) a per-view
+ *    queue would let view B's mouse-down be applied before view A's mouse-up
+ *    simply because the drain reached B's queue first.
+ *  - The producer stays trivial. A per-view queue means the game thread has to
+ *    find the queue for a view before every event, which is a lookup into
+ *    structures the UI thread owns -- the very thing this design avoids.
+ *  - It matches the command queue, so "dropped because the view is gone" and
+ *    "dropped because the thread is stopping" are one rule, in one place, with
+ *    one log line, rather than two.
+ *
+ * The cost is one branch per drained event to route it. A frame's worth of input
+ * is single digits, so that is not a cost.
+ *
+ * NOTE that a separate queue (rather than one queue of a union type) is what makes
+ * the ordering *between* commands and input deliberate instead of accidental: the
+ * drain applies every command first and only then the input, so an event can never
+ * be delivered to a context that is about to be resized or reloaded in the same
+ * frame.
+ */
+using FVaCuusInputQueue = TSpscQueue<FVaCuusInputEvent>;
+
+/**
  * Everything the game thread pushes into the UI thread, in one place so
  * FVaCuusUIThread can hold it opaquely and keep these payload types Private.
- * Task 6 adds the input-event queue here.
  *
  * Resize coalescing falls out of the drain rather than the queue: each drained
  * command's ViewSize simply overwrites the routed view's size, and pushing an
@@ -118,4 +147,5 @@ using FVaCuusCommandQueue = TSpscQueue<FVaCuusUICommand>;
 struct FVaCuusUIQueues
 {
 	FVaCuusCommandQueue Commands;
+	FVaCuusInputQueue Input;
 };

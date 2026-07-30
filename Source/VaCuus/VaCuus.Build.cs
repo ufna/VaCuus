@@ -16,7 +16,12 @@ public class VaCuus : ModuleRules
 			"ApplicationCore",
 			"Core",
 			"CoreUObject",
-			"Engine"
+			"Engine",
+
+			// FKey is part of the published input-event payload
+			// (VaCuusInputEvent.h). Engine happens to re-export InputCore, but the
+			// dependency is ours, so it is declared rather than inherited.
+			"InputCore"
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[] {

@@ -254,6 +254,16 @@ bool FVaCuusRmlDocumentHost::HasView() const
 	return Context != nullptr && Document != nullptr && ViewSize.X > 0 && ViewSize.Y > 0;
 }
 
+Rml::Context* FVaCuusRmlDocumentHost::GetContext() const
+{
+	// Handed to the UI thread's input drain, which owns every FKey/modifier/button
+	// translation (see IVaCuusDocumentHost::GetContext for why the seam is here).
+	// Note it stays valid while there is no DOCUMENT: input into an empty context is
+	// harmless, and refusing it would mean losing the mouse-leave that clears hover.
+	check(FVaCuusUIThread::IsInUIThread());
+	return Context;
+}
+
 void FVaCuusRmlDocumentHost::RecordAndPublishFrame()
 {
 	check(FVaCuusUIThread::IsInUIThread());
@@ -325,6 +335,19 @@ void FVaCuusRmlDocumentHost::PublishInteractiveSnapshot()
 		BuildVaCuusInteractiveSnapshot(*Context, ViewSize, ++SnapshotGeneration, Snapshot);
 	const double ElapsedMs = (FPlatformTime::Seconds() - StartSeconds) * 1000.0;
 
+	// The cursor RmlUi asked for during the Update() that just ran. Sampled HERE, one
+	// call after our own Update() and before any other view's, because the latch is
+	// process-wide while `cursor` is per context -- a serial that moved in this window
+	// belongs to this view. Set after the build, which resets the whole snapshot.
+	uint64 CursorSerial = 0;
+	const EMouseCursor::Type PushedCursor = GetVaCuusLatchedMouseCursor(CursorSerial);
+	if (CursorSerial != LatchedCursorSerial)
+	{
+		LatchedCursorSerial = CursorSerial;
+		LatchedCursor = PushedCursor;
+	}
+	Snapshot.Cursor = LatchedCursor;
+
 	// Copied out BEFORE the publish: the swap hands this buffer to the game thread,
 	// and reading it afterwards means reading a buffer somebody else now owns.
 	const int32 NumRects = Snapshot.InteractiveRects.Num();
@@ -339,10 +362,10 @@ void FVaCuusRmlDocumentHost::PublishInteractiveSnapshot()
 	if (++NumSnapshotsPublished % VaCuusRmlDocumentHost::GSnapshotLogInterval == 1)
 	{
 		UE_LOG(LogVaCuus, Verbose,
-			TEXT("View %u snapshot %llu: %d interactive rect(s) from %d element(s) in %d document(s), %.4f ms (%dx%d, keyboard focus %s)"),
+			TEXT("View %u snapshot %llu: %d interactive rect(s) from %d element(s) in %d document(s), %.4f ms (%dx%d, keyboard focus %s, cursor %d)"),
 			ViewId, SnapshotGeneration, NumRects, Stats.NumElementsVisited,
 			Stats.NumDocuments, ElapsedMs, ViewSize.X, ViewSize.Y,
-			bWantsKeyboardFocus ? TEXT("yes") : TEXT("no"));
+			bWantsKeyboardFocus ? TEXT("yes") : TEXT("no"), int32(LatchedCursor));
 	}
 }
 

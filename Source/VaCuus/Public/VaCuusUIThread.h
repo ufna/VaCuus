@@ -14,6 +14,7 @@
 class FRunnableThread;
 class FVaCuusEngine;
 class IVaCuusDocumentHost;
+struct FVaCuusInputEvent;
 struct FVaCuusUICommand;
 struct FVaCuusUIQueues;
 struct FVaCuusViewStatus;
@@ -141,6 +142,17 @@ public:
 	void EnqueueSetVisible(uint32 ViewId, bool bVisible);
 	void EnqueueShutdown();
 
+	/**
+	 * Queues one input event for a view. Stamps ViewId, so the caller only fills in
+	 * what the event is (see FVaCuusInputEvent's factories).
+	 *
+	 * Deliberately does NOT wake the UI thread: input is consumed by the next frame,
+	 * which UVaCuusSubsystem::Tick already asks for once per game frame. Waking here
+	 * would turn a mouse drag into one UI frame per motion event -- strictly more
+	 * work for a document that is going to be laid out once this frame anyway.
+	 */
+	void EnqueueInput(uint32 ViewId, FVaCuusInputEvent Event);
+
 	/** True while the worker thread is live and no stop has been requested. */
 	bool IsRunning() const;
 
@@ -177,6 +189,13 @@ private:
 
 	/** Applies every queued command, in order, routing each to its view. UI thread. */
 	void DrainCommands();
+
+	/**
+	 * Dispatches every queued input event into its view's context, in order.
+	 * Runs after DrainCommands() and before any view is updated, so an event always
+	 * reaches a context that is already the right size and has the right document.
+	 */
+	void DrainInput();
 
 	/** AddView/RemoveView handlers, split out because both are more than a line. */
 	void AddView(FVaCuusUICommand& Command);

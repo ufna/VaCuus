@@ -8,6 +8,11 @@
 
 struct FVaCuusViewStatus;
 
+namespace Rml
+{
+class Context;
+}
+
 /**
  * The UI thread's view of "the thing that owns ONE view's RmlUi context and
  * document". One host instance per UVaCuusView; the process-wide UI thread owns
@@ -79,6 +84,22 @@ public:
 
 	/** True when a frame can be produced: a document is loaded and the view size is valid. */
 	virtual bool HasView() const = 0;
+
+	/**
+	 * This view's RmlUi context, or null before Initialize() / after Shutdown().
+	 *
+	 * WHY THE HOST HANDS ITS CONTEXT OUT: input dispatch lives on the UI thread, in
+	 * VaCuus, next to the FKey/modifier/button/wheel translation it needs
+	 * (VaCuusInputMap) -- so the whole RmlUi input vocabulary stays in one module and
+	 * SVaCuusWidget never includes an RmlUi header. The alternative, a
+	 * ProcessInput(...) method here, would push that translation into whichever
+	 * module implements the host. It is the mirror image of the snapshot, which the
+	 * host already builds by handing its context to VaCuus code
+	 * (BuildVaCuusInteractiveSnapshot).
+	 *
+	 * UI THREAD ONLY, and the pointer must not be stored: it dies with Shutdown().
+	 */
+	virtual Rml::Context* GetContext() const = 0;
 
 	/**
 	 * Records one frame (update layout, record draw commands) and publishes it.

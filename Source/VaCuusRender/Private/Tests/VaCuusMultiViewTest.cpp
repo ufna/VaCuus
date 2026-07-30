@@ -165,6 +165,12 @@ public:
 		return Context != nullptr && RmlDocument != nullptr && ViewSize.X > 0 && ViewSize.Y > 0;
 	}
 
+	virtual Rml::Context* GetContext() const override
+	{
+		check(FVaCuusUIThread::IsInUIThread());
+		return Context;
+	}
+
 	virtual void RecordAndPublishFrame() override
 	{
 		check(FVaCuusUIThread::IsInUIThread());

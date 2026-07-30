@@ -1,18 +1,23 @@
 // Copyright 2026 Vladimir Alyamkin. All Rights Reserved.
 
-#include "SVaCuusHUDWidget.h"
+#include "SVaCuusWidget.h"
 #include "VaCuusDefines.h"
 #include "VaCuusRmlDocumentHost.h"
 #include "VaCuusSlateElement.h"
 #include "VaCuusSubsystem.h"
 #include "VaCuusView.h"
 
+#include "Containers/Ticker.h"
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
 #include "Engine/GameViewportClient.h"
 #include "Engine/World.h"
+#include "Framework/Application/SlateApplication.h"
+#include "GameFramework/PlayerController.h"
 #include "HAL/IConsoleManager.h"
+#include "Input/Events.h"
 #include "Interfaces/IPluginManager.h"
+#include "Misc/CoreDelegates.h"
 #include "Misc/Paths.h"
 #include "Modules/ModuleManager.h"
 #include "RenderingThread.h"
@@ -63,6 +68,53 @@ div { display: block; position: absolute; }
 </rml>)");
 
 /**
+ * Puts the local player controller into an input mode that lets Slate route pointer
+ * events to viewport overlays at all, and takes it back out again.
+ *
+ * NOT A NICETY -- WITHOUT IT NO INPUT REACHES THE UI. Under the default
+ * FInputModeGameOnly the game viewport holds mouse capture, so
+ * FSlateApplication routes every pointer event straight to the captor (the SViewport)
+ * and never runs a hit test; SVaCuusWidget's handlers are simply never called, no
+ * matter what its visibility says. This was observed, not assumed: with GameOnly, a
+ * synthesized move over the demo button reported "handled by a widget" (the captor)
+ * and RmlUi's hover never changed.
+ *
+ * GameAndUI rather than UIOnly, because Task 6's contract is that clicks the UI does
+ * not claim still reach the game -- which is exactly what GameAndUI means.
+ *
+ * This belongs to the debug toggle, not to the plugin: a real game decides its own
+ * input mode, and a UMG-hosted VaCuus widget (Task 8) inherits whatever the game
+ * already set.
+ */
+static void SetUIInputMode(UWorld* World, bool bEnable)
+{
+	APlayerController* PlayerController = World ? World->GetFirstPlayerController() : nullptr;
+	if (!PlayerController)
+	{
+		UE_LOG(LogVaCuus, Warning,
+			TEXT("M1 HUD: no player controller, so the input mode is unchanged; pointer input will not reach the UI"));
+		return;
+	}
+
+	if (bEnable)
+	{
+		FInputModeGameAndUI Mode;
+		Mode.SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock);
+		Mode.SetHideCursorDuringCapture(false);
+		PlayerController->SetInputMode(Mode);
+		PlayerController->SetShowMouseCursor(true);
+	}
+	else
+	{
+		PlayerController->SetInputMode(FInputModeGameOnly());
+		PlayerController->SetShowMouseCursor(false);
+	}
+
+	UE_LOG(LogVaCuus, Log, TEXT("M1 HUD: input mode is now %s"),
+		bEnable ? TEXT("GameAndUI (pointer events reach viewport overlays)") : TEXT("GameOnly"));
+}
+
+/**
  * Everything the HUD toggle owns while it is ON.
  *
  * The view is owned by UVaCuusSubsystem and the UI thread by FVaCuusModule; this
@@ -73,9 +125,12 @@ struct FState
 	TWeakObjectPtr<UVaCuusSubsystem> Subsystem;
 	TWeakObjectPtr<UVaCuusView> View;
 	TSharedPtr<FVaCuusSlateElement> Element;
-	TSharedPtr<SVaCuusHUDWidget> Widget;
+	TSharedPtr<SVaCuusWidget> Widget;
 	TWeakObjectPtr<UGameViewportClient> Viewport;
 	FDelegateHandle WorldTearDownHandle;
+
+	/** World whose player controller the toggle put into GameAndUI; restored on teardown. */
+	TWeakObjectPtr<UWorld> InputWorld;
 
 	/** True while the pending load is the VFS document, i.e. while a fallback is possible. */
 	bool bLoadingFromFile = false;
@@ -95,6 +150,10 @@ static void TearDown()
 	TUniquePtr<FState> State = MoveTemp(GState);
 
 	FWorldDelegates::OnWorldBeginTearDown.Remove(State->WorldTearDownHandle);
+
+	// Hand the mouse back to the game. Before the widget goes away, so nothing can
+	// arrive at a half-detached widget on the way out.
+	SetUIInputMode(State->InputWorld.Get(), /*bEnable=*/false);
 
 	// Spec §4 teardown order:
 	//
@@ -244,6 +303,7 @@ static void Toggle()
 	GState->View = View;
 	GState->Element = Element;
 	GState->Viewport = Viewport;
+	GState->InputWorld = World;
 	GState->bLoadingFromFile = bLoadFromFile;
 	GState->WorldTearDownHandle = FWorldDelegates::OnWorldBeginTearDown.AddStatic(&OnWorldBeginTearDown);
 
@@ -262,13 +322,151 @@ static void Toggle()
 		View->LoadDocumentFromMemory(GTestDocumentRml);
 	}
 
-	TSharedRef<SVaCuusHUDWidget> Widget = SNew(SVaCuusHUDWidget, View, Element);
+	TSharedRef<SVaCuusWidget> Widget = SNew(SVaCuusWidget, View, Element);
 	Viewport->AddViewportWidgetContent(Widget, /*ZOrder=*/100);
 	GState->Widget = Widget;
+
+	// After the widget is in the tree, so the input mode change lands on a viewport
+	// that already has something to route to.
+	SetUIInputMode(World, /*bEnable=*/true);
 
 	UE_LOG(LogVaCuus, Log, TEXT("M1 HUD on (view %u, initial view %dx%d)"),
 		View->GetViewId(), InitialViewSize.X, InitialViewSize.Y);
 }
+
+/**
+ * Puts the pointer at a window position and lets Slate route the move.
+ *
+ * DELIBERATELY GOES THROUGH FSlateApplication rather than calling the widget: this
+ * way the whole real path is exercised -- hit-test grid, bubble path,
+ * SVaCuusWidget::OnMouseMove, the snapshot test, the queue -- and the only thing
+ * synthesized is the position, which is the one part a headless session cannot
+ * produce. ProcessMouseMoveEvent is public engine API (SlateApplication.h:1292) and
+ * the same call the platform layer makes; nothing here is a test hook into VaCuus.
+ */
+static bool MoveMouseTo(const FVector2D& Position)
+{
+	if (!FSlateApplication::IsInitialized())
+	{
+		UE_LOG(LogVaCuus, Error, TEXT("Synthesizing a mouse move needs Slate (nothing to do under -nullrhi -unattended)"));
+		return false;
+	}
+
+	FSlateApplication& Slate = FSlateApplication::Get();
+
+	// Moves the platform cursor too, so anything that reads GetCursorPos() later
+	// (OnCursorQuery, tooltips) agrees with the event we are about to send.
+	Slate.SetCursorPos(Position);
+
+	const FPointerEvent MouseEvent(
+		FSlateApplicationBase::CursorPointerIndex,
+		Position,
+		Position,
+		TSet<FKey>(),
+		// A move affects no button. FKey() rather than EKeys::Invalid: the latter is
+		// declared in InputCoreTypes.h but not exported, so it does not link.
+		FKey(),
+		/*WheelDelta=*/0.0f,
+		FModifierKeysState());
+
+	const bool bHandled = Slate.ProcessMouseMoveEvent(MouseEvent);
+
+	UE_LOG(LogVaCuus, Log, TEXT("Pointer moved to (%.0f, %.0f); Slate reports the event %s"),
+		Position.X, Position.Y, bHandled ? TEXT("handled by a widget") : TEXT("unhandled (it fell through)"));
+	return bHandled;
+}
+
+static void SimulateMouseMove(const TArray<FString>& Args)
+{
+	if (Args.Num() < 2)
+	{
+		UE_LOG(LogVaCuus, Error, TEXT("vacuus.M1HUD.Mouse expects two arguments: <x> <y> in window pixels"));
+		return;
+	}
+
+	MoveMouseTo(FVector2D(FCString::Atof(*Args[0]), FCString::Atof(*Args[1])));
+}
+
+static FAutoConsoleCommand GSimulateMouseCommand(
+	TEXT("vacuus.M1HUD.Mouse"),
+	TEXT("Move the pointer to <x> <y> (window pixels) through Slate's real routing. Headless hover verification."),
+	FConsoleCommandWithArgsDelegate::CreateStatic(&SimulateMouseMove));
+
+/** When HoverShot parks the pointer, and when it shoots. Ordered, and both after the widget exists. */
+static constexpr float GHoverShotMoveSeconds = 2.0f;
+static constexpr float GHoverShotShotSeconds = 3.0f;
+
+/**
+ * Headless hover verification in one command: park the pointer at <x> <y>, then
+ * request a UI screenshot a second later.
+ *
+ * WHY IT SCHEDULES INSTEAD OF DOING: every `-ExecCmds` command runs on the same
+ * early tick, before the widget has ever been arranged -- so a mouse move issued
+ * there hits an empty hit-test grid and hovers nothing, and a screenshot taken there
+ * catches a HUD that has not laid out. Two timed steps make the ordering explicit
+ * (park, then shoot) instead of racing the frame rate, which is what counting
+ * published frames would do.
+ *
+ * With no arguments it only shoots, which is the "not hovering anything" half of the
+ * pair.
+ */
+static void HoverShot(const TArray<FString>& Args)
+{
+	const bool bMove = Args.Num() >= 2;
+	const FVector2D Position = bMove
+		? FVector2D(FCString::Atof(*Args[0]), FCString::Atof(*Args[1]))
+		: FVector2D::ZeroVector;
+
+	if (bMove)
+	{
+		// FROM OnBeginFrame, NOT FROM A TICKER, and that choice is the whole point of
+		// the frame-ordering measurement (bead VaCuus-akj.6.13). OnBeginFrame broadcasts
+		// at LaunchEngineLoop.cpp:5682, i.e. in the same window as the platform's own
+		// dispatch: after nothing that matters and BEFORE GEngine->Tick (line 5859),
+		// where UVaCuusSubsystem::Tick polls the snapshot. FTSTicker fires at line 6103,
+		// long after that poll, so a move driven from there would measure the ticker's
+		// position in the frame instead of input's and quietly invert the answer.
+		static FDelegateHandle MoveHandle;
+		static double MoveDeadline = 0.0;
+
+		MoveDeadline = FPlatformTime::Seconds() + GHoverShotMoveSeconds;
+		if (MoveHandle.IsValid())
+		{
+			FCoreDelegates::OnBeginFrame.Remove(MoveHandle);
+		}
+
+		MoveHandle = FCoreDelegates::OnBeginFrame.AddLambda(
+			[Position]
+			{
+				if (FPlatformTime::Seconds() < MoveDeadline)
+				{
+					return;
+				}
+
+				FCoreDelegates::OnBeginFrame.Remove(MoveHandle);
+				MoveHandle.Reset();
+				MoveMouseTo(Position);
+			});
+	}
+
+	FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda(
+		[](float)
+		{
+			UE_LOG(LogVaCuus, Log, TEXT("vacuus.M1HUD.HoverShot: requesting a UI screenshot"));
+			FScreenshotRequest::RequestScreenshot(/*bInShowUI=*/true);
+			return false;
+		}),
+		GHoverShotShotSeconds);
+
+	UE_LOG(LogVaCuus, Log, TEXT("vacuus.M1HUD.HoverShot: %s at t+%.1fs, screenshot at t+%.1fs"),
+		bMove ? *FString::Printf(TEXT("pointer to (%.0f, %.0f)"), Position.X, Position.Y) : TEXT("no pointer move"),
+		GHoverShotMoveSeconds, GHoverShotShotSeconds);
+}
+
+static FAutoConsoleCommand GHoverShotCommand(
+	TEXT("vacuus.M1HUD.HoverShot"),
+	TEXT("Park the pointer at [x y] after 2s, then take a UI screenshot at 3s. No arguments: screenshot only."),
+	FConsoleCommandWithArgsDelegate::CreateStatic(&HoverShot));
 
 static FAutoConsoleCommand GToggleCommand(
 	TEXT("vacuus.M1HUD"),
