@@ -597,25 +597,25 @@ by `UEditorEngine::Tick` — it is editor-only by construction; on Linux
 directory** (silent no-op); `FFileChangeData::Filename` is **relative**; one save produces a
 **burst** of events and the engine provides no debounce; `IN_Q_OVERFLOW` is dropped silently.
 
-- [ ] **Step 10.1: Register** on the UI content dir after an explicit
+- [x] **Step 10.1: Register** on the UI content dir after an explicit
       `IFileManager::Get().DirectoryExists()` check (the return value is not a health check
       on Linux). Registration and callbacks are game-thread only (`checkf(IsInGameThread())`
       inside the Linux backend) — do not add an `AsyncTask` hop.
-- [ ] **Step 10.2: Debounce.** Collect changed paths into a `TSet<FString>` (normalise every
+- [x] **Step 10.2: Debounce.** Collect changed paths into a `TSet<FString>` (normalise every
       incoming filename with `FPaths::ConvertRelativePathToFull`), skip editor temp files
       (`~`, `.tmp`, dotfiles), and flush on an `FTSTicker` after ~150 ms of quiet.
-- [ ] **Step 10.3: Dispatch to PIE.** Find the PIE game instance via
+- [x] **Step 10.3: Dispatch to PIE.** Find the PIE game instance via
       `GEngine->GetWorldContexts()` filtering `EWorldType::PIE`, get
       `UVaCuusSubsystem` from its game instance, and enqueue a reload command (the UI thread
       closes + reloads the document; no RmlUi call from the editor thread).
-- [ ] **Step 10.4: Escape hatch.** Console command `vacuus.ReloadUI` doing the same
+- [x] **Step 10.4: Escape hatch.** Console command `vacuus.ReloadUI` doing the same
       unconditionally — the watcher is not lossless (queue overflow is dropped).
-- [ ] **Step 10.5: Content location** (`VaCuus-akj.6.3`): decide and implement — mount the
+- [x] **Step 10.5: Content location** (`VaCuus-akj.6.3`): decide and implement — mount the
       **plugin's** `Content/DevUI` into the VFS roots alongside the project's, and delete the
       duplicated copy from whichever location loses. State the decision in the commit body.
-- [ ] **Step 10.6: Verify** — PIE running with the HUD; edit `m1_hud.rcss` (change a colour);
+- [x] **Step 10.6: Verify** — PIE running with the HUD; edit `m1_hud.rcss` (change a colour);
       within ~200 ms the running UI updates without leaving PIE. Screenshot before/after.
-- [ ] **Step 10.7: Commit:** `git commit -am "feat: editor live reload for UI documents (closes VaCuus-akj.6.3)"`
+- [x] **Step 10.7: Commit:** `git commit -am "feat: editor live reload for UI documents (closes VaCuus-akj.6.3)"`
 
 **10.6 verified: 191 ms**, live PIE session, never exited; one editor save produced 4 inotify
 events collapsed to 1 path. Evidence (screenshots + log excerpt + what the automated coverage

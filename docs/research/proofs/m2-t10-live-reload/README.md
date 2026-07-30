@@ -107,6 +107,11 @@ The screenshots are a one-time acceptance artifact, not a test. The automated co
   (iterating on a broken document).
 - `VaCuus.LiveReload.Dispatch` — a real game instance; the view's reload serial advances by
   exactly one on the file-backed document view and by zero on every other view.
-- `Proof.LiveReload.PIE` — a **harness, not a test**: it queues latent commands, asserts nothing,
-  and waits on an external edit. Labelled as such in its own header comment. It is also why
-  `VaCuus-akj.6.20` exists (it stalls a wildcard automation run for ~28 s).
+- `Proof.LiveReload.PIE` — a **harness, not a test**: it drives a PIE session and waits on an
+  external edit. Labelled as such in its own header comment. Originally it was also a trap — it was
+  discovered by "Run All", started PIE, blocked ~28 s waiting for an edit that never came, and then
+  passed while asserting nothing. Now gated on an explicit `-vacuusproof` opt-in: without the switch
+  it logs how to run it and returns in milliseconds without touching PIE; with it, it asserts both
+  screenshots exist. (`EAutomationTestFlags::Disabled` would have been the obvious lever and is the
+  wrong one — it removes the test from `GetValidTestNames`, so the explicit invocation documented in
+  the harness's own docstring would stop resolving.)
