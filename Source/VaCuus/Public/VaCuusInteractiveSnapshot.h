@@ -89,6 +89,38 @@ enum class EVaCuusRectFlags : uint8
 ENUM_CLASS_FLAGS(EVaCuusRectFlags)
 
 /**
+ * The four directions RmlUi's arrow-key branch distinguishes, as a mask.
+ *
+ * A MASK AND NOT A BOOL, because RmlUi's answer really is per direction and one keyword
+ * makes that unavoidable: `nav: vertical` is a Box shorthand that sets ALL FOUR nav-*
+ * properties (StyleSheetSpecification.cpp:382), and FindNextNavigationElement then moves
+ * focus for Up/Down and returns nullptr for Left/Right (ElementDocument.cpp:791-794). One
+ * bool has to be wrong about one axis or the other for the most ordinary vertical menu
+ * there is.
+ *
+ * Vertical/Horizontal are RmlUi's own two axes, in the same order it tests them
+ * (ElementDocument.cpp:780-781), so an axis test here reads as one comparison rather than
+ * two. Which FKey means which direction is not decided here -- that belongs with the key
+ * handler that owns the pad bindings (SVaCuusWidget::DoesKeyEnterUIFocus).
+ */
+enum class EVaCuusNavDirection : uint8
+{
+	None = 0,
+
+	Up = 1 << 0,
+	Down = 1 << 1,
+	Left = 1 << 2,
+	Right = 1 << 3,
+
+	Vertical = Up | Down,
+	Horizontal = Left | Right,
+
+	All = Vertical | Horizontal
+};
+
+ENUM_CLASS_FLAGS(EVaCuusNavDirection)
+
+/**
  * THE IME SHADOW STATE: everything `ITextInputMethodContext`'s pull-style virtuals have
  * to answer, as a plain value type the game thread already owns (controller decision
  * D15).
@@ -369,10 +401,11 @@ struct FVaCuusInteractiveSnapshot
 	bool bTabEntersFocus = false;
 
 	/**
-	 * The same question for a DIRECTION key (arrows and the DPad), which needs one thing
-	 * Tab does not.
+	 * The same question for the DIRECTION keys (arrows and the DPad), asked PER DIRECTION:
+	 * which of the four would move RmlUi's focus into this view's document from where it is
+	 * now. Empty means none of them would.
 	 *
-	 * WHY IT IS A SEPARATE BOOL. Tab is handled unconditionally
+	 * WHY IT IS SEPARATE FROM bTabEntersFocus. Tab is handled unconditionally
 	 * (ElementDocument.cpp:581-591 goes straight to FindNextTabElement), but the arrow
 	 * branch first reads a `nav-*` property off the focus node with GetLocalProperty and
 	 * does NOTHING AT ALL when there is none -- every line that could move focus sits
@@ -381,15 +414,21 @@ struct FVaCuusInteractiveSnapshot
 	 * the property has to be on the DOCUMENT element -- which is what `body { nav: auto; }`
 	 * is for, and why every VaCuus document carries it.
 	 *
-	 * So a document with focusables but no `nav` on its root can be entered by Tab and NOT
-	 * by an arrow. Collapsing the two into one bool would make the widget consume a
-	 * direction key that provably moves nothing -- swallowing the player's input to
-	 * achieve exactly nothing, which is the worse of the two errors this decision is
-	 * choosing between.
+	 * WHY IT IS A MASK RATHER THAN ONE BOOL, which is the fix for a real bug: FINDING the
+	 * property is not the same as RmlUi ACTING on it. FindNextNavigationElement reads the
+	 * value and returns nullptr -- moving nothing -- for `nav: none`
+	 * (ElementDocument.cpp:785) and for `horizontal`/`vertical` asked about the orthogonal
+	 * axis (:787-794). `body { nav: vertical; }`, the idiomatic vertical menu, therefore
+	 * declares all four directions and acts on exactly two, so a presence test made the
+	 * widget answer Handled for Left and Right and swallow the player's strafe to achieve
+	 * nothing -- the worse of the two errors this decision is choosing between. See
+	 * LocalNavDirections in VaCuusInteractiveSnapshot.cpp for what is and is not predicted.
 	 *
-	 * Implies bTabEntersFocus (same two preconditions plus the property).
+	 * EVERY BIT IMPLIES bTabEntersFocus (the same two preconditions, plus a usable
+	 * property), so an empty mask with bTabEntersFocus true is the real and common state
+	 * "Tab can enter this document, no arrow can".
 	 */
-	bool bDirectionEntersFocus = false;
+	EVaCuusNavDirection DirectionsEnteringFocus = EVaCuusNavDirection::None;
 
 	/**
 	 * True when a TEXT control -- one with a caret, a selection and a
@@ -468,6 +507,16 @@ struct FVaCuusInteractiveSnapshot
 	}
 
 	/**
+	 * Would a press of THIS direction key enter the document's focus? Takes one bit, or an
+	 * axis (EVaCuusNavDirection::Vertical) to ask "either of these two" -- any-of, because
+	 * every caller is deciding whether to consume one key.
+	 */
+	bool DoesDirectionEnterFocus(EVaCuusNavDirection Direction) const
+	{
+		return EnumHasAnyFlags(DirectionsEnteringFocus, Direction);
+	}
+
+	/**
 	 * Back to "nothing is interactive", keeping both arrays' allocations. The
 	 * publisher rotates through three of these forever, so reusing the arrays is
 	 * what makes a steady-state UI frame allocation-free.
@@ -481,7 +530,7 @@ struct FVaCuusInteractiveSnapshot
 		Cursor = EMouseCursor::Default;
 		bWantsKeyboardFocus = false;
 		bTabEntersFocus = false;
-		bDirectionEntersFocus = false;
+		DirectionsEnteringFocus = EVaCuusNavDirection::None;
 		bTextInputFocused = false;
 
 		// Keeps Value's allocation, like the rect arrays above: the publisher rotates

@@ -503,6 +503,36 @@ static FString DescribeRectFlags(EVaCuusRectFlags Flags)
 }
 
 /**
+ * The navigation-entry mask as a readable list.
+ *
+ * NAMED PER DIRECTION rather than printed as "yes/no", because the whole point of the mask
+ * is that `body { nav: vertical; }` answers Up|Down and NOT Left|Right -- a boolean line
+ * here would hide the exact distinction an acceptance run is checking.
+ */
+static FString DescribeNavDirections(EVaCuusNavDirection Directions)
+{
+	TArray<FString, TInlineAllocator<4>> Names;
+	if (EnumHasAnyFlags(Directions, EVaCuusNavDirection::Up))
+	{
+		Names.Add(TEXT("Up"));
+	}
+	if (EnumHasAnyFlags(Directions, EVaCuusNavDirection::Down))
+	{
+		Names.Add(TEXT("Down"));
+	}
+	if (EnumHasAnyFlags(Directions, EVaCuusNavDirection::Left))
+	{
+		Names.Add(TEXT("Left"));
+	}
+	if (EnumHasAnyFlags(Directions, EVaCuusNavDirection::Right))
+	{
+		Names.Add(TEXT("Right"));
+	}
+
+	return Names.IsEmpty() ? FString(TEXT("none")) : FString::Join(Names, TEXT("|"));
+}
+
+/**
  * Prints the interactive-region snapshot the game thread is currently answering Slate
  * from (Task 14).
  *
@@ -564,7 +594,7 @@ static void DumpRects()
 		Snapshot.InteractiveRects.Num(), int32(Snapshot.Cursor),
 		Snapshot.bWantsKeyboardFocus ? TEXT("yes") : TEXT("no"),
 		Snapshot.bTabEntersFocus ? TEXT("yes") : TEXT("no"),
-		Snapshot.bDirectionEntersFocus ? TEXT("yes") : TEXT("no"),
+		*DescribeNavDirections(Snapshot.DirectionsEnteringFocus),
 		Snapshot.bTextInputFocused ? TEXT("yes") : TEXT("no"));
 
 	// Min() rather than either count: the two arrays are an invariant, not a guarantee a

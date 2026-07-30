@@ -265,7 +265,7 @@ button, input { nav: auto; }
 </rml>)");
 
 /**
- * The two CONTROLS for VaCuus.Input.NavEntry, which is about a distinction the document
+ * The three CONTROLS for VaCuus.Input.NavEntry, which is about distinctions the document
  * above cannot show because it satisfies every precondition at once.
  *
  * GNoNavDocument: focusables, but no `nav-*` anywhere -- not on the buttons and, crucially,
@@ -273,10 +273,18 @@ button, input { nav: auto; }
  * (ElementDocument.cpp:581-591), while its arrow branch does nothing without a local nav
  * property on the focus node (:628-638), which with nothing focused resolves to the
  * document (:625). So this document is enterable by Tab and NOT by an arrow -- the whole
- * reason bTabEntersFocus and bDirectionEntersFocus are two flags and not one.
+ * reason bTabEntersFocus and DirectionsEnteringFocus are two published facts and not one.
  *
  * GNoFocusableDocument: `nav` on the document, and nothing for FindNextTabElement to land
  * on. Neither key can enter, so neither may be consumed.
+ *
+ * GVerticalNavDocument: the case a PRESENCE test gets wrong, and the reason the direction
+ * answer is a mask. `nav: vertical` is a Box shorthand, so it declares ALL FOUR nav-*
+ * properties (StyleSheetSpecification.cpp:382) -- every one of them non-null to
+ * GetLocalProperty -- and then FindNextNavigationElement returns nullptr for the horizontal
+ * pair and moves focus for the vertical one (ElementDocument.cpp:791-794). Two focusables
+ * stacked vertically, i.e. the most ordinary menu there is, so "consume Left, move nothing"
+ * is not a contrived shape.
  */
 static const TCHAR* GNoNavDocument = TEXT(R"(<rml>
 <head>
@@ -303,6 +311,21 @@ div { display: block; position: absolute; }
 </head>
 <body>
 	<div id="plain"/>
+</body>
+</rml>)");
+
+static const TCHAR* GVerticalNavDocument = TEXT(R"(<rml>
+<head>
+<style>
+body { display: block; width: 100%; height: 100%; nav: vertical; }
+button { display: block; position: absolute; nav: vertical; tab-index: auto; }
+#btn  { left: 20px; top: 20px; width: 100px; height: 40px; }
+#btn2 { left: 20px; top: 80px; width: 100px; height: 40px; }
+</style>
+</head>
+<body>
+	<button id="btn"/>
+	<button id="btn2"/>
 </body>
 </rml>)");
 
@@ -1027,12 +1050,14 @@ bool FVaCuusAnalogNavGateTest::RunTest(const FString& Parameters)
  * highlight moving AND their character stepping; every press after the first was consumed, so
  * the old rule was not even self-consistent.
  *
- * WHAT MAKES THE FIX PREDICTIVE RATHER THAN A GUESS: RmlUi's two preconditions for a
- * navigation key moving focus are both observable on the UI thread, so they are published
- * (FVaCuusInteractiveSnapshot::bTabEntersFocus / bDirectionEntersFocus) instead of being
- * approximated on the game thread. This test drives all three states those flags distinguish,
+ * WHAT MAKES THE FIX PREDICTIVE RATHER THAN A GUESS: RmlUi's preconditions for a navigation
+ * key moving focus are all observable on the UI thread, so they are published
+ * (FVaCuusInteractiveSnapshot::bTabEntersFocus / DirectionsEnteringFocus) instead of being
+ * approximated on the game thread. This test drives all four states those facts distinguish,
  * and asserts BOTH halves each time -- the FReply Slate sees, and where RmlUi's focus actually
- * went, on the same real queue.
+ * went, on the same real queue. STATE 4 is the one that needs the direction answer to be a
+ * MASK: `nav: vertical` declares all four directions and acts on two, so no single bool can
+ * be right about both axes.
  *
  * THE TWO DELIBERATE NON-MEMBERS of the entry set are asserted too, because both are places a
  * later change would silently do damage: the left-stick keys (which is a HELD MOVEMENT STICK
@@ -1107,8 +1132,10 @@ bool FVaCuusNavEntryTest::RunTest(const FString& Parameters)
 		{
 			return false;
 		}
-		if (!TestTrue(TEXT("...and so would a direction key, because <body> carries nav"),
-				Snapshot.bDirectionEntersFocus))
+		// ALL FOUR, because `body { nav: auto; }` is a keyword no axis test rejects
+		// (ElementDocument.cpp:786 falls straight through to :798-799).
+		if (!TestTrue(TEXT("...and so would any direction key, because <body> carries nav: auto"),
+				Snapshot.DirectionsEnteringFocus == EVaCuusNavDirection::All))
 		{
 			return false;
 		}
@@ -1244,8 +1271,8 @@ bool FVaCuusNavEntryTest::RunTest(const FString& Parameters)
 		{
 			return false;
 		}
-		TestFalse(TEXT("A direction key does NOT, because there is no local nav on the document"),
-			Snapshot.bDirectionEntersFocus);
+		TestTrue(TEXT("No direction key does, because there is no local nav on the document"),
+			Snapshot.DirectionsEnteringFocus == EVaCuusNavDirection::None);
 
 		const FReply Direction = Widget->OnKeyDown(Geometry, MakeKeyEvent(EKeys::Gamepad_DPad_Right));
 		TestFalse(TEXT("So the direction press falls through to the game"), Direction.IsEventHandled());
@@ -1285,7 +1312,8 @@ bool FVaCuusNavEntryTest::RunTest(const FString& Parameters)
 	{
 		const FVaCuusInteractiveSnapshot& Snapshot = View->GetSnapshot();
 		TestFalse(TEXT("Tab cannot enter a document with nothing focusable"), Snapshot.bTabEntersFocus);
-		TestFalse(TEXT("Neither can a direction key"), Snapshot.bDirectionEntersFocus);
+		TestTrue(TEXT("Neither can any direction key"),
+			Snapshot.DirectionsEnteringFocus == EVaCuusNavDirection::None);
 
 		TestFalse(TEXT("Tab therefore falls through to the game"),
 			Widget->OnKeyDown(Geometry, MakeKeyEvent(EKeys::Tab)).IsEventHandled());
@@ -1294,6 +1322,73 @@ bool FVaCuusNavEntryTest::RunTest(const FString& Parameters)
 		TestFalse(TEXT("...and so does a direction key"),
 			Widget->OnKeyDown(Geometry, MakeKeyEvent(EKeys::Gamepad_DPad_Right)).IsEventHandled());
 		Widget->OnKeyUp(Geometry, MakeKeyEvent(EKeys::Gamepad_DPad_Right));
+
+		// DRAINED BEFORE THE NEXT LOAD, and it is not tidiness: commands and input are two
+		// queues and the UI frame drains COMMANDS FIRST (VaCuusUIThread.cpp:807-808), so a
+		// press left in flight here would be delivered to the document loaded below rather
+		// than to this one -- and a stale Tab landing on the next document would silently
+		// pre-focus it and invalidate every assertion in STATE 4.
+		if (!TestTrue(TEXT("UI frame ran after the focusable-free presses"), RunFrames(*UIThread, 1)))
+		{
+			return false;
+		}
+		TestEqual(TEXT("Neither key moved focus, exactly as both flags said"), Host->FocusId, FString());
+	}
+
+	// STATE 4: `nav: vertical` on the document -- ALL FOUR nav-* properties declared, and only
+	// two of them able to move anything. This is the state a presence test got wrong, and the
+	// only one of the four that distinguishes a per-direction answer from a boolean one: with
+	// one bool the horizontal half of this block fails (the press is consumed), and with an
+	// ALL-directions bool the vertical half fails (the entering press reaches the game too).
+	UIThread->EnqueueLoadDocumentFromMemory(ViewId, GVerticalNavDocument, /*LoadSerial=*/4);
+	if (!TestTrue(TEXT("UI frames ran after loading the vertical-nav document"), RunFrames(*UIThread, 2)))
+	{
+		return false;
+	}
+	View->PollStatus();
+
+	{
+		const FVaCuusInteractiveSnapshot& Snapshot = View->GetSnapshot();
+		if (!TestTrue(TEXT("Tab enters a vertical-nav document like any other"), Snapshot.bTabEntersFocus))
+		{
+			return false;
+		}
+		if (!TestTrue(TEXT("Exactly the vertical pair enters; the horizontal pair does not"),
+				Snapshot.DirectionsEnteringFocus == EVaCuusNavDirection::Vertical))
+		{
+			return false;
+		}
+
+		// THE BUG, ASSERTED FROM THE OUTSIDE. A horizontal press over a vertical menu must
+		// reach the game: RmlUi's axis test rejects it (ElementDocument.cpp:791-794), so
+		// consuming it would cost the player their strafe and buy nothing.
+		const FReply Left = Widget->OnKeyDown(Geometry, MakeKeyEvent(EKeys::Gamepad_DPad_Left));
+		TestFalse(TEXT("A LEFT press over `nav: vertical` falls through to the game"), Left.IsEventHandled());
+		const FReply LeftUp = Widget->OnKeyUp(Geometry, MakeKeyEvent(EKeys::Gamepad_DPad_Left));
+		TestFalse(TEXT("...and so does its release, or the game sees an unmatched up"),
+			LeftUp.IsEventHandled());
+
+		// And it really was a no-op in the UI, which is what makes "falls through" correct
+		// rather than a guess that happened to match.
+		if (!TestTrue(TEXT("UI frame ran after the horizontal press"), RunFrames(*UIThread, 1)))
+		{
+			return false;
+		}
+		TestEqual(TEXT("RmlUi moved no focus for the horizontal press"), Host->FocusId, FString());
+
+		// The vertical half, from the identical state and the same stale snapshot: consumed,
+		// and it moves focus. Both halves are needed -- one alone is satisfied by a flag that
+		// is simply always false.
+		const FReply Down = Widget->OnKeyDown(Geometry, MakeKeyEvent(EKeys::Gamepad_DPad_Down));
+		TestTrue(TEXT("A DOWN press over `nav: vertical` IS consumed"), Down.IsEventHandled());
+		Widget->OnKeyUp(Geometry, MakeKeyEvent(EKeys::Gamepad_DPad_Down));
+
+		if (!TestTrue(TEXT("UI frame ran after the vertical press"), RunFrames(*UIThread, 1)))
+		{
+			return false;
+		}
+		TestEqual(TEXT("...and it entered the document, exactly as the mask said"),
+			Host->FocusId, FString(TEXT("btn")));
 	}
 
 	Widget->DetachView();

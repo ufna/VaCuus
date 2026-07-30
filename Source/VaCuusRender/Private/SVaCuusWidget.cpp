@@ -621,6 +621,36 @@ FCursorReply SVaCuusWidget::OnCursorQuery(const FGeometry& MyGeometry, const FPo
 	return FCursorReply::Cursor(Snapshot.Cursor);
 }
 
+/**
+ * Which navigation direction this key means to RmlUi, or None if it is not one.
+ *
+ * THE ARROWS AND THE DPAD ONLY, and that pairing is VaCuusInputMap's, not a guess: the four
+ * DPad names are mapped onto KI_UP/DOWN/LEFT/RIGHT there, which is what makes them reach
+ * ElementDocument's arrow branch at all. The LEFT STICK's digital names are deliberately not
+ * here -- see the exclusion note in DoesKeyEnterUIFocus.
+ */
+static EVaCuusNavDirection KeyToNavDirection(const FKey& Key)
+{
+	if (Key == EKeys::Up || Key == EKeys::Gamepad_DPad_Up)
+	{
+		return EVaCuusNavDirection::Up;
+	}
+	if (Key == EKeys::Down || Key == EKeys::Gamepad_DPad_Down)
+	{
+		return EVaCuusNavDirection::Down;
+	}
+	if (Key == EKeys::Left || Key == EKeys::Gamepad_DPad_Left)
+	{
+		return EVaCuusNavDirection::Left;
+	}
+	if (Key == EKeys::Right || Key == EKeys::Gamepad_DPad_Right)
+	{
+		return EVaCuusNavDirection::Right;
+	}
+
+	return EVaCuusNavDirection::None;
+}
+
 bool SVaCuusWidget::DoesKeyEnterUIFocus(const FKey& Key, const FVaCuusInteractiveSnapshot& Snapshot)
 {
 	// TASK 14 ACCEPTANCE DECISION A1, and the whole of it is here.
@@ -642,20 +672,22 @@ bool SVaCuusWidget::DoesKeyEnterUIFocus(const FKey& Key, const FVaCuusInteractiv
 	// key we could be stealing. The cost the alternative feared -- "a swallowed first input
 	// in the other direction" -- is a swallowed key in a state the game itself asked for.
 	//
-	// WHY IT IS GATED ON THE TWO PUBLISHED FLAGS RATHER THAN ON "a document is up": if the
-	// UI cannot act on the key, consuming it costs the player an input and buys nothing.
-	// bTabEntersFocus and bDirectionEntersFocus are exactly RmlUi's own preconditions, read
+	// WHY IT IS GATED ON THE PUBLISHED FACTS RATHER THAN ON "a document is up": if the UI
+	// cannot act on the key, consuming it costs the player an input and buys nothing.
+	// bTabEntersFocus and DirectionsEnteringFocus are exactly RmlUi's own preconditions, read
 	// off the frame the UI thread published; see their comments.
 	if (Key == EKeys::Tab)
 	{
 		return Snapshot.bTabEntersFocus;
 	}
 
-	if (Key == EKeys::Up || Key == EKeys::Down || Key == EKeys::Left || Key == EKeys::Right ||
-		Key == EKeys::Gamepad_DPad_Up || Key == EKeys::Gamepad_DPad_Down || Key == EKeys::Gamepad_DPad_Left ||
-		Key == EKeys::Gamepad_DPad_Right)
+	// PER DIRECTION, not per "is this an arrow at all": RmlUi answers per direction, because
+	// `nav: vertical` on a document moves focus for Up/Down and provably nothing for
+	// Left/Right (ElementDocument.cpp:787-794). Asking the coarse question is what used to
+	// eat a vertical menu's Left and Right and give the player nothing back.
+	if (const EVaCuusNavDirection Direction = KeyToNavDirection(Key); Direction != EVaCuusNavDirection::None)
 	{
-		return Snapshot.bDirectionEntersFocus;
+		return Snapshot.DoesDirectionEnterFocus(Direction);
 	}
 
 	// THE LEFT-STICK KEYS ARE DELIBERATELY ABSENT, and this is the one exclusion that

@@ -113,13 +113,19 @@ static bool IsKnownInteractiveTag(const Rml::String& Tag)
 }
 
 /**
- * Does this element carry a LOCAL `nav-*` declaration in any of the four directions?
+ * Which of the four direction keys would RmlUi actually move focus for, asked of the
+ * element its arrow branch reads the `nav-*` property from.
  *
- * THE GATE ON RmlUi'S ARROW-KEY BRANCH, asked of the element the branch would read it
- * from. ElementDocument::ProcessDefaultAction resolves a focus node, then wraps
- * everything that could move focus in `if (const Property* nav_property =
- * focus_node->GetLocalProperty(property_id))` (ElementDocument.cpp:628-638) -- so a
- * missing declaration is not a default, it is a dead branch.
+ * THE GATE IS TWO TESTS, AND ONLY THE FIRST ONE IS ABOUT PRESENCE.
+ * ElementDocument::ProcessDefaultAction resolves a focus node, then wraps everything that
+ * could move focus in `if (const Property* nav_property =
+ * focus_node->GetLocalProperty(property_id))` (ElementDocument.cpp:628-638) -- so a missing
+ * declaration is not a default, it is a dead branch. But a PRESENT declaration is not an
+ * answer either: FindNextNavigationElement reads the VALUE and returns nullptr, moving
+ * nothing, for `nav: none` (ElementDocument.cpp:785) and for `horizontal`/`vertical` asked
+ * about the orthogonal axis (:787-794). Testing presence alone is what made
+ * `body { nav: vertical; }` -- the idiomatic vertical menu -- consume the player's Left and
+ * Right and move nothing, which is the exact failure the published flag exists to prevent.
  *
  * LOCAL, not computed, because that is what RmlUi reads: all four properties are
  * registered with inherited=false (StyleSheetSpecification.cpp:378-381), so an
@@ -127,21 +133,98 @@ static bool IsKnownInteractiveTag(const Rml::String& Tag)
  * different question. GetLocalProperty sees inline styles plus the element's own
  * matched definition (ElementStyle::GetLocalProperty).
  *
- * ANY of the four rather than the specific direction the player will press: this feeds
- * ONE published bool, and the alternative is four (or a per-direction mask) for a
- * distinction no document in practice makes -- `nav` is a Box shorthand
- * (StyleSheetSpecification.cpp:382) and one value sets all four. The cost of being
- * coarse is bounded and named: a document that declares only `nav-up` would have a
- * left press consumed without moving focus. A document that declares none -- the case
- * that actually happens, because it is what forgetting `body { nav: auto; }` looks
- * like -- is answered exactly.
+ * WHAT IS DELIBERATELY NOT PREDICTED -- the cases where a bit may still be set for a press
+ * that moves nothing, stated because the alternative is a comment that claims more than the
+ * code does:
+ *
+ *  1. THE STRING FORM (`nav-right: "#some-id"`). RmlUi returns nullptr for a value with no
+ *     leading '#' (ElementDocument.cpp:760-766) and for an id that names nothing (:770-774),
+ *     and both are cheap to state but not cheap to KNOW: resolution goes through
+ *     ElementUtilities::GetElementById, a breadth-first walk of the whole document with a
+ *     heap-allocated queue per call (ElementUtilities.cpp:25-48). Covering them would put
+ *     four full document walks per frame into a snapshot whose entire design is O(1) per
+ *     element. They are also a different KIND of error from the keywords above: `nav:
+ *     vertical` is a CORRECT document that presence-testing mispredicted, while both string
+ *     failures are authoring bugs RmlUi already reports loudly, in the log, at the moment of
+ *     the press. So a string is taken at its word -- the author declared an edge.
+ *  2. Even a resolved target can refuse: `next->Focus(true)` returns false when the target
+ *     has `focus: none` (Element.cpp:1179-1184), which is the same walk away.
+ *  3. Any other unit is answered NO, which matches RmlUi's own `default: break;`
+ *     fall-through to `return nullptr` (ElementDocument.cpp:819-821).
+ *
+ * The caller gates the whole mask on bTabEntersFocus. That is exact for every keyword --
+ * they all end in FindNextTabElement (:795, :798-799), which needs something focusable to
+ * land on -- and conservative for the string form, whose target needs only `focus` != none
+ * and not `tab-index: auto`. Conservative there means losing a press rather than the
+ * player's input, which is the direction this decision errs in everywhere else.
  */
-static bool HasLocalNavProperty(Rml::Element& Element)
+static EVaCuusNavDirection LocalNavDirections(Rml::Element& Element)
 {
-	return Element.GetLocalProperty(Rml::PropertyId::NavUp) != nullptr ||
-		Element.GetLocalProperty(Rml::PropertyId::NavDown) != nullptr ||
-		Element.GetLocalProperty(Rml::PropertyId::NavLeft) != nullptr ||
-		Element.GetLocalProperty(Rml::PropertyId::NavRight) != nullptr;
+	struct FNavAxis
+	{
+		Rml::PropertyId Property;
+		EVaCuusNavDirection Direction;
+		bool bHorizontal;
+	};
+
+	static constexpr FNavAxis Axes[] = {
+		{Rml::PropertyId::NavUp, EVaCuusNavDirection::Up, false},
+		{Rml::PropertyId::NavDown, EVaCuusNavDirection::Down, false},
+		{Rml::PropertyId::NavLeft, EVaCuusNavDirection::Left, true},
+		{Rml::PropertyId::NavRight, EVaCuusNavDirection::Right, true},
+	};
+
+	EVaCuusNavDirection Directions = EVaCuusNavDirection::None;
+
+	for (const FNavAxis& Axis : Axes)
+	{
+		const Rml::Property* Property = Element.GetLocalProperty(Axis.Property);
+		if (Property == nullptr)
+		{
+			continue;
+		}
+
+		if (Property->unit == Rml::Unit::KEYWORD)
+		{
+			// `Property->value.Get<int>()` rather than Property->Get<int>(): that is the
+			// read FindNextNavigationElement itself performs (ElementDocument.cpp:783), and
+			// Property::Get goes through the numeric accessor, which is a different question.
+			switch (static_cast<Rml::Style::Nav>(Property->value.Get<int>()))
+			{
+				case Rml::Style::Nav::None:
+					continue;
+
+				case Rml::Style::Nav::Horizontal:
+					if (!Axis.bHorizontal)
+					{
+						continue;
+					}
+					break;
+
+				case Rml::Style::Nav::Vertical:
+					if (Axis.bHorizontal)
+					{
+						continue;
+					}
+					break;
+
+				// Both reach FindNextTabElement from a document focus node
+				// (ElementDocument.cpp:795 and :798-799), so both are answered by the
+				// bTabEntersFocus gate the caller applies.
+				case Rml::Style::Nav::Auto:
+				case Rml::Style::Nav::TreeOrder:
+					break;
+			}
+		}
+		else if (Property->unit != Rml::Unit::STRING)
+		{
+			continue;
+		}
+
+		Directions |= Axis.Direction;
+	}
+
+	return Directions;
 }
 
 /** Window-space AABB of an element's box area, snapped outwards to whole pixels. */
@@ -170,7 +253,7 @@ struct FSnapshotWalk
 	/**
 	 * bFocusBlocked mirrors RmlUi's CanFocus::NoAndNoChildren: `focus: none` prunes an
 	 * element AND its whole subtree from tab and spatial navigation
-	 * (ElementDocument.cpp:34-38), so it has to be carried down rather than tested per
+	 * (ElementDocument.cpp:37-38), so it has to be carried down rather than tested per
 	 * element. Unlike pointer-events -- which RmlUi does re-evaluate per element after
 	 * descending -- this one really is inherited-by-pruning.
 	 */
@@ -442,8 +525,8 @@ FVaCuusSnapshotBuildStats BuildVaCuusInteractiveSnapshot(
 	// bWantsKeyboardFocus is already true and these are irrelevant (and false: the loop
 	// above only sets FocusedDocument when the focus IS a document element).
 	OutSnapshot.bTabEntersFocus = FocusedDocument != nullptr && bFocusedDocumentHasFocusable;
-	OutSnapshot.bDirectionEntersFocus =
-		OutSnapshot.bTabEntersFocus && HasLocalNavProperty(*FocusedDocument);
+	OutSnapshot.DirectionsEnteringFocus =
+		OutSnapshot.bTabEntersFocus ? LocalNavDirections(*FocusedDocument) : EVaCuusNavDirection::None;
 
 	// Controller decision D14b, and the second half of the IME contract: whether a control
 	// that takes TEXT holds focus right now, plus everything the platform IME will pull about
