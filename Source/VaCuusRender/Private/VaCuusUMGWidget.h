@@ -53,6 +53,22 @@ class UVaCuusView;
  * creating the next -- which makes the invariant "at most one view per
  * UVaCuusWidget, alive exactly as long as its Slate widget" hold no matter how the
  * calls interleave, including on the GC path (UVisual::BeginDestroy releases too).
+ *
+ * KNOWN LIMITATION -- A FAILED BUILD IS PERMANENT FOR THIS WIDGET INSTANCE. When
+ * RebuildWidget() cannot produce a view (no game instance, no UVaCuusSubsystem yet, or
+ * UVaCuusSubsystem::CreateView() failed) it returns an SSpacer, and that SSpacer is what
+ * goes into the Slate tree. There is NO self-retry: UWidget::TakeWidget_Private only calls
+ * RebuildWidget() again once its cached `MyWidget` weak pointer has expired
+ * (Widget.cpp:TakeWidget_Private), i.e. only after the parent drops the SSpacer -- and
+ * SynchronizeProperties() cannot repair it either, because the widget already published to
+ * the tree is an SSpacer and UWidget offers no way to swap it for a real one. So a
+ * TRANSIENT failure (a widget built one frame before its subsystem exists) shows an empty
+ * slot for the widget's whole lifetime; the workaround is to remove and re-add it, which
+ * expires the cache and rebuilds. The structural fix -- always returning an SBox host and
+ * swapping its content on a later SynchronizeProperties() -- is deliberately deferred: it
+ * changes the widget type every UMG-hosted view reports, and nothing in M2 hits the
+ * transient case (the subsystem is a UGameInstanceSubsystem, so it exists before any widget
+ * a game can create).
  */
 UCLASS(meta = (DisplayName = "VaCuus View"))
 class UVaCuusWidget : public UWidget

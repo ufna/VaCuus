@@ -106,6 +106,28 @@ public:
 	/** Teardown step 1: stop queueing commands so the view can be retired. */
 	void DetachView();
 
+	/**
+	 * Hands back Slate's pointer capture, but ONLY for the users whose captor is this
+	 * widget. No-op when nothing captured us.
+	 *
+	 * WHY THE OWNER CALLS IT AND THE WIDGET DOES NOT DO IT ITSELF: Slate stores its captor
+	 * as a WEAK WIDGET PATH whose IsValid() only tests Num() > 0, so it never notices that
+	 * the captured leaf was destroyed -- dropping a VaCuus widget mid-drag leaves a captor
+	 * pointing at nothing and the next mouse-up trips
+	 * `ensureMsgf(MouseCaptorPath.Widgets.Num() > 0, ...)` (SlateApplication.cpp:5558). The
+	 * destructor is the wrong place to fix that (it can run from inside Slate's own tick or
+	 * paint, when the widget is already half-gone), so every owner that can drop this widget
+	 * -- vacuus.M1HUD's teardown and UVaCuusWidget::ReleaseSlateResources -- calls this
+	 * first. What the widget owns is only the KNOWLEDGE of how to ask.
+	 *
+	 * PER USER, NOT FSlateApplication::ReleaseAllPointerCapture() (bead VaCuus-akj.6.16):
+	 * that call releases capture for EVERY Slate user, so in split-screen -- one FSlateUser
+	 * per local player, each with its own captor -- tearing this widget down would abort an
+	 * unrelated player's drag on a completely different widget. FSlateUser answers the
+	 * precise question ("is THIS widget YOUR captor") and only those users are released.
+	 */
+	void ReleaseOwnPointerCapture(const TCHAR* Reason);
+
 	//~ Pass-through keys (controller decision D12): keys the UI never consumes and
 	//~ never forwards, even while a document holds focus. The default set is Escape,
 	//~ F1-F12 and the console key; a game (or the debug console command) extends it.

@@ -137,11 +137,16 @@ void UVaCuusWidget::ReleaseSlateResources(bool bReleaseChildren)
 	// place anyway (it can run from inside Slate's own tick or paint, and by then the
 	// widget is already half-gone). vacuus.M1HUD's teardown does exactly this; a
 	// UMG-hosted view is the other path that can drop a captured widget, so it does too.
-	if (MyVaCuusWidget.IsValid() && FSlateApplication::IsInitialized() && MyVaCuusWidget->HasMouseCapture())
+	//
+	// PER USER, NOT ReleaseAllPointerCapture() (bead VaCuus-akj.6.16). That call drops
+	// capture for EVERY Slate user, so in split-screen -- where each local player is a
+	// separate FSlateUser with its own captor -- releasing this widget would also abort an
+	// unrelated player's in-flight drag on a completely different widget. The precise
+	// question is per user ("does THIS widget hold YOUR capture"), and FSlateUser answers
+	// exactly that.
+	if (MyVaCuusWidget.IsValid())
 	{
-		UE_LOG(LogVaCuus, Log, TEXT("UVaCuusWidget '%s' is releasing mouse capture before its Slate widget goes away"),
-			*GetName());
-		FSlateApplication::Get().ReleaseAllPointerCapture();
+		MyVaCuusWidget->ReleaseOwnPointerCapture(*FString::Printf(TEXT("UVaCuusWidget '%s' release"), *GetName()));
 	}
 
 	// (2) NAVIGATION CONFIG, via DetachView() inside RetireView().

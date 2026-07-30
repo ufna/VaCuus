@@ -142,6 +142,16 @@ bool FVaCuusUMGWidgetTest::RunTest(const FString& Parameters)
 
 	TestNull(TEXT("A freshly constructed widget has no view yet"), Widget->GetView());
 
+	// THE AUTO-LOAD PATH, SET UP BEFORE THE FIRST TakeWidget() -- which is the only way to
+	// exercise it. RebuildWidget() deliberately does NOT load the document; the exposed
+	// properties are pushed by the SynchronizeProperties() that TakeWidget_Private calls
+	// immediately afterwards on the newly-created path (Widget.cpp:TakeWidget_Private), so a
+	// path assigned after the build would take a different route entirely (LoadDocument()).
+	// The file need not exist: what is under test is that the load is REQUESTED exactly
+	// once, which is a game-thread fact recorded before the UI thread ever sees it.
+	Widget->DocumentPath = TEXT("m1_hud.rml");
+	Widget->bAutoLoadDocument = true;
+
 	// 1. TakeWidget(): the one call UMG makes on a child widget. It runs RebuildWidget()
 	// and then SynchronizeProperties() on the newly-created path.
 	TSharedPtr<SWidget> SlateWidget = Widget->TakeWidget();
@@ -164,6 +174,23 @@ bool FVaCuusUMGWidgetTest::RunTest(const FString& Parameters)
 	// Rooted separately so the assertions after the release still have something to ask.
 	TStrongObjectPtr<UVaCuusView> ViewKeepAlive(View);
 	const uint32 FirstViewId = View->GetViewId();
+
+	// 2b. THE AUTO-LOAD FIRED, EXACTLY ONCE. Serials start at 1, so 1 means "one load has
+	// been asked for" -- and it can only have come from the SynchronizeProperties() inside
+	// TakeWidget(), because nothing else has touched this view.
+	TestEqual(TEXT("Building the widget auto-loaded DocumentPath once"),
+		int64(View->GetLastRequestedLoadSerial()), int64(1));
+
+	// 2c. AND THE RE-ENTRANCY GUARD HOLDS. UMG calls SynchronizeProperties() again on every
+	// designer property edit and after every rebuild; re-issuing the same path would close
+	// and re-parse the live document, losing its caret, selection and scroll position. The
+	// guard is AppliedDocumentPath, and the request serial is the only observable that can
+	// tell "suppressed" from "issued and coalesced" -- a suppressed push never reaches the
+	// queue at all.
+	Widget->SynchronizeProperties();
+	TestEqual(TEXT("Re-synchronizing the same DocumentPath does not re-request the load"),
+		int64(View->GetLastRequestedLoadSerial()), int64(1));
+	TestEqual(TEXT("...and the exposed property is untouched"), Widget->DocumentPath, FString(TEXT("m1_hud.rml")));
 
 	// 3. The UI thread actually registered it.
 	if (!TestTrue(TEXT("UI frames ran"), RunFrames(*UIThread, 2)))

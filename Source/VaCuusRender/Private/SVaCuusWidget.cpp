@@ -108,6 +108,41 @@ void SVaCuusWidget::DetachView()
 	RestoreNavigationConfig();
 }
 
+void SVaCuusWidget::ReleaseOwnPointerCapture(const TCHAR* Reason)
+{
+	check(IsInGameThread());
+
+	if (!FSlateApplication::IsInitialized())
+	{
+		return;
+	}
+
+	// Cheap gate first: HasMouseCapture() asks the whole application, so the per-user walk
+	// below only runs on the rare teardown that really is mid-drag.
+	if (!HasMouseCapture())
+	{
+		return;
+	}
+
+	const TSharedRef<const SWidget> Self = SharedThis(this);
+
+	int32 NumReleased = 0;
+	FSlateApplication::Get().ForEachUser(
+		[&Self, &NumReleased](FSlateUser& User)
+		{
+			// DoesWidgetHaveAnyCapture compares the LAST widget of each of this user's
+			// captor paths against us (SlateUser.cpp), which is exactly "this widget is
+			// your captor" and nothing wider.
+			if (User.DoesWidgetHaveAnyCapture(Self))
+			{
+				User.ReleaseAllCapture();
+				++NumReleased;
+			}
+		});
+
+	UE_LOG(LogVaCuus, Log, TEXT("VaCuus widget released pointer capture for %d user(s) (%s)"), NumReleased, Reason);
+}
+
 void SVaCuusWidget::Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime)
 {
 	// Cached for the handlers Slate gives no geometry to (OnMouseLeave, OnFocusLost)

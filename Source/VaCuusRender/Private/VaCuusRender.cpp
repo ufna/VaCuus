@@ -165,21 +165,16 @@ static void TearDown()
 	{
 		State->Widget->DetachView();
 
-		// Hand mouse capture back before the widget can be destroyed. Slate stores its
-		// captor as a WEAK WIDGET PATH whose IsValid() only tests Num() > 0, so it does
-		// not notice that the captured leaf has gone: toggling the HUD off mid-drag
-		// leaves a captor pointing at nothing and the next mouse-up trips
+		// Hand mouse capture back before the widget can be destroyed -- see
+		// SVaCuusWidget::ReleaseOwnPointerCapture for why (a dangling captor path trips
 		// `ensureMsgf(MouseCaptorPath.Widgets.Num() > 0, ...)` at
-		// SlateApplication.cpp:5558. ReleaseAllPointerCapture() is the supported way out
-		// and is a no-op when nothing is captured.
+		// SlateApplication.cpp:5558) and for why the release is PER USER rather than
+		// FSlateApplication::ReleaseAllPointerCapture() (bead VaCuus-akj.6.16).
 		//
 		// Task 8's UMG wrapper needs the same care in ReleaseSlateResources(): any path
-		// that can drop an SVaCuusWidget while it holds capture has to release first.
-		if (FSlateApplication::IsInitialized() && State->Widget->HasMouseCapture())
-		{
-			UE_LOG(LogVaCuus, Log, TEXT("M1 HUD: releasing mouse capture before the widget goes away"));
-			FSlateApplication::Get().ReleaseAllPointerCapture();
-		}
+		// that can drop an SVaCuusWidget while it holds capture has to release first, and
+		// it calls the same helper.
+		State->Widget->ReleaseOwnPointerCapture(TEXT("M1 HUD teardown"));
 
 		if (UGameViewportClient* Viewport = State->Viewport.Get())
 		{
