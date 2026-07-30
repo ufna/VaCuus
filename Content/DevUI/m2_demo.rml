@@ -76,12 +76,19 @@
 	     WHY #pass-zone IS `tab-index: auto` IN THE RCSS: pass-through is the ABSENCE
 	     of coverage, never an occluder, so marking a region that was never
 	     interactive proves nothing -- it would read as pass-through either way. This
-	     zone would be reported (and focusable) on its own merits, and the attribute
-	     is the only reason it is not. Delete the attribute and the clicks below stop
-	     reaching the game; that is the before/after.
+	     zone would be reported on its own merits, and the attribute is the only
+	     reason it is not. Delete the attribute and the clicks below stop reaching the
+	     game; that is the before/after.
+
+	     WHY IT ALSO CARRIES `focus: none`: the attribute is a POINTER opt-out and
+	     nothing else. RmlUi's tab search never sees it, so a `tab-index: auto` zone
+	     stays reachable by Tab -- and a focused element inside the region the demo
+	     advertises as the game's makes the widget eat every key over it. The rcss
+	     block for section 4 has the measurement.
 
 	     #pass-inner is a real <button>, i.e. interactive by tag, and it is inside the
-	     marked subtree -- so it is pruned too. That is the subtree half of the rule. -->
+	     marked subtree -- so it is pruned from the rects with its parent, and from
+	     the tab chain by the same `focus: none`. That is the subtree half of both. -->
 	<div id="p-pass">
 		<div class="panel-title">4 &#183; PASS-THROUGH (clicks reach the GAME)</div>
 		<div id="pass-zone" vacuus-passthrough>

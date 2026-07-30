@@ -305,15 +305,33 @@ sliderbar:active { background-color: #7DE6FF; }
 /* ------------------------------------------------------------------ */
 /* 4. Pass-through region                                              */
 /*                                                                     */
-/* `tab-index: auto` is what makes this zone interactive AND focusable  */
-/* by the snapshot's own predicate, so the `vacuus-passthrough`         */
-/* attribute in the RML is the ONLY reason it is not reported. Remove   */
-/* the attribute and clicks here stop reaching the game -- that is the  */
-/* before/after this section exists to make available.                  */
+/* `tab-index: auto` is what makes this zone interactive by the         */
+/* snapshot's own predicate, so the `vacuus-passthrough` attribute in   */
+/* the RML is the ONLY reason it is not reported. Remove the attribute  */
+/* and clicks here stop reaching the game -- that is the before/after   */
+/* this section exists to make available.                               */
 /*                                                                     */
-/* Deliberately NOT styled with :focus/:hover: the zone never receives  */
-/* either, because it is never reported and therefore never hit -- and  */
-/* a rule that could not fire would be a lie in a stylesheet.          */
+/* `focus: none` IS THE SECOND OPT-OUT, AND IT IS LOAD-BEARING.         */
+/* `vacuus-passthrough` opts out of POINTER COVERAGE ONLY: it is a      */
+/* VaCuus marker read by the snapshot walk, and RmlUi's own tab search  */
+/* knows nothing about it. `focus` defaults to auto and is inherited    */
+/* (StyleSheetSpecification.cpp:376), so with `tab-index: auto` here    */
+/* CanFocusElement answers Yes (ElementDocument.cpp:30-43) and          */
+/* FindNextTabElement lands on this element like any other.             */
+/* MEASURED BEFORE THIS LINE EXISTED, with the shipped commands:        */
+/* `vacuus.M2Demo` then `vacuus.M1HUD.Nav Tab Tab Tab Tab Tab` put      */
+/* focus here (bWantsKeyboardFocus true, bTextInputFocused false, the   */
+/* zone still absent from the rect list), after which SVaCuusWidget     */
+/* consumed EVERY key -- WASD included -- over the one region this      */
+/* section advertises as the game's, while clicks at (720,380) still    */
+/* fell through. `focus: none` closes it, and it prunes the subtree     */
+/* with it (CanFocus::NoAndNoChildren, ElementDocument.cpp:37-38),      */
+/* which is why #pass-inner needs no rule of its own.                   */
+/*                                                                     */
+/* Deliberately NOT styled with :focus/:hover, and now BOTH halves are  */
+/* true: :hover cannot fire because the zone is never reported and so   */
+/* never hit, :focus cannot fire because of the line above. A rule that */
+/* could not fire would be a lie in a stylesheet.                       */
 /* ------------------------------------------------------------------ */
 #pass-zone
 {
@@ -321,6 +339,7 @@ sliderbar:active { background-color: #7DE6FF; }
 	height: 130px;
 	padding: 10px;
 	tab-index: auto;
+	focus: none;
 	background-color: #1A0F1EB4;
 	border: 1px #6B4A7A;
 	border-radius: 6px;
