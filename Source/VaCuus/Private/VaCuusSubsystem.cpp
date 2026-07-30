@@ -5,6 +5,7 @@
 #include "VaCuus.h"
 #include "VaCuusDefines.h"
 #include "VaCuusDocumentHost.h"
+#include "VaCuusStats.h"
 #include "VaCuusUIThread.h"
 #include "VaCuusView.h"
 #include "VaCuusViewStatus.h"
@@ -52,6 +53,17 @@ void UVaCuusSubsystem::Deinitialize()
 
 void UVaCuusSubsystem::Tick(float DeltaTime)
 {
+	// THE SPEC'S GAME-THREAD BUDGET, one half of it (Task 14): everything below is the
+	// "snapshot read" the budget names -- PollStatus() swaps this frame's published
+	// snapshot into each view's game-thread cache and copies it when the generation moved
+	// -- plus the pulse that asks the UI thread for the next frame. The other half is
+	// SVaCuusWidget's Tick and its input handlers, sampled under SlateTick and Input.
+	//
+	// Around the WHOLE body rather than only the loop: Trigger() is game-thread work this
+	// design costs, and a scope that excluded it would understate the budget by exactly
+	// the amount nobody thought to measure.
+	VACUUS_PERF_SCOPE(GameTick);
+
 	// Turns any load result the UI thread published into a game-thread broadcast.
 	for (TObjectPtr<UVaCuusView>& View : Views)
 	{

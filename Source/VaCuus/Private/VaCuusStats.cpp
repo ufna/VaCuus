@@ -11,6 +11,9 @@ DEFINE_STAT(STAT_VaCuusUpdate);
 DEFINE_STAT(STAT_VaCuusRecord);
 DEFINE_STAT(STAT_VaCuusReplay);
 DEFINE_STAT(STAT_VaCuusComposite);
+DEFINE_STAT(STAT_VaCuusGameTick);
+DEFINE_STAT(STAT_VaCuusSlateTick);
+DEFINE_STAT(STAT_VaCuusInput);
 DEFINE_STAT(STAT_VaCuusDrawCalls);
 DEFINE_STAT(STAT_VaCuusCommands);
 
@@ -28,7 +31,12 @@ static const TCHAR* GScopeNames[FVaCuusPerfLog::Num] = {
 	TEXT("Record    (UI)"),
 	TEXT("Replay    (RT)"),
 	TEXT("Composite (RT)"),
+	TEXT("GameTick  (GT)"),
+	TEXT("SlateTick (GT)"),
+	TEXT("Input     (GT)"),
 };
+static_assert(UE_ARRAY_COUNT(GScopeNames) == FVaCuusPerfLog::Num,
+	"Every EScope needs a name here, or the log prints past the end of the array");
 
 struct FState
 {

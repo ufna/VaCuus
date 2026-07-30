@@ -7,16 +7,42 @@
 
 DECLARE_STATS_GROUP(TEXT("VaCuus"), STATGROUP_VaCuus, STATCAT_Advanced);
 
+/*
+ * WHY THIS LIVES IN THE VaCuus MODULE AND NOT NEXT TO THE RENDERER (Task 14).
+ *
+ * It measured only UI-thread and render-thread scopes, and both of those are driven from
+ * VaCuusRender, so Private/ was the right home for it. The acceptance gate added the
+ * GAME-thread side -- and the game thread's per-frame VaCuus work is split across both
+ * modules: UVaCuusSubsystem::Tick (this module) polls every view's published snapshot and
+ * pulses the UI thread, while SVaCuusWidget (VaCuusRender) does the per-widget work and
+ * every input handler. VaCuusRender depends on VaCuus and not the other way round, so a
+ * facility both must reach can only sit here. The alternative -- measuring the widget half
+ * and arguing the subsystem half was small -- would have left the budget gate unmeasured
+ * at exactly the seam where a future regression would land.
+ *
+ * Everything below is therefore VACUUS_API: the four render/UI scopes are still sampled
+ * from VaCuusRender.
+ */
+
 // (UI) == the dedicated VaCuus UI thread; these two used to be game-thread costs
 // and moved off it in M2 Task 3.
-DECLARE_CYCLE_STAT_EXTERN(TEXT("VaCuus Update (UI)"), STAT_VaCuusUpdate, STATGROUP_VaCuus, );
-DECLARE_CYCLE_STAT_EXTERN(TEXT("VaCuus Record (UI)"), STAT_VaCuusRecord, STATGROUP_VaCuus, );
-DECLARE_CYCLE_STAT_EXTERN(TEXT("VaCuus Replay (RT)"), STAT_VaCuusReplay, STATGROUP_VaCuus, );
-DECLARE_CYCLE_STAT_EXTERN(TEXT("VaCuus Composite (RT)"), STAT_VaCuusComposite, STATGROUP_VaCuus, );
+DECLARE_CYCLE_STAT_EXTERN(TEXT("VaCuus Update (UI)"), STAT_VaCuusUpdate, STATGROUP_VaCuus, VACUUS_API);
+DECLARE_CYCLE_STAT_EXTERN(TEXT("VaCuus Record (UI)"), STAT_VaCuusRecord, STATGROUP_VaCuus, VACUUS_API);
+DECLARE_CYCLE_STAT_EXTERN(TEXT("VaCuus Replay (RT)"), STAT_VaCuusReplay, STATGROUP_VaCuus, VACUUS_API);
+DECLARE_CYCLE_STAT_EXTERN(TEXT("VaCuus Composite (RT)"), STAT_VaCuusComposite, STATGROUP_VaCuus, VACUUS_API);
+
+// (GT) == the game thread, i.e. the spec's own budget line. Three scopes rather than one
+// because they have three different rates and only the sum is the per-frame figure:
+// GameTick and SlateTick are once per frame each, Input is once per EVENT. Folding them
+// into a single scope would make avg/p50 the average of a frame's parts rather than of a
+// frame, which is precisely the number the budget is stated in.
+DECLARE_CYCLE_STAT_EXTERN(TEXT("VaCuus GameTick (GT)"), STAT_VaCuusGameTick, STATGROUP_VaCuus, VACUUS_API);
+DECLARE_CYCLE_STAT_EXTERN(TEXT("VaCuus SlateTick (GT)"), STAT_VaCuusSlateTick, STATGROUP_VaCuus, VACUUS_API);
+DECLARE_CYCLE_STAT_EXTERN(TEXT("VaCuus Input (GT)"), STAT_VaCuusInput, STATGROUP_VaCuus, VACUUS_API);
 
 /** Per-frame counters (cleared by the stats system every frame). */
-DECLARE_DWORD_COUNTER_STAT_EXTERN(TEXT("VaCuus Draw Calls"), STAT_VaCuusDrawCalls, STATGROUP_VaCuus, );
-DECLARE_DWORD_COUNTER_STAT_EXTERN(TEXT("VaCuus Commands"), STAT_VaCuusCommands, STATGROUP_VaCuus, );
+DECLARE_DWORD_COUNTER_STAT_EXTERN(TEXT("VaCuus Draw Calls"), STAT_VaCuusDrawCalls, STATGROUP_VaCuus, VACUUS_API);
+DECLARE_DWORD_COUNTER_STAT_EXTERN(TEXT("VaCuus Commands"), STAT_VaCuusCommands, STATGROUP_VaCuus, VACUUS_API);
 
 /**
  * Log-based rolling perf capture for headless soaks (Task 10): wall-clock
@@ -27,7 +53,7 @@ DECLARE_DWORD_COUNTER_STAT_EXTERN(TEXT("VaCuus Commands"), STAT_VaCuusCommands, 
  * exists because stat output goes to the screen, not the log, and headless
  * measurement runs read the log.
  */
-class FVaCuusPerfLog
+class VACUUS_API FVaCuusPerfLog
 {
 public:
 	enum EScope : int32
@@ -36,6 +62,27 @@ public:
 		Record,
 		Replay,
 		Composite,
+
+		/**
+		 * The three GAME-thread scopes, added for the Task 14 budget gate ("input + snapshot
+		 * read <= 0.10 ms"). Read them as a sum per frame:
+		 *
+		 *   GameTick  -- UVaCuusSubsystem::Tick: poll every view's published snapshot into its
+		 *                game-thread cache, then pulse the UI thread. Once per frame, and the
+		 *                "snapshot read" half of the budget.
+		 *   SlateTick -- SVaCuusWidget::Tick: the resize check, the focus-release edge, the
+		 *                analog repeat clock and the IME surface push. Once per frame per
+		 *                hosted view. Deliberately EXCLUDES FVaCuusPerfLog::TickLog(), which
+		 *                is the logger's own 5-second print and would otherwise be the max
+		 *                sample in every window it printed.
+		 *   Input     -- one sample per input EVENT, covering the whole handler: the
+		 *                screen-to-view transform, the snapshot scan that produces the FReply,
+		 *                and the enqueue. The "input" half of the budget.
+		 */
+		GameTick,
+		SlateTick,
+		Input,
+
 		Num
 	};
 
