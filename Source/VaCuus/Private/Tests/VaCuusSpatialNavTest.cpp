@@ -234,7 +234,7 @@ static bool RunFrames(FVaCuusUIThread& UIThread, int32 NumFrames)
  * `body { nav: auto; }` is not redundant either -- it is the BOOTSTRAP. At load the
  * document element itself holds focus (FocusFlag::Document), so the first arrow key
  * reads the nav property off the document, and FindNextNavigationElement short-cuts
- * `current_element == this` to FindNextTabElement (ElementDocument.cpp:795-796):
+ * `current_element == this` to FindNextTabElement (ElementDocument.cpp:798-799):
  * the first press enters the grid in tab order, later ones navigate spatially.
  * Without it the first press is a silent no-op and the UI looks dead to a pad.
  *

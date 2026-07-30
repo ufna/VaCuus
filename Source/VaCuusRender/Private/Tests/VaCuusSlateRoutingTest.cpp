@@ -844,7 +844,7 @@ bool FVaCuusSlateRoutingTest::RunTest(const FString& Parameters)
  * player then simply holding the left stick to WALK would, 0.4 s later, have a synthesized
  * direction key delivered to a document whose own element holds focus -- which RmlUi
  * treats as "enter the grid" (FindNextNavigationElement short-cuts `current_element ==
- * this` to tab order, ElementDocument.cpp:795-796). From that frame on the view wanted the
+ * this` to tab order, ElementDocument.cpp:798-799). From that frame on the view wanted the
  * keyboard, the stick was answered Handled, and movement input vanished.
  *
  * WHY VaCuus.Input.SlateRouting CANNOT CATCH IT: that test establishes

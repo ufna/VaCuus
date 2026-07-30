@@ -27,7 +27,7 @@ body
 	   itself holds focus (Show(FocusFlag::Document)) -- that is what makes
 	   ElementDocument::ProcessDefaultAction run at all -- so the FIRST direction key
 	   reads nav-* off *this* element. RmlUi short-cuts that case to tab order
-	   (`current_element == this` -> FindNextTabElement, ElementDocument.cpp:795-796),
+	   (`current_element == this` -> FindNextTabElement, ElementDocument.cpp:798-799),
 	   which is how a pad enters the UI; every press after that navigates spatially from
 	   the focused element. Without this rule the first press is a silent no-op and the
 	   HUD looks dead to a controller. */

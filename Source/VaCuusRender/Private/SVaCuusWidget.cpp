@@ -936,7 +936,7 @@ void SVaCuusWidget::TickAnalogNavigation(double InCurrentTime)
 	// throttle would synthesize a direction key, and RmlUi treats the first direction key
 	// delivered while the DOCUMENT holds focus as "enter the grid"
 	// (FindNextNavigationElement short-cuts `current_element == this` to tab order,
-	// ElementDocument.cpp:795-796). From that moment bWantsKeyboardFocus is true, every
+	// ElementDocument.cpp:798-799). From that moment bWantsKeyboardFocus is true, every
 	// later stick event is answered Handled, and the player's movement input is silently
 	// eaten -- 0.4 s after they started walking.
 	//
