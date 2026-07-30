@@ -348,11 +348,35 @@ void FVaCuusRmlDocumentHost::RecordAndPublishFrame()
 	// idle next to the Replay samples that stopped happening.
 	FVaCuusPerfLog::AddUIFrame(bPublished);
 
+	// THE SECOND-CHEAPEST DIAGNOSTIC for a gate whose failure mode is a silently frozen UI,
+	// after the vacuus.IdleGate kill switch itself. Per TRANSITION, never per frame: a static
+	// HUD records ~13,000 frames per minute and publishes one, so a per-frame line would bury
+	// the log and a per-frame Verbose check would still cost a string format. Two lines per
+	// idle period is enough to answer "is this view wedged or just idle" from
+	// -LogCmds="LogVaCuus Verbose" instead of from a rebuild.
+	//
+	// The view id is in the line because the process-wide perf log cannot tell two views
+	// apart, and the counters are there because "went idle and never came back" versus "went
+	// idle at frame 12 of 13,000" are different bugs.
+	const bool bNowIdle = !bPublished;
+	if (bNowIdle != bIdle)
+	{
+		bIdle = bNowIdle;
+		UE_LOG(LogVaCuus, Verbose, TEXT("View %u UI frames went %s (published=%llu withheld=%llu)"),
+			ViewId, bIdle ? TEXT("IDLE, publishes withheld from here") : TEXT("ACTIVE, publishing again"),
+			Recorder->GetNumFramesPublished(), Recorder->GetNumFramesSkipped());
+	}
+
 	if (Status.IsValid())
 	{
-		// Counts RECORDED frames, published or not -- see FVaCuusViewStatus for why
-		// that is the number a headless wait wants.
+		// Two counters, and the game thread needs both: RECORDED is what a headless wait
+		// thresholds on (see FVaCuusViewStatus), PUBLISHED is the only per-view readout of
+		// whether the gate is firing. Their difference is this view's idle signal.
 		Status->FramesRecorded.fetch_add(1, std::memory_order_release);
+		if (bPublished)
+		{
+			Status->FramesPublished.fetch_add(1, std::memory_order_release);
+		}
 	}
 }
 

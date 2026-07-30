@@ -4,6 +4,7 @@
 
 #include "VaCuusDefines.h"
 
+#include "HAL/IConsoleManager.h"
 #include "HAL/PlatformTLS.h"
 #include "IImageWrapper.h"
 #include "IImageWrapperModule.h"
@@ -30,6 +31,24 @@ static_assert(sizeof(int) == sizeof(int32), "Rml index type must be 32-bit");
 // Recorder handles round-trip through Rml handles (uintptr_t) unchanged.
 static_assert(sizeof(Rml::CompiledGeometryHandle) == sizeof(FVaCuusGeometryHandle), "Rml geometry handle must be 64-bit");
 static_assert(sizeof(Rml::TextureHandle) == sizeof(FVaCuusTextureHandle), "Rml texture handle must be 64-bit");
+
+/**
+ * THE KILL SWITCH for the idle short-circuit, and the reason it is worth its handful of
+ * lines: the gate's failure mode is a frozen UI with no error, no ensure and no log line,
+ * and it is the first thing anyone will suspect when a UI stops updating. Without this the
+ * only way to test that suspicion is to rebuild the plugin with the condition commented out.
+ *
+ * Read on the UI thread with GetValueOnAnyThread(), following FVaCuusPerfLog::IsEnabled()
+ * (VaCuusStats.cpp:104-107). Flipping it at runtime is safe in both directions: turning it
+ * off just publishes every recorded frame from then on, and turning it back on compares
+ * against the hash of whatever was published last, which is by definition what the render
+ * target holds.
+ */
+static TAutoConsoleVariable<int32> CVarVaCuusIdleGate(
+	TEXT("vacuus.IdleGate"),
+	1,
+	TEXT("1 (default) = withhold the publish of a recorded UI frame that draws what the render thread already has.\n")
+		TEXT("0 = publish every recorded frame. Use this to rule the idle short-circuit out when a UI looks frozen."));
 
 namespace
 {
@@ -98,9 +117,12 @@ FVaCuusRecordingRenderInterface::~FVaCuusRecordingRenderInterface()
 	// traffic lands after the last published frame and recorder + replayer
 	// are torn down together. Logged (not ensured) because that legitimate
 	// path would otherwise trip on every shutdown.
-	if (Pending &&
-		(Pending->NewGeometry.Num() > 0 || Pending->NewTextures.Num() > 0 ||
-			Pending->ReleasedGeometry.Num() > 0 || Pending->ReleasedTextures.Num() > 0))
+	//
+	// The SECOND site that used to name all four delta arrays inline; it asks the buffer
+	// now, for the same reason the gate does. The message below still itemises the four --
+	// a fifth array would make it read "0 of everything" here, which is a cosmetic gap and
+	// not a lost resource, and FVaCuusCommandBuffer::HasResourceTraffic is one grep away.
+	if (Pending && Pending->HasResourceTraffic())
 	{
 		UE_LOG(LogVaCuus, Log,
 			TEXT("Recorder destroyed with unpublished resource traffic (new: %d geometry, %d textures; released: %d geometry, %d textures) — dropped"),
@@ -916,7 +938,9 @@ TUniquePtr<FVaCuusCommandBuffer> FVaCuusRecordingRenderInterface::EndFrameAndPub
 
 	// Generation > 0 == "this recorder has published at least once", so the first
 	// frame of a view always publishes and never compares against an unset hash.
-	if (Generation > 0 && ContentHash == LastPublishedContentHash && !bHasResourceTraffic)
+	// CVarVaCuusIdleGate is the kill switch; see its declaration.
+	const bool bGateEnabled = CVarVaCuusIdleGate.GetValueOnAnyThread() != 0;
+	if (bGateEnabled && Generation > 0 && ContentHash == LastPublishedContentHash && !bHasResourceTraffic)
 	{
 		// A skipped frame consumes NO generation: Generation is documented as a
 		// strictly increasing PUBLISH counter and ShouldConsume treats a repeat as

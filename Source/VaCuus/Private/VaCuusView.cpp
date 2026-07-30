@@ -282,6 +282,11 @@ uint64 UVaCuusView::GetFramesRecorded() const
 	return Status.IsValid() ? Status->FramesRecorded.load(std::memory_order_acquire) : 0;
 }
 
+uint64 UVaCuusView::GetFramesPublished() const
+{
+	return Status.IsValid() ? Status->FramesPublished.load(std::memory_order_acquire) : 0;
+}
+
 uint64 UVaCuusView::GetLastRequestedLoadSerial() const
 {
 	return Status.IsValid() ? Status->LoadRequestSerial.load(std::memory_order_relaxed) : 0;

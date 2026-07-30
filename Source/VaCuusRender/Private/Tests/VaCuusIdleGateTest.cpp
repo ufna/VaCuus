@@ -5,6 +5,8 @@
 #include "VaCuusCommandBuffer.h"
 #include "VaCuusRecordingRenderInterface.h"
 
+#include "HAL/IConsoleManager.h"
+#include "Misc/ScopeExit.h"
 #include "Templates/Function.h"
 
 #include <RmlUi/Core/Types.h>
@@ -393,6 +395,74 @@ bool FVaCuusIdleGatePerRecorderTest::RunTest(const FString& Parameters)
 		TestTrue(TEXT("...even though its content hashes the same as the idle view's last publish"),
 			VaCuusHashFrameContent(*RestartedFirst) == VaCuusHashFrameContent(*IdleFirst));
 	}
+
+	return true;
+}
+
+/**
+ * vacuus.IdleGate 0 turns the short-circuit off, which is the whole point of it existing: the
+ * gate's failure mode is a frozen UI with no error, no ensure and no log line, so the first
+ * thing anyone will want is to rule it out without a rebuild.
+ *
+ * Asserted rather than assumed because a kill switch that does not kill is worse than none --
+ * it would send whoever flipped it looking somewhere else.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusIdleGateKillSwitchTest, "VaCuus.Render.IdleGate.KillSwitch",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusIdleGateKillSwitchTest::RunTest(const FString& Parameters)
+{
+	using namespace VaCuusIdleGateTest;
+
+	IConsoleVariable* Gate = IConsoleManager::Get().FindConsoleVariable(TEXT("vacuus.IdleGate"));
+	if (!TestNotNull(TEXT("vacuus.IdleGate exists"), Gate))
+	{
+		return false;
+	}
+
+	// Restored on every exit path below, including the early returns: this cvar is
+	// process-wide and every other test in the suite assumes the gate is armed.
+	const int32 Saved = Gate->GetInt();
+	ON_SCOPE_EXIT { Gate->Set(Saved, ECVF_SetByCode); };
+	TestEqual(TEXT("The gate is on by default"), Saved, 1);
+
+	FVaCuusRecordingRenderInterface Recorder;
+	const FTriangle Triangle;
+
+	// Exactly the same frame every time, so the gate is the only thing that can decide.
+	Rml::CompiledGeometryHandle Geometry = 0;
+	const auto SameFrame = [&Recorder, &Triangle, &Geometry]()
+	{
+		Recorder.BeginFrame(GViewSize);
+		if (Geometry == 0)
+		{
+			Geometry = Recorder.CompileGeometry(Triangle.VertexSpan(), Triangle.IndexSpan());
+		}
+		Recorder.RenderGeometry(Geometry, Rml::Vector2f(1.f, 2.f), Rml::TextureHandle(0));
+		return Recorder.EndFrameAndPublish();
+	};
+
+	// Armed: first frame publishes (it also creates the geometry), the repeat does not.
+	TestNotNull(TEXT("First frame publishes"), SameFrame().Get());
+	TestNull(TEXT("With the gate on, the repeat is withheld"), SameFrame().Get());
+	TestEqual(TEXT("One frame skipped so far"), int32(Recorder.GetNumFramesSkipped()), 1);
+
+	// Disarmed: the identical frame publishes, twice over, and nothing is counted as
+	// skipped -- the gate is not "firing and being overridden", it is not firing.
+	Gate->Set(0, ECVF_SetByCode);
+	TestNotNull(TEXT("With the gate off, an identical frame publishes"), SameFrame().Get());
+	TestNotNull(TEXT("...and keeps publishing"), SameFrame().Get());
+	TestEqual(TEXT("Nothing new was counted as skipped"), int32(Recorder.GetNumFramesSkipped()), 1);
+	TestEqual(TEXT("Three publishes: the first frame and the two forced ones"),
+		int32(Recorder.GetNumFramesPublished()), 3);
+
+	// Re-armed mid-stream, which is the case a live toggle actually produces. The hash the
+	// gate compares against is the one from the last PUBLISHED frame, and with the gate off
+	// that is still being kept up to date -- so it withholds immediately rather than letting
+	// one more frame through.
+	Gate->Set(1, ECVF_SetByCode);
+	TestNull(TEXT("Re-arming withholds the next identical frame at once"), SameFrame().Get());
+	TestEqual(TEXT("...counted as the second skip"), int32(Recorder.GetNumFramesSkipped()), 2);
 
 	return true;
 }

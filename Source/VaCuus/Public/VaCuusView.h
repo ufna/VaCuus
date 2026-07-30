@@ -223,6 +223,22 @@ public:
 	uint64 GetFramesRecorded() const;
 
 	/**
+	 * Frames this view has PUBLISHED to the render thread, i.e. those the idle short-circuit
+	 * let through. Never above GetFramesRecorded().
+	 *
+	 * READ IT AGAINST GetFramesRecorded(): once the gate starts firing the two diverge, and
+	 * that divergence is this view's idle signal -- the only per-view one there is. A view
+	 * whose recorded count climbs while its published count sits still is idle and its
+	 * picture is living in the render target; a view where both sit still is not running
+	 * frames at all, which is a different problem. vacuus.M1HUD.PerfLog answers the same
+	 * question for the whole process at once and cannot separate two views.
+	 *
+	 * NOT a substitute for GetFramesRecorded() in a headless wait: on a static document this
+	 * number stops advancing after a handful of frames, so a threshold on it never completes.
+	 */
+	uint64 GetFramesPublished() const;
+
+	/**
 	 * Serial of the newest load this view has ASKED for, and of the newest one the UI
 	 * thread has FINISHED. Equal means the view is showing the answer to the last
 	 * request; a completed serial above your own request's means yours was

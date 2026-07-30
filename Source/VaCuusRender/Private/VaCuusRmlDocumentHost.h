@@ -118,6 +118,13 @@ private:
 	bool bLoggedFirstFrame = false;
 
 	/**
+	 * Whether the last recorded frame's publish was withheld by the idle gate. Kept only to
+	 * turn a per-frame condition into a per-TRANSITION log line; see RecordAndPublishFrame.
+	 * Starts false because a view's first frame always publishes.
+	 */
+	bool bIdle = false;
+
+	/**
 	 * Strictly increasing snapshot id, stamped into every publish (including the
 	 * empty ones). It is the only way the game thread can tell a fresh snapshot from
 	 * the previous buffer handed back again, so it must never repeat or reset.

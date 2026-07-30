@@ -130,9 +130,10 @@ public:
 	 * BeginFrame() may pre-populate it (see class comment).
 	 *
 	 * RETURNS NULL when the frame just recorded is the frame already on screen --
-	 * the idle short-circuit (see the cpp for the full argument). A null return is
-	 * a normal outcome, not a failure: the caller simply enqueues nothing, and the
-	 * render thread keeps compositing the render target it already has.
+	 * the idle short-circuit (see the cpp for the full argument), unless
+	 * `vacuus.IdleGate 0` has turned it off. A null return is a normal outcome, not a
+	 * failure: the caller simply enqueues nothing, and the render thread keeps
+	 * compositing the render target it already has.
 	 *
 	 * The RECORDING is never skipped, only the publish. That is load-bearing: the
 	 * async image decodes are drained inside BeginFrame(), so a recorder that
@@ -146,16 +147,27 @@ public:
 	 * Frames the idle gate withheld are NOT counted -- that is what keeps
 	 * Generation meaning "publishes", which the replayer's idempotence guard
 	 * relies on (FVaCuusReplayRenderer::ShouldConsume).
+	 *
+	 * THREAD AFFINITY, and it is narrower than it looks: both counters below are plain
+	 * uint64 written only by EndFrameAndPublish(), so they may be read only by the thread
+	 * that drives this recorder -- the VaCuus UI thread in production, the test thread in
+	 * a unit test. Deliberately NOT atomic, because nothing needs them to be: the
+	 * GAME-THREAD readout of the same two facts is FVaCuusViewStatus::FramesPublished
+	 * against FramesRecorded, which is atomic and per view, and that is where a
+	 * cross-thread reader belongs. CheckOwnerThread() is not called here on purpose --
+	 * it only bites while a frame is open, and these are read between frames, so it would
+	 * be an assertion that never fires pretending to be a guarantee.
 	 */
 	uint64 GetNumFramesPublished() const { return Generation; }
 
 	/**
 	 * Frames recorded whose publish the idle gate withheld.
 	 *
-	 * THE observable for the gate, and the reason it exists as a counter at all:
-	 * "an unchanged frame is not published" is otherwise invisible from outside --
-	 * the screen looks identical either way -- and an invariant with no observable
-	 * cannot be tested.
+	 * The observable that makes the gate TESTABLE: "an unchanged frame is not published" is
+	 * otherwise invisible from outside -- the screen looks identical either way -- and an
+	 * invariant with no observable cannot be tested. Same thread affinity as above; the
+	 * runtime diagnostics read the view-status counters and the vacuus.M1HUD.PerfLog
+	 * window instead.
 	 */
 	uint64 GetNumFramesSkipped() const { return NumFramesSkipped; }
 

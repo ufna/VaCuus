@@ -83,10 +83,31 @@ struct FVaCuusViewStatus
 	 * withheld frame means the pixels were already on the render thread. Counting
 	 * publishes instead would stall a waiter on a static UI forever.
 	 *
-	 * The publish count is per-recorder and lives there
-	 * (FVaCuusRecordingRenderInterface::GetNumFramesPublished).
+	 * The publish count is the sibling below.
 	 */
 	std::atomic<uint64> FramesRecorded{0};
+
+	/**
+	 * Frames this view has PUBLISHED, i.e. those the idle gate let through to the render
+	 * thread. Always <= FramesRecorded, and the difference IS this view's idle signal:
+	 * equal means the view changed on every frame, a gap that grows while FramesRecorded
+	 * also grows means the gate is firing and the render target is carrying the picture.
+	 *
+	 * WHY IT IS HERE RATHER THAN ONLY ON THE RECORDER. The recorder has the number
+	 * (FVaCuusRecordingRenderInterface::GetNumFramesPublished), but the recorder is owned by
+	 * FVaCuusRmlDocumentHost in VaCuusRender/Private with no accessor on
+	 * IVaCuusDocumentHost -- so before this counter existed the only possible reader was a
+	 * unit test holding a recorder directly, and per-view publish/skip was not observable at
+	 * runtime AT ALL. The one runtime readout, vacuus.M1HUD.PerfLog, aggregates over a
+	 * file-static singleton and prints ONE process-wide published/skipped line, so with two
+	 * views -- one genuinely idle, one wedged -- nothing said which contributed the skips.
+	 * FramesRecorded advances for both.
+	 *
+	 * Atomic and published with release ordering for the same reason as FramesRecorded: the
+	 * UI thread writes it, the game thread polls it, and no lock is worth taking for a
+	 * counter.
+	 */
+	std::atomic<uint64> FramesPublished{0};
 
 	//~ Interactive-region snapshot: UI thread produces, game thread consumes.
 	//~ See FVaCuusInteractiveSnapshot for what it means and how stale it is.

@@ -199,7 +199,16 @@ public:
 			Probe->Published.fetch_add(1, std::memory_order_relaxed);
 		}
 		Probe->Frames.fetch_add(1, std::memory_order_release);
+
+		// Both view-status counters, mirroring FVaCuusRmlDocumentHost::RecordAndPublishFrame
+		// line for line -- their DIFFERENCE is the only per-view idle readout the game thread
+		// has, so it is asserted below on a real static RmlUi document rather than only
+		// documented on the struct.
 		Status->FramesRecorded.fetch_add(1, std::memory_order_release);
+		if (Buffer.IsValid())
+		{
+			Status->FramesPublished.fetch_add(1, std::memory_order_release);
+		}
 	}
 
 private:
@@ -369,6 +378,20 @@ bool FVaCuusMultiViewTest::RunTest(const FString& Parameters)
 	// worth failing a test over.
 	TestTrue(TEXT("A static document publishes fewer frames than it records"),
 		ProbeB->Published.load(std::memory_order_relaxed) < ProbeB->Frames.load(std::memory_order_acquire));
+
+	// THE SAME FACT THROUGH THE GAME-THREAD CHANNEL, which is what a caller actually has:
+	// FVaCuusViewStatus carries both counters (UVaCuusView::GetFramesRecorded /
+	// GetFramesPublished), and before they existed side by side, per-view publish/skip was
+	// not observable at runtime at all -- vacuus.M1HUD.PerfLog aggregates every view into one
+	// process-wide line. A view whose published count sits still while its recorded count
+	// climbs is idle; both sitting still is a different bug entirely.
+	const uint64 StatusRecorded = StatusB->FramesRecorded.load(std::memory_order_acquire);
+	const uint64 StatusPublished = StatusB->FramesPublished.load(std::memory_order_acquire);
+	TestTrue(TEXT("The view status published at least once"), StatusPublished > 0);
+	TestTrue(TEXT("...and fewer times than it recorded, which IS the per-view idle signal"),
+		StatusPublished < StatusRecorded);
+	TestEqual(TEXT("...agreeing with the probe's own publish count"),
+		int32(StatusPublished), ProbeB->Published.load(std::memory_order_relaxed));
 
 	return true;
 }
