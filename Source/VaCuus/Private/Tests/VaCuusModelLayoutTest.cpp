@@ -394,6 +394,142 @@ bool FVaCuusModelLayoutAuthoredNameTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+namespace VaCuusModelLayoutTest
+{
+/**
+ * A Blueprint-style member name: `<Base>_<UniqueId>_<32hexGUID>`, which is what
+ * FStructureEditorUtils::AddVariable produces (StructureEditorUtils.cpp:256-264) and what
+ * UUserDefinedStruct::GetAuthoredNameForField chops back down (UserDefinedStruct.cpp:300-313).
+ */
+static FString MangledMemberName(const TCHAR* Base, int32 UniqueId, const TCHAR* Guid32)
+{
+	return FString::Printf(TEXT("%s_%d_%s"), Base, UniqueId, Guid32);
+}
+
+/** A linked UUserDefinedStruct carrying the given int32 members, by raw (mangled) name. */
+static UUserDefinedStruct* MakeUserStruct(const TArray<FString>& MemberNames)
+{
+	UUserDefinedStruct* Struct = NewObject<UUserDefinedStruct>(GetTransientPackage(), NAME_None, RF_Transient);
+	Struct->Guid = FGuid::NewGuid();
+	Struct->Status = EUserDefinedStructureStatus::UDSS_UpToDate;
+
+	for (const FString& MemberName : MemberNames)
+	{
+		FIntProperty* Prop = new FIntProperty(Struct, FName(*MemberName));
+		Prop->SetPropertyFlags(CPF_BlueprintVisible);
+		Struct->AddCppProperty(Prop);
+	}
+
+	Struct->Bind();
+	Struct->StaticLink(/*bRelinkExistingProperties=*/true);
+	return Struct;
+}
+}	 // namespace VaCuusModelLayoutTest
+
+/**
+ * DUPLICATE MEMBER (spec 8) -- the diagnostic that had no test.
+ *
+ * WHY IT IS REACHABLE AT ALL, WHICH IS THE WHOLE POINT. In C++ it is not: UHT refuses a
+ * property that shadows one in the super chain outright ("shadowing is not allowed",
+ * UhtProperty.cs:2357), so no native USTRUCT can produce two members with one name. The
+ * collision is created by the WIRE NAME rule instead. `GetAuthoredName()` chops a Blueprint
+ * member's `<Base>_<UniqueId>_<32hexGUID>` down to `<Base>`, and two never-renamed members --
+ * `Health_2_...` and `Health_5_...` -- both chop to `Health`
+ * (UserDefinedStruct.cpp:300-313). Without the check the layout would carry two entries under
+ * one name: FindField() would answer with whichever came first, DirtyVariable would fire twice
+ * for one variable, and the document would show one of the two values with nothing anywhere
+ * saying which.
+ *
+ * THIS IS THE COOKED PATH, RUN IN THE EDITOR, and that is deliberate rather than a compromise.
+ * GetAuthoredNameForField asks EditorData for a friendly name FIRST (UserDefinedStruct.cpp:289-298)
+ * and a real Blueprint struct would answer `Health_2` -- no collision. The structs below are
+ * built by hand with no EditorData, so `Cast<UUserDefinedStructEditorDataBase>` returns null and
+ * the chopping fallback runs, which is exactly what a packaged build does. Spec 10 notes that an
+ * editor automation test only exercises the editor branch; this one reaches the other.
+ *
+ * BOTH BRANCHES OF THE CHECK, because it is written as a ternary over two different lookups: a
+ * top-level name is tested against TopLevelNames, a nested one against FindField().
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusModelLayoutDuplicateNameTest, "VaCuus.Model.LayoutDuplicateName",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusModelLayoutDuplicateNameTest::RunTest(const FString& Parameters)
+{
+	using namespace VaCuusModelLayoutTest;
+
+	// REGISTERED, NOT MERELY TOLERATED: an unmatched expectation fails the test, so each of
+	// these IS the assertion that the collision was diagnosed exactly once, at Error, naming the
+	// wire name that was refused.
+	AddExpectedMessagePlain(
+		TEXT("cannot be bound under the name 'Health' --"), ELogVerbosity::Error, EAutomationExpectedMessageFlags::Contains, 1);
+	AddExpectedMessagePlain(TEXT("cannot be bound under the name 'Panel.Health' --"), ELogVerbosity::Error,
+		EAutomationExpectedMessageFlags::Contains, 1);
+
+	const FString FirstHealth = MangledMemberName(TEXT("Health"), 2, TEXT("9F3C1A084F6E4B2D8E7A5C0B1D2E3F40"));
+	const FString SecondHealth = MangledMemberName(TEXT("Health"), 5, TEXT("11223344556677889900AABBCCDDEEFF"));
+
+	const TArray<FString> Members = {FirstHealth, SecondHealth};
+	TStrongObjectPtr<UUserDefinedStruct> Inner(MakeUserStruct(Members));
+
+	// The premise, asserted rather than assumed: two DIFFERENT properties whose authored names
+	// are the SAME string. If UUserDefinedStruct ever stops chopping, this test stops testing
+	// what it says it tests, and this is the line that would say so.
+	const FProperty* FirstProp = Inner->FindPropertyByName(FName(*FirstHealth));
+	const FProperty* SecondProp = Inner->FindPropertyByName(FName(*SecondHealth));
+	if (!TestNotNull(TEXT("the first member exists"), FirstProp) || !TestNotNull(TEXT("the second member exists"), SecondProp))
+	{
+		return false;
+	}
+	TestTrue(TEXT("they are two distinct properties"), FirstProp != SecondProp);
+	TestEqual(TEXT("whose authored names collide"), FirstProp->GetAuthoredName(), SecondProp->GetAuthoredName());
+	TestEqual(TEXT("on 'Health'"), FirstProp->GetAuthoredName(), FString(TEXT("Health")));
+
+	// ---- Top-level branch: TopLevelNames.Contains(WireName). ----
+	{
+		const FVaCuusModelLayout Layout(Inner.Get());
+
+		if (TestEqual(TEXT("only one of the two colliding members is bound"), Layout.GetFields().Num(), 1))
+		{
+			TestEqual(TEXT("under the shared authored name"), Layout.GetFields()[0].WireName, FString(TEXT("Health")));
+		}
+
+		// A duplicate must not leave a second top-level name behind either: TopLevelNames is
+		// what the bind step iterates, so an extra entry would bind a second RmlUi variable
+		// against the same shadow -- and RmlUi's own refusal of the repeat is a compiled-out
+		// LT_WARNING (DataModel.cpp:119-124, spec 8).
+		TestEqual(TEXT("and exactly one top-level name"), Layout.GetTopLevelNames().Num(), 1);
+	}
+
+	// ---- Nested branch: FindField(WireName) != nullptr. ----
+	//
+	// The same two members reached through a struct member, so the colliding wire name is
+	// dotted and the check runs down its other arm.
+	{
+		TStrongObjectPtr<UUserDefinedStruct> Outer(
+			NewObject<UUserDefinedStruct>(GetTransientPackage(), NAME_None, RF_Transient));
+		Outer->Guid = FGuid::NewGuid();
+		Outer->Status = EUserDefinedStructureStatus::UDSS_UpToDate;
+
+		FStructProperty* PanelProp =
+			new FStructProperty(Outer.Get(), FName(*MangledMemberName(TEXT("Panel"), 0, TEXT("0123456789ABCDEF0123456789ABCDEF"))));
+		PanelProp->Struct = Inner.Get();
+		PanelProp->SetPropertyFlags(CPF_BlueprintVisible);
+		Outer->AddCppProperty(PanelProp);
+		Outer->Bind();
+		Outer->StaticLink(/*bRelinkExistingProperties=*/true);
+
+		const FVaCuusModelLayout Layout(Outer.Get());
+
+		if (TestEqual(TEXT("the nested collision leaves one leaf"), Layout.GetFields().Num(), 1))
+		{
+			TestEqual(TEXT("under its dotted path"), Layout.GetFields()[0].WireName, FString(TEXT("Panel.Health")));
+		}
+		TestEqual(TEXT("and one top-level name, the struct's"), Layout.GetTopLevelNames().Num(), 1);
+	}
+
+	return true;
+}
+
 /**
  * THE SHADOW BUFFER: a real UScriptStruct instance, addressable through the layout,
  * constructed and destroyed exactly once.

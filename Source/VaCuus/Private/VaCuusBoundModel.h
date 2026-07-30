@@ -131,6 +131,22 @@ public:
 	/** The game-side previous-value shadow. Game thread; diagnostics and tests. */
 	const FVaCuusModelShadow& GetGameShadow() const { return Sampler.GetShadow(); }
 
+	/**
+	 * `vacuus.DumpModel`'s game half: the layout, the game shadow's values, and the pending and
+	 * unacknowledged sets, to LogVaCuus at Display. Game thread.
+	 *
+	 * TWO HALVES RATHER THAN ONE, AND THE SPLIT IS OWNERSHIP, NOT TIDINESS. The UI shadow is a
+	 * UScriptStruct instance the UI thread writes with no synchronisation at all (see the class
+	 * comment): its FString fields are freed and reallocated by ApplyUpdate, so reading one from
+	 * here is a use-after-free, not a torn integer. So the game thread prints what it owns and
+	 * enqueues the rest -- see FVaCuusUIThread::EnqueueDumpModel and DumpUISide() below.
+	 *
+	 * The two halves therefore appear in the log one UI frame apart, and both name the view and
+	 * model so they can be read as a pair. That gap is itself the diagnostic in the case that
+	 * matters most: a UI half that never appears means the model reached no context.
+	 */
+	void DumpGameSide(uint32 ViewId);
+
 	//~ ------------------------------------------------------------------ UI thread
 
 	/**
@@ -172,6 +188,13 @@ public:
 	 * synchronised with it.
 	 */
 	const FVaCuusModelShadow& GetUIShadow() const { return UIShadow; }
+
+	/**
+	 * `vacuus.DumpModel`'s UI half: whether the bind reached a context, the UI shadow's values,
+	 * the published dirty set that last reached it, and the applied generation. UI thread; see
+	 * DumpGameSide() for why this is a separate call on a separate thread.
+	 */
+	void DumpUISide(uint32 ViewId);
 
 private:
 	/** The body of the apply, factored out only so the ConsumeUpdate lambda stays one line. */

@@ -174,6 +174,31 @@ struct FVaCuusModelField
 	 * declaration.
 	 */
 	VACUUS_API void CopyValue(void* DestStructBase, const void* SourceStructBase) const;
+
+	/**
+	 * This field's value in StructBase, as text, for `vacuus.DumpModel` and nothing else.
+	 *
+	 * WHAT IT IS FOR: spec 8 says the dump prints both shadows, and a shadow is a
+	 * UScriptStruct instance whose bytes mean nothing without the per-kind accessor. This is
+	 * that accessor, once, for every kind -- exhaustive switch with no `default`, so a new
+	 * EVaCuusFieldKind is a compile error here rather than a field the dump silently omits.
+	 *
+	 * NOT AN RmlUi CALL, AND THAT IS THE REASON IT EXISTS AT ALL RATHER THAN REUSING
+	 * FVaCuusScalarDefinition::Get(). The game-side shadow is game-thread state, so the dump's
+	 * game half runs on the game thread -- and building an Rml::Variant there would weaken the
+	 * one invariant this whole design rests on (every RmlUi call on the UI thread). One UE-only
+	 * function serves both halves.
+	 *
+	 * IT AGREES WITH WHAT THE DOCUMENT SHIPS FOR EVERY KIND EXCEPT FLOATS, deliberately.
+	 * RmlUi renders a bound double through TypeConverter<double, String>, which is
+	 * `FormatString(dest, "%.3f", src)` followed by TrimTrailingDotZeros
+	 * (ThirdParty/RmlUi/Include/RmlUi/Core/TypeConverter.inl:282-295), i.e. three decimals.
+	 * A dump that rounded the same way would hide the difference between two values the
+	 * document renders identically -- which is exactly the disagreement somebody dumping two
+	 * shadows is looking for. Bools follow RmlUi ("1"/"0", :340-347) because there the shipped
+	 * form loses nothing.
+	 */
+	VACUUS_API FString DescribeValue(const void* StructBase) const;
 };
 
 /**

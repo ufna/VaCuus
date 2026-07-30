@@ -287,6 +287,25 @@ public:
 	int32 NumOutstandingModelFields(FName ModelName);
 
 	/**
+	 * `vacuus.DumpModel`'s per-view body (spec 8): prints the layout, the game-side shadow and
+	 * the pending/unacknowledged sets for ModelName now, and enqueues the UI thread's half --
+	 * the UI shadow, the published dirty set and the applied generation -- which appears in the
+	 * log a UI frame later.
+	 *
+	 * TWO HALVES ON TWO THREADS, because the UI shadow is a UScriptStruct instance the UI thread
+	 * writes with no synchronisation at all: an FString field in it is freed and reallocated by
+	 * every apply that touches it, so reading one from here would be a use-after-free rather
+	 * than a stale number. FVaCuusUIThread::EnqueueDumpModel carries the request across.
+	 *
+	 * ModelName None dumps every model bound to this view.
+	 *
+	 * @return how many models were dumped from THIS side. Zero means nothing is bound under that
+	 *         name on the game thread, which is a different failure from the UI thread having
+	 *         nothing -- and the two lines say so separately.
+	 */
+	int32 DumpModel(FName ModelName);
+
+	/**
 	 * Publishes every bound model's outstanding fields to the UI thread. Once per frame, from
 	 * UVaCuusSubsystem::Tick.
 	 *

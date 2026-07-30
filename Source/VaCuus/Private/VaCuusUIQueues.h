@@ -69,6 +69,18 @@ enum class EVaCuusCommandKind : uint8
 	 */
 	BindModel,
 
+	/**
+	 * Prints the UI-thread half of `vacuus.DumpModel` for the model named in Payload, or for
+	 * every model of the view when Payload is empty (spec 8).
+	 *
+	 * HANDLED BEFORE THE PER-VIEW HOST LOOKUP, unlike every other routed kind, and that is the
+	 * point rather than an inconsistency: the models live in FVaCuusUIThread::Models keyed on
+	 * the view, not in the host, and a diagnostic that answered "unknown view" at Verbose --
+	 * which is what the lookup does -- would be the one command in the plugin that can fail
+	 * silently. It reports what it found either way.
+	 */
+	DumpModel,
+
 	/** Shows or hides the view's document per bVisible. */
 	SetVisible,
 

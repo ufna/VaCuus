@@ -411,6 +411,44 @@ int32 UVaCuusView::NumOutstandingModelFields(FName ModelName)
 	return Found != nullptr ? (*Found)->NumOutstandingFields() : INDEX_NONE;
 }
 
+int32 UVaCuusView::DumpModel(FName ModelName)
+{
+	check(IsInGameThread());
+
+	int32 NumDumped = 0;
+	for (const TPair<FName, TSharedPtr<FVaCuusBoundModel>>& Pair : Models)
+	{
+		if (ModelName.IsNone() || Pair.Key == ModelName)
+		{
+			Pair.Value->DumpGameSide(ViewId);
+			++NumDumped;
+		}
+	}
+
+	if (NumDumped == 0)
+	{
+		UE_LOG(LogVaCuus, Display, TEXT("DumpModel: view %u has no model called '%s' (%d bound: %s)"), ViewId,
+			*ModelName.ToString(), Models.Num(), Models.IsEmpty() ? TEXT("none") : TEXT("see vacuus.DumpModel with no arguments"));
+		return 0;
+	}
+
+	// ENQUEUED EVEN WHEN THE VIEW IS NO LONGER REGISTERED -- EnqueueDumpModel drops it with a
+	// log line of its own in that case (Enqueue()'s stopping gate), which is more useful than
+	// this function deciding not to ask. The half that does arrive still names the view, so a
+	// missing UI half is never ambiguous about which view it belonged to.
+	if (FVaCuusUIThread* UIThread = GetUIThread())
+	{
+		UIThread->EnqueueDumpModel(ViewId, ModelName);
+	}
+	else
+	{
+		UE_LOG(LogVaCuus, Display,
+			TEXT("DumpModel: view %u is no longer registered, so there is no UI-thread half to print"), ViewId);
+	}
+
+	return NumDumped;
+}
+
 void UVaCuusView::PublishModelUpdates()
 {
 	check(IsInGameThread());

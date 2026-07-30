@@ -188,6 +188,24 @@ public:
 	 */
 	int32 NumOutstandingFields();
 
+	/**
+	 * The two game-side sets `vacuus.DumpModel` prints (spec 8), separately rather than as the
+	 * union NumOutstandingFields() reports.
+	 *
+	 * THE DISTINCTION IS THE DIAGNOSTIC. Pending means "the differ saw this move and the UI has
+	 * not been told"; Unacked means "the UI was told and has not confirmed". A model whose
+	 * Pending set is empty while Unacked stays full for many frames is the signature of a bind
+	 * that never reached a context -- FVaCuusBoundModel::ApplyPendingUpdate() deliberately does
+	 * not consume in that case, so no echo ever comes back. Collapsed into one number those two
+	 * states are indistinguishable, and they have completely different fixes.
+	 *
+	 * Const, and therefore NOT harvesting the echo first -- unlike NumOutstandingFields(). The
+	 * dump calls that one immediately before these, so the sets it prints are already reaped.
+	 * Game thread.
+	 */
+	const TBitArray<>& GetPendingFields() const { return Pending; }
+	const TBitArray<>& GetUnackedFields() const { return Unacked; }
+
 	/** Generation of the newest publish; 0 before the first. */
 	uint64 GetLastPublishedGeneration() const { return LastPublishedGeneration; }
 
@@ -210,6 +228,27 @@ public:
 	 * @return true if Applier ran.
 	 */
 	bool ConsumeUpdate(TFunctionRef<void(const FVaCuusModelUpdate&)> Applier);
+
+	/**
+	 * The slot this consumer read last -- the PUBLISHED dirty set spec 8's dump prints, next to
+	 * the values that set announces.
+	 *
+	 * Read(), not SwapAndRead(): a swap here would consume a publish the real applier then never
+	 * sees, so a dump would silently drop one frame's update. TripleBuffer.h:137 hands back the
+	 * current read buffer and touches no index.
+	 *
+	 * CONSUMER THREAD ONLY, for the same reason ConsumeUpdate() is: the buffer this points at is
+	 * the producer's again the moment this thread swaps. Meaningless (generation 0, no bits, no
+	 * buffer) before the first successful ConsumeUpdate.
+	 *
+	 * Non-const because TTripleBuffer::Read() is (TripleBuffer.h:137) -- the same reason
+	 * NumOutstandingFields() above is not const, and preferable to a const_cast that would hide
+	 * a container contract behind a keyword.
+	 */
+	const FVaCuusModelUpdate& GetLastConsumedUpdate() { return Slots.Read(); }
+
+	/** Newest generation this consumer took; 0 before the first. Consumer thread. */
+	uint64 GetLastConsumedGeneration() const { return LastConsumedGeneration; }
 
 	/** Updates this consumer has applied. Any thread. */
 	uint64 GetNumUpdatesApplied() const { return NumUpdatesApplied.load(std::memory_order_relaxed); }

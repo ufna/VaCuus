@@ -8,6 +8,7 @@
 #include "UObject/Class.h"
 #include "UObject/EnumProperty.h"
 #include "UObject/Field.h"
+#include "UObject/SoftObjectPtr.h"
 #include "UObject/StrProperty.h"
 #include "UObject/TextProperty.h"
 #include "UObject/UnrealType.h"
@@ -54,6 +55,97 @@ void FVaCuusModelField::CopyValue(void* DestStructBase, const void* SourceStruct
 	// is what FBoolProperty's accessors and its masked copy both expect.
 	Property->CopySingleValue(Property->ContainerPtrToValuePtr<void>(ContainerPtr(DestStructBase)),
 		Property->ContainerPtrToValuePtr<void>(ContainerPtr(SourceStructBase)));
+}
+
+FString FVaCuusModelField::DescribeValue(const void* StructBase) const
+{
+	// The same two-step addressing every other reader uses: ContainerPtr applies the flattening
+	// offset, ContainerPtrToValuePtr applies Offset_Internal. Doing the second by hand is what
+	// FProperty::GetOffset_ReplaceWith_ContainerPtrToValuePtr (UnrealType.h:466) exists to shame,
+	// and it is also the only form that is correct for a bitfield -- whose value pointer is the
+	// shared storage integer, not the bit.
+	const void* ValuePtr = Property->ContainerPtrToValuePtr<void>(ContainerPtr(StructBase));
+
+	// NO `default`: -Wswitch makes a new EVaCuusFieldKind a compile error here. Same shape as
+	// FVaCuusScalarDefinition::Get(), the sampler's HasFieldChanged() and LexToString().
+	switch (Kind)
+	{
+		case EVaCuusFieldKind::Bool:
+			// The mask-aware accessor, never a byte read, for the reason the sampler spells out:
+			// `uint8 b : 1` shares its storage byte with up to seven unrelated bitfields.
+			// "1"/"0" rather than "true"/"false" because that is what RmlUi ships
+			// (TypeConverter.inl:340-347).
+			return CastFieldChecked<FBoolProperty>(Property)->GetPropertyValue(ValuePtr) ? TEXT("1") : TEXT("0");
+
+		case EVaCuusFieldKind::SignedInt:
+			return FString::Printf(TEXT("%lld"), CastFieldChecked<FNumericProperty>(Property)->GetSignedIntPropertyValue(ValuePtr));
+
+		case EVaCuusFieldKind::UnsignedInt:
+			return FString::Printf(TEXT("%llu"), CastFieldChecked<FNumericProperty>(Property)->GetUnsignedIntPropertyValue(ValuePtr));
+
+		case EVaCuusFieldKind::FloatingPoint:
+			// FULL PRECISION, WHICH IS WHERE THIS DELIBERATELY DIVERGES FROM THE SCREEN -- see
+			// the header. %.17g round-trips an IEEE double exactly, so two shadows that differ
+			// in the last bit differ here; RmlUi's own "%.3f" would print them the same.
+			return FString::Printf(
+				TEXT("%.17g"), CastFieldChecked<FNumericProperty>(Property)->GetFloatingPointPropertyValue(ValuePtr));
+
+		case EVaCuusFieldKind::String:
+			return CastFieldChecked<FStrProperty>(Property)->GetPropertyValue(ValuePtr);
+
+		case EVaCuusFieldKind::Utf8String:
+			return FString(CastFieldChecked<FUtf8StrProperty>(Property)->GetPropertyValue(ValuePtr));
+
+		case EVaCuusFieldKind::AnsiString:
+			return FString(CastFieldChecked<FAnsiStrProperty>(Property)->GetPropertyValue(ValuePtr));
+
+		case EVaCuusFieldKind::Name:
+			return CastFieldChecked<FNameProperty>(Property)->GetPropertyValue(ValuePtr).ToString();
+
+		case EVaCuusFieldKind::Text:
+			// The display string, which is what the adapter ships and what the sampler diffs.
+			return CastFieldChecked<FTextProperty>(Property)->GetPropertyValue(ValuePtr).ToString();
+
+		case EVaCuusFieldKind::Enum:
+		{
+			// Two shapes, one kind: an FEnumProperty wraps an underlying integer property while a
+			// TEnumAsByte is an FByteProperty that merely CARRIES a UEnum (UnrealType.h:2195,
+			// 2253). Only the first has GetUnderlyingProperty().
+			const UEnum* Enum = nullptr;
+			int64 Value = 0;
+			if (const FEnumProperty* EnumProperty = CastField<FEnumProperty>(Property))
+			{
+				Enum = EnumProperty->GetEnum();
+				Value = EnumProperty->GetUnderlyingProperty()->GetSignedIntPropertyValue(ValuePtr);
+			}
+			else
+			{
+				const FNumericProperty* Numeric = CastFieldChecked<FNumericProperty>(Property);
+				Enum = Numeric->GetIntPropertyEnum();
+				Value = static_cast<int64>(Numeric->GetUnsignedIntPropertyValue(ValuePtr));
+			}
+
+			// FindAuthoredNameStringByValue, matching the adapter: the Get form feeds an
+			// INDEX_NONE straight into GetNameStringByIndex and answers with an empty string
+			// (Enum.cpp:933-937), which is precisely the "reads as nothing, says nothing" outcome
+			// a dump exists to expose. The Find form reports the miss (Enum.cpp:939-949), and the
+			// number is printed because it is the only thing that identifies the bad value.
+			FString Name;
+			if (Enum == nullptr || !Enum->FindAuthoredNameStringByValue(Name, Value))
+			{
+				return FString::Printf(TEXT("<%lld is not a value of its enum; the document reads it as empty>"), Value);
+			}
+			return Name;
+		}
+
+		case EVaCuusFieldKind::ObjectPath:
+			// ToString() is GetUniqueID().ToString() (SoftObjectPtr.h:96-105) -- no resolution, no
+			// GUObjectArray read, so this is as safe on the UI thread as it is here.
+			return CastFieldChecked<FSoftObjectProperty>(Property)->GetPropertyValue(ValuePtr).ToString();
+	}
+
+	checkNoEntry();
+	return FString();
 }
 
 namespace VaCuusModelLayoutPrivate

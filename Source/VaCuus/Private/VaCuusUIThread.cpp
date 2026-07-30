@@ -577,6 +577,20 @@ void FVaCuusUIThread::EnqueueBindModel(uint32 ViewId, const TSharedRef<FVaCuusBo
 	Enqueue(MoveTemp(Command));
 }
 
+void FVaCuusUIThread::EnqueueDumpModel(uint32 ViewId, FName ModelName)
+{
+	FVaCuusUICommand Command;
+	Command.Kind = EVaCuusCommandKind::DumpModel;
+	Command.ViewId = ViewId;
+
+	// The name rides in Payload, which is the command's general-purpose string. None is carried
+	// as the empty string and means "every model of this view" -- the handler cannot tell the
+	// difference between an FName that stringifies to "None" and no name at all, and only one of
+	// those is a model somebody could have bound.
+	Command.Payload = ModelName.IsNone() ? FString() : ModelName.ToString();
+	Enqueue(MoveTemp(Command));
+}
+
 void FVaCuusUIThread::EnqueueShutdown()
 {
 	FVaCuusUICommand Command;
@@ -955,6 +969,17 @@ void FVaCuusUIThread::DrainCommands()
 			continue;
 		}
 
+		if (Command->Kind == EVaCuusCommandKind::DumpModel)
+		{
+			// AHEAD OF THE HOST LOOKUP, deliberately: the models are keyed on the view in
+			// Models, not held by the host, and the lookup below drops a command for a view it
+			// cannot find at Verbose. A diagnostic that answered silence would be worse than no
+			// diagnostic -- somebody would read the game half, see no UI half, and conclude the
+			// bind had failed when the view had simply been retired.
+			DumpModel(Command->ViewId, FName(*Command->Payload));
+			continue;
+		}
+
 		IVaCuusDocumentHost* Host = FindHost(Command->ViewId);
 		if (Host == nullptr)
 		{
@@ -1149,6 +1174,43 @@ void FVaCuusUIThread::BindModel(uint32 ViewId, IVaCuusDocumentHost& Host, const 
 
 	Models.FindOrAdd(ViewId).Add(Model.ToSharedRef());
 	NumBoundModels.fetch_add(1, std::memory_order_release);
+}
+
+void FVaCuusUIThread::DumpModel(uint32 ViewId, FName ModelName)
+{
+	check(IsInUIThread());
+
+	const TArray<TSharedRef<FVaCuusBoundModel>>* ViewModels = Models.Find(ViewId);
+	if (ViewModels == nullptr)
+	{
+		// THE MOST INFORMATIVE OUTCOME THIS COMMAND HAS. The game thread has just printed a
+		// model it holds; this says the UI thread holds none for that view -- so either the bind
+		// command never reached a context (BindModel above logs why, at Error, and this is the
+		// line that sends the reader back to look for it) or the view has been retired and the
+		// game-side handle has outlived it.
+		UE_LOG(LogVaCuus, Display,
+			TEXT("DumpModel:   UI thread (view %u): NO MODEL IS REGISTERED FOR THIS VIEW. Either the bind never reached a ")
+			TEXT("context -- look for a BindModel error above -- or the view has already been removed"),
+			ViewId);
+		return;
+	}
+
+	int32 NumDumped = 0;
+	for (const TSharedRef<FVaCuusBoundModel>& Model : *ViewModels)
+	{
+		if (ModelName.IsNone() || Model->GetModelName() == ModelName)
+		{
+			Model->DumpUISide(ViewId);
+			++NumDumped;
+		}
+	}
+
+	if (NumDumped == 0)
+	{
+		UE_LOG(LogVaCuus, Display,
+			TEXT("DumpModel:   UI thread (view %u): %d model(s) are registered, but none is called '%s'"), ViewId,
+			ViewModels->Num(), *ModelName.ToString());
+	}
 }
 
 void FVaCuusUIThread::ClearAssetCaches()

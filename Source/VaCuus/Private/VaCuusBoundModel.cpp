@@ -185,3 +185,77 @@ void FVaCuusBoundModel::ApplyUpdate(const FVaCuusModelUpdate& Update)
 		++NumFieldsApplied;
 	}
 }
+
+void FVaCuusBoundModel::DumpGameSide(uint32 ViewId)
+{
+	check(IsInGameThread());
+
+	// FIRST, because it is what harvests the echo -- and the two sets printed below are read
+	// straight out of the channel afterwards, so without this they would show fields the UI has
+	// already confirmed. The count is printed too: it is the number UVaCuusView's own
+	// NumOutstandingModelFields() reports, and a dump that disagreed with the public observable
+	// would send the reader looking in the wrong place.
+	const int32 NumOutstanding = NumOutstandingFields();
+
+	const TConstArrayView<FVaCuusModelField> Fields = Layout.GetFields();
+	const TConstArrayView<FString> TopLevelNames = Layout.GetTopLevelNames();
+
+	// Display, not Log: this is the answer to a console command somebody just typed, and
+	// LogVaCuus's default verbosity would otherwise decide whether they see it.
+	UE_LOG(LogVaCuus, Display,
+		TEXT("DumpModel: view %u model '%s' over '%s' -- %d field(s), %d top-level name(s), %s"), ViewId, *ModelName.ToString(),
+		Layout.GetStruct() != nullptr ? *Layout.GetStruct()->GetName() : TEXT("none"), Fields.Num(), TopLevelNames.Num(),
+		IsValid() ? TEXT("valid") : TEXT("INVALID (a shadow or the layout could not be built)"));
+
+	UE_LOG(LogVaCuus, Display,
+		TEXT("DumpModel:   game thread: samples=%llu fieldsMarked=%llu publishes=%llu fieldsPublished=%llu ")
+		TEXT("lastPublishedGeneration=%llu appliedGenerationEcho=%llu outstanding=%d"),
+		GetNumSamples(), GetNumFieldsMarked(), GetNumPublishes(), GetNumFieldsPublished(), GetLastPublishedGeneration(),
+		GetAppliedGeneration(), NumOutstanding);
+
+	const TBitArray<>& PendingFields = Channel.GetPendingFields();
+	const TBitArray<>& UnackedFields = Channel.GetUnackedFields();
+	const void* GameBase = GetGameShadow().GetData();
+
+	for (int32 Index = 0; Index < Fields.Num(); ++Index)
+	{
+		const FVaCuusModelField& Field = Fields[Index];
+
+		UE_LOG(LogVaCuus, Display, TEXT("DumpModel:   [%2d] %-28s %-14s top='%s' pending=%s unacked=%s game=%s"), Index,
+			*Field.WireName, LexToString(Field.Kind),
+			TopLevelNames.IsValidIndex(Field.TopLevelNameIndex) ? *TopLevelNames[Field.TopLevelNameIndex] : TEXT("<none>"),
+			PendingFields.IsValidIndex(Index) && PendingFields[Index] ? TEXT("Y") : TEXT("."),
+			UnackedFields.IsValidIndex(Index) && UnackedFields[Index] ? TEXT("Y") : TEXT("."),
+			GameBase != nullptr ? *Field.DescribeValue(GameBase) : TEXT("<no shadow>"));
+	}
+}
+
+void FVaCuusBoundModel::DumpUISide(uint32 ViewId)
+{
+	check(FVaCuusUIThread::IsInUIThread());
+
+	// THE LINE THAT MATTERS MOST IS THE ONE THAT SAYS `boundToContext=no`. That is this
+	// milestone's signature failure -- a model whose values go nowhere, a document that reads
+	// empty, and no other trace anywhere, because RmlUi's own refusal is compiled out (spec 8).
+	UE_LOG(LogVaCuus, Display,
+		TEXT("DumpModel:   UI thread (view %u model '%s'): boundToContext=%s updatesApplied=%llu fieldsApplied=%llu ")
+		TEXT("appliedGeneration=%llu lastConsumedGeneration=%llu"),
+		ViewId, *ModelName.ToString(), bBoundToContext ? TEXT("yes") : TEXT("NO -- this model reached no document"),
+		GetNumUpdatesApplied(), GetNumFieldsApplied(), GetAppliedGeneration(), Channel.GetLastConsumedGeneration());
+
+	const FVaCuusModelUpdate& Published = Channel.GetLastConsumedUpdate();
+	const TConstArrayView<FVaCuusModelField> Fields = Layout.GetFields();
+	const void* UIBase = UIShadow.GetData();
+
+	UE_LOG(LogVaCuus, Display, TEXT("DumpModel:   published slot: generation=%llu, %d of %d bit(s) set"), Published.Generation,
+		Published.DirtyFields.CountSetBits(), Fields.Num());
+
+	for (int32 Index = 0; Index < Fields.Num(); ++Index)
+	{
+		const FVaCuusModelField& Field = Fields[Index];
+
+		UE_LOG(LogVaCuus, Display, TEXT("DumpModel:   [%2d] %-28s published=%s ui=%s"), Index, *Field.WireName,
+			Published.DirtyFields.IsValidIndex(Index) && Published.DirtyFields[Index] ? TEXT("Y") : TEXT("."),
+			UIBase != nullptr ? *Field.DescribeValue(UIBase) : TEXT("<no shadow>"));
+	}
+}

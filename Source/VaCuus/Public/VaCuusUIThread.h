@@ -157,6 +157,18 @@ public:
 	void EnqueueBindModel(uint32 ViewId, const TSharedRef<FVaCuusBoundModel>& Model);
 
 	/**
+	 * Asks the UI thread to print its half of `vacuus.DumpModel` (spec 8) for ModelName on this
+	 * view, or for every model of the view when ModelName is None.
+	 *
+	 * IT IS A COMMAND AND NOT AN ACCESSOR BECAUSE OF WHAT IT READS. The UI-side shadow is a
+	 * UScriptStruct instance the UI thread writes with no synchronisation -- an FString field in
+	 * it is freed and reallocated by every apply that touches it -- so a game-thread getter that
+	 * returned its values would be a use-after-free rather than a stale read. The answer
+	 * therefore arrives in the log a UI frame later, on the thread that owns the buffer.
+	 */
+	void EnqueueDumpModel(uint32 ViewId, FName ModelName);
+
+	/**
 	 * Drops RmlUi's parsed stylesheet and template caches on the UI thread. Live
 	 * reload's actual mechanism (controller decision D21).
 	 *
@@ -271,6 +283,9 @@ private:
 
 	/** BindModel handler: creates the model on the view's context and keeps it. UI thread. */
 	void BindModel(uint32 ViewId, IVaCuusDocumentHost& Host, const TSharedPtr<FVaCuusBoundModel>& Model);
+
+	/** DumpModel handler: prints the UI-side half of every matching model, or says there is none. UI thread. */
+	void DumpModel(uint32 ViewId, FName ModelName);
 
 	/** ClearAssetCaches handler: drops RmlUi's global stylesheet/template caches. UI thread. */
 	void ClearAssetCaches();
