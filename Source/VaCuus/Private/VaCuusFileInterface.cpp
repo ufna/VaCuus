@@ -28,6 +28,13 @@ namespace VaCuusFileInterfacePrivate
  * Length() is Seek-to-end followed by Tell (:48-52), so a one-short Tell is a truncated
  * document.
  *
+ * IT IS ALSO A UNIX-ONLY DIVERGENCE, which is why tracking the position here brings the two
+ * platforms together rather than inventing a third contract: both Windows read handles
+ * accept exact EOF and report it. FAsyncBufferedFileReaderWindows (what OpenRead returns in
+ * a game build) asserts only `InPos <= FileSize` (Windows/WindowsPlatformFile.cpp:397) and
+ * Tell() returns its own FilePos (:446-450); FFileHandleWindows (the editor/program build)
+ * stores NewPosition unclamped (:748-756) and does the same (:738-742).
+ *
  * Size is cached rather than re-read per call because a read-only FFileHandleUnix caches it
  * too (fstat in the constructor, :130-135; Size() returns the member at :340-345), so this
  * changes nothing about what a caller observes -- and it gives the [0, Size] clamp below a
@@ -97,8 +104,11 @@ void FVaCuusFileInterface::Close(Rml::FileHandle File)
 	VaCuusFileInterfacePrivate::FOpenFile* Open = VaCuusFileInterfacePrivate::ToFile(File);
 	if (Open == nullptr)
 	{
-		// Rml::FileHandle(0) is the failure value Open() returns, and RmlUi does close
-		// handles it never got (StreamFile's destructor runs regardless).
+		// Defensive, not required: Rml::StreamFile guards every Close() call with
+		// `if (file_handle)` (ThirdParty/RmlUi/Source/Core/StreamFile.cpp:16-17, :25-26,
+		// :44-46), so RmlUi's own file stream never hands back the 0 that Open() returns on
+		// failure. Kept because the previous `delete (IFileHandle*)0` tolerated it and every
+		// other method here null-checks too -- a custom stream is free to be less careful.
 		return;
 	}
 
@@ -123,10 +133,12 @@ size_t FVaCuusFileInterface::Read(void* Buffer, size_t Size, Rml::FileHandle Fil
 		return 0;
 	}
 
-	// Re-sync the handle, which Seek() deliberately left where it was. Only when the two
-	// disagree: on Unix a read-mode Seek is a bare assignment, but on Windows it is a real
-	// SetFilePointerEx, and this runs per document read. The seek cannot be clamped here --
-	// Position < Size is guaranteed by BytesToRead > 0.
+	// Re-sync the handle, which Seek() deliberately left where it was. Guarded on a mismatch
+	// rather than done unconditionally because Seek() is not always free: on Unix a read-mode
+	// one is a bare assignment (UnixPlatformFile.cpp:175-179), but
+	// FAsyncBufferedFileReaderWindows::Seek waits out the in-flight read and, for a target
+	// outside its buffer, starts a NEW async read (WindowsPlatformFile.cpp:407-433). The seek
+	// here cannot hit the Unix clamp: BytesToRead > 0 means Position < Size.
 	if (Open->Handle->Tell() != Open->Position && !Open->Handle->Seek(Open->Position))
 	{
 		return 0;
