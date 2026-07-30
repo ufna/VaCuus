@@ -1235,13 +1235,13 @@ bool FVaCuusNavEntryTest::RunTest(const FString& Parameters)
 		// for the DPad: the UI acts AND the game sees the key. It predates Task 14 (the enqueue
 		// has always been unconditional) and Task 14 neither creates nor widens it.
 		//
-		// FIXING IT IS A SEPARATE POLICY CALL, and deliberately not made here: the only clean
-		// mechanism is D12's pass-through set, which is a static FKey set rather than a
-		// state-dependent one, and suppressing the enqueue would mean a pad player can no longer
-		// enter a VaCuus menu with the stick AT ALL -- the analog path is gated on
-		// bWantsKeyboardFocus, so this accident is currently the only stick-based entry there is.
-		// Choosing between "a walking player can lose the stick" and "a pad player must use the
-		// DPad to enter a menu" belongs to whoever owns D13.
+		// FIXING IT IS A SEPARATE POLICY CALL, and deliberately not made here: suppressing the
+		// enqueue would mean a pad player can no longer enter a VaCuus menu with the stick AT
+		// ALL -- the analog path is gated on bWantsKeyboardFocus, so this accident is currently
+		// the only stick-based entry there is. Choosing between "a walking player can lose the
+		// stick" and "a pad player must use the DPad to enter a menu" belongs to whoever owns
+		// D13. It is a product trade, not a missing mechanism: the suppression itself is two
+		// lines above the enqueue in this very handler.
 		//
 		// This assertion is deliberately about the CURRENT behaviour, so it fails loudly whichever
 		// way that decision goes -- which is the point of writing it down instead of a comment.
