@@ -670,32 +670,48 @@ deferred to `VaCuus-akj.6.25` (P3, measurement-gated). Task 11 also folds in `Va
 the `IImageWrapperModule` lookup must be cached from the game thread, since it currently runs
 on the UI thread where the module manager refuses callers.
 
-- [ ] **Step 11.1: Synchronous dimension probe.** `LoadTexture` must return dimensions
+- [x] **Step 11.1: Synchronous dimension probe.** `LoadTexture` must return dimensions
       immediately: `IImageWrapperModule::DetectImageFormat` → `CreateImageWrapper` →
       `SetCompressed` → `GetWidth()/GetHeight()`. Two documented traps: `SetCompressed`
       memcpys the entire file (O(filesize), not O(header)), and **1/2/4-bit PNGs fully
       decode inside `SetCompressed`** — do the probe on the UI thread (not the game thread)
       and `Reset()` the wrapper after probing (libjpeg-turbo retains a decompressor).
-- [ ] **Step 11.2: Async decode + upload.** Kick `UE::Tasks::Launch` for the decode; on
+- [x] **Step 11.2: Async decode + upload.** Kick `UE::Tasks::Launch` for the decode; on
       completion, record the create-with-data on a worker command list and hand it to
       `QueueAsyncCommandListSubmit` from the render thread. `FinishRecording()` before
       hand-off; guard the cancel path (a dropped command list is a silent leak —
       `FStaticMeshStreamIn` asserts on exactly this).
-- [ ] **Step 11.3: Placeholder swap without `FRHITextureReference`.** The replayer binds
+- [x] **Step 11.3: Placeholder swap without `FRHITextureReference`.** The replayer binds
       `FRHITexture*` per draw from `TMap<Handle, FTextureRHIRef>` — **swapping the map entry
       is the swap**. Until the upload lands, the handle maps to a 1×1 transparent texture so
       draws are invisible rather than missing. (`FRHITextureReference` is on Epic's removal
       list, costs an `RHIThreadFence` per swap and cannot back an SRV.)
-- [ ] **Step 11.4: Test.** Extend `VaCuus.Render.Recorder.LoadTexture`: dimensions are
+- [x] **Step 11.4: Test.** Extend `VaCuus.Render.Recorder.LoadTexture`: dimensions are
       correct **immediately**, the RGBA payload arrives on a later frame, and a draw
       referencing the not-yet-ready handle renders transparent instead of asserting.
-- [ ] **Step 11.5: Commit:** `git commit -am "feat: async texture decode/upload (closes VaCuus-akj.6.2)"`
+- [x] **Step 11.5: Commit:** `git commit -am "feat: async texture decode/upload (closes VaCuus-akj.6.2)"`
 
 ---
 
 ### Task 12: Idle short-circuit  · closes `VaCuus-akj.6.8`
 
 **Files:** Modify `VaCuusUIThread.cpp` (publish gate), `VaCuusCommandBuffer.h` (hash helper).
+
+⚠️ **This `Files:` line was wrong, and three statements below it were too** — corrected here after
+implementation rather than quietly, because the plan is the record. (a) The publish is **not** in
+`VaCuusUIThread.cpp`; that file only loops hosts. The publish is
+`FVaCuusRmlDocumentHost::RecordAndPublishFrame`, and the gate can live in **neither**, because only
+the recorder owns `Pending` and `Generation` — and the no-generation-on-skip rule below forbids
+touching `Generation` outside it. `VaCuusUIThread.cpp` ended up unchanged. (b) "Replay drops to ~0
+on idle frames" is not what happens: `Draw_RenderThread` never calls `Replay()` without a buffer, so
+the timing scope yields **no samples at all** — an average of 0.000 over count 0, not a small cost.
+The honest observable is the sample count collapsing, which is why a `published=/skipped=` line was
+added. (c) "Still advance the frame counter (so `stat vacuus` shows idle frames)" maps onto nothing:
+`stat vacuus` has no frame counter, and `FVaCuusUIThread::FrameCount` already advances
+unconditionally. (d) The plan also failed to notice `FVaCuusViewStatus::FramesPublished`. Leaving it
+publish-only would have **broken `vacuus.M1HUD.AutoShot`** — the static HUD publishes exactly once,
+so any threshold ≥2 would never fire and this milestone's own screenshot harness would hang. Renamed
+to `FramesRecorded`.
 
 RmlUi exposes **no** dirty signal (`Update`/`Render` return unconditional `true`;
 `IsLayoutDirty` is protected/private; `RenderManager` has no version counter;
@@ -712,19 +728,19 @@ drain runs before `Context::Update()`, an arrival is already sitting in `NewText
 the gate evaluates the resource deltas, so the "arrays are all empty" test correctly forces a
 publish on the frame a texture lands.
 
-- [ ] **Step 12.1: Hash field-by-field.** `FXxHash64Builder` over each `FVaCuusCommand`'s
+- [x] **Step 12.1: Hash field-by-field.** `FXxHash64Builder` over each `FVaCuusCommand`'s
       members — **never** a raw `HashBuffer` over the array: `EVaCuusCommandType` (uint8) at
       offset 0 is followed by 7 bytes of uninitialised padding, producing nondeterministic
       hashes and spurious dirty frames.
-- [ ] **Step 12.2: Gate.** Skip publish **only if** the hash is unchanged **and**
+- [x] **Step 12.2: Gate.** Skip publish **only if** the hash is unchanged **and**
       `NewGeometry/NewTextures/ReleasedGeometry/ReleasedTextures` are all empty — otherwise
       the replayer never sees the resource traffic. When skipping, still advance the frame
       counter (so `stat vacuus` shows idle frames) and leave the render thread reusing its RT
       (the spec §5 idle model: composite-only, measured 0.004 ms).
-- [ ] **Step 12.3: Measure.** With the static M1 HUD: Record cost stays (~0.06 ms), Replay
+- [x] **Step 12.3: Measure.** With the static M1 HUD: Record cost stays (~0.06 ms), Replay
       drops to ~0 on idle frames. Record the numbers; update spec §11's idle row if the
       measured composite-only cost changed.
-- [ ] **Step 12.4: Commit:** `git commit -am "perf: skip publish when the recorded frame is unchanged (closes VaCuus-akj.6.8)"`
+- [x] **Step 12.4: Commit:** `git commit -am "perf: skip publish when the recorded frame is unchanged (closes VaCuus-akj.6.8)"`
 
 ---
 
