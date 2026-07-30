@@ -64,6 +64,28 @@ double FVaCuusSystemInterface::GetElapsedTime()
 	return FPlatformTime::Seconds() - StartTime;
 }
 
+/**
+ * RmlUi'S OWN DIAGNOSTICS ARE NOT COMPILED OUT. THIS FUNCTION IS WHY, AND IT IS THE ONE PLACE
+ * THAT CLAIM IS DECIDED -- every comment in the data-binding code that talks about what RmlUi
+ * does or does not report cites this one.
+ *
+ * Rml::Log::Message is an ordinary function: it formats into a stack buffer and calls
+ * GetSystemInterface()->LogMessage (Log.cpp:11-31). Nothing about it is conditional. So every
+ * Log::Message(LT_ERROR/LT_WARNING, ...) anywhere in the library arrives HERE and leaves a
+ * `LogVaCuus: Error: [Rml] ...` (or `Warning:`) line in the ordinary engine log.
+ *
+ * WHAT IS COMPILED OUT IS THE ASSERT FAMILY, AND ONLY THAT. RMLUI_ASSERT, RMLUI_ASSERTMSG,
+ * RMLUI_ERROR and RMLUI_ERRORMSG expand to nothing unless RMLUI_DEBUG is defined
+ * (Debug.h:45-50), and Platform.h:20-21 defines RMLUI_DEBUG only when NDEBUG is absent -- which
+ * no configuration this plugin builds satisfies. RMLUI_LOG_TYPE_ERROR, the macro RmlUi's data
+ * binding reports type mistakes through, is RMLUI_ERRORMSG (DataTypes.h:74) and appears only in
+ * DataModelHandle.h, DataTypeRegister.h and DataStructHandle.h -- the TEMPLATED registration
+ * path FVaCuusStructDefinition deliberately bypasses, so none of them was ever on our path.
+ *
+ * THE NARROWER CLAIM THAT SURVIVES, and the one the model code is written against: an RmlUi API
+ * whose only failure signal is an assert is silent here, so VaCuus must check that precondition
+ * itself. An API that LOGS is not silent, and must not be described as if it were.
+ */
 bool FVaCuusSystemInterface::LogMessage(Rml::Log::Type Type, const Rml::String& Message)
 {
 	const FString Text = UTF8_TO_TCHAR(Message.c_str());

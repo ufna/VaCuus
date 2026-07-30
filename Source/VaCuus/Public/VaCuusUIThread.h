@@ -12,6 +12,7 @@
 #include <atomic>
 
 class FRunnableThread;
+class FVaCuusBoundModel;
 class FVaCuusEngine;
 class IVaCuusDocumentHost;
 struct FVaCuusInputEvent;
@@ -144,6 +145,30 @@ public:
 	void EnqueueShutdown();
 
 	/**
+	 * Creates Model's data model on the view's Rml::Context and binds its variables to the
+	 * model's UI-side shadow (M3a). The model is kept until the view is removed, and its
+	 * pending updates are applied once per UI frame.
+	 *
+	 * ENQUEUE IT BEFORE THE VIEW'S FIRST LoadDocument*. RmlUi resolves `data-model` once, in
+	 * Element::SetParent, so a model created afterwards attaches to nothing -- see
+	 * EVaCuusCommandKind::BindModel and UVaCuusView::BindModel, which warns when it can see a
+	 * load has already been asked for.
+	 */
+	void EnqueueBindModel(uint32 ViewId, const TSharedRef<FVaCuusBoundModel>& Model);
+
+	/**
+	 * Asks the UI thread to print its half of `vacuus.DumpModel` (spec 8) for ModelName on this
+	 * view, or for every model of the view when ModelName is None.
+	 *
+	 * IT IS A COMMAND AND NOT AN ACCESSOR BECAUSE OF WHAT IT READS. The UI-side shadow is a
+	 * UScriptStruct instance the UI thread writes with no synchronisation -- an FString field in
+	 * it is freed and reallocated by every apply that touches it -- so a game-thread getter that
+	 * returned its values would be a use-after-free rather than a stale read. The answer
+	 * therefore arrives in the log a UI frame later, on the thread that owns the buffer.
+	 */
+	void EnqueueDumpModel(uint32 ViewId, FName ModelName);
+
+	/**
 	 * Drops RmlUi's parsed stylesheet and template caches on the UI thread. Live
 	 * reload's actual mechanism (controller decision D21).
 	 *
@@ -191,6 +216,20 @@ public:
 	int32 GetNumViews() const;
 
 	/**
+	 * Data models bound across every view. Safe from any thread.
+	 *
+	 * The bind's only observable, and it is needed for the same reason
+	 * GetNumAssetCacheClears() is: a bind that never happened produces a model whose values go
+	 * nowhere and a document that reads empty, with nothing to ask about it. The UI thread
+	 * cannot report it to the game thread, because a BindModel command carries no serial; and
+	 * RmlUi cannot report it either -- NOT because its logging is compiled out (it is not; see
+	 * FVaCuusSystemInterface::LogMessage) but because a bind that never happened makes no RmlUi
+	 * call, so there is nothing for the library to refuse. This counter is the only way to
+	 * distinguish "bound and idle" from "never bound".
+	 */
+	int32 GetNumBoundModels() const;
+
+	/**
 	 * How many ClearAssetCaches commands this thread has applied. Safe from any thread.
 	 *
 	 * The ONLY observable the clear has: RmlUi exposes no way to ask whether its
@@ -234,9 +273,22 @@ private:
 	 */
 	void DrainInput();
 
+	/**
+	 * Applies every bound model's newest published update -- copy each dirty field into the
+	 * model's UI shadow, dirty its top-level name -- and echoes the applied generation back.
+	 * UI thread; the frame's DataApply phase.
+	 */
+	void ApplyModelUpdates();
+
 	/** AddView/RemoveView handlers, split out because both are more than a line. */
 	void AddView(FVaCuusUICommand& Command);
 	void RemoveView(uint32 ViewId);
+
+	/** BindModel handler: creates the model on the view's context and keeps it. UI thread. */
+	void BindModel(uint32 ViewId, IVaCuusDocumentHost& Host, const TSharedPtr<FVaCuusBoundModel>& Model);
+
+	/** DumpModel handler: prints the UI-side half of every matching model, or says there is none. UI thread. */
+	void DumpModel(uint32 ViewId, FName ModelName);
 
 	/** ClearAssetCaches handler: drops RmlUi's global stylesheet/template caches. UI thread. */
 	void ClearAssetCaches();
@@ -270,6 +322,23 @@ private:
 	 * Exit(), after the library is down.
 	 */
 	TArray<TUniquePtr<IVaCuusDocumentHost>> RetiredHosts;
+
+	/**
+	 * Data models bound per view (M3a), in bind order. UI thread only.
+	 *
+	 * KEYED ON THE VIEW rather than held by the host, and that is the same seam input dispatch
+	 * already uses (IVaCuusDocumentHost::GetContext): the whole RmlUi data-binding vocabulary
+	 * -- the definitions, the registry, DataModelConstructor -- lives in VaCuus, next to the
+	 * UE reflection it is built from, and a BindModel(...) method on the host interface would
+	 * push all of it into whichever module implements the host (VaCuusRender today).
+	 *
+	 * A model's entry is dropped in RemoveView(), AFTER the host's Shutdown() has destroyed
+	 * the context: RmlUi retains a raw void* into each model's UI shadow and revalidates it
+	 * never, so the buffer must outlive the context that points at it. The game thread holds
+	 * its own reference to the same object, so this drop is a refcount decrement rather than a
+	 * destruction in the common case.
+	 */
+	TMap<uint32, TArray<TSharedRef<FVaCuusBoundModel>>> Models;
 
 	/** Game thread -> UI thread transport; allocated in the constructor, never null. */
 	TUniquePtr<FVaCuusUIQueues> Queues;
@@ -306,6 +375,9 @@ private:
 	std::atomic<uint32> ThreadId{0};
 	std::atomic<uint64> FrameCount{0};
 	std::atomic<int32> NumViews{0};
+
+	/** Backs GetNumBoundModels(); mirrors the flattened size of Models. */
+	std::atomic<int32> NumBoundModels{0};
 
 	/** Applied ClearAssetCaches commands; see GetNumAssetCacheClears(). */
 	std::atomic<uint64> NumAssetCacheClears{0};

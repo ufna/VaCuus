@@ -24,8 +24,25 @@ DECLARE_STATS_GROUP(TEXT("VaCuus"), STATGROUP_VaCuus, STATCAT_Advanced);
  * from VaCuusRender.
  */
 
-// (UI) == the dedicated VaCuus UI thread; these two used to be game-thread costs
-// and moved off it in M2 Task 3.
+// (UI) == the dedicated VaCuus UI thread; Update and Record used to be game-thread
+// costs and moved off it in M2 Task 3.
+//
+// THE THREE DRAIN/APPLY SCOPES (M3a Task 0). Until M3a, FVaCuusUIThread::RunFrame() had
+// no scope of its own at all, so the only measured parts of a UI frame were the two
+// inside RecordAndPublishFrame(). That left the two phases that run BEFORE them
+// unmeasured, and they are not small in the frames that matter: DrainCommands() performs
+// a full document parse plus the first layout on a load (VaCuusUIThread.cpp:900-906 ->
+// IVaCuusDocumentHost::LoadDocumentFrom*), and DrainInput() runs hit-testing, focus
+// resolution and the IME surface push per event (VaCuusUIThread.cpp:927+).
+//
+// DataApply is declared here with no sampler yet on purpose: the M3a data apply lands at
+// RunFrame()'s `(data snapshots: M3)` marker (spec 3.6), i.e. between the two phases
+// above and Context::Update(). Adding its scope AFTER the apply exists would leave its
+// cost folded into whichever neighbour happened to grow, which is exactly the
+// unattributable result this task exists to prevent.
+DECLARE_CYCLE_STAT_EXTERN(TEXT("VaCuus DrainCommands (UI)"), STAT_VaCuusDrainCommands, STATGROUP_VaCuus, VACUUS_API);
+DECLARE_CYCLE_STAT_EXTERN(TEXT("VaCuus DrainInput (UI)"), STAT_VaCuusDrainInput, STATGROUP_VaCuus, VACUUS_API);
+DECLARE_CYCLE_STAT_EXTERN(TEXT("VaCuus DataApply (UI)"), STAT_VaCuusDataApply, STATGROUP_VaCuus, VACUUS_API);
 DECLARE_CYCLE_STAT_EXTERN(TEXT("VaCuus Update (UI)"), STAT_VaCuusUpdate, STATGROUP_VaCuus, VACUUS_API);
 DECLARE_CYCLE_STAT_EXTERN(TEXT("VaCuus Record (UI)"), STAT_VaCuusRecord, STATGROUP_VaCuus, VACUUS_API);
 DECLARE_CYCLE_STAT_EXTERN(TEXT("VaCuus Replay (RT)"), STAT_VaCuusReplay, STATGROUP_VaCuus, VACUUS_API);
@@ -39,6 +56,7 @@ DECLARE_CYCLE_STAT_EXTERN(TEXT("VaCuus Composite (RT)"), STAT_VaCuusComposite, S
 DECLARE_CYCLE_STAT_EXTERN(TEXT("VaCuus GameTick (GT)"), STAT_VaCuusGameTick, STATGROUP_VaCuus, VACUUS_API);
 DECLARE_CYCLE_STAT_EXTERN(TEXT("VaCuus SlateTick (GT)"), STAT_VaCuusSlateTick, STATGROUP_VaCuus, VACUUS_API);
 DECLARE_CYCLE_STAT_EXTERN(TEXT("VaCuus Input (GT)"), STAT_VaCuusInput, STATGROUP_VaCuus, VACUUS_API);
+DECLARE_CYCLE_STAT_EXTERN(TEXT("VaCuus ModelSample (GT)"), STAT_VaCuusModelSample, STATGROUP_VaCuus, VACUUS_API);
 
 /** Per-frame counters (cleared by the stats system every frame). */
 DECLARE_DWORD_COUNTER_STAT_EXTERN(TEXT("VaCuus Draw Calls"), STAT_VaCuusDrawCalls, STATGROUP_VaCuus, VACUUS_API);
@@ -56,10 +74,23 @@ DECLARE_DWORD_COUNTER_STAT_EXTERN(TEXT("VaCuus Commands"), STAT_VaCuusCommands, 
 class VACUUS_API FVaCuusPerfLog
 {
 public:
+	/**
+	 * ORDERED AS ONE FRAME RUNS, and the order is load-bearing in exactly one place:
+	 * VaCuusPerfLogPrivate::GScopeNames is a positional array indexed by these values,
+	 * so an enumerator inserted anywhere must have its name inserted at the same
+	 * position. The static_assert next to that array catches a MISSING name; only
+	 * reading the two lists together catches a mis-ORDERED one.
+	 */
 	enum EScope : int32
 	{
-		Update = 0,
+		// The UI thread's own frame, in FVaCuusUIThread::RunFrame() order.
+		DrainCommands = 0,
+		DrainInput,
+		DataApply,
+		Update,
 		Record,
+
+		// The render thread.
 		Replay,
 		Composite,
 
@@ -78,10 +109,21 @@ public:
 		 *   Input     -- one sample per input EVENT, covering the whole handler: the
 		 *                screen-to-view transform, the snapshot scan that produces the FReply,
 		 *                and the enqueue. The "input" half of the budget.
+		 *
+		 * ModelSample (M3a) is the fourth, and it is its own scope rather than part of
+		 * GameTick for a reason spec 6 did not anticipate: the sample can only run where the
+		 * live struct is, i.e. inside UVaCuusView::UpdateModel, wherever the game calls it
+		 * from. Folding it into GameTick would need a full extra copy of the struct per update
+		 * (the pointer a Blueprint wildcard pin hands over dies with the call), and adding
+		 * GameTick SAMPLES from a per-call site would break that scope's one-per-frame
+		 * meaning. Its own line keeps the spec 9 budget measurable either way. One sample per
+		 * UpdateModel call; read it as a sum over the frame, exactly like Input. The publish
+		 * half does run inside GameTick (UVaCuusView::PublishModelUpdates).
 		 */
 		GameTick,
 		SlateTick,
 		Input,
+		ModelSample,
 
 		Num
 	};

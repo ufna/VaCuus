@@ -10,8 +10,10 @@
 #include "VaCuusView.h"
 #include "VaCuusViewStatus.h"
 
+#include "Containers/Ticker.h"
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
+#include "HAL/IConsoleManager.h"
 
 UVaCuusSubsystem::UVaCuusSubsystem()
 	: FTickableGameObject(ETickableTickType::Never)
@@ -65,12 +67,23 @@ void UVaCuusSubsystem::Tick(float DeltaTime)
 	// the amount nobody thought to measure.
 	VACUUS_PERF_SCOPE(GameTick);
 
-	// Turns any load result the UI thread published into a game-thread broadcast.
+	// Turns any load result the UI thread published into a game-thread broadcast, and hands
+	// the UI thread whatever this frame's UpdateModel() calls marked.
 	for (TObjectPtr<UVaCuusView>& View : Views)
 	{
 		if (UVaCuusView* ViewPtr = View.Get())
 		{
 			ViewPtr->PollStatus();
+
+			// THE PUBLISH HALF OF THE M3a DATA PIPELINE, HERE AND NOT IN UpdateModel(). Two
+			// reasons, and the first is not about measurement: several UpdateModel calls in one
+			// frame -- one per actor, one per subsystem -- become ONE triple-buffer swap
+			// carrying each field's latest value, rather than one swap per call. The second is
+			// spec 6's: this is inside the GameTick scope above, which is where the game-thread
+			// budget is measured. It costs nothing when nothing changed (no outstanding field
+			// means no swap, no generation bump and therefore no UI-thread work at all), which
+			// is what spec 9's "idle -> 0 published frames" row rests on.
+			ViewPtr->PublishModelUpdates();
 		}
 	}
 
@@ -275,6 +288,52 @@ int32 UVaCuusSubsystem::ReloadAllDocuments()
 	return NumReloaded;
 }
 
+int32 UVaCuusSubsystem::DumpModels(uint32 ViewId, FName ModelName)
+{
+	check(IsInGameThread());
+
+	if (GEngine == nullptr)
+	{
+		UE_LOG(LogVaCuus, Display, TEXT("DumpModel: no engine, so there are no views"));
+		return 0;
+	}
+
+	int32 NumViews = 0;
+	int32 NumDumped = 0;
+
+	// GetWorldContexts(), for the reason ClearAssetCachesAndReloadAllViews() gives at length:
+	// the editor's PIE accessors see instance 0 only, and this is a Runtime module anyway.
+	for (const FWorldContext& Context : GEngine->GetWorldContexts())
+	{
+		UVaCuusSubsystem* Subsystem = UGameInstance::GetSubsystem<UVaCuusSubsystem>(Context.OwningGameInstance);
+		if (Subsystem == nullptr)
+		{
+			continue;
+		}
+
+		for (const TObjectPtr<UVaCuusView>& View : Subsystem->Views)
+		{
+			UVaCuusView* ViewPtr = View.Get();
+			if (ViewPtr == nullptr || (ViewId != 0 && ViewPtr->GetViewId() != ViewId))
+			{
+				continue;
+			}
+
+			++NumViews;
+			NumDumped += ViewPtr->DumpModel(ModelName);
+		}
+	}
+
+	if (NumViews == 0)
+	{
+		UE_LOG(LogVaCuus, Display,
+			TEXT("DumpModel: no live view matches %s. Run it with no arguments to dump every model of every view"),
+			ViewId != 0 ? *FString::Printf(TEXT("view %u"), ViewId) : TEXT("the search (there is no live view at all)"));
+	}
+
+	return NumDumped;
+}
+
 FVaCuusUIThread* UVaCuusSubsystem::GetUIThread() const
 {
 	// GetPtr(), not Get(): this also runs on teardown paths, where reloading the
@@ -282,3 +341,69 @@ FVaCuusUIThread* UVaCuusSubsystem::GetUIThread() const
 	const FVaCuusModule* Module = FVaCuusModule::GetPtr();
 	return Module ? Module->GetUIThread() : nullptr;
 }
+
+namespace VaCuusModelDiagnostics
+{
+/**
+ * `vacuus.DumpModel [view] [model]` -- spec 8's tool, and it is registered HERE rather than
+ * beside the demo toggles in VaCuusRender for one reason: everything it prints is private to
+ * this module. FVaCuusBoundModel, both shadows and the channel are in VaCuus/Private, and
+ * VaCuusRender depends on VaCuus rather than the other way round, so a command over there could
+ * only reach them through a public API invented for it. `vacuus.ReloadUI` sets the same
+ * precedent from the other direction -- it lives in VaCuusEditor, next to the watcher that
+ * needs it, and calls the static above.
+ *
+ * BOTH ARGUMENTS ARE OPTIONAL AND DEFAULT TO "EVERYTHING". A milestone whose failure mode is no
+ * output at all must not require the reader to already know a view id.
+ */
+static void DumpModelNow(uint32 ViewId, FName ModelName)
+{
+	const int32 NumDumped = UVaCuusSubsystem::DumpModels(ViewId, ModelName);
+
+	UE_LOG(LogVaCuus, Display,
+		TEXT("DumpModel: %d model(s) dumped from the game thread; each one's UI-THREAD HALF FOLLOWS ON THE NEXT UI FRAME ")
+		TEXT("(it is printed by the thread that owns the UI shadow, so it cannot be printed here)"),
+		NumDumped);
+}
+
+static void DumpModel(const TArray<FString>& Args)
+{
+	// `-` RATHER THAN AN OMITTED ARGUMENT, because the delay has to be reachable without naming
+	// a view or a model: the delay is exactly what an -ExecCmds run needs and exactly the run
+	// that has no view id to name yet. Both wildcards spelled the same way so there is one rule.
+	auto IsWildcard = [](const FString& Arg) { return Arg.IsEmpty() || Arg == TEXT("-"); };
+
+	const uint32 ViewId = (Args.Num() > 0 && !IsWildcard(Args[0])) ? static_cast<uint32>(FCString::Atoi(*Args[0])) : 0;
+	const FName ModelName = (Args.Num() > 1 && !IsWildcard(Args[1])) ? FName(*Args[1]) : NAME_None;
+	const float DelaySeconds = Args.Num() > 2 ? FCString::Atof(*Args[2]) : 0.0f;
+
+	if (DelaySeconds <= 0.0f)
+	{
+		DumpModelNow(ViewId, ModelName);
+		return;
+	}
+
+	// WHY THE DELAY EXISTS AT ALL, and it is the same argument vacuus.M2Demo.Rects carries:
+	// every `-ExecCmds` command runs on ONE early tick, before the UI thread has drained a
+	// single command. A dump issued there prints a model whose game half exists and whose UI
+	// half has not been created yet -- which looks exactly like the bind having failed, i.e. the
+	// one diagnosis this command exists to make unambiguous.
+	FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda(
+		[ViewId, ModelName](float)
+		{
+			DumpModelNow(ViewId, ModelName);
+			return false;
+		}),
+		DelaySeconds);
+
+	UE_LOG(LogVaCuus, Display, TEXT("DumpModel: scheduled at t+%.1fs"), DelaySeconds);
+}
+
+static FAutoConsoleCommand GDumpModelCommand(
+	TEXT("vacuus.DumpModel"),
+	TEXT("Print a bound data model: the layout, both shadows, the pending/unacknowledged/published dirty sets and the ")
+	TEXT("last applied generation. Optional [viewId] [modelName] [delaySeconds]; `-` or 0 means 'any', and the delay ")
+	TEXT("is for -ExecCmds use, where everything runs before the first UI frame. The UI-thread half arrives one UI ")
+	TEXT("frame after the game-thread half."),
+	FConsoleCommandWithArgsDelegate::CreateStatic(&DumpModel));
+}	 // namespace VaCuusModelDiagnostics

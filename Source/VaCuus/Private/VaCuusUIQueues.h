@@ -11,6 +11,7 @@
 #include "Templates/SharedPointer.h"
 #include "Templates/UniquePtr.h"
 
+class FVaCuusBoundModel;
 class IVaCuusDocumentHost;
 
 /** What a queued command asks the UI thread to do. */
@@ -54,6 +55,32 @@ enum class EVaCuusCommandKind : uint8
 
 	/** Carries only ViewSize; see the note below on coalescing. */
 	Resize,
+
+	/**
+	 * Creates one data model on the view's context and binds its variables to the model's
+	 * UI-side shadow (M3a). Carries the shared FVaCuusBoundModel.
+	 *
+	 * ROUTED, AND IT MUST REACH THE CONTEXT BEFORE ANY LOAD DOES. `data-model` is read
+	 * exactly once, in Element::SetParent (Element.cpp:2202-2219), so a model created after
+	 * its document loaded never attaches: an inert document, plus one RmlUi LT_ERROR that
+	 * does reach LogVaCuus (see FVaCuusSystemInterface::LogMessage) but describes the
+	 * DOCUMENT's failed lookup rather than the ordering mistake behind it. The ordering is
+	 * the producer's to get right; the queue is FIFO from a single producer, so a BindModel
+	 * enqueued before a LoadDocument* is drained before it.
+	 */
+	BindModel,
+
+	/**
+	 * Prints the UI-thread half of `vacuus.DumpModel` for the model named in Payload, or for
+	 * every model of the view when Payload is empty (spec 8).
+	 *
+	 * HANDLED BEFORE THE PER-VIEW HOST LOOKUP, unlike every other routed kind, and that is the
+	 * point rather than an inconsistency: the models live in FVaCuusUIThread::Models keyed on
+	 * the view, not in the host, and a diagnostic that answered "unknown view" at Verbose --
+	 * which is what the lookup does -- would be the one command in the plugin that can fail
+	 * silently. It reports what it found either way.
+	 */
+	DumpModel,
 
 	/** Shows or hides the view's document per bVisible. */
 	SetVisible,
@@ -105,6 +132,17 @@ struct FVaCuusUICommand
 
 	/** AddView only: the status object the host reports load results through. */
 	TSharedPtr<FVaCuusViewStatus> Status;
+
+	/**
+	 * BindModel only: the model both threads share.
+	 *
+	 * SHARED, NOT HANDED OVER (unlike Host above), because the game thread keeps sampling and
+	 * publishing into it for the rest of the view's life. The UI thread takes its own
+	 * reference when it drains this, and drops it in RemoveView() -- after the host's
+	 * Shutdown() has destroyed the Rml::Context that holds a raw pointer into the model's
+	 * shadow.
+	 */
+	TSharedPtr<FVaCuusBoundModel> Model;
 };
 
 /**

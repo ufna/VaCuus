@@ -108,6 +108,24 @@ public:
 	static int32 ClearAssetCachesAndReloadAllViews(const TCHAR* Reason);
 
 	/**
+	 * `vacuus.DumpModel`'s walk: prints the model diagnostic (spec 8) for every view of every
+	 * game instance in this process that matches. ViewId 0 means every view, ModelName None
+	 * means every model. Returns how many models were dumped. Game thread.
+	 *
+	 * STATIC AND HERE FOR THE REASON ClearAssetCachesAndReloadAllViews() IS: Views is private
+	 * and stays private, a static member reaches it without friendship, and a console command
+	 * has no other way to find a view -- the alternative, iterating every UObject of the class,
+	 * would also pick up the CDO and views belonging to a game instance that is tearing down.
+	 * The world-context walk is the same one that entry point uses and for the same reason:
+	 * GEditor's PIE accessors see instance 0 only.
+	 *
+	 * PRINTS A HEADER EVEN WHEN NOTHING MATCHES. A diagnostic command that answers nothing is
+	 * indistinguishable from one that did not run, which is the exact confusion this milestone's
+	 * failure mode already creates.
+	 */
+	static int32 DumpModels(uint32 ViewId, FName ModelName);
+
+	/**
 	 * Broadcast at the END of every per-instance fan-out (see ReloadAllDocuments below),
 	 * for owners of views that the fan-out could not reach.
 	 *

@@ -2,10 +2,13 @@
 
 #include "VaCuusUIThread.h"
 
+#include "VaCuusBoundModel.h"
+#include "VaCuusDataVariable.h"
 #include "VaCuusDefines.h"
 #include "VaCuusDocumentHost.h"
 #include "VaCuusEngine.h"
 #include "VaCuusInputMap.h"
+#include "VaCuusStats.h"
 #include "VaCuusTextInput.h"
 #include "VaCuusUIQueues.h"
 
@@ -566,6 +569,29 @@ void FVaCuusUIThread::EnqueueSetVisible(uint32 ViewId, bool bVisible)
 	Enqueue(MoveTemp(Command));
 }
 
+void FVaCuusUIThread::EnqueueBindModel(uint32 ViewId, const TSharedRef<FVaCuusBoundModel>& Model)
+{
+	FVaCuusUICommand Command;
+	Command.Kind = EVaCuusCommandKind::BindModel;
+	Command.ViewId = ViewId;
+	Command.Model = Model;
+	Enqueue(MoveTemp(Command));
+}
+
+void FVaCuusUIThread::EnqueueDumpModel(uint32 ViewId, FName ModelName)
+{
+	FVaCuusUICommand Command;
+	Command.Kind = EVaCuusCommandKind::DumpModel;
+	Command.ViewId = ViewId;
+
+	// The name rides in Payload, which is the command's general-purpose string. None is carried
+	// as the empty string and means "every model of this view" -- the handler cannot tell the
+	// difference between an FName that stringifies to "None" and no name at all, and only one of
+	// those is a model somebody could have bound.
+	Command.Payload = ModelName.IsNone() ? FString() : ModelName.ToString();
+	Enqueue(MoveTemp(Command));
+}
+
 void FVaCuusUIThread::EnqueueShutdown()
 {
 	FVaCuusUICommand Command;
@@ -637,6 +663,11 @@ uint64 FVaCuusUIThread::GetFrameCount() const
 int32 FVaCuusUIThread::GetNumViews() const
 {
 	return NumViews.load(std::memory_order_acquire);
+}
+
+int32 FVaCuusUIThread::GetNumBoundModels() const
+{
+	return NumBoundModels.load(std::memory_order_acquire);
 }
 
 uint64 FVaCuusUIThread::GetNumAssetCacheClears() const
@@ -787,9 +818,27 @@ void FVaCuusUIThread::Exit()
 		Engine.Shutdown();
 	}
 
-	// 3. Only now may the hosts themselves die, on the thread that built them.
+	// 3. Only now may the hosts themselves die, on the thread that built them. The models go
+	// with them, and for the same reason RemoveView() drops them after Shutdown(): every
+	// context is down by this point, so nothing holds a pointer into a UI shadow any more.
 	Hosts.Empty();
 	RetiredHosts.Empty();
+	Models.Empty();
+	NumBoundModels.store(0, std::memory_order_release);
+
+	// 4. And the process-wide definition cache, HERE RATHER THAN AT STATIC DESTRUCTION. Its
+	// entries hold TStrongObjectPtr<const UScriptStruct>, so leaving the map to the C++ runtime
+	// means calling UObjectBase::ReleaseRef after main returns, against a UObject system that
+	// may already be gone (FVaCuusDefinitionRegistry::ReleaseAll carries the argument). Step 3
+	// above is what makes this the safe point: every context, RmlUi itself, every host and every
+	// model are down, so nothing else can still reach a definition.
+	//
+	// Logged rather than silent because this line is otherwise unobservable -- it runs on a
+	// thread nobody is watching, at a moment nothing else reports.
+	if (const int32 NumDefinitions = FVaCuusDefinitionRegistry::ReleaseAll(); NumDefinitions > 0)
+	{
+		UE_LOG(LogVaCuus, Log, TEXT("UI thread exit: released %d cached model definition set(s)"), NumDefinitions);
+	}
 
 	GVaCuusUIThreadId.store(0, std::memory_order_release);
 	ThreadId.store(0, std::memory_order_release);
@@ -804,18 +853,75 @@ void FVaCuusUIThread::RunFrame()
 	// Commands first, then input: a view that was registered, resized or reloaded by
 	// this frame's commands receives this frame's input against its new state, never
 	// against the previous one.
-	DrainCommands();
-	DrainInput();
-	// (data snapshots: M3)
+	//
+	// SCOPED AT THE CALL SITE RATHER THAN INSIDE EACH FUNCTION so that the three phases
+	// of a UI frame sit next to each other and can be read as a decomposition of it: the
+	// remainder of RunFrame() is the per-view record loop, which is already covered by
+	// Update and Record inside RecordAndPublishFrame(). Nothing wraps that loop, because a
+	// scope around it would double-count those two into every window it printed.
+	{
+		VACUUS_PERF_SCOPE(DrainCommands);
+		DrainCommands();
+	}
+	{
+		VACUUS_PERF_SCOPE(DrainInput);
+		DrainInput();
+	}
+	{
+		// (data snapshots: M3a)
+		//
+		// HERE, AND FOR TWO REASONS. After both drains, so a model bound or a view loaded by
+		// this frame's commands is applied into this frame; and BEFORE Context::Update(), so
+		// the re-evaluation a dirtied variable causes is paid inside Update -- which is where
+		// spec 9 budgets it, and where the Update scope already measures it.
+		VACUUS_PERF_SCOPE(DataApply);
+		ApplyModelUpdates();
+	}
 
 	// One recorded frame per view, each publishing its own command buffer straight to
 	// the render thread and its own interactive-region snapshot straight to the game
 	// thread's view handle -- no game-thread hop in either direction.
+	//
+	// THE DATA APPLY ABOVE IS DELIBERATELY *NOT* IN THIS LOOP, which is the obvious place for
+	// it and the wrong one. HasView() is a RECORDABILITY test, not a liveness test: it
+	// additionally requires a non-degenerate view size (FVaCuusRmlDocumentHost::HasView, and
+	// the multi-view test's probe agrees), and every UMG view fails it until its first Slate
+	// tick -- UVaCuusWidget::RebuildWidget creates its view with FIntPoint::ZeroValue on
+	// purpose, because the only correct size is the arranged pixel rect UMG has not measured
+	// yet (VaCuusUMGWidget.cpp:70-78). A view whose document has just been closed is skipped
+	// here too, once its owed clearing frame is spent.
+	//
+	// Applying inside this loop would therefore leave updates sitting in the channel for a
+	// view that is perfectly alive, and then deliver them all at once on the frame the size
+	// arrives -- correct values, arbitrarily late, with no diagnostic. Worse, the channel is
+	// latest-wins, so what actually arrives is the newest publish only, which merely LOOKS
+	// like a burst.
 	for (TPair<uint32, TUniquePtr<IVaCuusDocumentHost>>& Pair : Hosts)
 	{
 		if (Pair.Value->HasView())
 		{
 			Pair.Value->RecordAndPublishFrame();
+		}
+	}
+}
+
+void FVaCuusUIThread::ApplyModelUpdates()
+{
+	check(IsInUIThread());
+
+	// OVER EVERY VIEW WITH MODELS, gated on nothing. See the record loop for why the gate that
+	// looks like it belongs here does not.
+	//
+	// Costs a map walk per frame and nothing else when no model has published: a channel with
+	// nothing outstanding never swaps, so ConsumeUpdate's SwapAndRead hands back the same
+	// buffer, the generation has not moved and the applier does not run
+	// (FVaCuusModelChannel::ConsumeUpdate). That is what spec 9's "idle -> 0 published frames"
+	// row rests on -- nothing writes the DOM, so nothing changes the frame hash.
+	for (TPair<uint32, TArray<TSharedRef<FVaCuusBoundModel>>>& Pair : Models)
+	{
+		for (const TSharedRef<FVaCuusBoundModel>& Model : Pair.Value)
+		{
+			Model->ApplyPendingUpdate();
 		}
 	}
 }
@@ -878,9 +984,41 @@ void FVaCuusUIThread::DrainCommands()
 			continue;
 		}
 
+		if (Command->Kind == EVaCuusCommandKind::DumpModel)
+		{
+			// AHEAD OF THE HOST LOOKUP, deliberately: the models are keyed on the view in
+			// Models, not held by the host, and the lookup below drops a command for a view it
+			// cannot find at Verbose. A diagnostic that answered silence would be worse than no
+			// diagnostic -- somebody would read the game half, see no UI half, and conclude the
+			// bind had failed when the view had simply been retired.
+			DumpModel(Command->ViewId, FName(*Command->Payload));
+			continue;
+		}
+
 		IVaCuusDocumentHost* Host = FindHost(Command->ViewId);
 		if (Host == nullptr)
 		{
+			// BindModel IS NOT AN ORDINARY DROP, and it gets its own level for the same reason
+			// DumpModel was hoisted above this lookup: losing it is not a lost frame of work,
+			// it is this milestone's signature failure arriving by the quietest door there is.
+			// The model never binds, every UpdateModel afterwards writes into a channel nothing
+			// consumes, the document reads empty -- and the idle gate correctly publishes
+			// nothing, so there is no second symptom anywhere. The DumpModel hoist argues that
+			// it "would be the one command in the plugin that can fail silently"; that applies
+			// with more force here, because the loss of THIS command is the failure the dump
+			// exists to find.
+			//
+			// Not hoisted above the lookup like DumpModel, because unlike DumpModel this
+			// command genuinely needs the host: there is nothing to do with it but report it.
+			if (Command->Kind == EVaCuusCommandKind::BindModel)
+			{
+				UE_LOG(LogVaCuus, Error,
+					TEXT("BindModel('%s') dropped: view %u is not registered on the UI thread. The model will never bind, and every ")
+					TEXT("UpdateModel for it goes nowhere"),
+					Command->Model.IsValid() ? *Command->Model->GetModelName().ToString() : TEXT("<none>"), Command->ViewId);
+				continue;
+			}
+
 			// Ordinary during teardown: the view was removed while commands for it
 			// were still in flight.
 			UE_LOG(LogVaCuus, Verbose, TEXT("UI command for unknown view %u dropped"), Command->ViewId);
@@ -907,6 +1045,10 @@ void FVaCuusUIThread::DrainCommands()
 
 			case EVaCuusCommandKind::CloseDocument:
 				Host->CloseDocument();
+				break;
+
+			case EVaCuusCommandKind::BindModel:
+				BindModel(Command->ViewId, *Host, Command->Model);
 				break;
 
 			case EVaCuusCommandKind::SetVisible:
@@ -1018,7 +1160,93 @@ void FVaCuusUIThread::RemoveView(uint32 ViewId)
 	Host->Shutdown();
 	RetiredHosts.Add(MoveTemp(Host));
 
-	UE_LOG(LogVaCuus, Log, TEXT("View %u removed from the UI thread (%d view(s) left)"), ViewId, Hosts.Num());
+	// AFTER Shutdown(), NOT BEFORE, and the order is the whole point: Shutdown() is what runs
+	// Rml::RemoveContext, and until it has, that context's data models still hold raw void*s
+	// into these models' UI shadows with no liveness check anywhere (spec 2(b)). Dropping the
+	// references first could destroy a shadow the context is about to read while it tears down
+	// its element tree.
+	//
+	// The game thread normally holds the other reference (UVaCuusView's model map), so this is
+	// usually a refcount decrement rather than a destruction -- and either way the buffer is
+	// only reachable from VaCuus code by then.
+	TArray<TSharedRef<FVaCuusBoundModel>> RemovedModels;
+	if (Models.RemoveAndCopyValue(ViewId, RemovedModels))
+	{
+		NumBoundModels.fetch_sub(RemovedModels.Num(), std::memory_order_release);
+	}
+
+	UE_LOG(LogVaCuus, Log, TEXT("View %u removed from the UI thread (%d view(s) left, %d model(s) dropped)"),
+		ViewId, Hosts.Num(), RemovedModels.Num());
+}
+
+void FVaCuusUIThread::BindModel(uint32 ViewId, IVaCuusDocumentHost& Host, const TSharedPtr<FVaCuusBoundModel>& Model)
+{
+	check(IsInUIThread());
+
+	if (!Model.IsValid())
+	{
+		UE_LOG(LogVaCuus, Error, TEXT("BindModel for view %u carried no model"), ViewId);
+		return;
+	}
+
+	Rml::Context* Context = Host.GetContext();
+	if (Context == nullptr)
+	{
+		// A host whose context is gone (mid-shutdown), or one that has none at all. There is
+		// nothing to create the model on and no way to tell the game thread -- a BindModel
+		// carries no serial -- so this line is the only trace.
+		UE_LOG(LogVaCuus, Error, TEXT("View %u has no Rml context; the data model '%s' is not bound and its updates go nowhere"),
+			ViewId, *Model->GetModelName().ToString());
+		return;
+	}
+
+	if (!Model->BindToContext(*Context))
+	{
+		// Already logged in detail. NOT registered below: an unbound model has nothing to
+		// dirty, and registering it would echo applied generations back for updates that
+		// reached no DataModel.
+		return;
+	}
+
+	Models.FindOrAdd(ViewId).Add(Model.ToSharedRef());
+	NumBoundModels.fetch_add(1, std::memory_order_release);
+}
+
+void FVaCuusUIThread::DumpModel(uint32 ViewId, FName ModelName)
+{
+	check(IsInUIThread());
+
+	const TArray<TSharedRef<FVaCuusBoundModel>>* ViewModels = Models.Find(ViewId);
+	if (ViewModels == nullptr)
+	{
+		// THE MOST INFORMATIVE OUTCOME THIS COMMAND HAS. The game thread has just printed a
+		// model it holds; this says the UI thread holds none for that view -- so either the bind
+		// command never reached a context (BindModel above logs why, at Error, and this is the
+		// line that sends the reader back to look for it) or the view has been retired and the
+		// game-side handle has outlived it.
+		UE_LOG(LogVaCuus, Display,
+			TEXT("DumpModel:   UI thread (view %u): NO MODEL IS REGISTERED FOR THIS VIEW. Either the bind never reached a ")
+			TEXT("context -- look for a BindModel error above -- or the view has already been removed"),
+			ViewId);
+		return;
+	}
+
+	int32 NumDumped = 0;
+	for (const TSharedRef<FVaCuusBoundModel>& Model : *ViewModels)
+	{
+		if (ModelName.IsNone() || Model->GetModelName() == ModelName)
+		{
+			Model->DumpUISide(ViewId);
+			++NumDumped;
+		}
+	}
+
+	if (NumDumped == 0)
+	{
+		UE_LOG(LogVaCuus, Display,
+			TEXT("DumpModel:   UI thread (view %u): %d model(s) are registered, but none is called '%s'"), ViewId,
+			ViewModels->Num(), *ModelName.ToString());
+	}
 }
 
 void FVaCuusUIThread::ClearAssetCaches()

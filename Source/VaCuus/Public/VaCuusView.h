@@ -11,10 +11,12 @@
 #include "VaCuusView.generated.h"
 
 class FGenericWindow;
+class FVaCuusBoundModel;
 class FVaCuusImeHandler;
 class FVaCuusUIThread;
 class ITextInputMethodContext;
 class ITextInputMethodSystem;
+class UScriptStruct;
 class UVaCuusSubsystem;
 struct FVaCuusInputEvent;
 struct FVaCuusViewStatus;
@@ -196,6 +198,164 @@ public:
 
 	/** Queues a re-layout at this pixel size. Only sent when the size actually changed. */
 	void Resize(FIntPoint ViewSize);
+
+	//~ ------------------------------------------------------------------ Data binding (M3a)
+	//~
+	//~ THREE CONTRACTS GOVERN EVERY CALL BELOW, and each is RmlUi's rather than ours.
+	//~
+	//~ 1. BIND BEFORE LoadDocument. `data-model` is read exactly once, when the document's
+	//~    body is parented into the context -- Element::SetParent looks the attribute up in
+	//~    Context::GetDataModelPtr and, failing to find it, logs Log::LT_ERROR and moves on
+	//~    (Element.cpp:2202-2219). There is no retry and no second lookup. So a model created
+	//~    after its document loaded attaches to nothing and every `{{Field}}` in that document
+	//~    resolves against no model.
+	//~
+	//~    THE LT_ERROR IS REAL OUTPUT, not a compiled-out one: Log::Message forwards to the
+	//~    registered SystemInterface unconditionally (Log.cpp:11-31) and ours routes LT_ERROR to
+	//~    UE_LOG(LogVaCuus, Error) -- FVaCuusSystemInterface::LogMessage carries the full
+	//~    argument and the list of what genuinely is compiled out. What that line cannot say is
+	//~    that a BIND was missing, because from RmlUi's side nothing was ever asked for; so
+	//~    BindModel() also warns when it can see a load has already been requested on this view,
+	//~    which is the closest thing to an up-front check there is.
+	//~
+	//~ 2. THERE IS NO UNBIND, AND THERE WILL NOT BE. RmlUi has no API for it: the only
+	//~    teardown is Context::RemoveDataModel, and that is a one-way door -- it calls
+	//~    Element::SetDataModel(nullptr) on every attached root (Context.cpp:1097-1111), and
+	//~    SetDataModel is PRIVATE (Element.h:662, and SetParent is the only caller), so a
+	//~    document that is still loaded is permanently detached with no way to re-attach it.
+	//~    Re-binding the same name instead is refused: Context::CreateDataModel returns a
+	//~    falsy constructor (Context.cpp:1074-1075) and the existing model keeps pointing at
+	//~    the OLD shadow. A model therefore lives as long as its view, and dies with the
+	//~    context.
+	//~
+	//~ 3. ON DOCUMENT RELOAD, DO NOTHING. The context, the model, its variables and the
+	//~    values in the UI shadow all survive a load -- only element-attached DataViews are
+	//~    rebuilt, and RmlUi re-initialises those itself (Context::LoadDocument runs
+	//~    DataModel::Update over every model right after the load event, Context.cpp:305-306,
+	//~    and DataViews::Update updates every newly added view unconditionally,
+	//~    DataView.cpp:76-88). VaCuus loads the new document BEFORE closing the old one
+	//~    (FVaCuusRmlDocumentHost::AdoptDocument), so the new one attaches while the model is
+	//~    fully live. Tearing the model down around a reload would race the load, and by
+	//~    contract 2 it could not be put back.
+	//~
+	//~ Game thread only, like every other mutator here.
+
+	/**
+	 * Creates a data model called ModelName over Type on this view's RmlUi context, and binds
+	 * one variable per bindable top-level property of Type to a UI-thread-owned shadow of it.
+	 *
+	 * Asynchronous, like every other call here: the model is created when the UI thread drains
+	 * the command, which -- the queue being FIFO from one producer -- is before any
+	 * LoadDocument enqueued after this. That ordering is contract 1 above.
+	 *
+	 * Type's properties are walked by FVaCuusModelLayout, which logs one line per property it
+	 * cannot bind (unsupported kind, RmlUi-illegal wire name, deprecated, editor-only). A
+	 * struct with no bindable property still gets an empty model, because what `data-model`
+	 * needs to resolve is the MODEL.
+	 *
+	 * @return false, with an Error or Warning saying why, for: a null Type, an unnamed model,
+	 *         a second model of the same name on this view, a type whose layout could not be
+	 *         built, or a view that is no longer registered. Never partially succeeds.
+	 */
+	bool BindModel(FName ModelName, const UScriptStruct* Type);
+
+	/**
+	 * Reads Data through ModelName's layout, marks whatever changed since the last call, and
+	 * leaves it for the next UVaCuusSubsystem::Tick to publish. Cheap and allocation-free in
+	 * the steady state; call it every frame.
+	 *
+	 * THE TYPE IS A PARAMETER, AND IT IS NOT CEREMONY. An untyped (FName, const void*) makes
+	 * "wrong type" and "wrong size" undiagnosable: both read whatever happens to sit at the
+	 * layout's offsets, and the first FString field turns that into a crash rather than a
+	 * wrong number. The Blueprint node gets the type for free from its wildcard pin, so both
+	 * surfaces reach this same check.
+	 *
+	 * A MODEL CONTAINING FText MUST BE RE-PUSHED AFTER A CULTURE CHANGE, OR PUSHED EVERY FRAME.
+	 * That is a contract, not the recommendation above. An FText field is stored in the shadow
+	 * as FText::AsCultureInvariant(Live.ToString()) -- resolved once, HERE, on the game thread --
+	 * so that the UI thread never touches FTextLocalizationManager (FVaCuusModelSampler's header
+	 * carries that argument; it is what makes the design thread-safe at all). A projected text
+	 * has an empty TextId, so FTextHistory_Base::CanUpdateDisplayString returns false
+	 * (TextHistory.cpp:940-943) and it can NEVER re-resolve itself.
+	 *
+	 * A culture change is therefore invisible until the next call to this function. Push a
+	 * struct of FText labels once when a settings menu opens, let the player change language,
+	 * and every label stays in the old language for the life of the view -- with no log line,
+	 * because nothing on this path is wrong. Hang a re-push off
+	 * FInternationalization::Get().OnCultureChanged() (Internationalization.h:201), or just call
+	 * this every frame as everything else here assumes.
+	 *
+	 * Nothing is written, and one line is logged, for: a model that is not bound (Warning), a
+	 * type that is not the bound one (Error), or a null Data (Warning). A view that has been
+	 * invalidated drops the call at Verbose -- this runs at frame rate, and a louder level
+	 * would bury the log during teardown, exactly as SendInput() already argues.
+	 */
+	void UpdateModel(FName ModelName, const UScriptStruct* Type, const void* Data);
+
+	/** True while a model of that name is bound to this view. Game thread. */
+	bool HasModel(FName ModelName) const;
+
+	/**
+	 * Fields of ModelName the UI thread has not confirmed applying, or INDEX_NONE when no such
+	 * model is bound.
+	 *
+	 * The API's only observable, and the diagnostic that tells the two silent failures apart:
+	 * a number that climbs and never falls means the model reached no context (nothing is
+	 * consuming the channel), while a steady 0 means the UI is keeping up. Harvests the echo,
+	 * so it is not const.
+	 */
+	int32 NumOutstandingModelFields(FName ModelName);
+
+	/**
+	 * `vacuus.DumpModel`'s per-view body (spec 8): prints the layout, the game-side shadow and
+	 * the pending/unacknowledged sets for ModelName now, and enqueues the UI thread's half --
+	 * the UI shadow, the published dirty set and the applied generation -- which appears in the
+	 * log a UI frame later.
+	 *
+	 * TWO HALVES ON TWO THREADS, because the UI shadow is a UScriptStruct instance the UI thread
+	 * writes with no synchronisation at all: an FString field in it is freed and reallocated by
+	 * every apply that touches it, so reading one from here would be a use-after-free rather
+	 * than a stale number. FVaCuusUIThread::EnqueueDumpModel carries the request across.
+	 *
+	 * ModelName None dumps every model bound to this view.
+	 *
+	 * @return how many models were dumped from THIS side. Zero means nothing is bound under that
+	 *         name on the game thread, which is a different failure from the UI thread having
+	 *         nothing -- and the two lines say so separately.
+	 */
+	int32 DumpModel(FName ModelName);
+
+	/**
+	 * Publishes every bound model's outstanding fields to the UI thread. Once per frame, from
+	 * UVaCuusSubsystem::Tick.
+	 *
+	 * SEPARATE FROM UpdateModel(), AND DRIVEN FROM THE SUBSYSTEM, for two reasons. It
+	 * coalesces: several UpdateModel calls in one frame -- several actors each updating their
+	 * own field -- become one publish and one triple-buffer swap rather than N. And it lands
+	 * inside the existing GameTick perf scope (VaCuusSubsystem.cpp), where spec 9's
+	 * game-thread budget is measured; from an actor tick it would be outside every scope.
+	 */
+	void PublishModelUpdates();
+
+	/**
+	 * Blueprint's BindModel: the wildcard struct pin supplies the UScriptStruct, so a designer
+	 * cannot get the type wrong and C++ and Blueprint reach the same check.
+	 *
+	 * CustomThunk because a wildcard pin has no C++ signature -- `const int32&` is the
+	 * engine's placeholder for one, and execCreateModelFromStruct reads the real
+	 * FStructProperty off the script stack. The declared function below is never called; the
+	 * thunk replaces it.
+	 */
+	UFUNCTION(BlueprintCallable, CustomThunk, Category = "VaCuus|Data",
+		meta = (CustomStructureParam = "Struct", DisplayName = "Create Model From Struct"))
+	bool CreateModelFromStruct(FName ModelName, const int32& Struct);
+	DECLARE_FUNCTION(execCreateModelFromStruct);
+
+	/** Blueprint's UpdateModel; same wildcard pin, same type check. */
+	UFUNCTION(BlueprintCallable, CustomThunk, Category = "VaCuus|Data",
+		meta = (CustomStructureParam = "Struct", DisplayName = "Update Whole Model"))
+	void UpdateWholeModel(FName ModelName, const int32& Struct);
+	DECLARE_FUNCTION(execUpdateWholeModel);
 
 	/**
 	 * Queues one input event for this view's context. Never blocks, never fails: a
@@ -397,6 +557,19 @@ private:
 
 	/** Shared with this view's document host on the UI thread. */
 	TSharedPtr<FVaCuusViewStatus> Status;
+
+	/**
+	 * Data models bound to this view, by the name a document's `data-model` writes.
+	 *
+	 * SHARED WITH THE UI THREAD, which holds its own reference per view and drops it in
+	 * RemoveView() -- after the context that points into each model's shadow is gone.
+	 *
+	 * NOT CLEARED BY Invalidate(), deliberately: it is what lets UpdateModel() tell "this view
+	 * is dead" from "you never bound that model", which are different mistakes with different
+	 * fixes. Nothing publishes through it once the view is unregistered
+	 * (PublishModelUpdates() returns early), and the entries die with this object.
+	 */
+	TMap<FName, TSharedPtr<FVaCuusBoundModel>> Models;
 
 	/**
 	 * The platform IME bridge, created by the first UpdateIme() and destroyed by DetachIme().
