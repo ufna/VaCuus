@@ -147,18 +147,22 @@ the C++, which is worse. An explicit rename attribute is v1.x.
 | numeric, `FBoolProperty` | ✅ | bitfields need care — §5 |
 | `FStrProperty`, `FNameProperty` | ✅ | |
 | `FTextProperty` | ✅ | shadow the **display string** — §5 |
-| `FUtf8StrProperty`, `FAnsiStrProperty` | ✅ | `CastField<FStrProperty>` silently misses these |
+| `FUtf8StrProperty` | ✅ | bytes copy straight into `Rml::String`. `CastField<FStrProperty>` silently misses this kind |
+| `FAnsiStrProperty` | ✅ | **not** interchangeable with UTF-8, as v2 implied by grouping them: every byte above `0x7F` is a valid `FAnsiString` character and an invalid UTF-8 sequence, so it must round-trip through `FString` |
 | `FEnumProperty`, `FByteProperty`-with-enum | ✅ | see below |
 | `FStructProperty` (nested) | ✅ | flattened, depth-limited |
-| `FSoftObjectProperty`, `FWeakObjectProperty` | ✅ | projected to a path string at sample time — value types, no GC ownership |
+| `FSoftObjectProperty` | ✅ | `FSoftObjectPtr::ToString()` is pure string data — no resolution, no GC interaction |
+| `FWeakObjectProperty` | ❌ | **corrected after implementation.** v2 said "projected to a path string at sample time" for both. For a weak ref there is nowhere to project *to*: §3.1 makes the shadow a real instance of the model type, so the field is still an `FWeakObjectPtr` — an index/serial pair containing no path. Producing a path means **resolving the object**, and the engine header says outright that a weak pointer "can not be used on another thread as it will incorrectly return false during the mark phase of the GC"; `GetPathName()` would then walk an Outer chain the purge phase may be destroying. That is precisely the use-after-free §3.1's GC argument exists to prevent. Refused in the layout, because a field that binds and reads empty forever is this milestone's signature failure |
 | `FArrayProperty` | **M3b** | §12 |
 | `FObjectProperty` (hard) | ❌ | §3.1's GC argument |
 | `FMapProperty`, `FSetProperty` | ❌ | no RmlUi map view; `Identical` is O(n²) |
 | `FDelegateProperty` | ❌ | events travel the other way |
 | **fixed-size C array** (`ArrayDim > 1`) | ❌ | added after implementation: `int32 Fixed[4]` is **one** `FProperty`, so it is not a *kind* and the type table cannot refuse it — binding element 0 and dropping the rest would be a silent partial bind. Refused with a `Warning`; revisit in M3b alongside `FArrayProperty` |
 
-**Enums** are exposed as **one** variable holding the name string, from
-`UEnum::GetAuthoredNameStringByValue`. v1 exposed name *and* value, which needs two legal names per
+**Enums** are exposed as **one** variable holding the name string. Use
+`FindAuthoredNameStringByValue`, **not** `GetAuthoredNameStringByValue` — the latter feeds an
+`INDEX_NONE` from `GetIndexByValue` straight into `GetNameStringByIndex` and returns an **empty
+string**, so an out-of-range value renders as nothing with no diagnostic. The miss is logged. v1 exposed name *and* value, which needs two legal names per
 property and collides with §3.3 for no clear gain; the numeric value is available by binding the
 underlying integer property if a document needs it.
 
