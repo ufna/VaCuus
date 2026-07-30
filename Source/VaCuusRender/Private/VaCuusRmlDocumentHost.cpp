@@ -314,6 +314,10 @@ void FVaCuusRmlDocumentHost::RecordAndPublishFrame()
 	// walk is a field read per element rather than a layout pass.
 	PublishInteractiveSnapshot();
 
+	// The hash the idle gate compares is computed inside EndFrameAndPublish(), so its
+	// cost is deliberately inside the Record scope: it is part of what recording a
+	// frame costs now, and hiding it outside the scope it pays for would make the
+	// perf log lie about the trade.
 	TUniquePtr<FVaCuusCommandBuffer> Buffer;
 	{
 		VACUUS_PERF_SCOPE(Record);
@@ -321,20 +325,34 @@ void FVaCuusRmlDocumentHost::RecordAndPublishFrame()
 		Buffer = Recorder->EndFrameAndPublish();
 	}
 
-	// Straight from the UI thread to the render thread: FRenderThreadCommandPipe
-	// has no game-thread requirement, and the element is a thread-safe shared ptr
-	// captured by value, so it outlives the enqueue no matter what the game thread
-	// is doing with its own reference.
-	ENQUEUE_RENDER_COMMAND(VaCuusPublishUIFrame)(
-		[LocalElement = Element, Buf = MoveTemp(Buffer)](FRHICommandListImmediate& RHICmdList) mutable
-		{
-			LocalElement->SetPendingBuffer_RenderThread(RHICmdList, MoveTemp(Buf));
-		});
+	// Null == the idle gate withheld this frame because it draws what the render
+	// thread already has (FVaCuusRecordingRenderInterface::EndFrameAndPublish). The
+	// right response is to enqueue NOTHING: the element re-composites its persistent
+	// render target every frame regardless of whether a buffer arrived
+	// (VaCuusSlateElement.cpp:91-140), which is the whole idle model.
+	const bool bPublished = Buffer.IsValid();
+	if (bPublished)
+	{
+		// Straight from the UI thread to the render thread: FRenderThreadCommandPipe
+		// has no game-thread requirement, and the element is a thread-safe shared ptr
+		// captured by value, so it outlives the enqueue no matter what the game thread
+		// is doing with its own reference.
+		ENQUEUE_RENDER_COMMAND(VaCuusPublishUIFrame)(
+			[LocalElement = Element, Buf = MoveTemp(Buffer)](FRHICommandListImmediate& RHICmdList) mutable
+			{
+				LocalElement->SetPendingBuffer_RenderThread(RHICmdList, MoveTemp(Buf));
+			});
+	}
+
+	// Both outcomes are counted, so the perf log can show how much of the window was
+	// idle next to the Replay samples that stopped happening.
+	FVaCuusPerfLog::AddUIFrame(bPublished);
 
 	if (Status.IsValid())
 	{
-		// Per-view frame count: what a headless screenshot actually needs to wait on.
-		Status->FramesPublished.fetch_add(1, std::memory_order_release);
+		// Counts RECORDED frames, published or not -- see FVaCuusViewStatus for why
+		// that is the number a headless wait wants.
+		Status->FramesRecorded.fetch_add(1, std::memory_order_release);
 	}
 }
 

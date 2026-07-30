@@ -212,8 +212,15 @@ public:
 	 */
 	uint64 GetNumInputEventsQueued() const { return NumInputEventsQueued; }
 
-	/** Frames this view has published to the render thread. Useful for headless waits. */
-	uint64 GetFramesPublished() const;
+	/**
+	 * Frames this view's document host has RECORDED. Useful for headless waits.
+	 *
+	 * Not "published": since the idle short-circuit (M2 Task 12) a frame that draws
+	 * what the render thread already has is recorded and then withheld, so a static
+	 * document publishes a handful of times and records forever. See
+	 * FVaCuusViewStatus::FramesRecorded for why a waiter wants the recording count.
+	 */
+	uint64 GetFramesRecorded() const;
 
 	/**
 	 * Serial of the newest load this view has ASKED for, and of the newest one the UI

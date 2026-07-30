@@ -46,6 +46,12 @@ struct FState
 	uint64 WindowFrames = 0;
 	uint64 TotalFrames = 0;
 
+	/** UI-thread frames recorded, split by whether the idle gate let them publish. */
+	uint64 WindowUIPublished = 0;
+	uint64 WindowUISkipped = 0;
+	uint64 TotalUIPublished = 0;
+	uint64 TotalUISkipped = 0;
+
 	double WindowStartSeconds = 0.0;
 	double EnableSeconds = 0.0;
 	bool bEnabled = false;
@@ -133,6 +139,22 @@ void FVaCuusPerfLog::AddDraws(int32 NumDraws)
 	}
 }
 
+void FVaCuusPerfLog::AddUIFrame(bool bPublished)
+{
+	if (!IsEnabled())
+	{
+		return;
+	}
+
+	using namespace VaCuusPerfLogPrivate;
+	FState& State = GetState();
+	FScopeLock ScopeLock(&State.Lock);
+	if (State.bEnabled)
+	{
+		bPublished ? ++State.WindowUIPublished : ++State.WindowUISkipped;
+	}
+}
+
 void FVaCuusPerfLog::TickLog()
 {
 	using namespace VaCuusPerfLogPrivate;
@@ -154,6 +176,8 @@ void FVaCuusPerfLog::TickLog()
 		State.WindowDraws = State.TotalDraws = 0;
 		State.WindowReplays = State.TotalReplays = 0;
 		State.WindowFrames = State.TotalFrames = 0;
+		State.WindowUIPublished = State.TotalUIPublished = 0;
+		State.WindowUISkipped = State.TotalUISkipped = 0;
 		State.WindowStartSeconds = State.EnableSeconds = NowSeconds;
 		State.bEnabled = bWantEnabled;
 		if (bWantEnabled)
@@ -180,6 +204,8 @@ void FVaCuusPerfLog::TickLog()
 	State.TotalFrames += State.WindowFrames;
 	State.TotalDraws += State.WindowDraws;
 	State.TotalReplays += State.WindowReplays;
+	State.TotalUIPublished += State.WindowUIPublished;
+	State.TotalUISkipped += State.WindowUISkipped;
 	for (int32 Scope = 0; Scope < Num; ++Scope)
 	{
 		State.Cumulative[Scope].Append(State.Window[Scope]);
@@ -192,6 +218,19 @@ void FVaCuusPerfLog::TickLog()
 		State.WindowReplays > 0 ? double(State.WindowDraws) / double(State.WindowReplays) : 0.0,
 		TotalElapsed, State.TotalFrames, double(State.TotalFrames) / TotalElapsed,
 		State.TotalReplays > 0 ? double(State.TotalDraws) / double(State.TotalReplays) : 0.0);
+
+	// The idle short-circuit, in one line: UI frames recorded, and how many of them
+	// the gate let through. `skipped` is what the Replay sample count below is missing.
+	UE_LOG(LogVaCuus, Log,
+		TEXT("PerfLog window UI frames published=%llu skipped=%llu (%.1f%% idle) | total published=%llu skipped=%llu (%.1f%% idle)"),
+		State.WindowUIPublished, State.WindowUISkipped,
+		(State.WindowUIPublished + State.WindowUISkipped) > 0
+			? 100.0 * double(State.WindowUISkipped) / double(State.WindowUIPublished + State.WindowUISkipped)
+			: 0.0,
+		State.TotalUIPublished, State.TotalUISkipped,
+		(State.TotalUIPublished + State.TotalUISkipped) > 0
+			? 100.0 * double(State.TotalUISkipped) / double(State.TotalUIPublished + State.TotalUISkipped)
+			: 0.0);
 
 	for (int32 Scope = 0; Scope < Num; ++Scope)
 	{
@@ -209,5 +248,7 @@ void FVaCuusPerfLog::TickLog()
 	State.WindowDraws = 0;
 	State.WindowReplays = 0;
 	State.WindowFrames = 0;
+	State.WindowUIPublished = 0;
+	State.WindowUISkipped = 0;
 	State.WindowStartSeconds = NowSeconds;
 }

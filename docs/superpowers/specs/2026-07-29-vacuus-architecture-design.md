@@ -205,6 +205,17 @@ RmlUi's native layer compositing (proven in the demo).
 per-frame cost is one composite of the RT. Dirty-region partial replay is a v1.x
 optimization.
 
+*Implemented in M2 Task 12* (`FVaCuusRecordingRenderInterface::EndFrameAndPublish`).
+RmlUi exposes no dirty signal — `Context::Update()`/`Render()` return an unconditional
+`true`, `IsLayoutDirty()` is non-public *and* only tracks layout — so every frame is
+**recorded** as usual and only the **publish** is gated, on an xxhash of the command list
+plus `ViewSize` being unchanged **and** all four resource-delta arrays being empty. The
+recording is never skipped: the async image-decode drain lives at the top of
+`BeginFrame()`, and a decode arrival is a non-empty `NewTextures`, which is one of the
+four conditions that force a publish. A skipped frame consumes no `Generation` (that
+counter means *publishes*, and the replayer's idempotence guard reads it as one); the UI
+thread's own frame count still advances.
+
 ## 6. Data binding
 
 - `FVaCuusModelBuilder`: walks UPROPERTY reflection of a USTRUCT/UObject and constructs a
@@ -325,7 +336,7 @@ budgets are asserted from M3.
 | Game-thread cost (input+snapshots) | ≤0.10 ms/frame | gate |
 | UI-thread Update + command record (reference HUD) | ≤0.50 ms/frame | gate |
 | Render-thread replay (re-replay frames) | ≤0.50 ms @1080p | gate — **measured M1: 0.03 ms avg / 0.07 ms p99 @1080p, 97 draws (2026-07-29)**. M1 static HUD subset, 100 s `-RenderOffscreen` soak, 15,324 replays, Linux Vulkan; steady-state max ≤0.37 ms, single 1.48 ms outlier on the first replay (font-atlas + image upload). Budget kept at 0.50 ms: ~7x p99 headroom for the full reference HUD (~10x the M1 element count, animated) |
-| Composite-only frames (idle UI) | ≤0.05 ms | gate — measured M1 composite section: 0.004 ms avg / 0.008 ms p99 (2026-07-29; render-thread graph-build cost of the composite pass — true idle frames need M2 dirty-detection, M1 re-records every frame) |
+| Composite-only frames (idle UI) | ≤0.05 ms | gate — **measured M2 on genuinely idle frames: 0.004 ms avg / 0.010 ms p99 @1080p (2026-07-30)**. M2 Task 12's publish gate makes them real: in a 60 s `-RenderOffscreen` soak of the static M1 HUD the view recorded 13,296 frames and published **1**, so the render thread ran one replay in the whole run and the composite is the only per-frame render cost. Identical to the M1 figure (0.004 / 0.008), which is the expected result — the composite section never depended on a buffer arriving. Record (UI) is unchanged at 0.040 ms avg with the content hash included, i.e. the hash is below the noise floor |
 | Added RAM (reference HUD, incl. JS heap ≤16 MB cap) | ≤32 MB | gate |
 | Added disk (Win64 shipping) | ≤10 MB | gate |
 | Frame-drop on document load (async path) | 0 hitches >1 ms on game thread | gate |

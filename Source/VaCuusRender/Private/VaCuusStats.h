@@ -49,6 +49,17 @@ public:
 	static void AddDraws(int32 NumDraws);
 
 	/**
+	 * Record one RECORDED UI frame and whether it was published. No-op while
+	 * disabled. UI thread.
+	 *
+	 * The idle short-circuit's measurable half: without it the window line shows
+	 * fewer Replay samples than frames and nothing says why. UI-thread frames are
+	 * counted here rather than reusing the existing `frames=` field, which counts
+	 * game-thread HUD ticks and is a different rate entirely.
+	 */
+	static void AddUIFrame(bool bPublished);
+
+	/**
 	 * Called once per game-thread HUD frame; handles enable/disable transitions
 	 * and prints the 5-second window plus cumulative stats when the window ends.
 	 */

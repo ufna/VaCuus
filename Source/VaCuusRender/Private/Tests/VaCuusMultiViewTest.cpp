@@ -28,6 +28,16 @@ struct FProbe
 {
 	std::atomic<bool> bBooted{false};
 	std::atomic<int32> Frames{0};
+
+	/**
+	 * Buffers the recorder actually handed out. Lower than Frames on a static
+	 * document: the idle short-circuit withholds a frame that draws what the render
+	 * thread already has. Kept separate so "the view still runs frames" and "the view
+	 * still publishes" stay distinguishable here.
+	 */
+	std::atomic<int32> Published{0};
+
+	/** Commands in the last PUBLISHED buffer; a withheld frame leaves it alone. */
 	std::atomic<int32> LastDraws{0};
 	std::atomic<bool> bShutdown{false};
 };
@@ -180,9 +190,16 @@ public:
 		Context->Render();
 		const TUniquePtr<FVaCuusCommandBuffer> Buffer = Recorder->EndFrameAndPublish();
 
-		Probe->LastDraws.store(Buffer.IsValid() ? Buffer->Commands.Num() : 0, std::memory_order_relaxed);
+		// Null == the idle gate withheld this frame; LastDraws deliberately keeps the
+		// last published count, because "what this view last handed to the render
+		// thread" is what it is asserted on, and a withheld frame did not change that.
+		if (Buffer.IsValid())
+		{
+			Probe->LastDraws.store(Buffer->Commands.Num(), std::memory_order_relaxed);
+			Probe->Published.fetch_add(1, std::memory_order_relaxed);
+		}
 		Probe->Frames.fetch_add(1, std::memory_order_release);
-		Status->FramesPublished.fetch_add(1, std::memory_order_release);
+		Status->FramesRecorded.fetch_add(1, std::memory_order_release);
 	}
 
 private:
@@ -343,6 +360,15 @@ bool FVaCuusMultiViewTest::RunTest(const FString& Parameters)
 		ProbeB->Frames.load(std::memory_order_acquire) > FramesB + 1);
 	TestTrue(TEXT("Surviving view still records draw commands"),
 		ProbeB->LastDraws.load(std::memory_order_relaxed) > 0);
+
+	// The idle short-circuit against RmlUi itself rather than a synthetic command list
+	// (VaCuus.Render.IdleGate covers the gate's logic): this document has no
+	// animation, so after five recorded frames most of them must have been withheld.
+	// If RmlUi ever starts churning geometry or commands on a static document, this is
+	// where it shows up -- and the gate would be worthless in production, which is
+	// worth failing a test over.
+	TestTrue(TEXT("A static document publishes fewer frames than it records"),
+		ProbeB->Published.load(std::memory_order_relaxed) < ProbeB->Frames.load(std::memory_order_acquire));
 
 	return true;
 }

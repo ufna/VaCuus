@@ -91,6 +91,10 @@ struct FVaCuusTextureDecodeSink
  *
  * Image decodes are the one piece of work that leaves the frame-owning thread:
  * see LoadTexture and DrainCompletedDecodes.
+ *
+ * EVERY frame is recorded; not every frame is published. EndFrameAndPublish()
+ * withholds a frame that draws what the render thread already has (the M2 Task 12
+ * idle short-circuit) and returns null for it.
  */
 class VACUUSRENDER_API FVaCuusRecordingRenderInterface : public Rml::RenderInterface
 {
@@ -120,8 +124,36 @@ public:
 	 * increasing Generation. The next frame starts from a fresh buffer,
 	 * though out-of-frame resource traffic arriving before the next
 	 * BeginFrame() may pre-populate it (see class comment).
+	 *
+	 * RETURNS NULL when the frame just recorded is the frame already on screen --
+	 * the idle short-circuit (see the cpp for the full argument). A null return is
+	 * a normal outcome, not a failure: the caller simply enqueues nothing, and the
+	 * render thread keeps compositing the render target it already has.
+	 *
+	 * The RECORDING is never skipped, only the publish. That is load-bearing: the
+	 * async image decodes are drained inside BeginFrame(), so a recorder that
+	 * stopped running frames would leave a loaded image on its transparent
+	 * placeholder forever.
 	 */
 	TUniquePtr<FVaCuusCommandBuffer> EndFrameAndPublish();
+
+	/**
+	 * Buffers this recorder has actually handed out, i.e. the newest Generation.
+	 * Frames the idle gate withheld are NOT counted -- that is what keeps
+	 * Generation meaning "publishes", which the replayer's idempotence guard
+	 * relies on (FVaCuusReplayRenderer::ShouldConsume).
+	 */
+	uint64 GetNumFramesPublished() const { return Generation; }
+
+	/**
+	 * Frames recorded whose publish the idle gate withheld.
+	 *
+	 * THE observable for the gate, and the reason it exists as a counter at all:
+	 * "an unchanged frame is not published" is otherwise invisible from outside --
+	 * the screen looks identical either way -- and an invariant with no observable
+	 * cannot be tested.
+	 */
+	uint64 GetNumFramesSkipped() const { return NumFramesSkipped; }
 
 	/**
 	 * Resolves the ImageWrapper module ONCE from the game thread and caches it for
@@ -171,6 +203,21 @@ private:
 	uint64 NextTextureHandle = 1;
 	uint64 Generation = 0;
 	bool bInFrame = false;
+
+	/**
+	 * VaCuusHashFrameContent() of the last buffer this recorder PUBLISHED, and the
+	 * only state the idle gate keeps.
+	 *
+	 * Per recorder, therefore per view: there is one recorder per Rml::Context
+	 * (FVaCuusRmlDocumentHost::Initialize), so one view going idle cannot suppress
+	 * another view's publish, and a view that is torn down and recreated gets a new
+	 * recorder and hence no hash to inherit. Only meaningful once Generation > 0,
+	 * which is also how the first frame of a view is forced to publish.
+	 */
+	uint64 LastPublishedContentHash = 0;
+
+	/** Frames the idle gate withheld; see GetNumFramesSkipped(). */
+	uint64 NumFramesSkipped = 0;
 
 	/** Thread that called BeginFrame(); only meaningful while bInFrame. */
 	uint32 OwnerThreadId = 0;

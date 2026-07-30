@@ -20,12 +20,12 @@
 #include "Widgets/SWindow.h"
 
 // Debug helper for headless verification: request a UI-inclusive screenshot
-// once the view has published N frames (0 = off). Set BEFORE toggling
+// once the view has recorded N frames (0 = off). Set BEFORE toggling
 // vacuus.M1HUD on, e.g. -ExecCmds="vacuus.M1HUD.AutoShot 10, vacuus.M1HUD".
 static TAutoConsoleVariable<int32> CVarVaCuusM1HUDAutoShot(
 	TEXT("vacuus.M1HUD.AutoShot"),
 	0,
-	TEXT("If > 0, request a screenshot (with UI) once the view has published this many frames."));
+	TEXT("If > 0, request a screenshot (with UI) once the view has recorded this many UI frames."));
 
 void SVaCuusWidget::Construct(const FArguments& InArgs,
 	UVaCuusView* InView,
@@ -203,18 +203,21 @@ void SVaCuusWidget::TickAutoShot()
 		return;
 	}
 
-	// Counted in published UI frames for THIS view, not game frames: that is what
-	// guarantees the document has actually been recorded and handed to the render
-	// thread by the time we shoot.
+	// Counted in recorded UI frames for THIS view, not game frames: that is what
+	// guarantees the document has actually been laid out and drawn by the time we
+	// shoot. Recorded rather than published on purpose -- the idle short-circuit
+	// (M2 Task 12) withholds the publish of a frame that draws what the render thread
+	// already has, so a static HUD would stop the publish count dead at two or three
+	// and a threshold above that would never be reached.
 	const UVaCuusView* ViewPtr = View.Get();
-	const uint64 PublishedFrames = ViewPtr ? ViewPtr->GetFramesPublished() : 0;
-	if (PublishedFrames < uint64(AutoShotFrame))
+	const uint64 RecordedFrames = ViewPtr ? ViewPtr->GetFramesRecorded() : 0;
+	if (RecordedFrames < uint64(AutoShotFrame))
 	{
 		return;
 	}
 
 	bAutoShotDone = true;
-	UE_LOG(LogVaCuus, Log, TEXT("M1 HUD auto-screenshot after %llu published UI frames"), PublishedFrames);
+	UE_LOG(LogVaCuus, Log, TEXT("M1 HUD auto-screenshot after %llu recorded UI frames"), RecordedFrames);
 	FScreenshotRequest::RequestScreenshot(/*bInShowUI=*/true);
 }
 

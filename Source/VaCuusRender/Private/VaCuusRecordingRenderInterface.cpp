@@ -584,20 +584,28 @@ void FVaCuusRecordingRenderInterface::DrainCompletedDecodes()
 	// thread and only through published buffers, so an in-band arrival needs no
 	// weak-pointer dance against teardown.
 	//
-	// WHY A LATE PAYLOAD IS GUARANTEED TO REACH THE SCREEN, as of today: every UI frame
-	// publishes unconditionally — FVaCuusUIThread::RunFrame records and publishes for
-	// every host with HasView() (VaCuusUIThread.cpp:769-774) — and the render thread
-	// draws whenever any buffer is pending, replaying the newest one in full
-	// (VaCuusSlateElement.cpp:56). So the buffer this payload lands in is replayed like
-	// any other. The only gate on the path is ShouldConsume's generation-idempotence
-	// check (VaCuusReplayRenderer.cpp:94-114), which stops one buffer being consumed
-	// twice and has nothing to do with whether the UI changed.
+	// WHY A LATE PAYLOAD IS GUARANTEED TO REACH THE SCREEN: every UI frame is RECORDED
+	// — FVaCuusUIThread::RunFrame records for every host with HasView()
+	// (VaCuusUIThread.cpp:769-775) — and this drain runs at the top of each of them, so
+	// an arrival always lands in a live pending buffer. Whether that buffer is
+	// PUBLISHED is a separate decision, and since Task 12 it is a real one: the idle
+	// gate in EndFrameAndPublish() withholds a frame whose commands and ViewSize are
+	// unchanged. A non-empty NewTextures is one of its four required wake conditions,
+	// which is exactly what keeps this path working — an arrival is the one resource
+	// delta that can appear in a frame where nothing else moved, and withholding that
+	// publish would leave the transparent 1x1 placeholder on screen indefinitely.
 	//
-	// There is NO idle short-circuit in the plugin; do not write comments that assume
-	// one. IF one is ever added, a non-empty NewTextures becomes a REQUIRED wake
-	// condition for it — an arrival is the one resource delta that can appear in a
-	// frame where nothing else moved, and skipping that publish would leave the
-	// placeholder on screen indefinitely.
+	// Note the ordering that makes the wake condition sufficient rather than merely
+	// stated: this drain runs BEFORE Context::Update() (see BeginFrame), so a payload
+	// is already sitting in the pending buffer's NewTextures by the time the gate
+	// inspects it at the end of the frame.
+	//
+	// Downstream of the gate the payload is unconditional again: the render thread
+	// draws whenever any buffer is pending, replaying the newest one in full
+	// (VaCuusSlateElement.cpp:56, :83). The only other filter on the path is
+	// ShouldConsume's generation-idempotence check (VaCuusReplayRenderer.cpp:94-114),
+	// which stops one buffer being consumed twice and has nothing to do with whether
+	// the UI changed.
 	//
 	// "Placeholder in frame N, payload in N+1" is the COMMON CASE, NOT AN INVARIANT.
 	// LoadTexture is reachable out of frame: AdoptDocument -> Document->Show()
@@ -675,7 +683,68 @@ TUniquePtr<FVaCuusCommandBuffer> FVaCuusRecordingRenderInterface::EndFrameAndPub
 	ensureMsgf(bInFrame, TEXT("EndFrameAndPublish() without a matching BeginFrame()"));
 	bInFrame = false;
 
+	// MoveTemp leaves Pending null, so whatever happens below the NEXT frame starts
+	// from a fresh buffer. That matters for the skip path: a buffer left in place
+	// would have this frame's commands appended to again next frame, and every
+	// command would be replayed twice.
 	TUniquePtr<FVaCuusCommandBuffer> Published = Pending ? MoveTemp(Pending) : MakeUnique<FVaCuusCommandBuffer>();
+
+	// THE IDLE SHORT-CIRCUIT (M2 Task 12). RmlUi offers no dirty signal to ask.
+	// Context::Update() and Context::Render() end in an unconditional `return true`
+	// (ThirdParty/RmlUi/Source/Core/Context.cpp:219 and :241). IsLayoutDirty() is not
+	// callable from here -- protected on Element (Include/RmlUi/Core/Element.h:637,
+	// under the `protected:` at :593) and private on ElementDocument
+	// (Include/RmlUi/Core/ElementDocument.h:146, under the `private:` at :135) -- and
+	// would be useless even if it were public. It returns the layout_dirty flag
+	// (ElementDocument.cpp:546-549), which Context::Update() has already cleared by the
+	// time this code could look at it: Update() calls doc->UpdateLayout() for every
+	// document (Context.cpp:207-214) and UpdateLayout() ends with layout_dirty = false
+	// (ElementDocument.cpp:476-493). And it is the wrong question regardless -- a colour
+	// change, a hover restyle or a scroll all change what is drawn without dirtying
+	// layout. RenderManager carries no version counter, and GetNextUpdateDelay
+	// (Include/RmlUi/Core/Context.h:294) is the lowest requested TIMER timestamp
+	// (documented at :286), not a change flag. So the frame is recorded as usual and
+	// compared afterwards.
+	//
+	// WHY DROPPING THIS BUFFER LOSES NOTHING: each buffer repaints the whole frame
+	// from scratch (that is why the replayer draws only the newest queued one and
+	// takes just the resource deltas from the rest, VaCuusSlateElement.cpp:79-83), so
+	// a buffer whose commands and ViewSize hash equal to the last PUBLISHED one draws
+	// exactly what the per-view render target already holds. The render thread then
+	// re-composites that render target unconditionally: Draw_RenderThread's replay is
+	// inside `if (PendingBuffers.Num() > 0)` but the composite that follows is outside
+	// it and reads Replayer.GetOutputRT() directly (VaCuusSlateElement.cpp:91-140), so
+	// the UI stays on screen with no buffer in flight at all.
+	//
+	// THE RESOURCE CONDITION IS NOT AN OPTIMISATION, IT IS CORRECTNESS: the four
+	// delta arrays are the ONLY channel by which created and released resources
+	// reach the replayer, and they are cleared with the buffer. Dropping a buffer
+	// carrying any of them would either leave the replayer without a resource a
+	// later frame draws with, or leak the RHI resource behind a release nobody
+	// consumed. The case that makes this non-hypothetical is a finished async image
+	// decode: BeginFrame() drains it into NewTextures BEFORE Context::Update() runs
+	// (see BeginFrame above), so a frame where nothing else moved still arrives here
+	// with non-empty resource traffic and MUST publish, or the image stays a
+	// transparent 1x1 placeholder forever.
+	const bool bHasResourceTraffic = Published->NewGeometry.Num() > 0 || Published->NewTextures.Num() > 0 ||
+		Published->ReleasedGeometry.Num() > 0 || Published->ReleasedTextures.Num() > 0;
+	const uint64 ContentHash = VaCuusHashFrameContent(*Published);
+
+	// Generation > 0 == "this recorder has published at least once", so the first
+	// frame of a view always publishes and never compares against an unset hash.
+	if (Generation > 0 && ContentHash == LastPublishedContentHash && !bHasResourceTraffic)
+	{
+		// A skipped frame consumes NO generation: Generation is documented as a
+		// strictly increasing PUBLISH counter and ShouldConsume treats a repeat as
+		// "already consumed", so counting withheld frames in it would make the
+		// number mean "frames recorded" instead. The UI thread's own frame count
+		// (FVaCuusUIThread::GetFrameCount) is that other number and still advances
+		// on every frame, published or not.
+		++NumFramesSkipped;
+		return nullptr;
+	}
+
+	LastPublishedContentHash = ContentHash;
 	Published->Generation = ++Generation;
 	return Published;
 }

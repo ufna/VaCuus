@@ -4,6 +4,8 @@
 
 #include "CoreMinimal.h"
 
+#include "Hash/xxhash.h"
+
 /**
  * Dense 1-based ids minted by the recorder; 0 = invalid/none.
  * Handles are shared with RmlUi verbatim: the recorder returns them as
@@ -128,3 +130,101 @@ struct FVaCuusCommandBuffer
 	TArray<FVaCuusGeometryHandle> ReleasedGeometry;
 	TArray<FVaCuusTextureHandle> ReleasedTextures;
 };
+
+/**
+ * Padding-free mirror of one FVaCuusCommand, built only to be fed to the frame hash
+ * below as raw bytes.
+ *
+ * WHY IT EXISTS -- FVaCuusCommand ITSELF MUST NEVER BE HASHED AS BYTES. Its first
+ * member is a uint8 enum and its last is an FMatrix44f, which is alignas(16)
+ * (Math/Matrix.h:42, and the M array again at :49), so the struct is 112 bytes with
+ * SEVEN bytes of padding sitting between Type and Geometry. No constructor writes
+ * padding, so those bytes hold whatever the allocator left behind: hashing the object
+ * would give a different hash for two identical frames, and a different one on every
+ * run. That is not a theoretical concern here -- the hash decides whether a frame is
+ * published, so nondeterministic padding means spurious "changed" frames forever.
+ *
+ * This mirror gives every hashed field its own 8-byte-aligned slot and lets the
+ * compiler CHECK that the result is gap-free (the static_assert below), which is
+ * stronger than a comment promising it. Field order here is arbitrary; it only has to
+ * be stable within a process, since a hash is never compared across runs.
+ */
+struct FVaCuusCommandHashImage
+{
+	uint64 Type = 0;
+	uint64 Geometry = 0;
+	uint64 Texture = 0;
+	float Translation[2] = {0.0f, 0.0f};
+	int32 Scissor[4] = {0, 0, 0, 0};
+	float Transform[16] = {};
+};
+
+static_assert(sizeof(FVaCuusCommandHashImage) ==
+		3 * sizeof(uint64) + 2 * sizeof(float) + 4 * sizeof(int32) + 16 * sizeof(float),
+	"FVaCuusCommandHashImage must have no padding: VaCuusHashFrameContent hashes it as raw bytes");
+
+/**
+ * Content hash of one recorded frame: everything in the buffer that decides what the
+ * replayer DRAWS, and nothing else.
+ *
+ * WHAT IS IN: the command list, field by field, plus ViewSize. ViewSize is hashed
+ * rather than compared separately because it is content in exactly the same sense as
+ * a command -- it sizes the render target the commands are replayed into, so a resize
+ * that happens to produce a byte-identical command list (a full-screen fill, a view
+ * that shrinks with everything clipped) has to read as a CHANGED frame or the RT never
+ * resizes and the composite stretches stale pixels forever. One number to compare, and
+ * no second condition to forget at the gate.
+ *
+ * WHAT IS OUT, and why neither can cause a false "unchanged":
+ *  - Generation: identifies the buffer, not its content. Hashing it would make every
+ *    frame differ from every other and the gate would never fire.
+ *  - NewGeometry / NewTextures / ReleasedGeometry / ReleasedTextures: resource traffic
+ *    the replayer must see even when the drawing did not change. The gate tests them
+ *    for emptiness DIRECTLY (see FVaCuusRecordingRenderInterface::EndFrameAndPublish)
+ *    instead of hashing their payloads -- cheaper (no megabyte texture walked per
+ *    frame) and safer, since "any traffic at all forces a publish" cannot be fooled by
+ *    a hash collision.
+ *
+ * Every FVaCuusCommand field is hashed, including the ones a given command type does
+ * not use (Scissor on a DrawGeometry, say). Those are default-initialised by the
+ * struct's NSDMIs and never written, so they contribute a constant -- hashing them
+ * costs nothing and removes the need to reason about which field matters to which
+ * type. Floats are hashed BITWISE, so +0.0 and -0.0 read as a change; that direction
+ * is the safe one (a redundant publish, never a missed one).
+ */
+inline uint64 VaCuusHashFrameContent(const FVaCuusCommandBuffer& Buffer)
+{
+	static_assert(sizeof(FVaCuusCommand) == 112 && offsetof(FVaCuusCommand, Geometry) == 8,
+		"FVaCuusCommand's layout changed. Every field that reaches the replayer must be copied into "
+		"FVaCuusCommandHashImage below, or an unhashed field silently stops triggering a publish");
+
+	// XXH3, streaming (Hash/xxhash.h:204). One Update per command rather than per
+	// field: Update is an out-of-line CORE_API call, and ~100 commands x 6 fields of
+	// call overhead per frame is a measurable slice of a 0.04 ms Record.
+	FXxHash64Builder Builder;
+
+	// Frame header. The command count is redundant today (fixed-size records mean
+	// equal byte lengths imply equal counts) and is here so it stays correct if a
+	// variable-length field is ever added to the image.
+	const uint64 Header[3] = {uint64(uint32(Buffer.ViewSize.X)), uint64(uint32(Buffer.ViewSize.Y)), uint64(Buffer.Commands.Num())};
+	Builder.Update(Header, sizeof(Header));
+
+	for (const FVaCuusCommand& Command : Buffer.Commands)
+	{
+		FVaCuusCommandHashImage Image;
+		Image.Type = uint64(Command.Type);
+		Image.Geometry = Command.Geometry;
+		Image.Texture = Command.Texture;
+		Image.Translation[0] = Command.Translation.X;
+		Image.Translation[1] = Command.Translation.Y;
+		Image.Scissor[0] = Command.Scissor.Min.X;
+		Image.Scissor[1] = Command.Scissor.Min.Y;
+		Image.Scissor[2] = Command.Scissor.Max.X;
+		Image.Scissor[3] = Command.Scissor.Max.Y;
+		FMemory::Memcpy(Image.Transform, Command.Transform.M, sizeof(Image.Transform));
+
+		Builder.Update(&Image, sizeof(Image));
+	}
+
+	return Builder.Finalize().Hash;
+}

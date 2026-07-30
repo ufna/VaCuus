@@ -70,11 +70,23 @@ struct FVaCuusViewStatus
 	std::atomic<uint8> LoadResult{static_cast<uint8>(EVaCuusLoadResult::None)};
 
 	/**
-	 * Frames this view has recorded and published. Per-view rather than the UI
-	 * thread's frame counter: a headless screenshot wants to know that *this*
-	 * document made it to the render thread, not that the loop spun.
+	 * Frames this view has RECORDED. Per-view rather than the UI thread's frame
+	 * counter: a headless screenshot wants to know that *this* document was laid out
+	 * and drawn, not that the loop spun.
+	 *
+	 * RECORDED, NOT PUBLISHED, and the distinction is real since M2 Task 12: the idle
+	 * gate withholds the publish of a frame that draws what the render thread already
+	 * has, so a static document records forever and publishes a handful of times. This
+	 * counter deliberately follows the recording, because "has this view produced its
+	 * content yet" is what every waiter here actually asks -- a screenshot after N
+	 * recorded frames is correct whether or not frames 3..N were published, since a
+	 * withheld frame means the pixels were already on the render thread. Counting
+	 * publishes instead would stall a waiter on a static UI forever.
+	 *
+	 * The publish count is per-recorder and lives there
+	 * (FVaCuusRecordingRenderInterface::GetNumFramesPublished).
 	 */
-	std::atomic<uint64> FramesPublished{0};
+	std::atomic<uint64> FramesRecorded{0};
 
 	//~ Interactive-region snapshot: UI thread produces, game thread consumes.
 	//~ See FVaCuusInteractiveSnapshot for what it means and how stale it is.

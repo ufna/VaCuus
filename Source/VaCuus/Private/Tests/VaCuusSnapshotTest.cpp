@@ -164,7 +164,7 @@ public:
 		Status->PublishSnapshot();
 
 		LastElementsVisited.store(Stats.NumElementsVisited, std::memory_order_relaxed);
-		Status->FramesPublished.fetch_add(1, std::memory_order_release);
+		Status->FramesRecorded.fetch_add(1, std::memory_order_release);
 	}
 
 	/** Test-thread readable: how big the walked tree was on the last frame. */

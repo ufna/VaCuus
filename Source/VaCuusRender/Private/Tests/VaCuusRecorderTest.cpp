@@ -612,26 +612,29 @@ bool FVaCuusRecorderDecodeFailureTest::RunTest(const FString& Parameters)
 		return false;
 	}
 
-	// Frame 2 drains the failure: no payload, and no release either.
+	// Frame 2 drains the failure, and since M2 Task 12 publishes NOTHING -- which is a
+	// STRONGER assertion than the two this replaces ("no payload arrived", "the handle
+	// was not retired"), because both of those are resource traffic and any resource
+	// traffic at all forces a publish (EndFrameAndPublish's gate). A null buffer
+	// therefore proves NewTextures and ReleasedTextures are both empty; a non-null one
+	// would mean the drain smuggled something through.
+	//
+	// It is also the proof that the short-circuit gates the PUBLISH and not the RECORD:
+	// the drain ran on a frame that was never published, and the Occurrences=1
+	// expectation registered above is only satisfiable if it did.
 	Recorder.BeginFrame(FIntPoint(64, 64));
 	const TUniquePtr<FVaCuusCommandBuffer> Second = Recorder.EndFrameAndPublish();
-	if (!TestNotNull(TEXT("Second published buffer"), Second.Get()))
-	{
-		return false;
-	}
-	TestEqual(TEXT("A failed decode contributes no texture payload"), Second->NewTextures.Num(), 0);
-	TestFalse(TEXT("A failed decode does NOT retire the handle"),
-		Second->ReleasedTextures.Contains(FVaCuusTextureHandle(Handle)));
+	TestNull(TEXT("A failed decode leaves nothing to publish"), Second.Get());
+	TestEqual(TEXT("The withheld frame consumed no generation"), int32(Recorder.GetNumFramesPublished()), 1);
+	TestEqual(TEXT("...and was counted as skipped"), int32(Recorder.GetNumFramesSkipped()), 1);
 
 	// Frame 3 proves the log is not per-frame: the drain forgot the handle in frame 2, so
 	// there is nothing left to report. The Occurrences=1 expectation above fails if this
 	// frame produces a second line.
 	Recorder.BeginFrame(FIntPoint(64, 64));
 	const TUniquePtr<FVaCuusCommandBuffer> Third = Recorder.EndFrameAndPublish();
-	if (TestNotNull(TEXT("Third published buffer"), Third.Get()))
-	{
-		TestEqual(TEXT("Still no payload a frame later"), Third->NewTextures.Num(), 0);
-	}
+	TestNull(TEXT("Still nothing to publish a frame later"), Third.Get());
+	TestEqual(TEXT("Two withheld frames, one publish"), int32(Recorder.GetNumFramesSkipped()), 2);
 
 	return true;
 }

@@ -201,7 +201,7 @@ public:
 			}
 		}
 
-		Status->FramesPublished.fetch_add(1, std::memory_order_release);
+		Status->FramesRecorded.fetch_add(1, std::memory_order_release);
 	}
 
 	//~ Post-frame observations. See the class comment for why plain members are safe.
