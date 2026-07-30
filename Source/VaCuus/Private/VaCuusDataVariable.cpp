@@ -317,10 +317,19 @@ Rml::DataVariable FVaCuusStructDefinition::Child(void* InModelBase, const Rml::D
 {
 	// AN INDEXED ENTRY ON A STRUCT. DataAddressEntry(int) leaves `name` empty
 	// (DataTypes.h:36-41), so `{{Origin[0]}}` arrives here with index >= 0 and no name.
+	//
+	// LATCHED, like every other diagnostic on this path: a document does not stop being wrong,
+	// so an unthrottled line here is one log write per re-evaluation per frame, forever.
 	if (Address.index >= 0)
 	{
-		UE_LOG(LogVaCuus, Warning, TEXT("VaCuus model: '%s' is a struct and was indexed as an array ([%d]); arrays are M3b"),
-			*DiagnosticPath, Address.index);
+		if (!bIndexedMissLogged)
+		{
+			bIndexedMissLogged = true;
+			UE_LOG(LogVaCuus, Warning,
+				TEXT("VaCuus model: '%s' is a struct and was indexed as an array ([%d]); arrays are M3b. Reported once per struct"),
+				*DiagnosticPath, Address.index);
+		}
+
 		return Rml::DataVariable();
 	}
 
@@ -341,15 +350,28 @@ Rml::DataVariable FVaCuusStructDefinition::Child(void* InModelBase, const Rml::D
 	// Returning an empty DataVariable is safe -- every caller in Core tests
 	// `explicit operator bool` first (DataModel.cpp:285-290, :319; DataControllerDefault.cpp:57;
 	// DataExpression.cpp:1188).
-	FString Available;
-	for (const FMember& Member : Members)
+	//
+	// LATCHED, AND THE STRING BUILD IS INSIDE THE LATCH. This is not a once-at-startup path: a
+	// missing member is re-resolved every time the expression re-evaluates, i.e. every time its
+	// ROOT variable is dirtied. `{{Target.Desgination}}` on a Target that moves each frame is
+	// therefore ~264 warnings AND ~264 member-list concatenations per second on the rig spec 9
+	// budgets -- and the document is exactly as wrong on the second one as on the first. The
+	// list itself is why the build has to be inside: it is O(members) FString appends, so
+	// leaving it outside would keep the allocations after removing the log line.
+	if (!bMemberMissLogged)
 	{
-		Available += (Available.IsEmpty() ? TEXT("") : TEXT(", "));
-		Available += UTF8_TO_TCHAR(Member.Segment.c_str());
-	}
+		bMemberMissLogged = true;
 
-	UE_LOG(LogVaCuus, Warning, TEXT("VaCuus model: '%s' has no member '%s'. It has: %s"), *DiagnosticPath,
-		UTF8_TO_TCHAR(Address.name.c_str()), Available.IsEmpty() ? TEXT("(nothing)") : *Available);
+		FString Available;
+		for (const FMember& Member : Members)
+		{
+			Available += (Available.IsEmpty() ? TEXT("") : TEXT(", "));
+			Available += UTF8_TO_TCHAR(Member.Segment.c_str());
+		}
+
+		UE_LOG(LogVaCuus, Warning, TEXT("VaCuus model: '%s' has no member '%s'. It has: %s. Reported once per struct"),
+			*DiagnosticPath, UTF8_TO_TCHAR(Address.name.c_str()), Available.IsEmpty() ? TEXT("(nothing)") : *Available);
+	}
 
 	return Rml::DataVariable();
 }

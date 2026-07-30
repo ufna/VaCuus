@@ -198,6 +198,23 @@ private:
 
 	TArray<FMember> Members;
 	FString DiagnosticPath;
+
+	/**
+	 * Log throttles, and they are not cosmetic -- see Child()'s comment.
+	 *
+	 * BOTH BRANCHES BELOW ARE ON THE PER-FRAME EXPRESSION PATH. An address that misses is
+	 * re-resolved every time its root variable is dirtied, which on the spec 9 measurement rig
+	 * is ~264 times a second, forever, for a document that will never be fixed by logging it
+	 * again. Same shape and same reason as FVaCuusScalarDefinition's two latches: UI-thread
+	 * state, one report per definition, and the definition is process-wide per model TYPE.
+	 *
+	 * THE COST OF THE SHAPE, STATED: a second, DIFFERENT bad member under the same struct level
+	 * is silent. The one line that does get printed lists every member the level has, so both
+	 * typos are usually diagnosable from it; `vacuus.DumpModel` prints the layout when they are
+	 * not.
+	 */
+	bool bIndexedMissLogged = false;
+	bool bMemberMissLogged = false;
 };
 
 /**
