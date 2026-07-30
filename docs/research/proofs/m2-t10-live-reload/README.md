@@ -44,13 +44,67 @@ An earlier, tighter pixel measurement of the same mechanism during implementatio
 old colour became 9010 px of the new one, with the changed region's bounding box exactly 200×48 —
 the button's authored size.
 
+## The bug the reviews found afterwards, and its restore-the-bug proof
+
+The verification above was real, but it only exercised the case where a view was live. The
+code-quality review found a **critical** hole in the case where none is: the RmlUi cache clear rode
+as a payload (`bClearAssetCaches`) on the *per-view load command*, handled after the host-lookup
+gate — so a flush that reached zero live views enqueued zero commands and cleared nothing, while
+RmlUi's caches are process-global statics keyed on file name that outlive the PIE session (the
+subsystem's `Deinitialize` deliberately does not stop the UI thread).
+
+Failure sequence: play, stop PIE, edit an `.rcss`, press Play. RmlUi re-parses the RML **from disk**
+but serves the **cached** RCSS from the previous session. Old colour, no error, no warning. Nastily
+asymmetric — RML edits survived it, RCSS edits did not — and "edit the CSS, then hit Play" is a
+mainstream workflow, not a corner. `vacuus.ReloadUI` did not help either, which made its own help
+text ("dropping RmlUi's stylesheet/template caches first") false in exactly the case a user would
+reach for it.
+
+Fixed by hoisting the clear into its own command kind handled **before** the host lookup, enqueued
+once per flush. That was a net deletion: the payload flag came out of the command struct and the
+enqueue signature.
+
+The proof standard on this milestone is to restore the bug and watch the new test fail. Both
+properties failed, which is what makes the test load-bearing rather than decorative:
+
+```
+Test Completed. Result={Fail} Path={VaCuus.LiveReload.AssetCaches}
+  (1) ...and the RmlUi asset caches are dropped anyway: The two values are not equal.
+  (2) ...at the cost of exactly one cache clear, not one per view: The two values are not equal.
+```
+
+Then with the fix restored: `Result={Success}`.
+
+Property (2) is the second bug the same change fixed: the old code cleared once **per command**, so
+three reloaded views cleared three times, and clears 2 and 3 discarded the stylesheet view 1 had
+just re-parsed. The comment claiming "one clear serves every view reloaded in this drain" only
+became true after the hoist.
+
+Note what made this testable at all: RmlUi exposes no way to observe its caches, so the fix added an
+observable clear count. Without one the invariant stays unassertable — which is how the bug survived
+the original implementation and its first review.
+
 ## Regression coverage (what actually guards this going forward)
 
 The screenshots are a one-time acceptance artifact, not a test. The automated coverage is:
 
-- `VaCuus.LiveReload.Filter` — the debounce and the filename filters, including a
-  `#if PLATFORM_LINUX` case asserting the real watcher's documented pitfall (a registration on a
-  non-existent directory returns a valid handle and then silently delivers nothing).
+- `VaCuus.LiveReload.Filter` — the filename filters, including a `#if PLATFORM_LINUX` case
+  asserting the real watcher's documented pitfall (a registration on a non-existent directory
+  returns a valid handle and then silently delivers nothing).
+- `VaCuus.LiveReload.Debounce` — the debounce *arithmetic*, via an injected clock: not-yet-quiet
+  keeps ticking without flushing, quiet flushes exactly once, the hard cap fires while changes are
+  still streaming, and a change after a flush is judged against a fresh batch start. Added by the
+  review fixes; the original had no coverage of the only function in the feature containing
+  arithmetic.
+- `VaCuus.LiveReload.WatcherEvent` — writes a real file under the watched root and pumps the
+  watcher synchronously with `Tick(-1.0f)`, so the inotify link itself is covered. The original
+  implementation asserted in four places that this was impossible; the project's own API notes
+  documented the technique, with engine precedent.
+- `VaCuus.LiveReload.AssetCaches` — the C1 regression above.
+- `VaCuus.LiveReload.Rearm` — a view that fell back to the inline document because its file was
+  missing reloads once the file appears. That path was previously dead: the fallback cleared the
+  remembered path, so live reload did nothing in the one configuration where you most need it
+  (iterating on a broken document).
 - `VaCuus.LiveReload.Dispatch` — a real game instance; the view's reload serial advances by
   exactly one on the file-backed document view and by zero on every other view.
 - `Proof.LiveReload.PIE` — a **harness, not a test**: it queues latent commands, asserts nothing,
