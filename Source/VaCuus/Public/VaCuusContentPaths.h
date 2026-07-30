@@ -15,6 +15,14 @@
  * Live reload makes that fatal rather than merely annoying: inotify watches inodes,
  * so a watcher on one copy cannot see an edit to the other.
  *
+ * WHICH DOES NOT MEAN DUPLICATES ARE NOW IMPOSSIBLE, and the distinction matters on a
+ * machine where the plugin is developed as its own repository: `<Plugin>/Content/DevUI`
+ * below resolves to the CLONE THAT IS MOUNTED IN THIS PROJECT, which is not necessarily
+ * the clone that holds `docs/`. Two separate clones (rather than a symlink) are two sets
+ * of inodes, so an edit made in the other one produces no event, no log line and nothing
+ * on screen. The log line every reload emits names the absolute root it resolved to --
+ * read it before concluding that live reload is broken. Code cannot fix two clones.
+ *
  * THE ROOT ORDER IS PLUGIN-FIRST, and that is the decision, not an accident:
  *
  *   1. <Plugin>/Content/DevUI   -- canonical, git-tracked, what the watcher watches
@@ -32,7 +40,9 @@
  * NOT EDITOR-ONLY: IPlugin::GetContentDir() is `FPaths::GetPath(FileName)/Content`
  * (PluginManager.cpp:406-409) in the Runtime `Projects` module, so a packaged game
  * resolves the same root. Loose DevUI files still have to be STAGED for that to find
- * anything -- see Config/FilterPlugin.ini -- which is a packaging task, not a path one.
+ * anything, and that is NOT YET CONFIGURED: Config/FilterPlugin.ini is still the stock
+ * template (comments only, no [FilterPlugin] entries), so a packaged build ships none of
+ * these documents today. Tracked separately -- it is a packaging task, not a path one.
  */
 namespace VaCuusContentPaths
 {
