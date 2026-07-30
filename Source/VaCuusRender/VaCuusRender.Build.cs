@@ -37,6 +37,9 @@ public class VaCuusRender : ModuleRules
 			// LoadTexture: synchronous image decode on the UI thread.
 			"ImageWrapper",
 
+			// UVaCuusWidget derives from UWidget (VaCuusUMGWidget.h).
+			"UMG",
+
 			"VaCuus"
 		});
 	}
