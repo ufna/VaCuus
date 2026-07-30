@@ -9,6 +9,8 @@
 #include "DirectoryWatcherModule.h"
 #include "HAL/FileManager.h"
 #include "HAL/IConsoleManager.h"
+#include "Interfaces/IPluginManager.h"
+#include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "Modules/ModuleManager.h"
 
@@ -22,7 +24,141 @@ static bool IsWatchedExtension(const FString& Extension)
 	return Extension.Equals(TEXT("rml"), ESearchCase::IgnoreCase) ||
 		   Extension.Equals(TEXT("rcss"), ESearchCase::IgnoreCase);
 }
+
+/**
+ * Names a SECOND working tree of this plugin when one is provably present, because that is
+ * the shape in which live reload fails with no error at all (bead VaCuus-akj.6.22).
+ *
+ * THE FAILURE. VaCuus is developed as its own git repository, and the checkout a host
+ * project builds is not necessarily the checkout that holds `docs/` and the issue database.
+ * Two checkouts are two sets of INODES, and inotify watches inodes: the Linux backend hands
+ * the resolved directory to inotify_add_watch (DirectoryWatchRequestLinux.cpp:266) and the
+ * kernel then reports events for that inode's children. So editing
+ * `Content/DevUI/foo.rcss` in the OTHER tree produces no event, no reload, no log line --
+ * not even "reloaded 0 view(s)", because nothing ever flushes. Nothing anywhere reports an
+ * error, which is exactly the outcome the content-location decision (D19) exists to prevent
+ * and which it cannot prevent, since code cannot merge two clones.
+ *
+ * WHY A GIT REMOTE IS THE EVIDENCE. If this plugin directory is a git checkout whose
+ * `.git/config` names a remote whose url is a LOCAL ABSOLUTE PATH, and that path exists and
+ * has its own Content/DevUI, then a second working tree demonstrably exists on this machine
+ * with documents in it. That is a fact read off disk, not a heuristic. An ordinary remote
+ * (`git@github.com:...`, `https://...`) is not an absolute path and is skipped; a bare
+ * mirror has no Content/DevUI and is skipped too; a plugin SYMLINKED into the project
+ * resolves to the canonical checkout's own config, whose remote is the real upstream, so
+ * the one arrangement that has a single set of inodes stays silent -- correctly.
+ *
+ * WHAT IT CANNOT SEE, said plainly so nobody reads silence as safety: two clones that both
+ * point upstream rather than at each other, or a copy made with `cp -r`. Finding those means
+ * sweeping the disk for directories that happen to contain Content/DevUI -- unbounded and
+ * imprecise, i.e. the fragile thing not to build. The startup line below therefore states
+ * the consequence UNCONDITIONALLY, and README.md's Development section carries the
+ * arrangement itself.
+ *
+ * A BIND MOUNT of one tree onto the other would warn spuriously (two paths, one inode, and
+ * no engine API exposes an inode to compare). Accepted: the message names both directories,
+ * so a reader in that situation can see it does not apply.
+ */
+static void WarnAboutSecondWorkingTree(const TArray<FString>& WatchedRoots)
+{
+	const TSharedPtr<IPlugin> Plugin = IPluginManager::Get().FindPlugin(TEXT("VaCuus"));
+	if (!Plugin.IsValid())
+	{
+		return;
+	}
+
+	const FString PluginDir = FPaths::ConvertRelativePathToFull(Plugin->GetBaseDir());
+	const FString OtherDevUI =
+		FVaCuusLiveReload::FindSecondWorkingTreeDevUI(PluginDir / TEXT(".git") / TEXT("config"), PluginDir);
+	if (OtherDevUI.IsEmpty())
+	{
+		return;
+	}
+
+	UE_LOG(LogVaCuus, Warning,
+		TEXT("Live reload: a SECOND VaCuus working tree exists at '%s' -- this plugin is a git checkout ")
+		TEXT("whose remote points there, and it has its own Content/DevUI. It is NOT watched, and it cannot ")
+		TEXT("be: inotify watches inodes, not paths, so an edit made there produces no event, no reload and ")
+		TEXT("no error. The watched copy is '%s'. Edit that one, or make the two a single tree."),
+		*OtherDevUI, *FString::Join(WatchedRoots, TEXT(" | ")));
+}
 }	 // namespace VaCuusLiveReloadPrivate
+
+FString FVaCuusLiveReload::FindSecondWorkingTreeDevUI(const FString& GitConfigPath, const FString& PluginDir)
+{
+	// FileExists, not DirectoryExists on `.git`: it is a FILE ("gitdir: ...") in a linked
+	// worktree or a submodule, and this deliberately does not chase that -- a git worktree is
+	// still a separate checkout with separate inodes, but its config lives elsewhere and
+	// following the pointer would be guessing at a layout this has no way to test.
+	TArray<FString> Lines;
+	if (!FFileHelper::LoadFileToStringArray(Lines, *GitConfigPath))
+	{
+		return FString();
+	}
+
+	// NormalizeDirectoryName as well as ConvertRelativePathToFull, and the second one is not
+	// tidiness: ConvertRelativePathToFull KEEPS a trailing slash, so a perfectly ordinary
+	// `url = /path/to/this/` compared unequal to the plugin's own directory and this reported
+	// the plugin as its own second working tree. Caught by VaCuus.LiveReload.SecondTree.
+	const auto NormalizeDir = [](const FString& In)
+	{
+		FString Out = FPaths::ConvertRelativePathToFull(In);
+		FPaths::NormalizeDirectoryName(Out);
+		return Out;
+	};
+
+	const FString NormalizedPluginDir = NormalizeDir(PluginDir);
+
+	for (const FString& Line : Lines)
+	{
+		// Parsed by hand rather than through FConfigFile: git's section headers are
+		// `[remote "origin"]`, which is not UE's ini grammar, and every remote's URL is
+		// equally interesting -- so the section does not need to be tracked at all, only the
+		// two keys that hold one. `pushurl` is included because a fetch-from-upstream,
+		// push-to-local-clone setup is still two working trees, and missing it would be a
+		// blind spot in the one check that exists to remove a blind spot. Compared
+		// case-insensitively, as git compares its own key names; and a `#`/`;` comment cannot
+		// be mistaken for either, because the key would then be `# url` and this is exact.
+		FString Key;
+		FString Value;
+		if (!Line.TrimStartAndEnd().Split(TEXT("="), &Key, &Value))
+		{
+			continue;
+		}
+
+		Key.TrimEndInline();
+		if (!Key.Equals(TEXT("url"), ESearchCase::IgnoreCase) && !Key.Equals(TEXT("pushurl"), ESearchCase::IgnoreCase))
+		{
+			continue;
+		}
+
+		// The whole filter. FPaths::IsRelative is true for anything that does not begin with
+		// a path root, which is every URL form git accepts -- `git@host:path`, `https://...`,
+		// `ssh://...` -- so this keeps only local absolute paths.
+		const FString Url = Value.TrimStartAndEnd();
+		if (Url.IsEmpty() || FPaths::IsRelative(Url))
+		{
+			continue;
+		}
+
+		const FString OtherDir = NormalizeDir(Url);
+		if (OtherDir == NormalizedPluginDir)
+		{
+			continue;
+		}
+
+		// The last gate, and the one that keeps this a FACT rather than a guess: a bare
+		// mirror or an unrelated local repo has no Content/DevUI, so there is nothing there
+		// anyone could edit and expect to see on screen.
+		const FString OtherDevUI = OtherDir / TEXT("Content") / TEXT("DevUI");
+		if (IFileManager::Get().DirectoryExists(*OtherDevUI))
+		{
+			return OtherDevUI;
+		}
+	}
+
+	return FString();
+}
 
 FVaCuusLiveReload::~FVaCuusLiveReload()
 {
@@ -115,9 +251,19 @@ void FVaCuusLiveReload::Start()
 		return;
 	}
 
+	// THE CONSEQUENCE IS PART OF THE LINE, not left to be inferred from the paths. This is
+	// the one place a developer looks when live reload "does nothing", and the commonest
+	// cause is that the file they saved is a different INODE from the one being watched --
+	// a second checkout of this plugin, or a stray copy under the project's own Content.
+	// Telling them the rule here is what turns a silent failure into a readable one.
 	UE_LOG(LogVaCuus, Log,
-		TEXT("Live reload watching %d root(s): %s (debounce: %.0f ms of quiet, %.0f ms cap)"),
+		TEXT("Live reload watching %d root(s): %s (debounce: %.0f ms of quiet, %.0f ms cap). ")
+		TEXT("ONLY these directories: inotify watches inodes, not paths, so saving a COPY of a document ")
+		TEXT("anywhere else on disk produces no event, no reload and no error -- if live reload seems dead, ")
+		TEXT("check that the file you edited is under a root named above."),
 		WatchedRoots.Num(), *FString::Join(WatchedRoots, TEXT(" | ")), QuietSeconds * 1000.0, MaxDeferSeconds * 1000.0);
+
+	VaCuusLiveReloadPrivate::WarnAboutSecondWorkingTree(WatchedRoots);
 }
 
 void FVaCuusLiveReload::Shutdown()

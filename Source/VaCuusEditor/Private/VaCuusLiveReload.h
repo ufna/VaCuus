@@ -175,6 +175,17 @@ public:
 	 */
 	static int32 ReloadAllLiveViews(const TCHAR* Reason);
 
+	/**
+	 * The Content/DevUI of a SECOND working tree of this plugin, if the git config at
+	 * GitConfigPath proves one exists; empty otherwise. See WarnAboutSecondWorkingTree in the
+	 * .cpp for why a local-path git remote is evidence and what this deliberately cannot see.
+	 *
+	 * PUBLIC AND PARAMETERISED ONLY SO IT CAN BE TESTED, like ShouldTrackChange above: the
+	 * git-config grammar is the one fragile part of the check, and a detector that silently
+	 * stopped matching would restore exactly the silent failure it exists to end.
+	 */
+	static FString FindSecondWorkingTreeDevUI(const FString& GitConfigPath, const FString& PluginDir);
+
 	//~ The two debounce THRESHOLDS. Public because VaCuus.LiveReload.Debounce asserts the
 	//~ timing contract against these very numbers rather than a hard-coded copy of them --
 	//~ the poll INTERVAL is not one of them and is private below.

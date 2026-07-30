@@ -24,6 +24,14 @@ public class VaCuusEditor : ModuleRules
 			"DirectoryWatcher",
 
 			"Engine",
+
+			// IPluginManager, to locate this plugin's own directory when checking whether a
+			// SECOND checkout of it exists (see WarnAboutSecondWorkingTree). UnrealEd below
+			// happens to re-export it, but the dependency is ours, so it is declared rather
+			// than inherited -- the same rule Source/VaCuus/VaCuus.Build.cs states for
+			// ApplicationCore and InputCore.
+			"Projects",
+
 			"Slate",
 			"SlateCore",
 			"UnrealEd"

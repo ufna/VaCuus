@@ -284,6 +284,110 @@ bool FVaCuusLiveReloadFilterTest::RunTest(const FString& Parameters)
 }
 
 /**
+ * THE SECOND-WORKING-TREE DETECTOR (bead VaCuus-akj.6.22), which exists because the failure
+ * it reports is otherwise completely silent: two checkouts of this plugin are two sets of
+ * inodes, inotify watches inodes, and an edit made in the tree the editor did NOT load
+ * produces no event, no reload and no log line at all.
+ *
+ * WHAT IS TESTED IS THE GRAMMAR, which is the only fragile part. The detector's evidence is
+ * a git remote whose url is a local absolute path to a directory that has its own
+ * Content/DevUI -- a fact read off disk -- but reading it means parsing git's config format
+ * by hand, and a parser that quietly stopped matching would restore the exact silence the
+ * check was added to end, while still logging nothing. So every discriminating case gets an
+ * assertion, in BOTH directions.
+ *
+ * Real directories, not mocks: the last gate is DirectoryExists, so a fake path would make
+ * every positive case unreachable and the test would pass by never testing anything.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusLiveReloadSecondTreeTest, "VaCuus.LiveReload.SecondTree",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusLiveReloadSecondTreeTest::RunTest(const FString& Parameters)
+{
+	const FString Root = FPaths::ConvertRelativePathToFull(FPaths::ProjectSavedDir() / TEXT("VaCuusSecondTreeTest"));
+	const FString OtherTree = Root / TEXT("other");
+	const FString OtherDevUI = OtherTree / TEXT("Content") / TEXT("DevUI");
+	const FString BareMirror = Root / TEXT("mirror");
+	const FString ThisTree = Root / TEXT("this");
+	const FString ConfigPath = Root / TEXT("config");
+
+	IFileManager& Files = IFileManager::Get();
+	Files.DeleteDirectory(*Root, /*bRequireExists=*/false, /*bTree=*/true);
+	ON_SCOPE_EXIT
+	{
+		IFileManager::Get().DeleteDirectory(*Root, /*bRequireExists=*/false, /*bTree=*/true);
+	};
+
+	// The other tree has documents; the mirror exists but has none; ThisTree stands in for
+	// the plugin directory itself and has documents, so the only thing that can exclude it is
+	// the self-comparison.
+	if (!TestTrue(TEXT("Fixture directories created"),
+			Files.MakeDirectory(*OtherDevUI, /*Tree=*/true) && Files.MakeDirectory(*BareMirror, /*Tree=*/true) &&
+				Files.MakeDirectory(*(ThisTree / TEXT("Content") / TEXT("DevUI")), /*Tree=*/true)))
+	{
+		return false;
+	}
+
+	const auto WriteConfig = [&ConfigPath](const FString& Body) { return FFileHelper::SaveStringToFile(Body, *ConfigPath); };
+	const auto Detect = [&ConfigPath, &ThisTree]() { return FVaCuusLiveReload::FindSecondWorkingTreeDevUI(ConfigPath, ThisTree); };
+
+	//~ A missing config is the ordinary case for a plugin that is not its own checkout.
+	TestTrue(TEXT("No git config at all: nothing to report"),
+		FVaCuusLiveReload::FindSecondWorkingTreeDevUI(Root / TEXT("no_such_config"), ThisTree).IsEmpty());
+
+	//~ Ordinary upstream remotes. None of these is a second working tree, and answering
+	//~ otherwise would put a false warning in front of every user of the plugin.
+	if (!TestTrue(TEXT("Config written"),
+			WriteConfig(FString::Printf(TEXT("[remote \"origin\"]\n\turl = git@github.com:ufna/VaCuus.git\n")
+										TEXT("[remote \"https\"]\n\turl = https://github.com/ufna/VaCuus.git\n")
+										TEXT("[remote \"ssh\"]\n\turl = ssh://git@host/srv/VaCuus.git\n")))))
+	{
+		return false;
+	}
+	TestTrue(TEXT("A git@/https/ssh remote is not a local working tree"), Detect().IsEmpty());
+
+	//~ THE CASE THIS EXISTS FOR: a local clone-of-a-clone.
+	WriteConfig(FString::Printf(TEXT("[remote \"origin\"]\n\turl = %s\n"), *OtherTree));
+	TestEqual(TEXT("A local remote with its own Content/DevUI is the second tree"), Detect(), OtherDevUI);
+
+	//~ ...and it is found among several remotes, not only as the first line.
+	WriteConfig(FString::Printf(TEXT("[core]\n\tbare = false\n[remote \"upstream\"]\n\turl = git@github.com:ufna/VaCuus.git\n")
+								TEXT("[remote \"local\"]\n\turl = %s\n"),
+		*OtherTree));
+	TestEqual(TEXT("It is found on any remote, not just the first"), Detect(), OtherDevUI);
+
+	//~ A bare mirror is a legitimate local remote with nothing anyone can edit.
+	WriteConfig(FString::Printf(TEXT("[remote \"origin\"]\n\turl = %s\n"), *BareMirror));
+	TestTrue(TEXT("A local remote with no Content/DevUI is not a working tree"), Detect().IsEmpty());
+
+	//~ A remote pointing at this very directory is not a SECOND anything.
+	WriteConfig(FString::Printf(TEXT("[remote \"origin\"]\n\turl = %s\n"), *ThisTree));
+	TestTrue(TEXT("A remote pointing at the plugin itself is not a second tree"), Detect().IsEmpty());
+
+	//~ A trailing slash is the same directory; ConvertRelativePathToFull normalises it away.
+	WriteConfig(FString::Printf(TEXT("[remote \"origin\"]\n\turl = %s/\n"), *ThisTree));
+	TestTrue(TEXT("...with a trailing slash too"), Detect().IsEmpty());
+
+	//~ A commented-out url must not match: the key is then '# url', and the compare is exact.
+	WriteConfig(FString::Printf(TEXT("[remote \"origin\"]\n\t# url = %s\n\t; url = %s\n"), *OtherTree, *OtherTree));
+	TestTrue(TEXT("A commented-out url is not a remote"), Detect().IsEmpty());
+
+	//~ pushurl IS a remote URL: fetch from upstream, push to a local clone is still two
+	//~ working trees. Case-insensitively, because that is how git compares its key names.
+	WriteConfig(FString::Printf(TEXT("[remote \"origin\"]\n\turl = git@github.com:ufna/VaCuus.git\n\tpushurl = %s\n"),
+		*OtherTree));
+	TestEqual(TEXT("A local pushurl counts as well"), Detect(), OtherDevUI);
+	WriteConfig(FString::Printf(TEXT("[remote \"origin\"]\n\tURL = %s\n"), *OtherTree));
+	TestEqual(TEXT("Key names are matched case-insensitively"), Detect(), OtherDevUI);
+
+	//~ A key that merely CONTAINS 'url' is not one of the two.
+	WriteConfig(FString::Printf(TEXT("[remote \"origin\"]\n\turlx = %s\n"), *OtherTree));
+	TestTrue(TEXT("'urlx' is neither 'url' nor 'pushurl'"), Detect().IsEmpty());
+
+	return true;
+}
+
+/**
  * THE DEBOUNCE TIMING CONTRACT -- the only arithmetic in this feature, and until this test
  * existed the only part of it that was unexercised (VaCuus.LiveReload.Filter asserts the
  * SET behaviour, which is a different thing).
