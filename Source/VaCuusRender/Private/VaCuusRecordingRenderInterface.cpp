@@ -906,8 +906,12 @@ TUniquePtr<FVaCuusCommandBuffer> FVaCuusRecordingRenderInterface::EndFrameAndPub
 	// (see BeginFrame above), so a frame where nothing else moved still arrives here
 	// with non-empty resource traffic and MUST publish, or the image stays a
 	// transparent 1x1 placeholder forever.
-	const bool bHasResourceTraffic = Published->NewGeometry.Num() > 0 || Published->NewTextures.Num() > 0 ||
-		Published->ReleasedGeometry.Num() > 0 || Published->ReleasedTextures.Num() > 0;
+	//
+	// The predicate itself lives on the BUFFER, next to the arrays it names, and not
+	// here: this gate is 500 lines from those declarations and has no compile-time link
+	// to them, so a fifth resource array added for shaders or filters would have been
+	// invisible from this site. See FVaCuusCommandBuffer::HasResourceTraffic.
+	const bool bHasResourceTraffic = Published->HasResourceTraffic();
 	const uint64 ContentHash = VaCuusHashFrameContent(*Published);
 
 	// Generation > 0 == "this recorder has published at least once", so the first

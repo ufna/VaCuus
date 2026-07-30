@@ -149,6 +149,32 @@ bool FVaCuusIdleGateResourceTrafficTest::RunTest(const FString& Parameters)
 {
 	using namespace VaCuusIdleGateTest;
 
+	// The wake predicate on its own, before any recording. It lives on the buffer
+	// (FVaCuusCommandBuffer::HasResourceTraffic) so that a future resource array cannot be
+	// added without the member-count assert next to it firing; the frames below prove the
+	// GATE consults it, and this proves the predicate is not blind to one of the four arrays
+	// in a way those frames happen not to reach.
+	{
+		FVaCuusCommandBuffer Probe;
+		TestFalse(TEXT("An empty buffer carries no resource traffic"), Probe.HasResourceTraffic());
+
+		Probe.Commands.AddDefaulted();
+		Probe.ViewSize = GViewSize;
+		Probe.Generation = 7;
+		TestFalse(TEXT("Commands, ViewSize and Generation are not resource traffic"), Probe.HasResourceTraffic());
+
+		const auto ArmsThePredicate = [this](const TCHAR* What, TFunctionRef<void(FVaCuusCommandBuffer&)> Fill)
+		{
+			FVaCuusCommandBuffer Armed;
+			Fill(Armed);
+			TestTrue(FString::Printf(TEXT("%s alone arms the predicate"), What), Armed.HasResourceTraffic());
+		};
+		ArmsThePredicate(TEXT("NewGeometry"), [](FVaCuusCommandBuffer& B) { B.NewGeometry.Add(1); });
+		ArmsThePredicate(TEXT("NewTextures"), [](FVaCuusCommandBuffer& B) { B.NewTextures.Add(1); });
+		ArmsThePredicate(TEXT("ReleasedGeometry"), [](FVaCuusCommandBuffer& B) { B.ReleasedGeometry.Add(1); });
+		ArmsThePredicate(TEXT("ReleasedTextures"), [](FVaCuusCommandBuffer& B) { B.ReleasedTextures.Add(1); });
+	}
+
 	FVaCuusRecordingRenderInterface Recorder;
 	const FTriangle Triangle;
 	const FTexel2x2 Texel;
