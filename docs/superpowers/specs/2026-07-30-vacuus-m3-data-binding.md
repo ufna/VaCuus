@@ -92,8 +92,16 @@ harder than, the data-race argument.
 ### 3.2 The layout — flat, pre-resolved, built once
 
 `FVaCuusModelLayout` is built once per `UScriptStruct`. Each entry: resolved `FProperty*`, the wire
-name, the top-level name index to dirty, and the field kind. Nested structs are **flattened at build
-time**; there is no per-frame `TFieldIterator`.
+name, the top-level name index to dirty, the field kind, and **the offset of the containing struct**.
+Nested structs are **flattened at build time**; there is no per-frame `TFieldIterator`.
+
+The container offset was missing from v1 and is not optional: a flattened nested leaf's
+`Offset_Internal` is relative to *its own* owner, so without it the field cannot be addressed from
+the model's base at all — the restore-the-bug proof is that `Origin.X` reads the value of an
+unrelated sibling. Storing the **container's** offset rather than the value's keeps every read going
+through `ContainerPtrToValuePtr`, so no caller does offset arithmetic. This is not the two-offset
+incoherence §13.2 records: there is still exactly one offset per value, valid in both the live struct
+and the shadow.
 
 Deliberately the shape Unreal's own per-frame differ (`FRepLayout`) uses, and for the same reason:
 `FStructProperty::Identical` spins up a fresh `TFieldIterator` per call and `FMapProperty::Identical`
@@ -116,10 +124,21 @@ So `UPROPERTY() int32 Size;` — about as ordinary as UE gets — **cannot be bo
 logs a warning and returns false, the variable is silently absent, and every `{{Size}}` then fails
 address resolution with a second warning.
 
-**Policy: v1 refuses and says so.** The builder validates each wire name against the same rule,
-logs one `Error` per rejected property naming the property, the reason, and the reserved word if
-that is the cause, and omits it. Renaming silently would put a name in the document that appears
-nowhere in the C++, which is worse. An explicit rename attribute is v1.x.
+**CORRECTED after implementation** — the rule is positional, and v1 of this section over-refused.
+RmlUi applies `LegalVariableName` in exactly two places, `BindVariable` and `BindEventCallback`,
+i.e. only to the name a variable is **registered** under. A dotted address is split by `ParseAddress`
+with **no name rule at all**, and each non-first segment is resolved by `DataVariable::Child`. The
+reserved words are top-level-only too: `it`/`it_index`/`ev` are alias lookups keyed on the *front* of
+the address, `literal` tests `address[0]`, and the `true`/`false` check compares the whole dotted
+string. So top-level `Size` is unbindable, but **`Panel.Size` binds and works** — holding nested
+segments to the full rule would loudly refuse a field that functions.
+
+**Policy: two rules by position.** A top-level name gets the full `LegalVariableName`. A nested
+segment need only be non-empty and `[A-Za-z0-9_]` — what the expression lexer accepts after the first
+character, since a `-` there would terminate the lexed address and parse as subtraction. A rejected
+top-level name logs one `Error` naming the property, the reason and the reserved word when that is
+the cause, and is omitted. Renaming silently would put a name in the document that appears nowhere in
+the C++, which is worse. An explicit rename attribute is v1.x.
 
 ### 3.4 Type coverage — M3a
 
@@ -136,6 +155,7 @@ nowhere in the C++, which is worse. An explicit rename attribute is v1.x.
 | `FObjectProperty` (hard) | ❌ | §3.1's GC argument |
 | `FMapProperty`, `FSetProperty` | ❌ | no RmlUi map view; `Identical` is O(n²) |
 | `FDelegateProperty` | ❌ | events travel the other way |
+| **fixed-size C array** (`ArrayDim > 1`) | ❌ | added after implementation: `int32 Fixed[4]` is **one** `FProperty`, so it is not a *kind* and the type table cannot refuse it — binding element 0 and dropping the rest would be a silent partial bind. Refused with a `Warning`; revisit in M3b alongside `FArrayProperty` |
 
 **Enums** are exposed as **one** variable holding the name string, from
 `UEnum::GetAuthoredNameStringByValue`. v1 exposed name *and* value, which needs two legal names per
@@ -145,9 +165,18 @@ underlying integer property if a document needs it.
 **Unsupported properties are never silent** — one `Warning` per property per layout build, with the
 type name and the reason.
 
-**Exposure** is `CPF_BlueprintVisible` **or** `CPF_Edit`. Both survive cooking. Note `CPF_Edit`
-means "the author ticked EditAnywhere", not "the shipped game considers this visible" — using it is
-a deliberate convenience, not a semantic claim.
+**Exposure** is `(CPF_BlueprintVisible || CPF_Edit) && !CPF_Deprecated && !IsEditorOnlyProperty()`.
+
+`CPF_Edit` is **load-bearing, not a convenience** — corrected after implementation. `FUtf8String` and
+`FAnsiString` cannot be Blueprint-visible **at all**: UHT leaves `IsMemberSupportedByBlueprint`
+commented out of their property caps. Without `CPF_Edit`, two of M3a's own supported kinds would be
+unreachable by any `UPROPERTY` a user could write.
+
+The two exclusions were added during implementation and both prevent a silent wrong result.
+**Deprecated**: nothing maintains the value ("read it from an archive, but don't save it"), so
+binding one puts a stale number on screen; logged at `Log`, because the outcome is correct rather
+than defective. **Editor-only**: the property does not exist in a Game target, so binding it builds a
+layout that works in PIE and shows nothing in the packaged build.
 
 ### 3.5 The channel — **corrected in v2**
 
