@@ -33,9 +33,13 @@ class UScriptStruct;
  *    identical display strings but different identities are "not equal" -- so a HUD label
  *    rebuilt each frame from the same string would publish, dirty a variable and re-run its
  *    views EVERY FRAME. That is spec 9's idle row lost to a comparison, not to a change.
- *  - FStructProperty::Identical spins up a fresh TFieldIterator per call
- *    (Class.cpp:3663-3694). Nesting is flattened at layout-build time precisely so this is
- *    never reached.
+ *  - FStructProperty::Identical answers for a whole nested struct at once, so `Origin` would
+ *    carry one dirty bit and none of the per-leaf rules below would run. Nesting is flattened
+ *    at layout-build time precisely so this is never reached. (Its COST is a weaker argument
+ *    than it looks: Identical forwards to UScriptStruct::CompareScriptStruct
+ *    (PropertyStruct.cpp:139-142), which short-circuits through ICppStructOps::Identical for
+ *    any STRUCT_IdenticalNative type -- FVector, FVector2D, FQuat -- and never reaches the
+ *    TFieldIterator at all. FVaCuusModelLayout's header has the full correction.)
  *
  * And two more get a wrong answer out of the OBVIOUS hand-written comparison, which is what
  * the per-kind switch is really defending against -- see the .cpp: FString::operator== is
@@ -77,7 +81,7 @@ class UScriptStruct;
  * no engine synchronisation whatsoever (research ue-reflection 6.3), so this reads gameplay
  * memory that only the game thread may be reading. The spec also requires it be driven from
  * UVaCuusSubsystem::Tick, because that is what lands it inside the existing GameTick perf
- * scope (VaCuusSubsystem.cpp:66); from an actor tick or a Blueprint node it would be outside
+ * scope (VaCuusSubsystem.cpp:68); from an actor tick or a Blueprint node it would be outside
  * every scope and the budget would become an inference on top of an inference.
  */
 class FVaCuusModelSampler

@@ -95,8 +95,9 @@ struct FVaCuusModelField
 {
 	/**
 	 * The resolved leaf property. NEVER an FStructProperty -- nesting is flattened at
-	 * build time (spec 3.2), which is what keeps FStructProperty::Identical (a fresh
-	 * TFieldIterator per call, Class.cpp:3683-3692) off the per-frame path.
+	 * build time (spec 3.2). That is what gives every leaf its own dirty bit and its own
+	 * per-kind comparison rule; see FVaCuusModelLayout below for what the flattening does
+	 * and does not buy against FStructProperty::Identical.
 	 *
 	 * Safe to hold raw: an already-linked type's FProperty chain is not rewritten at
 	 * runtime, and the layout holds a strong reference to the owning UScriptStruct,
@@ -208,10 +209,28 @@ struct FVaCuusModelField
  * WHY FLAT AND PRE-RESOLVED. This is deliberately the shape UE's own per-frame differ
  * uses. FRepLayout keeps a flat command list with a typed comparator per entry and
  * falls back to the virtual Identical only for kinds it did not special-case
- * (RepLayout.cpp:668-753). The reason is cost: FStructProperty::Identical spins up a
- * fresh TFieldIterator per call (Class.cpp:3683-3692) and FMapProperty::Identical is
- * O(n^2) via IsPermutation (PropertyMap.cpp:85-148). A binder that reached for those
- * once per frame would become the frame's dominant cost.
+ * (RepLayout.cpp:668-753).
+ *
+ * THE PRIMARY REASON IS RESOLUTION, NOT COST, AND THIS IS A CORRECTION TO WHAT THIS
+ * COMMENT USED TO CLAIM. A nested struct compared as one unit has ONE answer, so it
+ * would get one dirty bit for the whole of `Origin` -- and the per-kind rules that make
+ * this milestone correct (case-sensitive strings and names, display-string FText, the
+ * mask-aware bitfield read) live per LEAF and would never run at all. Flattening is what
+ * makes both possible.
+ *
+ * COST IS THE SECOND REASON, AND IT IS NARROWER THAN IT LOOKS. FStructProperty::Identical
+ * is three lines forwarding to UScriptStruct::CompareScriptStruct (PropertyStruct.cpp:
+ * 139-142), and CompareScriptStruct SHORT-CIRCUITS through ICppStructOps::Identical when
+ * the type has STRUCT_IdenticalNative (Class.cpp:3672-3681) -- which every struct a HUD
+ * actually nests has: FVector, FVector2D and FQuat all declare WithIdenticalViaEquality
+ * or WithIdentical (Property.cpp:53-73, :146-161, :338-353), and Class.cpp:3263-3267 sets
+ * the flag from that. So the fresh TFieldIterator at Class.cpp:3683-3692 is reached only
+ * by structs with no native comparison, e.g. a designer's USTRUCT. Real, but not the
+ * dominant cost this comment used to assert for the common case.
+ *
+ * The container kinds are a different matter and the cost argument does hold there:
+ * FMapProperty::Identical (PropertyMap.cpp:233) is O(n^2) via IsPermutation
+ * (PropertyMap.cpp:85-148). Containers are M3b.
  *
  * THREADING. Building is safe on any thread for a type that is already loaded and
  * linked: nothing in a cooked runtime rewrites a linked type's ChildProperties /

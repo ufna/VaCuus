@@ -66,7 +66,8 @@ void FVaCuusModelChannel::ReapAcknowledgement()
 	// ACQUIRE, pairing with the consumer's release store after its apply. Without it the
 	// producer could see the new generation while the shadow writes that preceded it are
 	// still invisible -- and it would then stop republishing fields the UI has not actually
-	// got. Same pairing as the load-serial (VaCuusView.cpp:375 / VaCuusRmlDocumentHost.cpp:231).
+	// got. Same pairing as the load-serial (VaCuusView.cpp:584 and :662 load,
+	// VaCuusRmlDocumentHost.cpp:231 stores).
 	const uint64 Applied = AppliedGeneration.load(std::memory_order_acquire);
 
 	// >= THE LAST PUBLISH, NOT >= THE GENERATION A BIT WAS FIRST SENT AT. Every publish
