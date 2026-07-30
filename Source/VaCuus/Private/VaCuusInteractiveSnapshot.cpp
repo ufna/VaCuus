@@ -180,7 +180,17 @@ struct FSnapshotWalk
 	int32 NumElementsVisited = 0;
 
 	/**
-	 * Did the walk see ANY element RmlUi would let Tab land on?
+	 * Did the document currently being walked contain any element RmlUi would let Tab
+	 * land on? Reset by the caller before each document.
+	 *
+	 * PER DOCUMENT, NOT PER CONTEXT, because that is FindNextTabElement's own scope: it
+	 * takes `document = current_element->GetOwnerDocument()` and every branch stops at
+	 * it -- the upward walk terminates on `while (child != document)` and even the
+	 * wrap-around searches `SearchFocusSubtreeChildren(document, ...)`
+	 * (ElementDocument.cpp:669-726). So a focusable in a SECOND document is not
+	 * somewhere Tab can go from the first, and counting it would make
+	 * bTabEntersFocus claim an entry that cannot happen. One document per view is the
+	 * only shape M2 ships, so this costs nothing today and is simply correct.
 	 *
 	 * DELIBERATELY NOT "did any Focusable rect get reported": a rect is only appended
 	 * when the element is also INTERACTIVE by the predicate and its clipped box has
@@ -370,15 +380,18 @@ FVaCuusSnapshotBuildStats BuildVaCuusInteractiveSnapshot(
 
 	FSnapshotWalk Walk(OutSnapshot);
 
+	// The document element that holds focus, if focus is on a document at all, and
+	// whether THAT document has anything Tab could land on. Both entry flags below need
+	// them: it is the element ProcessDefaultAction would run on, the element whose local
+	// `nav-*` the arrow branch would read, and the only subtree FindNextTabElement
+	// searches.
+	Rml::ElementDocument* FocusedDocument = nullptr;
+	bool bFocusedDocumentHasFocusable = false;
+
 	// Front to back: a higher document index is closer to the front
 	// (PullDocumentToFront appends to the root's children, Context.cpp:468-481). The
 	// order does not change the union, but it costs nothing to produce the rects in
 	// the order RmlUi would have hit-tested them.
-	// The document element that holds focus, if focus is on a document at all. Both
-	// entry flags below need it: it is the element ProcessDefaultAction would run on and
-	// the element whose local `nav-*` the arrow branch would read.
-	Rml::ElementDocument* FocusedDocument = nullptr;
-
 	const int32 NumDocuments = Context.GetNumDocuments();
 	const FIntRect ViewRect(0, 0, ViewSize.X, ViewSize.Y);
 	for (int32 Index = NumDocuments - 1; Index >= 0; --Index)
@@ -397,11 +410,22 @@ FVaCuusSnapshotBuildStats BuildVaCuusInteractiveSnapshot(
 				FocusedDocument = Document;
 			}
 
+			// Reset per document, because FindNextTabElement never leaves the document it
+			// starts in (see FSnapshotWalk::bAnyFocusable) -- so only the FOCUSED document's
+			// answer is the one Tab would get, and a focusable in some other document must
+			// not be counted.
+			Walk.bAnyFocusable = false;
+
 			// bFocusBlocked starts false: `focus` defaults to auto and is inherited
 			// (StyleSheetSpecification.cpp:376), so a document is focusable until an
 			// author says otherwise -- and RmlUi relies on that, since Show() focuses the
 			// document element itself.
 			Walk.Visit(Document, ViewRect, /*bFocusBlocked=*/false);
+
+			if (Document == Focus)
+			{
+				bFocusedDocumentHasFocusable = Walk.bAnyFocusable;
+			}
 		}
 	}
 
@@ -417,7 +441,7 @@ FVaCuusSnapshotBuildStats BuildVaCuusInteractiveSnapshot(
 	// focus and consuming one would be a lie. If focus is on something INSIDE a document,
 	// bWantsKeyboardFocus is already true and these are irrelevant (and false: the loop
 	// above only sets FocusedDocument when the focus IS a document element).
-	OutSnapshot.bTabEntersFocus = FocusedDocument != nullptr && Walk.bAnyFocusable;
+	OutSnapshot.bTabEntersFocus = FocusedDocument != nullptr && bFocusedDocumentHasFocusable;
 	OutSnapshot.bDirectionEntersFocus =
 		OutSnapshot.bTabEntersFocus && HasLocalNavProperty(*FocusedDocument);
 
