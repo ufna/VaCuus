@@ -34,7 +34,8 @@ public class VaCuusRender : ModuleRules
 			"Slate",
 			"Projects",
 
-			// LoadTexture: synchronous image decode on the UI thread.
+			// LoadTexture: synchronous dimension probe on the UI thread, async decode
+			// on a worker (both through the module pointer cached at startup).
 			"ImageWrapper",
 
 			// UVaCuusWidget derives from UWidget (VaCuusUMGWidget.h).

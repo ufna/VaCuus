@@ -69,6 +69,12 @@ struct FVaCuusGeometryData
  * Raw RGBA8 pixels, RmlUi byte order, ALWAYS premultiplied alpha: generated
  * textures (fonts) per the Rml contract, loaded images premultiplied at decode
  * by the recorder. Upload as PF_R8G8B8A8 and blend One/InverseSourceAlpha.
+ *
+ * A 1x1 (0,0,0,0) payload is the async-load placeholder: LoadTexture returns the
+ * real dimensions immediately but the decode runs on a worker, so the handle
+ * carries one premultiplied-transparent texel until the payload arrives. That
+ * makes an unfinished image draw INVISIBLE rather than missing, which is why the
+ * placeholder is a real entry and not an absent one.
  */
 struct FVaCuusTextureData
 {
@@ -95,7 +101,17 @@ struct FVaCuusCommandBuffer
 
 	TArray<FVaCuusCommand> Commands;
 
-	/** Resources first seen this frame, keyed by handle. */
+	/**
+	 * Resources first seen this frame, keyed by handle.
+	 *
+	 * NewTextures is also the arrival channel for a finished async image decode,
+	 * so ONE texture handle may appear in NewTextures of two different buffers:
+	 * the placeholder in the buffer that ran LoadTexture, the real payload in a
+	 * later one. The replayer's TMap<Handle, FTextureRHIRef>::Add on an existing
+	 * key destroys the old value before relocating the new one in
+	 * (Containers/SetUtilities.h:98, MoveByRelocate), so re-adding IS the swap:
+	 * the placeholder's RHI ref is released and no handle is orphaned.
+	 */
 	TMap<FVaCuusGeometryHandle, FVaCuusGeometryData> NewGeometry;
 	TMap<FVaCuusTextureHandle, FVaCuusTextureData> NewTextures;
 

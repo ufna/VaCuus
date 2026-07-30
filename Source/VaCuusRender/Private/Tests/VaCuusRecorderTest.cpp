@@ -39,6 +39,45 @@ struct FVaCuusRecorderTriangle
 	Rml::Span<const Rml::Vertex> VertexSpan() const { return Rml::Span<const Rml::Vertex>(Vertices, 3); }
 	Rml::Span<const int> IndexSpan() const { return Rml::Span<const int>(Indices, 3); }
 };
+
+/**
+ * Writes an RGBA8 PNG of distinct byte values with Alpha stamped into every
+ * texel's A byte, and hands back the exact pre-premultiply pixels so the caller
+ * can predict what LoadTexture must produce. PNG is lossless and stores
+ * straight (non-premultiplied) alpha, so the decoded bytes are these bytes.
+ */
+bool SaveVaCuusProbePng(const FString& Path, FIntPoint Size, uint8 Alpha, TArray<uint8>& OutPixels)
+{
+	OutPixels.SetNumUninitialized(Size.X * Size.Y * 4);
+	for (int32 Index = 0; Index < OutPixels.Num(); ++Index)
+	{
+		OutPixels[Index] = (Index % 4 == 3) ? Alpha : uint8(Index * 7 + 3);
+	}
+
+	IImageWrapperModule& ImageWrapperModule = FModuleManager::LoadModuleChecked<IImageWrapperModule>("ImageWrapper");
+	const TSharedPtr<IImageWrapper> Encoder = ImageWrapperModule.CreateImageWrapper(EImageFormat::PNG);
+	if (!Encoder.IsValid() ||
+		!Encoder->SetRaw(OutPixels.GetData(), OutPixels.Num(), Size.X, Size.Y, ERGBFormat::RGBA, 8))
+	{
+		return false;
+	}
+
+	return FFileHelper::SaveArrayToFile(Encoder->GetCompressed(), *Path);
+}
+
+/** Independent restatement of the recorder's premultiply contract: round-to-nearest (c*a + 127)/255. */
+TArray<uint8> PremultiplyVaCuusProbe(const TArray<uint8>& Straight)
+{
+	TArray<uint8> Result = Straight;
+	for (int32 Index = 0; Index + 3 < Result.Num(); Index += 4)
+	{
+		const uint32 A = Result[Index + 3];
+		Result[Index + 0] = uint8((Result[Index + 0] * A + 127u) / 255u);
+		Result[Index + 1] = uint8((Result[Index + 1] * A + 127u) / 255u);
+		Result[Index + 2] = uint8((Result[Index + 2] * A + 127u) / 255u);
+	}
+	return Result;
+}
 } // namespace
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusRecorderCompileGeometryTest, "VaCuus.Render.Recorder.CompileGeometry",
@@ -179,33 +218,28 @@ bool FVaCuusRecorderLoadTextureTest::RunTest(const FString& Parameters)
 
 	const FString TestDir = FPaths::ConvertRelativePathToFull(FPaths::ProjectSavedDir() / TEXT("VaCuusTest"));
 	const FString PngPath = TestDir / TEXT("recorder_probe.png");
+	const FString AlphaPngPath = TestDir / TEXT("recorder_alpha.png");
+	const FString ReleasedPngPath = TestDir / TEXT("recorder_released.png");
 	const FString FakePngPath = TestDir / TEXT("recorder_fake.png");
 	ON_SCOPE_EXIT
 	{
 		IFileManager::Get().Delete(*PngPath);
+		IFileManager::Get().Delete(*AlphaPngPath);
+		IFileManager::Get().Delete(*ReleasedPngPath);
 		IFileManager::Get().Delete(*FakePngPath);
 		IFileManager::Get().DeleteDirectory(*TestDir);
 	};
 
-	// 4x2 RGBA probe with distinct byte values. Alpha bytes are forced opaque:
-	// LoadTexture premultiplies alpha at decode, and A=255 keeps that a no-op
-	// so the lossless round-trip assertion below stays byte-exact.
+	// Two 4x2 probes with the same byte pattern and different alpha: A=255 keeps
+	// the premultiply a no-op (byte-exact round trip), A=128 actually exercises
+	// the round-to-nearest divide.
 	const FIntPoint ProbeSize(4, 2);
-	TArray<uint8> Pixels;
-	Pixels.SetNumUninitialized(ProbeSize.X * ProbeSize.Y * 4);
-	for (int32 Index = 0; Index < Pixels.Num(); ++Index)
-	{
-		Pixels[Index] = (Index % 4 == 3) ? uint8(255) : uint8(Index * 7 + 3);
-	}
-
-	IImageWrapperModule& ImageWrapperModule = FModuleManager::LoadModuleChecked<IImageWrapperModule>("ImageWrapper");
-	const TSharedPtr<IImageWrapper> Encoder = ImageWrapperModule.CreateImageWrapper(EImageFormat::PNG);
-	if (!TestTrue(TEXT("PNG encoder ready"),
-			Encoder.IsValid() && Encoder->SetRaw(Pixels.GetData(), Pixels.Num(), ProbeSize.X, ProbeSize.Y, ERGBFormat::RGBA, 8)))
-	{
-		return false;
-	}
-	if (!TestTrue(TEXT("Probe PNG saved"), FFileHelper::SaveArrayToFile(Encoder->GetCompressed(), *PngPath)))
+	TArray<uint8> OpaquePixels;
+	TArray<uint8> AlphaPixels;
+	TArray<uint8> ReleasedPixels;
+	if (!TestTrue(TEXT("Opaque probe PNG saved"), SaveVaCuusProbePng(PngPath, ProbeSize, 255, OpaquePixels)) ||
+		!TestTrue(TEXT("Translucent probe PNG saved"), SaveVaCuusProbePng(AlphaPngPath, ProbeSize, 128, AlphaPixels)) ||
+		!TestTrue(TEXT("Released-probe PNG saved"), SaveVaCuusProbePng(ReleasedPngPath, ProbeSize, 255, ReleasedPixels)))
 	{
 		return false;
 	}
@@ -213,11 +247,26 @@ bool FVaCuusRecorderLoadTextureTest::RunTest(const FString& Parameters)
 	FVaCuusRecordingRenderInterface Recorder;
 	Recorder.BeginFrame(FIntPoint(64, 64));
 
-	// Happy path: absolute path decodes; dimensions and pixels round-trip.
+	// Step 11.1: the dimension probe is SYNCHRONOUS. These reads happen before
+	// any drain point, so no decode can have contributed to them.
 	Rml::Vector2i Dimensions(0, 0);
 	const Rml::TextureHandle Handle = Recorder.LoadTexture(Dimensions, Rml::String(TCHAR_TO_UTF8(*PngPath)));
 	TestTrue(TEXT("LoadTexture returns non-zero handle"), Handle != Rml::TextureHandle(0));
-	TestTrue(TEXT("Decoded dimensions are 4x2"), Dimensions.x == 4 && Dimensions.y == 2);
+	TestTrue(TEXT("Dimensions are probed synchronously (4x2)"), Dimensions.x == 4 && Dimensions.y == 2);
+
+	Rml::Vector2i AlphaDimensions(0, 0);
+	const Rml::TextureHandle AlphaHandle = Recorder.LoadTexture(AlphaDimensions, Rml::String(TCHAR_TO_UTF8(*AlphaPngPath)));
+	TestTrue(TEXT("Translucent load returns non-zero handle"), AlphaHandle != Rml::TextureHandle(0));
+	TestTrue(TEXT("Translucent dimensions are probed synchronously (4x2)"), AlphaDimensions.x == 4 && AlphaDimensions.y == 2);
+
+	// Release-before-arrival: retired in the very frame that started its decode,
+	// so the completion below must be dropped rather than resurrecting a texture
+	// the replayer has already retired. Race-free without any sleep: the drain
+	// that would install the payload cannot run before the release.
+	Rml::Vector2i ReleasedDimensions(0, 0);
+	const Rml::TextureHandle ReleasedHandle = Recorder.LoadTexture(ReleasedDimensions, Rml::String(TCHAR_TO_UTF8(*ReleasedPngPath)));
+	TestTrue(TEXT("Released-probe load returns non-zero handle"), ReleasedHandle != Rml::TextureHandle(0));
+	Recorder.ReleaseTexture(ReleasedHandle);
 
 	// Failure: missing file.
 	Rml::Vector2i MissingDimensions(0, 0);
@@ -232,20 +281,80 @@ bool FVaCuusRecorderLoadTextureTest::RunTest(const FString& Parameters)
 			Recorder.LoadTexture(FakeDimensions, Rml::String(TCHAR_TO_UTF8(*FakePngPath))) == Rml::TextureHandle(0));
 	}
 
-	const TUniquePtr<FVaCuusCommandBuffer> Buffer = Recorder.EndFrameAndPublish();
-	if (!TestNotNull(TEXT("Published buffer"), Buffer.Get()))
+	// A draw issued in the same frame as the load: the replayer resolves textures
+	// out of its handle map, so the placeholder has to be in THIS buffer's
+	// NewTextures or the replayer's unknown-handle ensure fires.
+	const FVaCuusRecorderTriangle Triangle;
+	const Rml::CompiledGeometryHandle Geometry = Recorder.CompileGeometry(Triangle.VertexSpan(), Triangle.IndexSpan());
+	Recorder.RenderGeometry(Geometry, Rml::Vector2f(0.f, 0.f), Handle);
+
+	const TUniquePtr<FVaCuusCommandBuffer> First = Recorder.EndFrameAndPublish();
+	if (!TestNotNull(TEXT("First published buffer"), First.Get()))
 	{
 		return false;
 	}
 
-	TestEqual(TEXT("Exactly one texture recorded"), Buffer->NewTextures.Num(), 1);
-	const FVaCuusTextureData* Data = Buffer->NewTextures.Find(FVaCuusTextureHandle(Handle));
-	if (TestNotNull(TEXT("Loaded texture stored under its handle"), Data))
+	TestEqual(TEXT("Three placeholders recorded, nothing for the failed loads"), First->NewTextures.Num(), 3);
+
+	const FVaCuusTextureData* Placeholder = First->NewTextures.Find(FVaCuusTextureHandle(Handle));
+	if (TestNotNull(TEXT("Placeholder stored under the returned handle"), Placeholder))
 	{
-		TestTrue(TEXT("Texture size is 4x2"), Data->Size == FIntPoint(4, 2));
-		TestEqual(TEXT("RGBA payload is 32 bytes"), Data->RGBA.Num(), 32);
-		TestTrue(TEXT("PNG decode round-trips losslessly"), Data->RGBA == Pixels);
+		TestTrue(TEXT("Placeholder is 1x1"), Placeholder->Size == FIntPoint(1, 1));
+		TestEqual(TEXT("Placeholder is one texel"), Placeholder->RGBA.Num(), 4);
+		const bool bTransparent = Placeholder->RGBA.Num() == 4 && Placeholder->RGBA[0] == 0 &&
+			Placeholder->RGBA[1] == 0 && Placeholder->RGBA[2] == 0 && Placeholder->RGBA[3] == 0;
+		TestTrue(TEXT("Placeholder texel is premultiplied transparent (0,0,0,0)"), bTransparent);
 	}
+
+	const FVaCuusCommand* Draw = First->Commands.FindByPredicate(
+		[](const FVaCuusCommand& Command) { return Command.Type == EVaCuusCommandType::DrawGeometry; });
+	if (TestNotNull(TEXT("Frame recorded the draw"), Draw))
+	{
+		TestTrue(TEXT("Draw references the loaded handle"), Draw->Texture == FVaCuusTextureHandle(Handle));
+		TestTrue(TEXT("A not-yet-ready handle still resolves in NewTextures"), First->NewTextures.Contains(Draw->Texture));
+	}
+
+	// Same-frame create+release keeps both, exactly as for geometry: the
+	// commands above were recorded while the handle was still live.
+	TestTrue(TEXT("Released-in-flight handle is retired by this buffer"),
+		First->ReleasedTextures.Contains(FVaCuusTextureHandle(ReleasedHandle)));
+
+	// Deterministic: wait on the decode tasks themselves, then let the next
+	// BeginFrame() drain their payloads. Generous timeout, hard failure on expiry.
+	if (!TestTrue(TEXT("Async decodes completed within the timeout"),
+			Recorder.WaitForTextureDecodes(FTimespan::FromSeconds(30.0))))
+	{
+		return false;
+	}
+
+	Recorder.BeginFrame(FIntPoint(64, 64));
+	const TUniquePtr<FVaCuusCommandBuffer> Second = Recorder.EndFrameAndPublish();
+	if (!TestNotNull(TEXT("Second published buffer"), Second.Get()))
+	{
+		return false;
+	}
+
+	TestTrue(TEXT("Payloads arrive in a strictly later buffer"), Second->Generation > First->Generation);
+
+	const FVaCuusTextureData* Opaque = Second->NewTextures.Find(FVaCuusTextureHandle(Handle));
+	if (TestNotNull(TEXT("Opaque payload lands under the same handle"), Opaque))
+	{
+		TestTrue(TEXT("Opaque payload size is 4x2"), Opaque->Size == FIntPoint(4, 2));
+		TestEqual(TEXT("Opaque payload is 32 bytes"), Opaque->RGBA.Num(), 32);
+		TestTrue(TEXT("A=255 keeps premultiply a no-op, so the decode round-trips losslessly"), Opaque->RGBA == OpaquePixels);
+	}
+
+	const FVaCuusTextureData* Translucent = Second->NewTextures.Find(FVaCuusTextureHandle(AlphaHandle));
+	if (TestNotNull(TEXT("Translucent payload lands under the same handle"), Translucent))
+	{
+		TestTrue(TEXT("Translucent payload size is 4x2"), Translucent->Size == FIntPoint(4, 2));
+		TestTrue(TEXT("A<255 is premultiplied with round-to-nearest"), Translucent->RGBA == PremultiplyVaCuusProbe(AlphaPixels));
+	}
+
+	// The leak this guards: installing this payload would create an RHI texture
+	// whose ReleasedTextures entry was already consumed by the first buffer.
+	TestFalse(TEXT("A handle released while in flight never receives its payload"),
+		Second->NewTextures.Contains(FVaCuusTextureHandle(ReleasedHandle)));
 
 	return true;
 }

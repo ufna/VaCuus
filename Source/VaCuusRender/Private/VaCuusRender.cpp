@@ -3,6 +3,7 @@
 #include "SVaCuusWidget.h"
 #include "VaCuusContentPaths.h"
 #include "VaCuusDefines.h"
+#include "VaCuusRecordingRenderInterface.h"
 #include "VaCuusRmlDocumentHost.h"
 #include "VaCuusSlateElement.h"
 #include "VaCuusSubsystem.h"
@@ -910,6 +911,11 @@ public:
 		checkf(Plugin.IsValid(), TEXT("VaCuus plugin descriptor not found"));
 		const FString ShaderDir = FPaths::Combine(Plugin->GetBaseDir(), TEXT("Shaders"));
 		AddShaderSourceDirectoryMapping(TEXT("/Plugin/VaCuus"), ShaderDir);
+
+		// The one game-thread window in which the recorder's image path may touch the
+		// module manager at all: LoadTexture runs on the UI thread, where loading a
+		// module is refused outright. See CacheImageWrapperModule.
+		FVaCuusRecordingRenderInterface::CacheImageWrapperModule();
 	}
 
 	virtual void ShutdownModule() override
