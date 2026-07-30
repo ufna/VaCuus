@@ -29,6 +29,21 @@ namespace
  */
 EMouseCursor::Type GLatchedCursor = EMouseCursor::Default;
 uint64 GLatchedCursorSerial = 0;
+
+/**
+ * The caret RmlUi last asked the keyboard to follow, and its own serial.
+ *
+ * SAME SHAPE AND SAME JUSTIFICATION AS THE CURSOR LATCH ABOVE, and the mismatch is if
+ * anything sharper: `ActivateKeyboard` carries no context and no element (SystemInterface.h:59),
+ * so this one global is the whole channel for every context in the process. The host
+ * attributes it (serial moved AND my own context has a text control focused); see
+ * GetVaCuusLatchedCaret's comment for why nothing better exists at 0ae381e.
+ *
+ * Plain (non-atomic) statics: written and read only from the one thread allowed to call
+ * into RmlUi at all.
+ */
+FVaCuusCaretLatch GLatchedCaret;
+uint64 GLatchedCaretSerial = 0;
 }	 // namespace
 
 EMouseCursor::Type GetVaCuusLatchedMouseCursor(uint64& OutSerial)
@@ -91,4 +106,35 @@ void FVaCuusSystemInterface::SetMouseCursor(const Rml::String& CursorName)
 
 	UE_LOG(LogVaCuus, Verbose, TEXT("[Rml] cursor '%s' -> EMouseCursor %d (serial %llu)"),
 		UTF8_TO_TCHAR(CursorName.c_str()), int32(Cursor), GLatchedCursorSerial);
+}
+
+FVaCuusCaretLatch GetVaCuusLatchedCaret(uint64& OutSerial)
+{
+	check(FVaCuusUIThread::IsInUIThread());
+
+	OutSerial = GLatchedCaretSerial;
+	return GLatchedCaret;
+}
+
+void FVaCuusSystemInterface::ActivateKeyboard(Rml::Vector2f CaretPosition, float LineHeight)
+{
+	// No UI-thread assert here on purpose: this is called from inside RmlUi, so being on
+	// any other thread is impossible by construction, and an assert on a path RmlUi takes
+	// a dozen times per keystroke is cost for nothing.
+	GLatchedCaret.Position = FVector2f(CaretPosition.x, CaretPosition.y);
+	GLatchedCaret.LineHeight = LineHeight;
+	GLatchedCaret.bActive = true;
+
+	// The serial advances on EVERY call, not on every distinct position -- same rule as the
+	// cursor: a repeat at the same place is still an observation, and swallowing it would
+	// let a later view's caret be attributed to whichever view pushed last.
+	++GLatchedCaretSerial;
+}
+
+void FVaCuusSystemInterface::DeactivateKeyboard()
+{
+	// Position is deliberately kept: bActive false is what the consumer tests, and a
+	// stale position that nothing reads is cheaper than a branch that clears it.
+	GLatchedCaret.bActive = false;
+	++GLatchedCaretSerial;
 }

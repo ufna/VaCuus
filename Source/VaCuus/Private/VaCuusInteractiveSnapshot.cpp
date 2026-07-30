@@ -2,6 +2,7 @@
 
 #include "VaCuusInteractiveSnapshot.h"
 
+#include "VaCuusTextInput.h"
 #include "VaCuusUIThread.h"
 
 #include <RmlUi/Core.h>
@@ -229,10 +230,23 @@ void FSnapshotWalk::Visit(Rml::Element* Element, const FIntRect& Clip, bool bFoc
 
 	if (bInteractive && Rect.Area() > 0)
 	{
+		// Controller decision D14a. Asked only for rects that are actually being reported, and
+		// only after the cheap tests above have passed: the answer is two string compares on a
+		// tag plus at most one attribute lookup, which is not worth paying for a <div>.
+		//
+		// NOT GATED ON bFocusable, even though every text field is focusable: the two flags
+		// answer different questions and a caller that wants both asks for both. Gating would
+		// make TextInput silently imply Focusable and hide the day RmlUi lets one exist without
+		// the other (a `focus: none` input, say -- which is unfocusable AND still takes text
+		// from a script-driven caret).
+		const bool bTextInput = VaCuusTextInput::IsTextInputElement(*Element);
+
 		// Both arrays, always together: the index is the only thing that pairs a rect
 		// with its flags (see FVaCuusInteractiveSnapshot::RectFlags).
 		Out.InteractiveRects.Add(Rect);
-		Out.RectFlags.Add(EVaCuusRectFlags::Interactive | (bFocusable ? EVaCuusRectFlags::Focusable : EVaCuusRectFlags::None));
+		Out.RectFlags.Add(EVaCuusRectFlags::Interactive |
+			(bFocusable ? EVaCuusRectFlags::Focusable : EVaCuusRectFlags::None) |
+			(bTextInput ? EVaCuusRectFlags::TextInput : EVaCuusRectFlags::None));
 	}
 
 	// Does this element clip its descendants? Same test RmlUi uses to build a
@@ -336,6 +350,16 @@ FVaCuusSnapshotBuildStats BuildVaCuusInteractiveSnapshot(
 	}
 
 	OutSnapshot.bWantsKeyboardFocus = bFocusIsRealElement;
+
+	// Controller decision D14b, and the second half of the IME contract: whether a control
+	// that takes TEXT holds focus right now, plus everything the platform IME will pull about
+	// it (D15). Read from THIS context, so it is exact per view -- unlike the caret and the
+	// field generation, which RmlUi only offers process-wide.
+	//
+	// AFTER the walk rather than inside it, because it is a property of the focus and not of
+	// any rect, and because it reads the element's live value and selection -- work that must
+	// happen once per frame, not once per element.
+	OutSnapshot.bTextInputFocused = VaCuusTextInput::FillTextFieldState(Context, OutSnapshot.TextField);
 
 	FVaCuusSnapshotBuildStats Stats;
 	Stats.NumDocuments = NumDocuments;

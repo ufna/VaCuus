@@ -57,10 +57,156 @@ enum class EVaCuusRectFlags : uint8
 	 * not about geometry: it belongs next to bWantsKeyboardFocus, whose staleness it
 	 * shares. Deriving either from the other is the mistake D11 was fixing.
 	 */
-	Focusable = 1 << 1
+	Focusable = 1 << 1,
+
+	/**
+	 * A click here would put the CARET in a text field: the element is `<textarea>`, or
+	 * `<input>` whose `type` is text or password (controller decision D14a).
+	 *
+	 * THE SET IS RmlUi'S OWN, not a guess. ElementFormControlInput dispatches on the
+	 * `type` attribute and instances InputTypeText for exactly "text" and "password" --
+	 * "radio", "checkbox", "range", "submit" and "button" get their own non-text types,
+	 * and an unrecognised or missing type falls back to "text"
+	 * (ElementFormControlInput.cpp:95-118). InputTypeText is the only one that owns a
+	 * WidgetTextInput, i.e. the only one that has a caret, a selection, and a
+	 * Rml::TextInputContext for an IME to talk to.
+	 *
+	 * WHY IT IS A SEPARATE BIT FROM Focusable. Every text field is focusable, but the
+	 * converse is loudly false: a button, a checkbox, a `tab-index: auto` div are all
+	 * Focusable and none of them takes text. Activating the platform IME context on a
+	 * click over any of those would tell the OS to open a candidate window over a
+	 * checkbox.
+	 *
+	 * WHY IT IS NEEDED AT ALL, given bTextInputFocused below exists: the same D11
+	 * asymmetry as Focusable. This is GEOMETRY (one frame old but already correct before
+	 * anyone clicks), so `OnMouseButtonDown` can activate the IME context on the click
+	 * that focuses the field; bTextInputFocused is UI-THREAD STATE, and therefore behind
+	 * the click that changed it by one frame. Waiting for it loses the first composition.
+	 */
+	TextInput = 1 << 2
 };
 
 ENUM_CLASS_FLAGS(EVaCuusRectFlags)
+
+/**
+ * THE IME SHADOW STATE: everything `ITextInputMethodContext`'s pull-style virtuals have
+ * to answer, as a plain value type the game thread already owns (controller decision
+ * D15).
+ *
+ * WHY IT MUST BE A SHADOW AND NOT A QUERY. All 14 of ITextInputMethodContext's methods
+ * are SYNCHRONOUS PULLS made from the platform message pump on the GAME thread
+ * (ITextInputMethodSystem.h:14-139) -- the OS asks "how long is your text", "what is
+ * selected", "where is the caret" and expects an answer before it returns. The answers
+ * live in RmlUi, on the VaCuus UI thread, which no game-thread call may touch (spec §4).
+ * Blocking on the UI thread to answer would hand the OS's input pump a stall; so the UI
+ * thread publishes this instead, once per frame, inside the snapshot, and the context
+ * answers from it. Only MUTATIONS travel the other way, as queued input events stamped
+ * with Generation. Epic's own out-of-process precedent does the same thing for the same
+ * reason (FCEFTextInputMethodContext keeps its own CompositionSequence rather than
+ * querying the renderer, CEFTextInputMethodContext.cpp:89-139).
+ *
+ * INDEX SPACE: **UTF-16 units into Value**, i.e. plain FString indices -- because that is
+ * what the engine's side of the boundary means by "code point index" (Slate answers
+ * GetTextLength with FString::Len(), SlateEditableTextLayout.cpp), and what TSF's ACP
+ * offsets are on Windows. RmlUi's public offsets are UTF-8 CHARACTER offsets, a third
+ * space; the conversion happens exactly twice, both in VaCuusTextInput.cpp -- on publish
+ * (RmlUi character offset -> UTF-16 index) and on enqueue (UTF-16 index -> RmlUi
+ * character offset). Both are pure functions of Value, so both sides agree by
+ * construction.
+ *
+ * ORDERING DISCIPLINE, and it is short because the triple buffer does the hard part:
+ *
+ *  1. The UI thread fills this whole struct and only THEN swaps the buffer
+ *     (FVaCuusViewStatus::PublishSnapshot), so the game thread can never observe a
+ *     half-filled state and no per-field release ordering is needed. Every field below is
+ *     therefore consistent with every other field IN THE SAME publish -- that is the one
+ *     guarantee the IME context relies on (a selection range that does not fit the value
+ *     would make TSF compute a negative length).
+ *  2. It is filled AFTER `Context::Update()` and after the caret latch is sampled, in
+ *     that order: Update() is what leaves the element boxes clean, and ActivateKeyboard
+ *     can fire from inside it.
+ *  3. Generation is an IDENTITY token, not a freshness token (the snapshot's own
+ *     Generation is freshness). It moves ONLY when the platform's active field changes --
+ *     activate, deactivate, destroy -- so a queued mutation whose stamp no longer matches
+ *     is a mutation for a field that is gone, and is dropped rather than half-applied.
+ *     This is load-bearing: WidgetTextInput::SetSelectionRange EARLY-RETURNS when the
+ *     element is not focused (WidgetTextInput.cpp:330-331), so without the stamp a stale
+ *     selection would be silently swallowed while the SetText next to it still landed.
+ *  4. Every field is a snapshot of the PREVIOUS UI frame. The IME therefore reasons about
+ *     text that is up to one frame old; the mutation path is what keeps that safe, since
+ *     a mutation the UI thread rejects never changes anything.
+ */
+struct FVaCuusTextFieldState
+{
+	/**
+	 * Identity of the platform's currently active text field; 0 means "none".
+	 *
+	 * PROCESS-WIDE, not per view, and that is RmlUi's constraint rather than a choice:
+	 * `Rml::TextInputHandler`'s three callbacks carry only a `TextInputContext*` and no
+	 * context or element (TextInputHandler.h:24-32), so "which field is the IME talking
+	 * to" is a single global fact. It matches what the platform means anyway -- TSF has
+	 * one active context at a time, and so does Slate's own IME.
+	 */
+	uint64 Generation = 0;
+
+	/** The focused control's whole value, UTF-16. The index space for everything below. */
+	FString Value;
+
+	/** Selection as half-open UTF-16 indices into Value; equal means a bare caret. */
+	int32 SelectionBegin = 0;
+	int32 SelectionEnd = 0;
+
+	/**
+	 * The composing span RmlUi was last asked to underline, as half-open UTF-16 indices.
+	 * [0, 0) means "not composing" -- RmlUi's own "clear it" value
+	 * (WidgetTextInput::SetCompositionRange(0, 0)).
+	 *
+	 * PUBLISHED FOR OBSERVABILITY, NOT AS THE SOURCE OF TRUTH: the authoritative
+	 * composition range is the game-thread context's own member, because TSF drives it and
+	 * `IsComposing()` must answer without consulting anything. This is what the UI thread
+	 * actually applied, which is the only way a test can tell the two apart.
+	 */
+	int32 CompositionBegin = 0;
+	int32 CompositionEnd = 0;
+
+	/**
+	 * Caret position and line height in VIEW PIXELS, straight from
+	 * `SystemInterface::ActivateKeyboard(caret_position, line_height)`.
+	 *
+	 * THE ONLY PER-CARET SIGNAL RmlUi GIVES AN EMBEDDER. `Rml::TextInputContext` has no
+	 * caret API at all -- its `GetBoundingBox` is the element's whole BORDER box
+	 * (WidgetTextInput.cpp:85-88) -- so without this the OS candidate window would be
+	 * pinned to the field's top-left instead of following the caret. RmlUi emits it from
+	 * WidgetTextInput::SetKeyboardActive, i.e. on every ShowCursor(true): focus, every
+	 * arrow key, every click and every edit (WidgetTextInput.cpp:1159-1175).
+	 */
+	FVector2f CaretPosition = FVector2f::ZeroVector;
+	float CaretLineHeight = 0.0f;
+
+	/** False until ActivateKeyboard has been seen for this field; GetTextBounds falls back. */
+	bool bCaretValid = false;
+
+	/** The focused control's border box in view pixels; the GetTextBounds fallback. */
+	FIntRect BoundingBox = FIntRect(0, 0, 0, 0);
+
+	/** RmlUi: the element carries `readonly`, or is disabled. */
+	bool bReadOnly = false;
+
+	void Reset()
+	{
+		Generation = 0;
+		Value.Reset();
+		SelectionBegin = 0;
+		SelectionEnd = 0;
+		CompositionBegin = 0;
+		CompositionEnd = 0;
+		CaretPosition = FVector2f::ZeroVector;
+		CaretLineHeight = 0.0f;
+		bCaretValid = false;
+		BoundingBox = FIntRect(0, 0, 0, 0);
+		bReadOnly = false;
+	}
+};
 
 /**
  * Where a view is interactive, as a fully detached value type.
@@ -191,6 +337,33 @@ struct FVaCuusInteractiveSnapshot
 	bool bWantsKeyboardFocus = false;
 
 	/**
+	 * True when a TEXT control -- one with a caret, a selection and a
+	 * Rml::TextInputContext -- holds RmlUi focus right now (controller decision D14b).
+	 *
+	 * THE SECOND HALF OF D14, AND NOT DERIVABLE FROM THE FIRST. EVaCuusRectFlags::TextInput
+	 * says "a click HERE WOULD put the caret in a field" (geometry, already correct before
+	 * the click); this says "a field HAS the caret" (UI-thread state, one frame behind the
+	 * click that changed it). The IME needs both and for opposite reasons: the flag decides
+	 * when to ACTIVATE the platform context (on the first click, or the first composition is
+	 * lost), this decides when to DEACTIVATE it (once nothing takes text any more, or the OS
+	 * keeps a candidate window open over a game that has moved on).
+	 *
+	 * STRICTLY NARROWER THAN bWantsKeyboardFocus: a focused button makes the view want the
+	 * keyboard but takes no text.
+	 *
+	 * COMPUTED FROM THIS VIEW'S OWN CONTEXT, so unlike FVaCuusTextFieldState::Generation it
+	 * is exact per view even with several views up.
+	 */
+	bool bTextInputFocused = false;
+
+	/**
+	 * What the platform IME needs to know about the focused text field (D15). Meaningful
+	 * only while bTextInputFocused is true; reset (Generation 0) otherwise, so a view with
+	 * no field never publishes another view's text.
+	 */
+	FVaCuusTextFieldState TextField;
+
+	/**
 	 * Is this point covered by any interactive region? Linear scan -- tens of rects
 	 * in practice, and the cost is a few nanoseconds per rect with no branching
 	 * worth optimising. If a document ever produces hundreds, the cheap fix is a
@@ -222,19 +395,21 @@ struct FVaCuusInteractiveSnapshot
 	 */
 	bool IsFocusableAt(FIntPoint Point) const
 	{
-		// Index-based rather than ranged: the flags live in a parallel array, and the
-		// index is the only thing that ties the two together.
-		const int32 NumRects = FMath::Min(InteractiveRects.Num(), RectFlags.Num());
-		for (int32 Index = 0; Index < NumRects; ++Index)
-		{
-			if (InteractiveRects[Index].Contains(Point) &&
-				EnumHasAnyFlags(RectFlags[Index], EVaCuusRectFlags::Focusable))
-			{
-				return true;
-			}
-		}
+		return HasFlagAt(Point, EVaCuusRectFlags::Focusable);
+	}
 
-		return false;
+	/**
+	 * Would a click at this point put the caret in a text field (controller decision
+	 * D14a)? Same scan, same permissive-on-overlap rule as IsFocusableAt().
+	 *
+	 * This is what activates the platform IME context on the FIRST click. Erring towards
+	 * "yes" costs an IME context activated over a field the click missed -- which the next
+	 * published snapshot corrects, because bTextInputFocused will say no; erring towards
+	 * "no" costs the player's first composition, silently.
+	 */
+	bool IsTextInputAt(FIntPoint Point) const
+	{
+		return HasFlagAt(Point, EVaCuusRectFlags::TextInput);
 	}
 
 	/**
@@ -250,6 +425,29 @@ struct FVaCuusInteractiveSnapshot
 		RectFlags.Reset();
 		Cursor = EMouseCursor::Default;
 		bWantsKeyboardFocus = false;
+		bTextInputFocused = false;
+
+		// Keeps Value's allocation, like the rect arrays above: the publisher rotates
+		// through three of these forever and a focused field is re-published every frame.
+		TextField.Reset();
+	}
+
+private:
+	/** Shared body of IsFocusableAt/IsTextInputAt; one pass over the parallel arrays. */
+	bool HasFlagAt(FIntPoint Point, EVaCuusRectFlags Flag) const
+	{
+		// Index-based rather than ranged: the flags live in a parallel array, and the
+		// index is the only thing that ties the two together.
+		const int32 NumRects = FMath::Min(InteractiveRects.Num(), RectFlags.Num());
+		for (int32 Index = 0; Index < NumRects; ++Index)
+		{
+			if (InteractiveRects[Index].Contains(Point) && EnumHasAnyFlags(RectFlags[Index], Flag))
+			{
+				return true;
+			}
+		}
+
+		return false;
 	}
 };
 
@@ -293,3 +491,36 @@ VACUUS_API FVaCuusSnapshotBuildStats BuildVaCuusInteractiveSnapshot(
  * UI thread only (asserted): it is written from inside RmlUi.
  */
 VACUUS_API EMouseCursor::Type GetVaCuusLatchedMouseCursor(uint64& OutSerial);
+
+/** Where RmlUi last said the text caret is, in view pixels, plus its line height. */
+struct FVaCuusCaretLatch
+{
+	FVector2f Position = FVector2f::ZeroVector;
+	float LineHeight = 0.0f;
+
+	/** False after DeactivateKeyboard: no field is taking keys, so there is no caret. */
+	bool bActive = false;
+};
+
+/**
+ * The caret RmlUi last asked the platform keyboard to follow, and a serial that only
+ * moves when it did.
+ *
+ * A LATCH FOR EXACTLY THE SAME REASON AS THE CURSOR ONE ABOVE, and with the same
+ * process-wide/per-context mismatch: `SystemInterface::ActivateKeyboard(caret_position,
+ * line_height)` is the ONLY per-caret spatial signal RmlUi offers an embedder
+ * (SystemInterface.h:59), it is PUSH-only, and the system interface is one object for the
+ * whole library while a caret belongs to one context. RmlUi calls it from
+ * WidgetTextInput::SetKeyboardActive on every ShowCursor(true) -- focus, arrow keys,
+ * clicks, edits (WidgetTextInput.cpp:1159-1175) -- which happens both inside
+ * `Context::Update()` and inside the `Context::Process*` calls the input drain makes.
+ *
+ * So a host adopts the value only when the serial moved AND its own context has a text
+ * control focused; a view with no focused field publishes no caret. Position is in
+ * ABSOLUTE RMLUI CONTEXT PIXELS (element absolute offset - scroll + cursor position,
+ * WidgetTextInput.cpp:1613-1617), which is the same space as the view's own pixels and as
+ * the interactive rects.
+ *
+ * UI thread only (asserted): it is written from inside RmlUi.
+ */
+VACUUS_API FVaCuusCaretLatch GetVaCuusLatchedCaret(uint64& OutSerial);

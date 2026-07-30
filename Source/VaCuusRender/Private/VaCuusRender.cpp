@@ -388,6 +388,86 @@ static bool MoveMouseTo(const FVector2D& Position)
 	return bHandled;
 }
 
+/**
+ * Presses and releases the left mouse button where the pointer already is.
+ *
+ * THROUGH FSlateApplication, for the same reason MoveMouseTo does: the whole point of a
+ * headless click is that it survives the parts a unit test cannot reach -- the hit-test
+ * grid, the bubble path, and SVaCuusWidget's own FReply (which is what takes Slate focus
+ * and, for Task 9, activates the platform IME context on the first click).
+ *
+ * ProcessMouseButtonDownEvent takes the PLATFORM WINDOW so it can build a widget path;
+ * passing a null one makes Slate resolve the path from the cursor position instead, which
+ * is exactly what we want after MoveMouseTo. ProcessMouseButtonUpEvent needs no window at
+ * all -- by then the captor (if any) is known.
+ */
+static bool ClickWhereThePointerIs(const FVector2D& Position)
+{
+	if (!FSlateApplication::IsInitialized())
+	{
+		UE_LOG(LogVaCuus, Error, TEXT("Synthesizing a click needs Slate (nothing to do under -nullrhi -unattended)"));
+		return false;
+	}
+
+	FSlateApplication& Slate = FSlateApplication::Get();
+
+	// The pressed-button sets differ between down and up, and faithfully so: OnMouseUp
+	// REMOVES the released button before constructing its event (SlateApplication.cpp:6098-6106),
+	// which is the exact asymmetry SVaCuusWidget's capture release depends on.
+	const TSet<FKey> LeftOnly = {EKeys::LeftMouseButton};
+	const TSet<FKey> NoButtons;
+
+	const FPointerEvent DownEvent(FSlateApplicationBase::CursorPointerIndex, Position, Position, LeftOnly,
+		EKeys::LeftMouseButton, /*WheelDelta=*/0.0f, FModifierKeysState());
+	const FPointerEvent UpEvent(FSlateApplicationBase::CursorPointerIndex, Position, Position, NoButtons,
+		EKeys::LeftMouseButton, /*WheelDelta=*/0.0f, FModifierKeysState());
+
+	const bool bDownHandled = Slate.ProcessMouseButtonDownEvent(nullptr, DownEvent);
+	Slate.ProcessMouseButtonUpEvent(UpEvent);
+
+	UE_LOG(LogVaCuus, Log, TEXT("Left click at (%.0f, %.0f); Slate reports the press %s"),
+		Position.X, Position.Y, bDownHandled ? TEXT("handled by a widget") : TEXT("unhandled (it fell through)"));
+	return bDownHandled;
+}
+
+/**
+ * Types a string one character at a time, exactly as the platform keyboard would.
+ *
+ * ONE FCharacterEvent PER UTF-16 UNIT, because that is what Slate delivers -- TCHAR is
+ * char16_t on Unix, so anything above the BMP arrives as two calls and SVaCuusWidget
+ * recombines the surrogate pair. Iterating the FString's units rather than its code points
+ * is therefore not a shortcut, it is the faithful thing.
+ *
+ * ProcessKeyCharEvent routes along the FOCUS path, so whatever holds Slate focus receives
+ * it; the caller is expected to have focused the HUD widget (SendNavSequence and the click
+ * above both do). This is the whole Linux text path -- OnKeyChar -> the input queue ->
+ * Rml::Context::ProcessTextInput -- driven from outside VaCuus.
+ */
+static void TypeTextIntoFocusedWidget(const FString& Text)
+{
+	if (!FSlateApplication::IsInitialized())
+	{
+		UE_LOG(LogVaCuus, Error, TEXT("Synthesizing text needs Slate (nothing to do under -nullrhi -unattended)"));
+		return;
+	}
+
+	FSlateApplication& Slate = FSlateApplication::Get();
+	const int32 UserIndex = Slate.GetUserIndexForKeyboard();
+
+	int32 NumHandled = 0;
+	for (int32 Index = 0; Index < Text.Len(); ++Index)
+	{
+		const FCharacterEvent CharEvent(Text[Index], FModifierKeysState(), UserIndex, /*bIsRepeat=*/false);
+		if (Slate.ProcessKeyCharEvent(CharEvent))
+		{
+			++NumHandled;
+		}
+	}
+
+	UE_LOG(LogVaCuus, Log, TEXT("Typed '%s' (%d UTF-16 unit(s), %d handled by a widget)"),
+		*Text, Text.Len(), NumHandled);
+}
+
 static void SimulateMouseMove(const TArray<FString>& Args)
 {
 	if (Args.Num() < 2)
@@ -663,6 +743,134 @@ static void NavShot(const TArray<FString>& Args)
 	UE_LOG(LogVaCuus, Log, TEXT("vacuus.M1HUD.NavShot: keys [%s] at t+%.1fs, screenshot at t+%.1fs"),
 		*FString::Join(PendingKeys, TEXT(" ")), GHoverShotMoveSeconds, GHoverShotShotSeconds);
 }
+
+/**
+ * Types into whatever holds Slate focus, focusing the HUD widget first.
+ *
+ * The focus step is not optional: OnKeyChar only reaches a widget on the focus path, and in a
+ * headless session nothing has clicked anything. Use vacuus.M1HUD.TypeShot instead when the
+ * point is to type into a specific FIELD -- this one types wherever RmlUi's focus already is.
+ */
+static void Type(const TArray<FString>& Args)
+{
+	if (!GState || !GState->Widget.IsValid() || !FSlateApplication::IsInitialized())
+	{
+		UE_LOG(LogVaCuus, Error, TEXT("vacuus.M1HUD.Type needs the HUD to be on"));
+		return;
+	}
+
+	if (Args.Num() == 0)
+	{
+		UE_LOG(LogVaCuus, Error, TEXT("vacuus.M1HUD.Type expects the text to type, e.g. 'vacuus.M1HUD.Type hello'"));
+		return;
+	}
+
+	FSlateApplication& Slate = FSlateApplication::Get();
+	Slate.SetUserFocus(Slate.GetUserIndexForKeyboard(), GState->Widget, EFocusCause::SetDirectly);
+
+	// Rejoined with spaces: the console splits on whitespace, and "type a sentence" is the
+	// normal case for a chat field.
+	TypeTextIntoFocusedWidget(FString::Join(Args, TEXT(" ")));
+}
+
+static FAutoConsoleCommand GTypeCommand(
+	TEXT("vacuus.M1HUD.Type"),
+	TEXT("Focus the HUD widget and type <text> into it through Slate's real OnKeyChar routing. ")
+	TEXT("Headless text-entry verification."),
+	FConsoleCommandWithArgsDelegate::CreateStatic(&Type));
+
+/**
+ * The TEXT-ENTRY twin of HoverShot and NavShot: park the pointer on a field, CLICK it, type,
+ * then shoot (Task 9).
+ *
+ * Same two-step timing and the same reason for it -- every `-ExecCmds` command runs on one
+ * early tick, before the widget has ever been arranged, so a click issued there hits an empty
+ * hit-test grid and focuses nothing.
+ *
+ * THE CLICK IS THE POINT, not just a way to focus: it is what exercises controller decision
+ * D14a end to end. The press lands on a rect carrying EVaCuusRectFlags::TextInput, which both
+ * takes Slate focus (D11) and activates the platform IME context on that same first click --
+ * and then the characters that follow go through the OnKeyChar path, which on this platform is
+ * the ONLY text path there is (D16). The screenshot is proof that all of it agreed on the same
+ * element.
+ */
+static void TypeShot(const TArray<FString>& Args)
+{
+	static FDelegateHandle TypeHandle;
+	static double TypeDeadline = 0.0;
+	static FVector2D PendingPosition = FVector2D::ZeroVector;
+	static FString PendingText;
+
+	if (Args.Num() < 2)
+	{
+		UE_LOG(LogVaCuus, Error,
+			TEXT("vacuus.M1HUD.TypeShot expects <x> <y> [text]: window pixels of the field, then what to type"));
+		return;
+	}
+
+	PendingPosition = FVector2D(FCString::Atof(*Args[0]), FCString::Atof(*Args[1]));
+	PendingText = Args.Num() > 2 ? FString::Join(TArray<FString>(Args.GetData() + 2, Args.Num() - 2), TEXT(" "))
+								 : FString(TEXT("VaCuus M2"));
+	TypeDeadline = FPlatformTime::Seconds() + GHoverShotMoveSeconds;
+
+	if (TypeHandle.IsValid())
+	{
+		FCoreDelegates::OnBeginFrame.Remove(TypeHandle);
+	}
+
+	// FROM OnBeginFrame, NOT A TICKER, for the reason HoverShot spells out: this is the same
+	// window the platform's own input dispatch runs in, i.e. before UVaCuusSubsystem::Tick polls
+	// the snapshot -- which is exactly the ordering a real click has.
+	TypeHandle = FCoreDelegates::OnBeginFrame.AddLambda(
+		[]
+		{
+			if (FPlatformTime::Seconds() < TypeDeadline)
+			{
+				return;
+			}
+
+			FCoreDelegates::OnBeginFrame.Remove(TypeHandle);
+			TypeHandle.Reset();
+
+			// Move, then click, then type -- in that order and in one frame. The move is what
+			// gives the click a hit-test position; the click focuses the field and activates the
+			// IME; the characters then reach the field the click focused.
+			MoveMouseTo(PendingPosition);
+			ClickWhereThePointerIs(PendingPosition);
+			TypeTextIntoFocusedWidget(PendingText);
+
+			if (GState && GState->View.IsValid())
+			{
+				const UVaCuusView::FImeStatus ImeStatus = GState->View->GetImeStatus();
+				UE_LOG(LogVaCuus, Log,
+					TEXT("vacuus.M1HUD.TypeShot: IME bridge built=%s, platform system absent=%s, registered=%s, ")
+					TEXT("context active=%s -- so the text above went through OnKeyChar -> ProcessTextInput"),
+					ImeStatus.bHandlerBuilt ? TEXT("yes") : TEXT("no"),
+					ImeStatus.bPlatformImeAbsent ? TEXT("yes") : TEXT("no"),
+					ImeStatus.bRegistered ? TEXT("yes") : TEXT("no"),
+					ImeStatus.bContextActive ? TEXT("yes") : TEXT("no"));
+			}
+		});
+
+	FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda(
+		[](float)
+		{
+			UE_LOG(LogVaCuus, Log, TEXT("vacuus.M1HUD.TypeShot: requesting a UI screenshot"));
+			FScreenshotRequest::RequestScreenshot(/*bInShowUI=*/true);
+			return false;
+		}),
+		GHoverShotShotSeconds);
+
+	UE_LOG(LogVaCuus, Log,
+		TEXT("vacuus.M1HUD.TypeShot: click (%.0f, %.0f) and type '%s' at t+%.1fs, screenshot at t+%.1fs"),
+		PendingPosition.X, PendingPosition.Y, *PendingText, GHoverShotMoveSeconds, GHoverShotShotSeconds);
+}
+
+static FAutoConsoleCommand GTypeShotCommand(
+	TEXT("vacuus.M1HUD.TypeShot"),
+	TEXT("Click the field at <x> <y> after 2s, type [text] into it, then take a UI screenshot at 3s. ")
+	TEXT("Headless text-entry proof."),
+	FConsoleCommandWithArgsDelegate::CreateStatic(&TypeShot));
 
 static FAutoConsoleCommand GNavShotCommand(
 	TEXT("vacuus.M1HUD.NavShot"),

@@ -12,10 +12,12 @@
 #include "Framework/Application/NavigationConfig.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/Application/SlateUser.h"
+#include "GenericPlatform/GenericWindow.h"
 #include "HAL/IConsoleManager.h"
 #include "Rendering/DrawElements.h"
 #include "RenderingThread.h"
 #include "UnrealClient.h"
+#include "Widgets/SWindow.h"
 
 // Debug helper for headless verification: request a UI-inclusive screenshot
 // once the view has published N frames (0 = off). Set BEFORE toggling
@@ -100,6 +102,17 @@ bool SVaCuusWidget::RemovePassThroughKey(const FKey& Key)
 void SVaCuusWidget::DetachView()
 {
 	check(IsInGameThread());
+
+	// CONTROLLER DECISION D18, AND IT MUST BE BEFORE THE RESET. ITextInputMethodSystem holds
+	// the IME context by TSharedRef, so a context registered on focus keeps the platform
+	// pointing at this widget's window -- and this widget is usually pulled out of the tree
+	// immediately after this call. Waiting for a destructor is not an option: it can run frames
+	// later, and an IME left mid-composition would call EndComposition() on a dead owner.
+	if (UVaCuusView* ViewPtr = View.Get())
+	{
+		ViewPtr->DetachIme();
+	}
+
 	View.Reset();
 
 	// The view is going away, so there is no document left to navigate: stop suppressing
@@ -173,6 +186,11 @@ void SVaCuusWidget::Tick(const FGeometry& AllottedGeometry, const double InCurre
 	// because a held stick stops producing events.
 	TickAnalogNavigation(InCurrentTime);
 
+	// The IME's coordinate basis (Task 9). Once per frame rather than on demand, because the
+	// rect it publishes is what the OS candidate window is anchored to and a viewport can be
+	// resized or dragged without any input reaching this widget at all.
+	PushImeSurface();
+
 	TickAutoShot();
 	FVaCuusPerfLog::TickLog();
 }
@@ -240,6 +258,51 @@ FIntPoint SVaCuusWidget::ToViewPixels(const FGeometry& Geometry, const UE::Slate
 	const FVector2f Local = FVector2f(Geometry.AbsoluteToLocal(ScreenPosition));
 	return FIntPoint(
 		FMath::FloorToInt(Local.X * Geometry.Scale), FMath::FloorToInt(Local.Y * Geometry.Scale));
+}
+
+void SVaCuusWidget::PushImeSurface(TOptional<bool> bFocusOverride)
+{
+	check(IsInGameThread());
+
+	UVaCuusView* ViewPtr = View.Get();
+	if (ViewPtr == nullptr || !FSlateApplication::IsInitialized())
+	{
+		return;
+	}
+
+	FSlateApplication& Slate = FSlateApplication::Get();
+
+	FVaCuusImeSurface Surface;
+
+	// NULL ON THIS PLATFORM, AND THAT IS THE POINT (controller decision D16): only
+	// FWindowsApplication and FMacApplication override
+	// GenericApplication::GetTextInputMethodSystem(); FLinuxApplication does not, so this is
+	// null here and every IME path downstream no-ops while typing keeps working through
+	// OnKeyChar. The handler logs the difference once so it is visible rather than mysterious.
+	Surface.TextInputMethodSystem = Slate.GetTextInputMethodSystem();
+
+	if (const TSharedPtr<SWindow> Window = Slate.FindWidgetWindow(SharedThis(this)))
+	{
+		// ITextInputMethodContext::GetWindow wants the PLATFORM window, not the Slate one:
+		// TSF attaches its document manager to an HWND.
+		Surface.NativeWindow = Window->GetNativeWindow();
+	}
+
+	// THE SAME RECT THE RENDER PATH COMPOSITES INTO, deliberately: ComputeWindowRect is built
+	// from GetRenderBoundingRect too, so the caret's mapping and the pixels it is drawn over
+	// cannot disagree. GetRenderBoundingRect is already in Slate ABSOLUTE space, which is
+	// exactly what GetTextBounds/GetScreenBounds are specified in -- no extra transform, and
+	// no FVector2f/FVector2D narrowing to get wrong.
+	const FSlateRect Bounds = CachedInputGeometry.GetRenderBoundingRect();
+	Surface.AbsolutePosition = FVector2D(Bounds.Left, Bounds.Top);
+	Surface.AbsoluteSize = FVector2D(Bounds.Right - Bounds.Left, Bounds.Bottom - Bounds.Top);
+	Surface.ViewPixelSize = ComputeWindowRect(CachedInputGeometry).Size();
+
+	// Slate focus, not RmlUi focus: keys travel Slate's focus path, so a platform IME context
+	// activated while another widget owns focus is pointed at a field nothing can type into.
+	Surface.bHostHasFocus = bFocusOverride.IsSet() ? bFocusOverride.GetValue() : HasAnyUserFocus().IsSet();
+
+	ViewPtr->UpdateIme(Surface);
 }
 
 FVaCuusModifierState SVaCuusWidget::ToModifierState(const FInputEvent& Event)
@@ -339,6 +402,25 @@ FReply SVaCuusWidget::OnMouseButtonDown(const FGeometry& MyGeometry, const FPoin
 		// focus a game handed us deliberately -- because it opened a menu -- is that
 		// game's to take away again.
 		bSelfRequestedUserFocus = true;
+	}
+
+	// CONTROLLER DECISION D14a: the platform IME context is activated on THIS click, from the
+	// rect flags, and not from the view-level bTextInputFocused that will confirm it a frame
+	// later. Same asymmetry the focus branch above exploits -- the geometry already knows the
+	// rect takes text, while "a field HAS the caret" cannot be true until the UI thread has
+	// processed the press we just queued. Waiting costs the player's first composition,
+	// silently; the D11 bug in a different coat.
+	//
+	// The surface is pushed first so the handler has a window and a rect to register with: a
+	// press can be the first thing that ever happens to a freshly built widget.
+	if (Snapshot.IsTextInputAt(Position))
+	{
+		PushImeSurface();
+
+		if (UVaCuusView* ViewPtr = View.Get())
+		{
+			ViewPtr->NotifyImeTextInputClicked();
+		}
 	}
 
 	return Reply;
@@ -941,9 +1023,14 @@ void SVaCuusWidget::RestoreNavigationConfig()
 FReply SVaCuusWidget::OnFocusReceived(const FGeometry& MyGeometry, const FFocusEvent& InFocusEvent)
 {
 	// Nothing is pushed into RmlUi: its focus is its own state, already set by the
-	// click that brought us here. This exists so the transition is observable (and,
-	// in Task 9, so the IME context can be activated).
+	// click that brought us here. This exists so the transition is observable, and so the
+	// IME learns that keys now reach us.
 	UE_LOG(LogVaCuus, Verbose, TEXT("VaCuus widget received Slate focus (cause %d)"), int32(InFocusEvent.GetCause()));
+
+	// Task 9: bHostHasFocus is what gates activation, so it has to be republished on the edge
+	// rather than waited for until the next Tick -- a pad-driven menu can focus this widget and
+	// have a field focused inside the document in the same frame.
+	PushImeSurface(/*bFocusOverride=*/true);
 
 	// Controller decision D12: while we own the keyboard, Slate must stop eating
 	// directions before OnKeyDown sees them. The user index is passed through only for
@@ -977,6 +1064,12 @@ void SVaCuusWidget::OnFocusLost(const FFocusEvent& InFocusEvent)
 	// Hand navigation back. Not conditional on anything: whoever has focus now owns
 	// arrow keys, and it is not us.
 	RestoreNavigationConfig();
+
+	// Task 9: the platform IME context is DEACTIVATED here (through the republished
+	// bHostHasFocus == false), and deliberately not unregistered -- the field keeps its caret
+	// and selection in RmlUi, exactly as the comment above says, so returning to the widget
+	// resumes composing where the player stopped. Unregistration belongs to teardown (D18).
+	PushImeSurface(/*bFocusOverride=*/false);
 
 	UE_LOG(LogVaCuus, Verbose, TEXT("VaCuus widget lost Slate focus (cause %d)"), int32(InFocusEvent.GetCause()));
 }

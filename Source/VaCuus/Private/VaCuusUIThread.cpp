@@ -6,6 +6,7 @@
 #include "VaCuusDocumentHost.h"
 #include "VaCuusEngine.h"
 #include "VaCuusInputMap.h"
+#include "VaCuusTextInput.h"
 #include "VaCuusUIQueues.h"
 
 #include "HAL/PlatformProcess.h"
@@ -249,6 +250,21 @@ void DispatchInputEvent(Rml::Context& Context, const FVaCuusInputEvent& Event)
 				Event.ViewId, UTF8_TO_TCHAR(BlurredId.c_str()));
 			break;
 		}
+
+		case EVaCuusInputEventKind::ImeSetTextInRange:
+		case EVaCuusInputEventKind::ImeSetSelectionRange:
+		case EVaCuusInputEventKind::ImeSetCompositionRange:
+		case EVaCuusInputEventKind::ImeCommitComposition:
+			// The only game -> UI half of the IME contract (controller decision D15). Handled
+			// in VaCuusTextInput because every one of these needs the active
+			// Rml::TextInputContext, the field-generation guard and the character-offset index
+			// space -- none of which belongs in a switch over input kinds.
+			//
+			// ON THIS QUEUE rather than a separate one so that ordering against the KeyDown and
+			// TextInput events the same composition produced is preserved; see the comment on
+			// the Ime* kinds in VaCuusInputEvent.h.
+			VaCuusTextInput::ApplyMutation(Context, Event.ViewId, Event);
+			break;
 
 		case EVaCuusInputEventKind::None:
 		default:

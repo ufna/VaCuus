@@ -162,6 +162,20 @@ void UVaCuusWidget::ReleaseSlateResources(bool bReleaseChildren)
 	// user widget.
 	RetireView();
 
+	// (3) IME CONTEXT -- ALREADY DONE, AND SAID SO EXPLICITLY (controller decision D18).
+	//
+	// RetireView() above calls SVaCuusWidget::DetachView(), whose FIRST act is
+	// UVaCuusView::DetachIme(): the platform text-input system is told to deactivate and
+	// unregister, and the context's back-pointer is nulled. Nothing extra belongs here, and the
+	// reason is the same determinism argument as (2): this call site is a KNOWN teardown moment
+	// for the Slate widget, and ITextInputMethodSystem holds our context by TSharedRef -- so an
+	// IME left registered would keep the OS pointing at this widget's native window for as many
+	// frames as it takes something else to drop the last reference. The destructor is too late,
+	// which is exactly what D18 says.
+	//
+	// A separate call here would be worse than redundant: it would need its own null checks and
+	// would make two places responsible for one invariant.
+
 	// Our reference has to go, and it has to be the last one: the UMG designer's
 	// FWidgetBlueprintEditorUtils::DestroyUserWidget ensure()s that a released widget's
 	// Slate widgets are actually destroyed, and WidgetBlueprint.cpp reports a "Leak

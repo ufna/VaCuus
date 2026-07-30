@@ -29,6 +29,20 @@ public:
 	 * view.
 	 */
 	virtual void SetMouseCursor(const Rml::String& CursorName) override;
+
+	/**
+	 * The caret, and the only place it can be caught -- see GetVaCuusLatchedCaret().
+	 *
+	 * RmlUi means this as "show the on-screen keyboard here"; for a desktop embedder it is
+	 * the IME candidate-window anchor, and it is the ONLY per-caret geometry RmlUi ever
+	 * hands out (`Rml::TextInputContext::GetBoundingBox` is the element's whole border box).
+	 * CaretPosition is in absolute RmlUi context pixels; latched, never acted on here,
+	 * because the host that owns this context has to attribute it first.
+	 */
+	virtual void ActivateKeyboard(Rml::Vector2f CaretPosition, float LineHeight) override;
+
+	/** Focus left every text field: there is no caret to follow until the next Activate. */
+	virtual void DeactivateKeyboard() override;
 	//~ End Rml::SystemInterface
 
 private:

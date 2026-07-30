@@ -5,6 +5,7 @@
 #include "VaCuusDefines.h"
 #include "VaCuusInputEvent.h"
 #include "VaCuusSubsystem.h"
+#include "VaCuusTextInput.h"
 #include "VaCuusUIThread.h"
 #include "VaCuusViewStatus.h"
 
@@ -26,9 +27,93 @@ void UVaCuusView::Invalidate()
 {
 	check(IsInGameThread());
 
+	// Controller decision D18: the platform text-input system holds our context by
+	// TSharedRef, so an invalidated view must let go of it HERE rather than whenever the
+	// UObject happens to be collected -- otherwise the OS keeps composing into a view that
+	// no longer exists.
+	DetachIme();
+
 	// The status object stays: the UI thread's host holds its own reference, and
 	// dropping ours would only make a late PollStatus() crash instead of no-op.
 	bRegistered = false;
+}
+
+void UVaCuusView::BeginDestroy()
+{
+	// The safety net. Every real teardown path (SVaCuusWidget::DetachView, the subsystem's
+	// Invalidate) has already detached by now; this is what keeps a view nobody retired from
+	// leaving a registered context behind.
+	DetachIme();
+
+	Super::BeginDestroy();
+}
+
+void UVaCuusView::UpdateIme(const FVaCuusImeSurface& Surface)
+{
+	check(IsInGameThread());
+
+	if (!ImeHandler.IsValid())
+	{
+		if (Surface.TextInputMethodSystem == nullptr)
+		{
+			// No platform IME (Linux, or a world-space host -- D17). Nothing to build, and
+			// building it anyway would allocate a handler that can never register anything. The
+			// one-shot "this platform has none" log lives in the handler, so create it once
+			// even here -- see below.
+			//
+			// Created regardless, deliberately: the handler is where the degradation is logged,
+			// and it is a few dozen bytes. Everything it does afterwards is a no-op.
+		}
+
+		ImeHandler = FVaCuusImeHandler::Create(*this);
+	}
+
+	ImeHandler->UpdateSurface(Surface);
+}
+
+void UVaCuusView::NotifyImeTextInputClicked()
+{
+	check(IsInGameThread());
+
+	if (ImeHandler.IsValid())
+	{
+		// The generation the click was answered from: the handler will not let a snapshot this
+		// old, or older, cancel the activation it cannot know about yet.
+		ImeHandler->NotifyTextInputClicked(CachedSnapshot.Generation);
+	}
+}
+
+void UVaCuusView::DetachIme()
+{
+	check(IsInGameThread());
+
+	if (ImeHandler.IsValid())
+	{
+		// Shutdown() first, then drop: the platform must be told before the last reference
+		// goes, or UnregisterContext never happens.
+		ImeHandler->Shutdown();
+		ImeHandler.Reset();
+	}
+}
+
+UVaCuusView::FImeStatus UVaCuusView::GetImeStatus() const
+{
+	FImeStatus ImeStatus;
+	if (!ImeHandler.IsValid())
+	{
+		return ImeStatus;
+	}
+
+	ImeStatus.bHandlerBuilt = true;
+	ImeStatus.bPlatformImeAbsent = ImeHandler->IsPlatformImeAbsent();
+	ImeStatus.bRegistered = ImeHandler->IsRegistered();
+	ImeStatus.bContextActive = ImeHandler->IsContextActive();
+	return ImeStatus;
+}
+
+ITextInputMethodContext* UVaCuusView::GetImeContextForTesting() const
+{
+	return ImeHandler.IsValid() ? ImeHandler->GetContextForTesting() : nullptr;
 }
 
 FVaCuusUIThread* UVaCuusView::GetUIThread() const
@@ -229,6 +314,14 @@ void UVaCuusView::PollStatus()
 
 	// Immediately after, so the log line can print both halves of the comparison.
 	LogFrameOrderingOnce();
+
+	// IME reconciliation rides the same poll, immediately after the snapshot it reads: the
+	// context's shadow state must be the newest published one before any notification tells
+	// the OS to come and read it (see FVaCuusImeHandler::OnSnapshotRefreshed).
+	if (ImeHandler.IsValid())
+	{
+		ImeHandler->OnSnapshotRefreshed(CachedSnapshot);
+	}
 
 	// Acquire pairs with the host's release store, so the result read below belongs
 	// to this serial and not to the load before it.

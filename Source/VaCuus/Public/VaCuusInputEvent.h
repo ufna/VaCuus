@@ -51,7 +51,44 @@ enum class EVaCuusInputEventKind : uint8
 	 * goes false) and keys reach the game again. "Close the menu", "pop the screen" and
 	 * every other Back semantic is game-side policy and belongs to whatever binds it.
 	 */
-	NavigateBack
+	NavigateBack,
+
+	//~ IME MUTATIONS (controller decision D15). The platform text-input system drives
+	//~ these from the game thread; they are the ONLY half of the IME contract that
+	//~ travels game -> UI. Everything the OS READS is answered from the shadow state in
+	//~ the published snapshot (FVaCuusTextFieldState) and never queued at all.
+	//~
+	//~ WHY THEY RIDE THE INPUT QUEUE RATHER THAN ONE OF THEIR OWN: order against typing
+	//~ is the whole point. During a composition the OS interleaves SetTextInRange with
+	//~ the key and character events that provoked it; two queues would let a
+	//~ composition commit overtake the keystroke after it and corrupt the field. One
+	//~ ordered channel is the only arrangement in which "the OS asked for this after
+	//~ that" survives the hand-off.
+	//~
+	//~ EVERY ONE carries FieldGeneration and is DROPPED on mismatch -- see
+	//~ FVaCuusTextFieldState::Generation for why a silently half-applied mutation is the
+	//~ failure mode being designed out.
+
+	/** RangeBegin/RangeEnd + Text: replace a span. ITextInputMethodContext::SetTextInRange. */
+	ImeSetTextInRange,
+
+	/** RangeBegin/RangeEnd + bCaretAtRangeBeginning. ITextInputMethodContext::SetSelectionRange. */
+	ImeSetSelectionRange,
+
+	/**
+	 * RangeBegin/RangeEnd: the span RmlUi should draw as composing (it already renders the
+	 * underline itself, WidgetTextInput::SetCompositionRange -> FormatText). An empty range
+	 * clears it.
+	 */
+	ImeSetCompositionRange,
+
+	/**
+	 * RangeBegin/RangeEnd + Text: commit the composition. Distinct from ImeSetTextInRange
+	 * because RmlUi's `CommitComposition` respects the element's maxlength while its
+	 * `SetText` explicitly does not (TextInputContext.h:48) -- and the commit is exactly
+	 * the moment maxlength has to hold.
+	 */
+	ImeCommitComposition
 };
 
 /**
@@ -87,8 +124,14 @@ struct FVaCuusModifierState
  * and the UI thread looks that up in its host map. See FVaCuusUIQueues for why
  * one shared queue rather than one per view.
  *
- * Trivially copyable and cheap (an FKey is an FName plus flags); nothing here
- * owns memory, so the queue never allocates beyond its own nodes.
+ * CHEAP, AND ALLOCATION-FREE FOR EVERY KIND EXCEPT THE IME ONES. An FKey is an FName plus
+ * flags and the rest are scalars, so the pointer/mouse/key path never allocates beyond the
+ * queue's own nodes. `Text` below is the single exception: it exists only for the two IME
+ * kinds that carry a string, which arrive at composition rate (tens per session, not per
+ * frame) and are moved rather than copied into the queue. That is why the type is
+ * move-friendly rather than trivially copyable -- TSpscQueue's in-place variadic Enqueue and
+ * TOptional-returning Dequeue both handle it, exactly as they already do for
+ * FVaCuusUICommand's FString payload.
  */
 struct FVaCuusInputEvent
 {
@@ -124,6 +167,39 @@ struct FVaCuusInputEvent
 	 * insert garbage rather than fail.
 	 */
 	uint32 CodePoint = 0;
+
+	//~ IME mutation payload. Unused (and untouched) by every other kind.
+
+	/**
+	 * Half-open range the mutation applies to, in **RmlUi UTF-8 CHARACTER OFFSETS** --
+	 * already converted out of the engine's UTF-16 index space by the producer.
+	 *
+	 * CONVERTED ON THE GAME THREAD, DELIBERATELY, even though RmlUi lives on the UI thread:
+	 * the conversion needs the field's text, and the game thread has an exact copy of it
+	 * (FVaCuusTextFieldState::Value) in the same publish the OS's indices were derived from.
+	 * Converting on the UI thread would use the LIVE value instead -- a different string
+	 * whenever the field changed in between -- and silently shift the range.
+	 */
+	int32 RangeBegin = 0;
+	int32 RangeEnd = 0;
+
+	/**
+	 * The value of FVaCuusTextFieldState::Generation the producer believed it was mutating.
+	 * A mismatch on the UI thread means the platform's active field changed underneath the
+	 * queue, and the event is dropped rather than applied to whatever is focused now.
+	 */
+	uint64 FieldGeneration = 0;
+
+	/** ImeSetTextInRange / ImeCommitComposition: the replacement text (UTF-16 in, UTF-8 out). */
+	FString Text;
+
+	/**
+	 * ImeSetSelectionRange: which end of the range the caret sits at
+	 * (ITextInputMethodContext::ECaretPosition). RmlUi has no such concept -- its selection
+	 * is a range plus a separate cursor -- so this becomes SetCursorPosition(begin) or
+	 * SetCursorPosition(end) at dispatch.
+	 */
+	bool bCaretAtRangeBeginning = false;
 
 	static FVaCuusInputEvent MouseMove(FIntPoint InPosition, const FVaCuusModifierState& InModifiers)
 	{
@@ -184,6 +260,55 @@ struct FVaCuusInputEvent
 		Event.Kind = EVaCuusInputEventKind::TextInput;
 		Event.CodePoint = InCodePoint;
 		Event.Modifiers = InModifiers;
+		return Event;
+	}
+
+	//~ IME factories. Ranges are RmlUi CHARACTER offsets (see RangeBegin) and every one of
+	//~ them takes the generation, so forgetting the stamp is not expressible.
+
+	static FVaCuusInputEvent ImeSetTextInRange(
+		uint64 InFieldGeneration, int32 InRangeBegin, int32 InRangeEnd, FString InText)
+	{
+		FVaCuusInputEvent Event;
+		Event.Kind = EVaCuusInputEventKind::ImeSetTextInRange;
+		Event.FieldGeneration = InFieldGeneration;
+		Event.RangeBegin = InRangeBegin;
+		Event.RangeEnd = InRangeEnd;
+		Event.Text = MoveTemp(InText);
+		return Event;
+	}
+
+	static FVaCuusInputEvent ImeSetSelectionRange(
+		uint64 InFieldGeneration, int32 InRangeBegin, int32 InRangeEnd, bool bInCaretAtRangeBeginning)
+	{
+		FVaCuusInputEvent Event;
+		Event.Kind = EVaCuusInputEventKind::ImeSetSelectionRange;
+		Event.FieldGeneration = InFieldGeneration;
+		Event.RangeBegin = InRangeBegin;
+		Event.RangeEnd = InRangeEnd;
+		Event.bCaretAtRangeBeginning = bInCaretAtRangeBeginning;
+		return Event;
+	}
+
+	static FVaCuusInputEvent ImeSetCompositionRange(uint64 InFieldGeneration, int32 InRangeBegin, int32 InRangeEnd)
+	{
+		FVaCuusInputEvent Event;
+		Event.Kind = EVaCuusInputEventKind::ImeSetCompositionRange;
+		Event.FieldGeneration = InFieldGeneration;
+		Event.RangeBegin = InRangeBegin;
+		Event.RangeEnd = InRangeEnd;
+		return Event;
+	}
+
+	static FVaCuusInputEvent ImeCommitComposition(
+		uint64 InFieldGeneration, int32 InRangeBegin, int32 InRangeEnd, FString InText)
+	{
+		FVaCuusInputEvent Event;
+		Event.Kind = EVaCuusInputEventKind::ImeCommitComposition;
+		Event.FieldGeneration = InFieldGeneration;
+		Event.RangeBegin = InRangeBegin;
+		Event.RangeEnd = InRangeEnd;
+		Event.Text = MoveTemp(InText);
 		return Event;
 	}
 };

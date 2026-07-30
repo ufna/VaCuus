@@ -317,6 +317,49 @@ button, input, .slot
 }
 
 /* ------------------------------------------------------------------ */
+/* Text-entry probe (bottom-left, above the button) -- Task 9           */
+/* ------------------------------------------------------------------ */
+/* `cursor: text` is not decoration: it is the second half of the proof that the
+   pointer path and the text path agree about where this element is. RmlUi pushes the
+   name through SystemInterface::SetMouseCursor, VaCuus latches it into the published
+   snapshot, and SVaCuusWidget::OnCursorQuery answers Slate from it -- so an I-beam over
+   this box and an arrow over #demo-btn below it means the same geometry that decides
+   EVaCuusRectFlags::TextInput is the geometry the cursor came from. */
+#chat-input
+{
+	display: block;
+	position: absolute;
+	left: 16px;
+	bottom: 76px;
+	width: 200px;
+	height: 32px;
+	padding: 0px 8px;
+	font-size: 15px;
+	color: #DCF2FA;
+	background-color: #0A1419;
+	border: 1px #2F5566;
+	border-radius: 6px;
+	cursor: text;
+}
+/* Focus is styled DIFFERENTLY from the button's on purpose: a screenshot has to show
+   which of the two bottom-left controls holds the caret, and "the border went cyan" is
+   readable at 1920x1080 where a caret one pixel wide is not. */
+#chat-input:focus
+{
+	background-color: #0E2430;
+	border-color: #5FE0FF;
+}
+/* The composing span RmlUi underlines for an IME. Unreachable on Linux (no
+   ITextInputMethodSystem, so no composition ever starts) and styled anyway, because the
+   element that draws it is RmlUi's own and this is the only place a Windows validation
+   pass would look. */
+#chat-input selection
+{
+	color: #05090C;
+	background-color: #5FE0FF;
+}
+
+/* ------------------------------------------------------------------ */
 /* Ability bar (bottom-center); slot 3 on cooldown                     */
 /* ------------------------------------------------------------------ */
 #ability-bar

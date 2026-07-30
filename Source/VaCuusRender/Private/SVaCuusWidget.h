@@ -255,6 +255,27 @@ private:
 	static FVaCuusModifierState ToModifierState(const FInputEvent& Event);
 
 	/**
+	 * Hands the view's IME bridge this widget's absolute rect, its native window, the
+	 * platform's text-input system and whether we hold Slate focus (Task 9).
+	 *
+	 * FROM HERE AND NOWHERE ELSE, because this module is the only one that may touch Slate:
+	 * `FSlateApplication::GetTextInputMethodSystem()` and `FindWidgetWindow()` both live in
+	 * the Slate module, while VaCuus deliberately depends only on ApplicationCore -- which is
+	 * where the whole ITextInputMethod* interface lives anyway. So the widget MEASURES and the
+	 * view's handler DECIDES.
+	 *
+	 * Called from Tick (cheap and idempotent -- the handler ignores an unchanged surface) and
+	 * from both focus handlers, where the focus bit is what actually changed.
+	 *
+	 * bFocusOverride is how the two focus handlers say what they KNOW rather than what Slate
+	 * happens to report at that instant: OnFocusLost runs inside the focus transition, and
+	 * relying on HasAnyUserFocus() there would make the answer depend on exactly where in
+	 * FSlateApplication's bookkeeping the callback sits. Unset means "ask Slate", which is what
+	 * Tick wants.
+	 */
+	void PushImeSurface(TOptional<bool> bFocusOverride = TOptional<bool>());
+
+	/**
 	 * The view's newest published snapshot, or a permanently empty one when there is
 	 * no view. Never fails and never blocks -- that is the whole point of it -- so every
 	 * handler below can be a plain synchronous test.

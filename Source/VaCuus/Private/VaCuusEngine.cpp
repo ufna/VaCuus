@@ -6,6 +6,7 @@
 #include "VaCuusDefines.h"
 #include "VaCuusFileInterface.h"
 #include "VaCuusSystemInterface.h"
+#include "VaCuusTextInput.h"
 
 #include "HAL/PlatformTLS.h"
 #include "Misc/Paths.h"
@@ -96,6 +97,14 @@ bool FVaCuusEngine::Initialize()
 	Rml::SetFileInterface(FileInterface.Get());
 	Rml::SetRenderInterface(RenderInterface);
 
+	// BEFORE Rml::Initialise(), and it has to be: Initialise() allocates a default no-op
+	// handler when the slot is empty (Core.cpp:121-125), and Shutdown() nulls the slot again
+	// (Core.cpp:189) -- so this belongs to every boot, and doing it here means every context
+	// created afterwards inherits it (CreateContext copies the global when its 4th argument is
+	// null, Core.cpp:267-268). The object has static storage duration, so RmlUi's raw pointer
+	// stays valid past Rml::Shutdown().
+	Rml::SetTextInputHandler(&VaCuusTextInput::GetRmlTextInputHandler());
+
 	if (!Rml::Initialise())
 	{
 		UE_LOG(LogVaCuus, Error, TEXT("Rml::Initialise() failed"));
@@ -106,6 +115,7 @@ bool FVaCuusEngine::Initialize()
 		Rml::SetSystemInterface(nullptr);
 		Rml::SetFileInterface(nullptr);
 		Rml::SetRenderInterface(nullptr);
+		Rml::SetTextInputHandler(nullptr);
 
 		// Drop only our stub; an externally provided interface is kept for a later retry.
 		if (RenderInterface == NullRenderInterface.Get())

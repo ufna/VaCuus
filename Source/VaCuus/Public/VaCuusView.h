@@ -10,10 +10,63 @@
 
 #include "VaCuusView.generated.h"
 
+class FGenericWindow;
+class FVaCuusImeHandler;
 class FVaCuusUIThread;
+class ITextInputMethodContext;
+class ITextInputMethodSystem;
 class UVaCuusSubsystem;
 struct FVaCuusInputEvent;
 struct FVaCuusViewStatus;
+
+/**
+ * Everything the platform IME needs to know about WHERE a view is drawn, as plain data.
+ *
+ * WHY IT IS A STRUCT AND NOT AN FGeometry: `ITextInputMethodContext` wants Slate ABSOLUTE
+ * (desktop) pixels, RmlUi gives view pixels, and the transform between them belongs to the
+ * Slate host -- which is in another module. Passing the two rectangles instead of the
+ * geometry keeps VaCuus free of a Slate dependency (every type below is ApplicationCore or
+ * Core) and keeps the mapping in one line the host can be held to:
+ *
+ *     Absolute = AbsolutePosition + ViewPixel * (AbsoluteSize / ViewPixelSize)
+ *
+ * which is exact for the axis-aligned translate+scale geometry a viewport overlay or a UMG
+ * slot ever has, and degenerates safely (no caret) when ViewPixelSize is zero.
+ *
+ * D17 -- WORLD-SPACE SURFACES MUST NOT SUPPLY ONE. There is no valid Slate-absolute mapping
+ * for a UI drawn on a mesh in the world: the "screen position" of a caret on a rotating
+ * quad is a projection that changes with the camera, and an IME candidate window anchored to
+ * it would chase the player's head. A UVaCuusWorldComponent-style host therefore leaves
+ * TextInputMethodMethodSystem null (or simply never calls UVaCuusView::UpdateIme), which
+ * degrades to exactly the Linux path -- OnKeyChar -> ProcessTextInput, no composition.
+ * M2 ships no world component, so this is a documented constraint rather than code.
+ */
+struct FVaCuusImeSurface
+{
+	/**
+	 * The platform's text-input method system, or NULL when the platform has none.
+	 *
+	 * Supplied by the host (FSlateApplication::GetTextInputMethodSystem()) rather than looked
+	 * up here, because that accessor is in the Slate module. Null is not an error: it is the
+	 * normal state on Linux -- FLinuxApplication never overrides
+	 * GenericApplication::GetTextInputMethodSystem() -- and on any world-space host (D17).
+	 * Everything downstream then no-ops and typing degrades to the OnKeyChar path.
+	 */
+	ITextInputMethodSystem* TextInputMethodSystem = nullptr;
+
+	/** Native window the surface is drawn in; what ITextInputMethodContext::GetWindow answers. */
+	TSharedPtr<FGenericWindow> NativeWindow;
+
+	/** The host widget's rect in Slate ABSOLUTE (desktop) pixels. */
+	FVector2D AbsolutePosition = FVector2D::ZeroVector;
+	FVector2D AbsoluteSize = FVector2D::ZeroVector;
+
+	/** The view's own pixel size -- the space RmlUi's coordinates and the snapshot rects use. */
+	FIntPoint ViewPixelSize = FIntPoint::ZeroValue;
+
+	/** True while the host holds Slate keyboard focus; false deactivates the context. */
+	bool bHostHasFocus = false;
+};
 
 /**
  * Broadcast on the GAME thread for the NEWEST completed document load.
@@ -168,6 +221,75 @@ public:
 	 */
 	const FVaCuusInteractiveSnapshot& GetSnapshot() const { return CachedSnapshot; }
 
+	//~ IME (Task 9). The Slate host's whole interface to the platform text-input system:
+	//~ everything RmlUi-shaped and everything ITextInputMethodContext-shaped stays behind
+	//~ these three calls. Game thread only.
+
+	/**
+	 * Tells the IME where this view is drawn and whether the host has keyboard focus (see
+	 * FVaCuusImeSurface). Called once per game frame by the host; cheap when nothing moved,
+	 * and a complete no-op on a platform with no IME system.
+	 *
+	 * The FIRST call is what creates the handler, so a view nobody hosts in Slate never
+	 * builds an IME context at all -- which is the right answer for a headless view and for a
+	 * world-space one (D17).
+	 */
+	void UpdateIme(const FVaCuusImeSurface& Surface);
+
+	/**
+	 * Controller decision D14a: a press landed on a rect flagged
+	 * EVaCuusRectFlags::TextInput, so activate the platform IME context on THIS click
+	 * instead of waiting for the snapshot that will confirm it a frame later. Without this
+	 * the player's first composition is lost -- the same bug D11 fixed for Slate focus.
+	 */
+	void NotifyImeTextInputClicked();
+
+	/**
+	 * Deactivates, unregisters and forgets the IME context NOW (controller decision D18).
+	 *
+	 * Called from every teardown site rather than left to destruction: the platform system
+	 * holds the context by TSharedRef, so a context that outlives its Slate widget keeps the
+	 * OS pointing at a window that is gone.
+	 */
+	void DetachIme();
+
+	/**
+	 * What the IME bridge is doing right now.
+	 *
+	 * ONE STRUCT RATHER THAN FOUR ACCESSORS, and it is deliberately on the VIEW: the handler and
+	 * the context are both declared in a PRIVATE header (VaCuusTextInput.h), so a caller in
+	 * another module -- VaCuus.Input.TextEntry lives in VaCuusRender, next to the widget whose
+	 * OnKeyChar it drives -- cannot name their types at all. The view is already the facade for
+	 * everything else about a view; being the facade for this too is what keeps the IME
+	 * implementation private without making it untestable.
+	 */
+	struct FImeStatus
+	{
+		/** False until the first UpdateIme(): a view nobody hosts in Slate has no bridge. */
+		bool bHandlerBuilt = false;
+
+		/** True where the platform offers no ITextInputMethodSystem -- the Linux path (D16). */
+		bool bPlatformImeAbsent = true;
+
+		/** True once the context has been handed to the platform system. Never true on Linux. */
+		bool bRegistered = false;
+
+		/** True while the platform reports OUR context as the active one. */
+		bool bContextActive = false;
+	};
+
+	FImeStatus GetImeStatus() const;
+
+	/**
+	 * The platform-facing context, so a test can drive the 14 ITextInputMethodContext virtuals
+	 * the way the OS would. Null before the first UpdateIme().
+	 *
+	 * NON-NULL EVEN WITHOUT A PLATFORM IME, which is the point: answering those virtuals needs
+	 * only the shadow state and the surface, so the whole game-thread half of the IME is built
+	 * and observable on a platform that will never call it (D16).
+	 */
+	ITextInputMethodContext* GetImeContextForTesting() const;
+
 	/**
 	 * Once per game frame, from UVaCuusSubsystem::Tick: refreshes the snapshot cache
 	 * and turns the UI thread's newest load result into an OnLoadCompleted
@@ -175,6 +297,11 @@ public:
 	 * game thread by the time anyone reads it.
 	 */
 	void PollStatus();
+
+	//~ Begin UObject
+	/** Last-chance IME teardown; the explicit DetachIme() sites are the intended ones (D18). */
+	virtual void BeginDestroy() override;
+	//~ End UObject
 
 private:
 	/** Copies the newest published snapshot into CachedSnapshot, if there is a newer one. */
@@ -196,6 +323,15 @@ private:
 
 	/** Shared with this view's document host on the UI thread. */
 	TSharedPtr<FVaCuusViewStatus> Status;
+
+	/**
+	 * The platform IME bridge, created by the first UpdateIme() and destroyed by DetachIme().
+	 *
+	 * TSharedPtr because ITextInputMethodSystem::RegisterContext takes the CONTEXT by
+	 * TSharedRef and the handler is what owns that context -- the platform can outlive our
+	 * intent to keep it, which is precisely why Shutdown() is called explicitly.
+	 */
+	TSharedPtr<FVaCuusImeHandler> ImeHandler;
 
 	/**
 	 * Game-thread-owned copy of the newest snapshot the UI thread published.
