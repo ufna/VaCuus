@@ -718,6 +718,112 @@ static bool ClickWhereThePointerIs(const FVector2D& Position)
 }
 
 /**
+ * Turns the wheel where the pointer is, through Slate's real routing.
+ *
+ * THE MOVE FIRST IS NOT A CONVENIENCE. Rml::Context::ProcessMouseWheel resolves its scroll
+ * target from the HOVER element and returns immediately when there is none
+ * (Context.cpp:811-814), and hover is only ever set by a processed mouse move
+ * (Context.cpp:1311). A wheel event delivered to a context that has never seen a position
+ * scrolls nothing, silently -- so the pair is what the real path looks like anyway.
+ *
+ * Delta is in WHEEL NOTCHES, positive up, which is UE's convention;
+ * FVaCuusUIThread::DispatchInputEvent flips the sign and maps it onto RmlUi's
+ * UNIT_SCROLL_LENGTH unit.
+ */
+static bool WheelAt(const FVector2D& Position, float Delta)
+{
+	if (!FSlateApplication::IsInitialized())
+	{
+		UE_LOG(LogVaCuus, Error, TEXT("Synthesizing a wheel turn needs Slate"));
+		return false;
+	}
+
+	MoveMouseTo(Position);
+
+	FSlateApplication& Slate = FSlateApplication::Get();
+	const FPointerEvent WheelEvent(FSlateApplicationBase::CursorPointerIndex, Position, Position, TSet<FKey>(),
+		EKeys::MouseWheelAxis, Delta, FModifierKeysState());
+
+	const bool bHandled = Slate.ProcessMouseWheelOrGestureEvent(WheelEvent, /*InGestureEvent=*/nullptr);
+
+	UE_LOG(LogVaCuus, Log, TEXT("Wheel %+.1f at (%.0f, %.0f); Slate reports the event %s"),
+		Delta, Position.X, Position.Y,
+		bHandled ? TEXT("handled by a widget") : TEXT("unhandled (it fell through)"));
+	return bHandled;
+}
+
+/**
+ * Presses at one point, drags to another in steps, and releases -- the gesture a scrollbar
+ * needs and the one case the snapshot deliberately cannot answer on its own.
+ *
+ * WHY THE INTERMEDIATE MOVES MATTER: a press-then-jump-then-release is not a drag to RmlUi
+ * either -- WidgetScroll positions its bar from the mouse position it sees while the bar is
+ * :active -- and it is not a drag to SVaCuusWidget's capture bookkeeping, which is the thing
+ * being demonstrated: the moves must keep answering Handled after the pointer leaves the
+ * rect the press started in.
+ *
+ * The pressed-button set is LEFT for the press and every move, and EMPTY for the release,
+ * mirroring FSlateApplication::OnMouseUp, which removes the released button before building
+ * the event (SlateApplication.cpp:6098-6106).
+ */
+static void DragFromTo(const FVector2D& From, const FVector2D& To, int32 NumSteps)
+{
+	if (!FSlateApplication::IsInitialized())
+	{
+		UE_LOG(LogVaCuus, Error, TEXT("Synthesizing a drag needs Slate"));
+		return;
+	}
+
+	FSlateApplication& Slate = FSlateApplication::Get();
+	const TSet<FKey> LeftOnly = {EKeys::LeftMouseButton};
+	const TSet<FKey> NoButtons;
+
+	MoveMouseTo(From);
+
+	const FPointerEvent DownEvent(FSlateApplicationBase::CursorPointerIndex, From, From, LeftOnly,
+		EKeys::LeftMouseButton, /*WheelDelta=*/0.0f, FModifierKeysState());
+	const bool bDownHandled = Slate.ProcessMouseButtonDownEvent(nullptr, DownEvent);
+
+	// WHOSE press was it? ProcessMouseButtonDownEvent's return cannot say: it is true if ANY
+	// widget on the bubble path handled the event, and SViewport -- the game's own widget, and
+	// our ancestor (GameViewportClient.cpp:1326) -- handles what we decline. So a pass-through
+	// press and a UI press BOTH report "handled", which is exactly the distinction an acceptance
+	// run needs and the one Slate will not give.
+	//
+	// Capture does give it. SVaCuusWidget takes Slate's mouse capture on the first press it
+	// answers Handled (OnMouseButtonDown), and takes none at all when the snapshot does not
+	// cover the point -- so this flag, sampled between the press and the release, is a direct
+	// readout of the FReply the widget produced.
+	const bool bVaCuusTookPress = GState.IsValid() && GState->Widget.IsValid() &&
+		GState->Widget->IsTrackingMouseCapture_Debug();
+
+	const int32 Steps = FMath::Max(NumSteps, 1);
+	int32 NumMovesHandled = 0;
+	for (int32 Step = 1; Step <= Steps; ++Step)
+	{
+		const FVector2D Position = FMath::Lerp(From, To, double(Step) / double(Steps));
+		Slate.SetCursorPos(Position);
+
+		const FPointerEvent MoveEvent(FSlateApplicationBase::CursorPointerIndex, Position, Position, LeftOnly,
+			FKey(), /*WheelDelta=*/0.0f, FModifierKeysState());
+		NumMovesHandled += Slate.ProcessMouseMoveEvent(MoveEvent) ? 1 : 0;
+	}
+
+	const FPointerEvent UpEvent(FSlateApplicationBase::CursorPointerIndex, To, To, NoButtons,
+		EKeys::LeftMouseButton, /*WheelDelta=*/0.0f, FModifierKeysState());
+	Slate.ProcessMouseButtonUpEvent(UpEvent);
+
+	UE_LOG(LogVaCuus, Log,
+		TEXT("Dragged (%.0f, %.0f) -> (%.0f, %.0f) in %d step(s); Slate says the press was %s, ")
+		TEXT("and the press was taken by %s (%d of %d move(s) handled by someone)"),
+		From.X, From.Y, To.X, To.Y, Steps,
+		bDownHandled ? TEXT("handled") : TEXT("unhandled"),
+		bVaCuusTookPress ? TEXT("THE UI (VaCuus captured the mouse)")
+						 : TEXT("THE GAME (VaCuus declined, so it bubbled past us to SViewport)"),
+		NumMovesHandled, Steps);
+}
+
+/**
  * Types a string one character at a time, exactly as the platform keyboard would.
  *
  * ONE FCharacterEvent PER UTF-16 UNIT, because that is what Slate delivers -- TCHAR is
@@ -1189,6 +1295,51 @@ static FAutoConsoleCommand GM2DemoCommand(
 	TEXT("wheel-scrollable list, a text field, a vacuus-passthrough region and nav-annotated focusables. ")
 	TEXT("Shares every vacuus.M1HUD.* sub-command, because those are about the view and not the document."),
 	FConsoleCommandDelegate::CreateLambda([] { Toggle(GM2DemoVfsPath); }));
+
+static void Wheel(const TArray<FString>& Args)
+{
+	if (Args.Num() < 3)
+	{
+		UE_LOG(LogVaCuus, Error,
+			TEXT("vacuus.M2Demo.Wheel expects <x> <y> <delta> [delaySeconds]: window pixels, then notches (+ is up)"));
+		return;
+	}
+
+	const FVector2D Position(FCString::Atof(*Args[0]), FCString::Atof(*Args[1]));
+	const float Delta = FCString::Atof(*Args[2]);
+	const float DelaySeconds = Args.Num() > 3 ? FCString::Atof(*Args[3]) : 0.0f;
+
+	ScheduleAfter(DelaySeconds, [Position, Delta] { WheelAt(Position, Delta); });
+}
+
+static void Drag(const TArray<FString>& Args)
+{
+	if (Args.Num() < 4)
+	{
+		UE_LOG(LogVaCuus, Error,
+			TEXT("vacuus.M2Demo.Drag expects <x0> <y0> <x1> <y1> [steps] [delaySeconds], in window pixels"));
+		return;
+	}
+
+	const FVector2D From(FCString::Atof(*Args[0]), FCString::Atof(*Args[1]));
+	const FVector2D To(FCString::Atof(*Args[2]), FCString::Atof(*Args[3]));
+	const int32 Steps = Args.Num() > 4 ? FCString::Atoi(*Args[4]) : 8;
+	const float DelaySeconds = Args.Num() > 5 ? FCString::Atof(*Args[5]) : 0.0f;
+
+	ScheduleAfter(DelaySeconds, [From, To, Steps] { DragFromTo(From, To, Steps); });
+}
+
+static FAutoConsoleCommand GWheelCommand(
+	TEXT("vacuus.M2Demo.Wheel"),
+	TEXT("Move the pointer to <x> <y> and turn the wheel <delta> notches (+ is up) through Slate's real ")
+	TEXT("routing. Optional [delaySeconds]. Headless scroll verification."),
+	FConsoleCommandWithArgsDelegate::CreateStatic(&Wheel));
+
+static FAutoConsoleCommand GDragCommand(
+	TEXT("vacuus.M2Demo.Drag"),
+	TEXT("Press at <x0> <y0>, drag to <x1> <y1> in [steps] moves, release. Optional [delaySeconds]. ")
+	TEXT("Headless drag verification -- the scrollbar case pointer capture exists for."),
+	FConsoleCommandWithArgsDelegate::CreateStatic(&Drag));
 
 static FAutoConsoleCommand GRectsCommand(
 	TEXT("vacuus.M2Demo.Rects"),
