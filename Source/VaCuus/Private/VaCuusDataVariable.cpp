@@ -353,11 +353,11 @@ Rml::DataVariable FVaCuusStructDefinition::Child(void* InModelBase, const Rml::D
 	//
 	// LATCHED, AND THE STRING BUILD IS INSIDE THE LATCH. This is not a once-at-startup path: a
 	// missing member is re-resolved every time the expression re-evaluates, i.e. every time its
-	// ROOT variable is dirtied. `{{Target.Desgination}}` on a Target that moves each frame is
-	// therefore ~264 warnings AND ~264 member-list concatenations per second on the rig spec 9
-	// budgets -- and the document is exactly as wrong on the second one as on the first. The
-	// list itself is why the build has to be inside: it is O(members) FString appends, so
-	// leaving it outside would keep the allocations after removing the log line.
+	// ROOT variable is dirtied. `{{Target.Desgination}}` against a Target the game writes each
+	// frame is therefore one warning AND one member-list rebuild per UI frame, at UI frame rate,
+	// for the life of the process -- on a path spec 9 budgets in microseconds. The list is why
+	// the build has to be INSIDE rather than merely the log line: it is O(members) FString
+	// appends, so latching only the UE_LOG would leave every allocation behind.
 	if (!bMemberMissLogged)
 	{
 		bMemberMissLogged = true;
