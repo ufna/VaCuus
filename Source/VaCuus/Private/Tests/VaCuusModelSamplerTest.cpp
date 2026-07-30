@@ -13,6 +13,8 @@
 #include "UObject/SoftObjectPath.h"
 #include "UObject/UnrealType.h"
 
+#include <limits>
+
 #if WITH_DEV_AUTOMATION_TESTS
 
 namespace VaCuusModelSamplerTest
@@ -100,6 +102,9 @@ struct FKindCase
 {
 	const TCHAR* WireName;
 	TFunction<void(FVaCuusLayoutTestModel&)> Mutate;
+
+	/** Only when two cases drive the same field, so the assertion messages stay distinguishable. */
+	const TCHAR* Label = nullptr;
 };
 
 static TArray<FKindCase> MakeKindCases()
@@ -120,6 +125,20 @@ static TArray<FKindCase> MakeKindCases()
 		{TEXT("Icon"), [](FVaCuusLayoutTestModel& M) { M.Icon = TSoftObjectPtr<UObject>(FSoftObjectPath(TEXT("/Game/UI/Icon.Icon"))); }},
 		{TEXT("Origin.X"), [](FVaCuusLayoutTestModel& M) { M.Origin.X = 5.f; }},
 		{TEXT("Origin.Y"), [](FVaCuusLayoutTestModel& M) { M.Origin.Y = 5.f; }},
+
+		// NaN, AND IT IS FRAME 4 OF THE RIG THAT MATTERS -- "the change settles".
+		//
+		// `NaN != NaN` is true for every pair, including a value compared with itself, so the
+		// obvious `!=` differ reports this field changed on EVERY frame from here on: one
+		// publish, one DirtyVariable and one view re-evaluation per frame for a value that is
+		// not moving. That is spec 9's idle row lost to a comparison rather than to a change,
+		// and it is invisible without this case -- the sampler compares bit patterns
+		// (FMemory::Memcmp) precisely to prevent it, and before this line no test anywhere set
+		// a float to NaN, so reverting that Memcmp to `!=` broke nothing.
+		//
+		// A percentage over a zero maximum is the everyday way a UI-bound float goes NaN.
+		{TEXT("Ratio"), [](FVaCuusLayoutTestModel& M) { M.Ratio = std::numeric_limits<float>::quiet_NaN(); },
+			TEXT("Ratio (NaN)")},
 	};
 }
 }	 // namespace VaCuusModelSamplerTest
@@ -146,9 +165,14 @@ bool FVaCuusModelSamplerPerKindTest::RunTest(const FString& Parameters)
 
 	for (const FKindCase& Case : MakeKindCases())
 	{
+		// Two cases drive `Ratio` (an ordinary value and a NaN), so the messages carry the
+		// case's label rather than its field name -- otherwise a failure names a field that
+		// appears twice and says nothing about which mutation produced it.
+		const TCHAR* const Name = Case.Label != nullptr ? Case.Label : Case.WireName;
+
 		FPipeline Pipeline(FVaCuusLayoutTestModel::StaticStruct());
 		const int32 Expected = IndexOf(Pipeline.Layout, Case.WireName);
-		if (!TestTrue(*FString::Printf(TEXT("the fixture has '%s'"), Case.WireName), Expected != INDEX_NONE))
+		if (!TestTrue(*FString::Printf(TEXT("the fixture has '%s'"), Name), Expected != INDEX_NONE))
 		{
 			continue;
 		}
@@ -160,15 +184,15 @@ bool FVaCuusModelSamplerPerKindTest::RunTest(const FString& Parameters)
 
 		// Frame 2, unchanged: the differ must find nothing, and nothing must be published.
 		const TArray<int32> Quiet = Pipeline.RunFrame(Live);
-		TestEqual(*FString::Printf(TEXT("'%s': an unchanged frame publishes nothing"), Case.WireName), Quiet.Num(), 0);
+		TestEqual(*FString::Printf(TEXT("'%s': an unchanged frame publishes nothing"), Name), Quiet.Num(), 0);
 
 		// Frame 3: exactly one field moves.
 		Case.Mutate(Live);
 		const TArray<int32> Changed = Pipeline.RunFrame(Live);
 
-		if (TestEqual(*FString::Printf(TEXT("'%s': exactly one field is marked"), Case.WireName), Changed.Num(), 1))
+		if (TestEqual(*FString::Printf(TEXT("'%s': exactly one field is marked"), Name), Changed.Num(), 1))
 		{
-			TestEqual(*FString::Printf(TEXT("'%s': and it is the one that changed"), Case.WireName), Changed[0], Expected);
+			TestEqual(*FString::Printf(TEXT("'%s': and it is the one that changed"), Name), Changed[0], Expected);
 		}
 		else
 		{
@@ -177,15 +201,17 @@ bool FVaCuusModelSamplerPerKindTest::RunTest(const FString& Parameters)
 			{
 				if (Index != Expected)
 				{
-					AddError(FString::Printf(TEXT("'%s' also marked '%s'"), Case.WireName, *Pipeline.Layout.GetFields()[Index].WireName));
+					AddError(FString::Printf(TEXT("'%s' also marked '%s'"), Name, *Pipeline.Layout.GetFields()[Index].WireName));
 				}
 			}
 		}
 
 		// Frame 4: quiet again. A differ that stored the wrong thing (or nothing) into its
 		// shadow would keep re-reporting the same field forever, which is a publish per frame.
+		// This is also the ONLY assertion the NaN case can fail: `NaN != NaN` still reports the
+		// change on frame 3, and only stops settling here.
 		const TArray<int32> Settled = Pipeline.RunFrame(Live);
-		TestEqual(*FString::Printf(TEXT("'%s': the change settles"), Case.WireName), Settled.Num(), 0);
+		TestEqual(*FString::Printf(TEXT("'%s': the change settles"), Name), Settled.Num(), 0);
 	}
 
 	return true;
@@ -263,19 +289,29 @@ bool FVaCuusModelSamplerBitfieldTest::RunTest(const FString& Parameters)
 }
 
 /**
- * CASE-ONLY CHANGES, for the four string-shaped kinds.
+ * CASE-ONLY CHANGES, for every kind whose shipped value is a string.
  *
- * Every one of them ships its DISPLAY form to RmlUi, and every one of them has an obvious
- * comparison that is case-INSENSITIVE: FString/FUtf8String/FAnsiString all get operator== from
- * one template whose implementation is `Equals(Rhs, ESearchCase::IgnoreCase)`
- * (UnrealString.h.inl:906-915), and FName::operator== compares the case-insensitive comparison
- * index (NameTypes.h:1624-1626). "hp" -> "HP" is then a change the screen shows and the differ
- * denies -- one stale label, forever, with no diagnostic.
+ * Each of them ships its DISPLAY form to RmlUi, and each of them has an obvious comparison that
+ * is case-INSENSITIVE: FString/FUtf8String/FAnsiString all get operator== from one template
+ * whose implementation is `Equals(Rhs, ESearchCase::IgnoreCase)` (UnrealString.h.inl:906-915),
+ * and FName::operator== compares the case-insensitive comparison index (NameTypes.h:1624-1626).
+ * "hp" -> "HP" is then a change the screen shows and the differ denies -- one stale label,
+ * forever, with no diagnostic.
  *
- * FName carries a caveat and the test states it: WITH_CASE_PRESERVING_NAME is
- * WITH_EDITORONLY_DATA (NameTypes.h:32-33), so a cooked build does not keep the case and
- * cannot render the difference either. The assertion is therefore about the editor and PIE,
- * where authoring happens.
+ * FSoftObjectPath BELONGS HERE FOR THE SAME REASON, and this is the case that was missing: its
+ * operator== is `AssetPath == Other.AssetPath && SubPathString == Other.SubPathString`
+ * (SoftObjectPath.cpp:590-593) -- two FName compares plus an FUtf8String compare, and the last
+ * of those is Stricmp again. The UI ships FSoftObjectPtr::ToString(), i.e. the display form, so
+ * a sub-path that differs only in case renders differently and compares equal. Before this the
+ * only soft-reference mutation in any test was empty -> populated, which every candidate
+ * comparison catches, so FVaCuusModelSampler's componentwise case-sensitive compare could be
+ * reverted to operator== with nothing failing anywhere.
+ *
+ * THE SUB-PATH IS WHAT IS MUTATED, DELIBERATELY. A case-only change in the package or asset
+ * name would be undetectable without WITH_CASE_PRESERVING_NAME (it is WITH_EDITORONLY_DATA,
+ * NameTypes.h:32-33) and would not render differently in a cooked build either -- the same
+ * caveat FName carries below. SubPathString is an FUtf8String and always keeps its case, so
+ * this assertion holds in every configuration.
  */
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusModelSamplerStringCaseTest, "VaCuus.Model.Sampler.StringCase",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -292,15 +328,23 @@ bool FVaCuusModelSamplerStringCaseTest::RunTest(const FString& Parameters)
 	Live.Caption = FText::FromString(TEXT("hp"));
 	Live.Utf8Note = FUtf8String(UTF8TEXT("hp"));
 	Live.AnsiNote = FAnsiString("hp");
+	Live.Icon = TSoftObjectPtr<UObject>(FSoftObjectPath(TEXT("/Game/UI/Icons.Icons:hp")));
 	Pipeline.RunFrame(Live);
 	Pipeline.RunFrame(Live);
 
-	// Case, and nothing else, changes on all five.
+	// The premise, asserted rather than assumed: if the sub-path stopped surviving the round
+	// trip into the shadow, the soft-reference assertion below would pass for the wrong reason.
+	TestEqual(TEXT("the sub-path reached the UI shadow"),
+		FString(Read<TSoftObjectPtr<UObject>>(Pipeline.Layout, Pipeline.UIShadow.GetData(), TEXT("Icon")).ToString()),
+		FString(TEXT("/Game/UI/Icons.Icons:hp")));
+
+	// Case, and nothing else, changes on all six.
 	Live.Title = TEXT("HP");
 	Live.Tag = TEXT("HP");
 	Live.Caption = FText::FromString(TEXT("HP"));
 	Live.Utf8Note = FUtf8String(UTF8TEXT("HP"));
 	Live.AnsiNote = FAnsiString("HP");
+	Live.Icon = TSoftObjectPtr<UObject>(FSoftObjectPath(TEXT("/Game/UI/Icons.Icons:HP")));
 
 	const TArray<int32> Changed = Pipeline.RunFrame(Live);
 
@@ -310,6 +354,7 @@ bool FVaCuusModelSamplerStringCaseTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("FUtf8String: a case-only change is a change"), WasMarked(TEXT("Utf8Note")));
 	TestTrue(TEXT("FAnsiString: a case-only change is a change"), WasMarked(TEXT("AnsiNote")));
 	TestTrue(TEXT("FText: a case-only change is a change"), WasMarked(TEXT("Caption")));
+	TestTrue(TEXT("FSoftObjectPath: a case-only sub-path change is a change"), WasMarked(TEXT("Icon")));
 
 #if WITH_CASE_PRESERVING_NAME
 	TestTrue(TEXT("FName: a case-only change is a change where the case is kept"), WasMarked(TEXT("Tag")));
@@ -317,6 +362,9 @@ bool FVaCuusModelSamplerStringCaseTest::RunTest(const FString& Parameters)
 
 	TestEqual(TEXT("the new casing reached the UI"), Read<FString>(Pipeline.Layout, Pipeline.UIShadow.GetData(), TEXT("Title")),
 		FString(TEXT("HP")));
+	TestEqual(TEXT("and so did the new sub-path casing"),
+		FString(Read<TSoftObjectPtr<UObject>>(Pipeline.Layout, Pipeline.UIShadow.GetData(), TEXT("Icon")).ToString()),
+		FString(TEXT("/Game/UI/Icons.Icons:HP")));
 
 	return true;
 }
