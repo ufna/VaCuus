@@ -11,9 +11,41 @@
 
 namespace VaCuusFileInterfacePrivate
 {
-IFileHandle* ToHandle(Rml::FileHandle File)
+/**
+ * An open file plus the LOGICAL read position, which IFileHandle cannot hold.
+ *
+ * WHY THE POSITION IS OURS AND NOT THE HANDLE'S: for a read-only handle
+ * FFileHandleUnix::Seek clamps to the last byte --
+ * `FileOffset = NewPosition >= FileSize ? FileSize - 1 : NewPosition`
+ * (Unix/UnixPlatformFile.cpp:177) -- and Tell() returns that same member verbatim
+ * (:152-157). So seeking to exact EOF leaves the handle at Size - 1: Tell() reports one
+ * byte short and the next Read() hands back the LAST BYTE AGAIN instead of nothing.
+ * SeekFromEnd() has the same off-by-one (:200), and on an EMPTY file the clamp goes
+ * NEGATIVE (FileSize - 1 == -1), which Tell() then returns and our size_t cast turns into
+ * ~0. None of that is a Unix quirk we may pass on: Rml::FileInterface::Tell is specified as
+ * "the number of bytes from the origin of the file" with no clamp
+ * (ThirdParty/RmlUi/Include/RmlUi/Core/FileInterface.h:43-46), and RmlUi's own default
+ * Length() is Seek-to-end followed by Tell (:48-52), so a one-short Tell is a truncated
+ * document.
+ *
+ * Size is cached rather than re-read per call because a read-only FFileHandleUnix caches it
+ * too (fstat in the constructor, :130-135; Size() returns the member at :340-345), so this
+ * changes nothing about what a caller observes -- and it gives the [0, Size] clamp below a
+ * domain that cannot shift between a Seek and the Read that follows it.
+ */
+struct FOpenFile
 {
-	return reinterpret_cast<IFileHandle*>(File);
+	IFileHandle* Handle = nullptr;
+
+	/** Always in [0, Size]. The handle's own position cannot represent Size. */
+	int64 Position = 0;
+
+	int64 Size = 0;
+};
+
+FOpenFile* ToFile(Rml::FileHandle File)
+{
+	return reinterpret_cast<FOpenFile*>(File);
 }
 } // namespace VaCuusFileInterfacePrivate
 
@@ -56,43 +88,70 @@ Rml::FileHandle FVaCuusFileInterface::Open(const Rml::String& Path)
 		return Rml::FileHandle(0);
 	}
 
-	return reinterpret_cast<Rml::FileHandle>(Handle);
+	return reinterpret_cast<Rml::FileHandle>(
+		new VaCuusFileInterfacePrivate::FOpenFile{Handle, /*Position=*/0, Handle->Size()});
 }
 
 void FVaCuusFileInterface::Close(Rml::FileHandle File)
 {
-	delete VaCuusFileInterfacePrivate::ToHandle(File);
+	VaCuusFileInterfacePrivate::FOpenFile* Open = VaCuusFileInterfacePrivate::ToFile(File);
+	if (Open == nullptr)
+	{
+		// Rml::FileHandle(0) is the failure value Open() returns, and RmlUi does close
+		// handles it never got (StreamFile's destructor runs regardless).
+		return;
+	}
+
+	delete Open->Handle;
+	delete Open;
 }
 
 size_t FVaCuusFileInterface::Read(void* Buffer, size_t Size, Rml::FileHandle File)
 {
-	IFileHandle* Handle = VaCuusFileInterfacePrivate::ToHandle(File);
-	if (Handle == nullptr)
+	VaCuusFileInterfacePrivate::FOpenFile* Open = VaCuusFileInterfacePrivate::ToFile(File);
+	if (Open == nullptr)
 	{
 		return 0;
 	}
 
-	// IFileHandle::Read is all-or-nothing, so clamp to the bytes actually left.
-	const int64 Remaining = Handle->Size() - Handle->Tell();
-	const int64 BytesToRead = FMath::Min(static_cast<int64>(Size), Remaining);
+	// IFileHandle::Read is all-or-nothing, so clamp to the bytes actually left. Counted
+	// from OUR position: at exact EOF the handle's own is Size - 1 (see FOpenFile) and
+	// this would read the last byte a second time.
+	const int64 BytesToRead = FMath::Min(static_cast<int64>(Size), Open->Size - Open->Position);
 	if (BytesToRead <= 0)
 	{
 		return 0;
 	}
 
-	return Handle->Read(static_cast<uint8*>(Buffer), BytesToRead) ? static_cast<size_t>(BytesToRead) : 0;
+	// Re-sync the handle, which Seek() deliberately left where it was. Only when the two
+	// disagree: on Unix a read-mode Seek is a bare assignment, but on Windows it is a real
+	// SetFilePointerEx, and this runs per document read. The seek cannot be clamped here --
+	// Position < Size is guaranteed by BytesToRead > 0.
+	if (Open->Handle->Tell() != Open->Position && !Open->Handle->Seek(Open->Position))
+	{
+		return 0;
+	}
+
+	if (!Open->Handle->Read(static_cast<uint8*>(Buffer), BytesToRead))
+	{
+		return 0;
+	}
+
+	Open->Position += BytesToRead;
+	return static_cast<size_t>(BytesToRead);
 }
 
 bool FVaCuusFileInterface::Seek(Rml::FileHandle File, long Offset, int Origin)
 {
-	IFileHandle* Handle = VaCuusFileInterfacePrivate::ToHandle(File);
-	if (Handle == nullptr)
+	VaCuusFileInterfacePrivate::FOpenFile* Open = VaCuusFileInterfacePrivate::ToFile(File);
+	if (Open == nullptr)
 	{
 		return false;
 	}
 
-	const int64 FileSize = Handle->Size();
-
+	// The three origins are the whole contract -- Rml::FileInterface::Seek documents
+	// exactly SEEK_SET, SEEK_END and SEEK_CUR (FileInterface.h:36-42) -- so anything else
+	// is a caller bug to refuse rather than a mode to guess at.
 	int64 Target = 0;
 	switch (Origin)
 	{
@@ -100,33 +159,35 @@ bool FVaCuusFileInterface::Seek(Rml::FileHandle File, long Offset, int Origin)
 		Target = Offset;
 		break;
 	case SEEK_CUR:
-		Target = Handle->Tell() + Offset;
+		Target = Open->Position + Offset;
 		break;
 	case SEEK_END:
-		Target = FileSize + Offset;
+		Target = Open->Size + Offset;
 		break;
 	default:
 		return false;
 	}
 
-	// IFileHandle::Seek asserts on negative positions (and SeekFromEnd on positive
-	// offsets), so validate the computed target before delegating.
-	if (Target < 0 || Target > FileSize)
+	if (Target < 0 || Target > Open->Size)
 	{
 		return false;
 	}
 
-	return Handle->Seek(Target);
+	// THE HANDLE IS NOT MOVED HERE. It cannot hold Target == Size (see FOpenFile), and
+	// Read() re-syncs it from Position anyway -- which also means a refused seek above
+	// cannot leave the handle somewhere Tell() does not describe.
+	Open->Position = Target;
+	return true;
 }
 
 size_t FVaCuusFileInterface::Tell(Rml::FileHandle File)
 {
-	IFileHandle* Handle = VaCuusFileInterfacePrivate::ToHandle(File);
-	return Handle ? static_cast<size_t>(Handle->Tell()) : 0;
+	const VaCuusFileInterfacePrivate::FOpenFile* Open = VaCuusFileInterfacePrivate::ToFile(File);
+	return Open ? static_cast<size_t>(Open->Position) : 0;
 }
 
 size_t FVaCuusFileInterface::Length(Rml::FileHandle File)
 {
-	IFileHandle* Handle = VaCuusFileInterfacePrivate::ToHandle(File);
-	return Handle ? static_cast<size_t>(Handle->Size()) : 0;
+	const VaCuusFileInterfacePrivate::FOpenFile* Open = VaCuusFileInterfacePrivate::ToFile(File);
+	return Open ? static_cast<size_t>(Open->Size) : 0;
 }

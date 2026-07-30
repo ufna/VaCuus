@@ -12,6 +12,10 @@
  * Relative paths are resolved against the ordered DevUI roots -- the plugin's
  * Content/DevUI first, then the project's (see VaCuusContentPaths.h and controller
  * decision D19); absolute paths are passed through unchanged.
+ *
+ * The Rml::FileHandle values handed out are NOT IFileHandle pointers: they address a small
+ * record holding the handle plus the LOGICAL read position, because IFileHandle cannot
+ * represent a position at exact EOF. See FOpenFile in the .cpp.
  */
 class FVaCuusFileInterface : public Rml::FileInterface
 {

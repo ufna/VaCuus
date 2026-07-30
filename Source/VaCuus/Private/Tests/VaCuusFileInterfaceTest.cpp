@@ -51,6 +51,7 @@ bool FVaCuusFileInterfaceTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("Read request past EOF returns remaining byte count"), FileInterface.Read(Buffer, sizeof(Buffer), File), (size_t)6);
 		TestTrue(TEXT("Read content matches payload tail"), FMemory::Memcmp(Buffer, "ABCDEF", 6) == 0);
 		TestEqual(TEXT("Read at EOF returns 0"), FileInterface.Read(Buffer, sizeof(Buffer), File), (size_t)0);
+		TestEqual(TEXT("Tell after reading to EOF"), FileInterface.Tell(File), (size_t)16);
 
 		// SEEK_END with negative offset lands back in range.
 		TestTrue(TEXT("Seek SEEK_END -16 succeeds"), FileInterface.Seek(File, -16, SEEK_END));
@@ -63,7 +64,72 @@ bool FVaCuusFileInterfaceTest::RunTest(const FString& Parameters)
 		TestFalse(TEXT("Seek SEEK_END past end fails"), FileInterface.Seek(File, 1, SEEK_END));
 		TestEqual(TEXT("Tell unchanged after failed seeks"), FileInterface.Tell(File), (size_t)0);
 
+		//~ EXACT EOF -- the one position IFileHandle cannot hold, and the reason this
+		//~ interface tracks the read position itself. FFileHandleUnix::Seek clamps a
+		//~ read-mode seek to the LAST BYTE
+		//~ (Runtime/Core/Private/Unix/UnixPlatformFile.cpp:177) and Tell() returns that
+		//~ clamped member (:152-157), so answering Tell() from the handle reports 15 here
+		//~ and the read below hands the last byte back a SECOND time instead of nothing.
+		//~ Rml::FileInterface::Tell is specified as bytes-from-the-origin with no clamp
+		//~ (ThirdParty/RmlUi/Include/RmlUi/Core/FileInterface.h:43-46), and RmlUi's own
+		//~ default Length() is Seek-to-end plus Tell (:48-52) -- so one short here is a
+		//~ silently truncated document.
+		TestTrue(TEXT("Seek to exact EOF succeeds"), FileInterface.Seek(File, 0, SEEK_END));
+		TestEqual(TEXT("EXACT EOF: Tell is Size, not Size - 1"), FileInterface.Tell(File), (size_t)16);
+		TestEqual(TEXT("EXACT EOF: a read returns 0, not the last byte again"),
+			FileInterface.Read(Buffer, sizeof(Buffer), File), (size_t)0);
+		TestEqual(TEXT("EXACT EOF: the refused read did not move the position"), FileInterface.Tell(File), (size_t)16);
+
+		// A seek past the end from exact EOF is still refused, and still leaves the
+		// position where Tell() says it is -- the property that lets Read() re-sync the
+		// underlying handle from it.
+		TestFalse(TEXT("EXACT EOF: SEEK_CUR +1 is still out of range"), FileInterface.Seek(File, 1, SEEK_CUR));
+		TestEqual(TEXT("EXACT EOF: Tell survives that too"), FileInterface.Tell(File), (size_t)16);
+
+		// SEEK_CUR back from exact EOF: only correct if Seek and Tell agree about where
+		// EOF is, and it proves the handle re-syncs rather than reading from wherever the
+		// clamp left it.
+		TestTrue(TEXT("Seek SEEK_CUR -6 from exact EOF succeeds"), FileInterface.Seek(File, -6, SEEK_CUR));
+		TestEqual(TEXT("...landing 6 bytes from the end"), FileInterface.Tell(File), (size_t)10);
+		FMemory::Memzero(Buffer, sizeof(Buffer));
+		TestEqual(TEXT("...and the tail still reads back"), FileInterface.Read(Buffer, sizeof(Buffer), File), (size_t)6);
+		TestTrue(TEXT("...with the right bytes"), FMemory::Memcmp(Buffer, "ABCDEF", 6) == 0);
+
+		// And the whole file re-reads from the start, so nothing above left the handle
+		// desynchronised from the logical position.
+		TestTrue(TEXT("Rewind to 0"), FileInterface.Seek(File, 0, SEEK_SET));
+		FMemory::Memzero(Buffer, sizeof(Buffer));
+		TestEqual(TEXT("The whole file reads back after all that seeking"),
+			FileInterface.Read(Buffer, sizeof(Buffer), File), (size_t)16);
+		TestTrue(TEXT("...byte for byte"), FMemory::Memcmp(Buffer, "0123456789ABCDEF", 16) == 0);
+
 		FileInterface.Close(File);
+	}
+
+	//~ THE ZERO-LENGTH FILE, which is the same clamp at its worst: FileSize - 1 is -1, so
+	//~ the handle's Tell() returns a NEGATIVE position and the size_t cast turns it into
+	//~ ~0ULL. Not hypothetical for a live-reload tree -- a just-created .rcss, or one
+	//~ caught mid-save, is exactly this file.
+	{
+		const FString EmptyPath = TestDir / TEXT("file_interface_empty.txt");
+		if (TestTrue(TEXT("Empty file saved"), FFileHelper::SaveStringToFile(FString(), *EmptyPath)))
+		{
+			const Rml::FileHandle Empty = FileInterface.Open(ToRmlPath(EmptyPath));
+			if (TestTrue(TEXT("Empty file opens"), Empty != Rml::FileHandle(0)))
+			{
+				char Buffer[8] = {0};
+				TestEqual(TEXT("Empty file length is 0"), FileInterface.Length(Empty), (size_t)0);
+				TestEqual(TEXT("Empty file starts at 0"), FileInterface.Tell(Empty), (size_t)0);
+				TestTrue(TEXT("Seek to EOF of an empty file succeeds"), FileInterface.Seek(Empty, 0, SEEK_END));
+				TestEqual(TEXT("EOF of an empty file is 0, not a huge unsigned"),
+					FileInterface.Tell(Empty), (size_t)0);
+				TestEqual(TEXT("Reading an empty file returns 0"),
+					FileInterface.Read(Buffer, sizeof(Buffer), Empty), (size_t)0);
+				TestFalse(TEXT("Seeking past the end of an empty file fails"), FileInterface.Seek(Empty, 1, SEEK_SET));
+				FileInterface.Close(Empty);
+			}
+			IFileManager::Get().Delete(*EmptyPath);
+		}
 	}
 
 	// Directories and missing files must not produce handles.
