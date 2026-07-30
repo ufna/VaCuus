@@ -150,6 +150,30 @@ struct FVaCuusModelField
 	{
 		return static_cast<uint8*>(StructBase) + ContainerOffset;
 	}
+
+	/**
+	 * Copies THIS FIELD ONLY between two instances of the model type -- live struct, game
+	 * shadow, channel slot and UI shadow are all instances of it, so this is the one copy
+	 * every stage of the pipeline uses.
+	 *
+	 * CopySingleValue AND NOT A memcpy OF GetElementSize() BYTES, and the difference is a
+	 * bitfield. For `uint8 b : 1` the value pointer addresses the storage integer that up to
+	 * seven unrelated bitfields share; CopySingleValue routes a non-POD property through
+	 * CopyValuesInternal (UnrealType.h:881-894), and FBoolProperty's override is a
+	 * read-modify-write under FieldMask (PropertyBool.cpp:442-451), so the siblings in the
+	 * destination survive. A native bool takes the POD path instead -- SetBoolSize sets
+	 * CPF_IsPlainOldData only for one (PropertyBool.cpp:67-73) -- which is why the same call
+	 * is correct for both, and why FBoolProperty::CopyValuesInternal can assert !IsNativeBool()
+	 * (:444) without that assert ever firing here.
+	 *
+	 * Single, not Complete: FVaCuusModelLayout refuses ArrayDim > 1, so there is exactly one
+	 * value per entry.
+	 *
+	 * Out of line, unlike ContainerPtr above, only because calling into FProperty needs the
+	 * complete type and this is a Public header that today gets away with a forward
+	 * declaration.
+	 */
+	VACUUS_API void CopyValue(void* DestStructBase, const void* SourceStructBase) const;
 };
 
 /**

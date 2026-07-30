@@ -47,6 +47,15 @@ const TCHAR* LexToString(EVaCuusFieldKind Kind)
 	return TEXT("<unknown>");
 }
 
+void FVaCuusModelField::CopyValue(void* DestStructBase, const void* SourceStructBase) const
+{
+	// See the header for why CopySingleValue and not a memcpy. Both pointers go through
+	// ContainerPtrToValuePtr so that a bitfield's value pointer is its storage integer, which
+	// is what FBoolProperty's accessors and its masked copy both expect.
+	Property->CopySingleValue(Property->ContainerPtrToValuePtr<void>(ContainerPtr(DestStructBase)),
+		Property->ContainerPtrToValuePtr<void>(ContainerPtr(SourceStructBase)));
+}
+
 namespace VaCuusModelLayoutPrivate
 {
 /** The character class RmlUi accepts inside a name, in both positions. */
