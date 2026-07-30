@@ -21,6 +21,11 @@ public class VaCuusRender : ModuleRules
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[] {
+			// The EKeys::* FKey statics (mouse buttons in the widget's input path and in
+			// VaCuus.Input.SlateRouting) are exported by InputCore, not by Engine's
+			// re-export -- referencing them needs the link dependency.
+			"InputCore",
+
 			// Slate side of the render backend (widget, composite) lands in later
 			// tasks; declared up front so the module shape is final.
 			"RenderCore",

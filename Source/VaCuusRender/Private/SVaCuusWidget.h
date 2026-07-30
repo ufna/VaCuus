@@ -96,6 +96,15 @@ public:
 	 */
 	const FGeometry& GetCachedGeometry_Debug() const { return CachedInputGeometry; }
 
+	/**
+	 * Whether this widget believes it holds Slate's mouse capture.
+	 *
+	 * Exposed for VaCuus.Input.SlateRouting, which asserts the multi-button release
+	 * rule against the bookkeeping and not only against the returned FReply -- the two
+	 * can disagree, and a stuck flag makes every later mouse move answer Handled.
+	 */
+	bool IsTrackingMouseCapture_Debug() const { return bHasMouseCapture; }
+
 private:
 	/**
 	 * Single source of truth for the widget's window-space pixel rect: Tick asks

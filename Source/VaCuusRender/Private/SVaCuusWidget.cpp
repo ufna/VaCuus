@@ -242,9 +242,16 @@ FReply SVaCuusWidget::OnMouseButtonUp(const FGeometry& MyGeometry, const FPointe
 
 	const bool bWasCapturing = bHasMouseCapture;
 
-	// GetPressedButtons() still contains the button being released, so "no buttons
-	// left" is a set of exactly one.
-	if (bHasMouseCapture && MouseEvent.GetPressedButtons().Num() <= 1)
+	// GetPressedButtons() is the POST-release set: FSlateApplication::OnMouseUp removes
+	// the released button before it constructs the FPointerEvent, and says so in its
+	// own comment ("Update PressedMouseButtons before constructing the event so the
+	// value-copy snapshot reflects the post-release state", SlateApplication.cpp:6098-6106).
+	// So IsEmpty() -- not Num() <= 1 -- is "the last button just came up". With Left and
+	// Right both down, releasing Left leaves {Right}, and a `<= 1` test would drop
+	// capture with a button still held, breaking any drag that uses a second button.
+	// This is also exactly what the precedent does
+	// (FWebBrowserViewport::OnMouseButtonUp, WebBrowserViewport.cpp:52-78).
+	if (bHasMouseCapture && MouseEvent.GetPressedButtons().IsEmpty())
 	{
 		bHasMouseCapture = false;
 
@@ -365,17 +372,26 @@ FReply SVaCuusWidget::OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& In
 	// Note this is a per-view verdict, not a per-key one: RmlUi's own "was it
 	// consumed" answer arrives on the UI thread, frames later in queue terms, and
 	// cannot be waited for here.
-	return GetSnapshot().bWantsKeyboardFocus ? FReply::Handled() : FReply::Unhandled();
+	const bool bConsumeKeys = GetSnapshot().bWantsKeyboardFocus;
+	return bConsumeKeys ? FReply::Handled() : FReply::Unhandled();
 }
 
 FReply SVaCuusWidget::OnKeyUp(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent)
 {
 	SendInput(FVaCuusInputEvent::KeyEvent(/*bDown=*/false, InKeyEvent.GetKey(), ToModifierState(InKeyEvent)));
-	return GetSnapshot().bWantsKeyboardFocus ? FReply::Handled() : FReply::Unhandled();
+
+	const bool bConsumeKeys = GetSnapshot().bWantsKeyboardFocus;
+	return bConsumeKeys ? FReply::Handled() : FReply::Unhandled();
 }
 
 FReply SVaCuusWidget::OnKeyChar(const FGeometry& MyGeometry, const FCharacterEvent& InCharacterEvent)
 {
+	// Fetched once: the verdict cannot change inside one handler (the snapshot is a
+	// per-frame value), and this handler has several early returns -- with more coming
+	// when Task 9 adds the IME path.
+	const bool bConsumeKeys = GetSnapshot().bWantsKeyboardFocus;
+	const FReply Reply = bConsumeKeys ? FReply::Handled() : FReply::Unhandled();
+
 	const uint32 Unit = uint32(InCharacterEvent.GetCharacter());
 
 	uint32 CodePoint = Unit;
@@ -383,8 +399,15 @@ FReply SVaCuusWidget::OnKeyChar(const FGeometry& MyGeometry, const FCharacterEve
 	{
 		// High surrogate: half a code point. Hold it and wait -- forwarding it alone
 		// would insert a replacement character or garbage.
+		if (PendingHighSurrogate != 0)
+		{
+			// Two high halves in a row: the first will never be completed now.
+			UE_LOG(LogVaCuus, Verbose,
+				TEXT("Stale UTF-16 high surrogate U+%04X dropped; replaced by U+%04X"), PendingHighSurrogate, Unit);
+		}
+
 		PendingHighSurrogate = Unit;
-		return GetSnapshot().bWantsKeyboardFocus ? FReply::Handled() : FReply::Unhandled();
+		return Reply;
 	}
 
 	if (Unit >= 0xDC00 && Unit <= 0xDFFF)
@@ -393,15 +416,18 @@ FReply SVaCuusWidget::OnKeyChar(const FGeometry& MyGeometry, const FCharacterEve
 		{
 			// A lone low surrogate: nothing sane to build from it.
 			UE_LOG(LogVaCuus, Verbose, TEXT("Unpaired UTF-16 low surrogate U+%04X dropped"), Unit);
-			return GetSnapshot().bWantsKeyboardFocus ? FReply::Handled() : FReply::Unhandled();
+			return Reply;
 		}
 
 		CodePoint = 0x10000 + ((PendingHighSurrogate - 0xD800) << 10) + (Unit - 0xDC00);
 		PendingHighSurrogate = 0;
 	}
-	else
+	else if (PendingHighSurrogate != 0)
 	{
 		// Any non-surrogate ends a pending pair; a stale high half must not join it.
+		UE_LOG(LogVaCuus, Verbose,
+			TEXT("Stale UTF-16 high surrogate U+%04X dropped; U+%04X is not a low surrogate"),
+			PendingHighSurrogate, Unit);
 		PendingHighSurrogate = 0;
 	}
 
@@ -412,11 +438,11 @@ FReply SVaCuusWidget::OnKeyChar(const FGeometry& MyGeometry, const FCharacterEve
 	// synthesised on the key path instead (the SDL backend does the same).
 	if (CodePoint < 0x20 || CodePoint == 0x7F)
 	{
-		return GetSnapshot().bWantsKeyboardFocus ? FReply::Handled() : FReply::Unhandled();
+		return Reply;
 	}
 
 	SendInput(FVaCuusInputEvent::TextInput(CodePoint, ToModifierState(InCharacterEvent)));
-	return GetSnapshot().bWantsKeyboardFocus ? FReply::Handled() : FReply::Unhandled();
+	return Reply;
 }
 
 FReply SVaCuusWidget::OnFocusReceived(const FGeometry& MyGeometry, const FFocusEvent& InFocusEvent)
