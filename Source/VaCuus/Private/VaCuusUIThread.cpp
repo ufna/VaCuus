@@ -998,6 +998,27 @@ void FVaCuusUIThread::DrainCommands()
 		IVaCuusDocumentHost* Host = FindHost(Command->ViewId);
 		if (Host == nullptr)
 		{
+			// BindModel IS NOT AN ORDINARY DROP, and it gets its own level for the same reason
+			// DumpModel was hoisted above this lookup: losing it is not a lost frame of work,
+			// it is this milestone's signature failure arriving by the quietest door there is.
+			// The model never binds, every UpdateModel afterwards writes into a channel nothing
+			// consumes, the document reads empty -- and the idle gate correctly publishes
+			// nothing, so there is no second symptom anywhere. The DumpModel hoist argues that
+			// it "would be the one command in the plugin that can fail silently"; that applies
+			// with more force here, because the loss of THIS command is the failure the dump
+			// exists to find.
+			//
+			// Not hoisted above the lookup like DumpModel, because unlike DumpModel this
+			// command genuinely needs the host: there is nothing to do with it but report it.
+			if (Command->Kind == EVaCuusCommandKind::BindModel)
+			{
+				UE_LOG(LogVaCuus, Error,
+					TEXT("BindModel('%s') dropped: view %u is not registered on the UI thread. The model will never bind, and every ")
+					TEXT("UpdateModel for it goes nowhere"),
+					Command->Model.IsValid() ? *Command->Model->GetModelName().ToString() : TEXT("<none>"), Command->ViewId);
+				continue;
+			}
+
 			// Ordinary during teardown: the view was removed while commands for it
 			// were still in flight.
 			UE_LOG(LogVaCuus, Verbose, TEXT("UI command for unknown view %u dropped"), Command->ViewId);
