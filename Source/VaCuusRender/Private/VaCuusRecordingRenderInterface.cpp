@@ -200,13 +200,90 @@ Rml::TextureHandle FVaCuusRecordingRenderInterface::LoadTexture(Rml::Vector2i& O
 		return Rml::TextureHandle(0);
 	}
 
+	// THE DECODE-FORMAT WHITELIST. A WORKAROUND, NOT A FIX — the real one is at the end of
+	// this comment and is deliberately not attempted here.
+	//
+	// DetectImageFormat can return eleven distinct formats (ImageWrapperModule.cpp:160-216)
+	// and the decode below asks whichever one it got for GetRaw(ERGBFormat::RGBA, 8). That
+	// is only a REQUEST: FImageWrapperBase::GetRaw forwards InFormat to Uncompress
+	// unfiltered (ImageWrapperBase.cpp:61-64), and the wrappers do not agree about
+	// honouring it. Two of them do not merely misbehave, they assert:
+	//  - BMP always writes BGRA8 and says so with check(InFormat == ERGBFormat::BGRA)
+	//    (BmpImageWrapper.cpp:69), reached from FBmpImageWrapper::Uncompress (:32-53) for
+	//    anything DetectImageFormat called BMP — the guard at :42 is the same 'BM' magic the
+	//    sniff already matched, and is skipped outright when bHasHeader is false.
+	//  - DDS, under its own "only support decoding to own format": check(InFormat ==
+	//    GetFormat()) (DdsImageWrapper.cpp:176-178).
+	//  - ICO forwards to a PNG or BMP sub-wrapper (IcoImageWrapper.cpp:89-95), so a
+	//    BMP-payload .ico inherits the BMP assert.
+	// check() is fatal in every DO_CHECK build, Development Editor included, and this
+	// decode runs on a WORKER: before this whitelist, one <img src="logo.bmp"> in any
+	// document took the whole editor down from a background thread with no VaCuus frame in
+	// the callstack. Nothing upstream stopped it — the sniff is the two bytes 0x42 0x4D
+	// (IMAGE_MAGIC_BMP at ImageWrapperModule.cpp:32, matched at :175-178) and
+	// FBmpImageWrapper::SetCompressed only reads the header, so the synchronous probe below
+	// was perfectly happy.
+	//
+	// TGA is why this is a WHITELIST and not a BMP/DDS blocklist: FTgaImageWrapper::
+	// Uncompress ignores InFormat entirely and always writes BGRA order
+	// (TgaImageWrapper.cpp:131-133). The byte count is still W*H*4, so every validation on
+	// the worker passes and red and blue simply come out swapped with no diagnostic. A
+	// blocklist of the formats that crash would have shipped that one.
+	//
+	// What is left in is what has been read and confirmed to honour a (RGBA, 8) request:
+	//  - PNG. UncompressPNGData sizes and orders from InFormat, not from its own Format
+	//    (PngImageWrapper.cpp:450, and png_set_bgr only for BGRA at :468-470), and
+	//    FPngImageWrapper::Uncompress re-decodes whenever the two differ (:360-367) — which
+	//    is what makes greyscale and paletted PNGs come out RGBA8 too, not just truecolour.
+	//  - JPEG. UncompressTurbo derives its channel count from InFormat
+	//    (JpegImageWrapper.cpp:427-430) and ConvertTJpegPixelFormat maps RGBA to TJPF_RGBA
+	//    (:53). Greyscale JPEGs are included: Channels is 4 for any RGBA request.
+	//  - UEJPEG. Ignores InFormat, but a four-component UEJPEG is natively RGBA
+	//    (UEJpegImageWrapper.cpp:144-146, :275-276) so it is correct by coincidence rather
+	//    than by contract. Three components its own SetCompressed refuses (:147-148); the
+	//    greyscale case is the one hole this whitelist does not close, so the probe below
+	//    closes it.
+	// The remaining four decline an 8-bit RGBA request rather than misbehave, so they were
+	// never the bug — they are excluded anyway, because "declines cleanly" is a per-wrapper
+	// accident and this list should say what VaCuus supports, not what happens not to hurt:
+	// EXR reports "Unsupported bit depth, expected 16 or 32" and SetErrors out before it can
+	// reach its own check(InBitDepth == 32) (ExrImageWrapper.cpp:447-462, :628); HDR
+	// overrides GetRaw itself and rejects anything that is not (BGRE, 8) with a logged error
+	// (HdrImageWrapper.cpp:205-211 — the check() pair at :164-165 is on SetRaw, the ENCODE
+	// path, and is not reachable from here); TIFF gates its whole decode on
+	// InFormat == Format and SetErrors otherwise (TiffImageWrapper.cpp:579, :654-657), and
+	// (RGBA, 8) is not among the formats its SetCompressed can report (:582-647); ICNS
+	// returns false straight out of SetCompressed off Mac (IcnsImageWrapper.cpp:67-69), so
+	// its non-Mac checkf(false) at :236 is unreachable and the probe below already refused
+	// it. On Mac it would in fact have worked (check accepts RGBA, :119-120).
+	//
+	// GrayscaleJPEG and GrayscaleUEJPEG are absent because DetectImageFormat CANNOT return
+	// them — both sniffs carry the engine's own "@Todo: Should we detect grayscale vs
+	// non-grayscale?" (ImageWrapperModule.cpp:169, :173).
+	//
+	// THE REAL FIX is GetRawImage(FImage&) / the one-argument GetRaw(), which ask each
+	// wrapper for its OWN format and therefore trip none of the asserts above. That is a
+	// wider change than a fix pass should carry, because it moves channel-order conversion
+	// into this plugin: GetRawImage goes through GetRaw(GetFormat(), ...) and
+	// GetClosestRawImageFormat (ImageWrapperBase.cpp:420-434), and GetFormat() is BGRA for
+	// PNG at 8 bits (PngImageWrapper.cpp:624-627) and for non-greyscale JPEG
+	// (JpegImageWrapper.cpp:354) — so migrating trades this whitelist for an R/B swap of our
+	// own, in exchange for BMP/DDS/TGA/ICO support. Filed, not half-done.
+	if (Format != EImageFormat::PNG && Format != EImageFormat::JPEG && Format != EImageFormat::UEJPEG)
+	{
+		UE_LOG(LogVaCuus, Warning,
+			TEXT("LoadTexture: unsupported image format '%s' in '%s' — VaCuus decodes PNG, JPEG and UEJPEG only"),
+			ImageWrapperModule->GetExtension(Format), UTF8_TO_TCHAR(Source.c_str()));
+		return Rml::TextureHandle(0);
+	}
+
 	// Step 11.1, the synchronous dimension probe. Two costs that are NOT free and
 	// are not avoidable through IImageWrapper's API:
-	//  - SetCompressed memcpy's the whole file (ImageWrapperBase.cpp:104-118, whose
-	//    own comment calls the copy "usually unnecessary"), so this is O(filesize),
-	//    not O(header).
+	//  - SetCompressed memcpy's the whole file (ImageWrapperBase.cpp:104-122, whose
+	//    own comment calls the copy "usually unnecessary" at :111), so this is
+	//    O(filesize), not O(header).
 	//  - 1/2/4-bit paletted/grey PNGs DECODE inside SetCompressed
-	//    (PngImageWrapper.cpp:309-329 calls UncompressPNGData), so for that one
+	//    (PngImageWrapper.cpp:309-331 calls UncompressPNGData at :328), so for that one
 	//    class of image the decode still happens on this thread — and then again on
 	//    the worker. Rare in UI art, and there is no header-only query to use
 	//    instead (IImageWrapperModule offers none).
@@ -214,6 +291,30 @@ Rml::TextureHandle FVaCuusRecordingRenderInterface::LoadTexture(Rml::Vector2i& O
 	if (!Probe.IsValid() || !Probe->SetCompressed(FileData.data(), FileData.size()))
 	{
 		UE_LOG(LogVaCuus, Warning, TEXT("LoadTexture: failed to parse '%s'"), UTF8_TO_TCHAR(Source.c_str()));
+		return Rml::TextureHandle(0);
+	}
+
+	// THE ONE HOLE THE FORMAT WHITELIST ABOVE CANNOT CLOSE, closed here because the probe is
+	// the first place that knows it. UEJPEG is whitelisted for its four-component form, but
+	// FUEJpegImageWrapper::Uncompress ignores the requested ERGBFormat and allocates
+	// Width*Height*NumColors from what the decoder found (UEJpegImageWrapper.cpp:275-276),
+	// so a GREYSCALE UEJPEG returns W*H bytes from a (RGBA, 8) request and GetRaw still
+	// returns TRUE. That used to reach the worker's byte-count check and be reported as
+	// "the decoder disagreed with its own probe", which sent a reader to the engine for what
+	// is really an unsupported input.
+	//
+	// GetFormat() is the exact test and needs no guessing: FUEJpegImageWrapper::SetCompressed
+	// sets Gray for one component and RGBA for four and refuses everything else
+	// (UEJpegImageWrapper.cpp:139-148). Scoped to UEJPEG deliberately — a greyscale PNG or
+	// JPEG also reports Gray here and both decode correctly to RGBA8 (PNG re-decodes when
+	// InFormat differs from Format, PngImageWrapper.cpp:360-367; JPEG takes its channel
+	// count from InFormat, JpegImageWrapper.cpp:427-430), so testing GetFormat() alone would
+	// refuse images that work.
+	if (Format == EImageFormat::UEJPEG && Probe->GetFormat() != ERGBFormat::RGBA)
+	{
+		UE_LOG(LogVaCuus, Warning,
+			TEXT("LoadTexture: unsupported single-channel UEJPEG in '%s' — VaCuus needs four-component RGBA"),
+			UTF8_TO_TCHAR(Source.c_str()));
 		return Rml::TextureHandle(0);
 	}
 
@@ -292,27 +393,53 @@ Rml::TextureHandle FVaCuusRecordingRenderInterface::LoadTexture(Rml::Vector2i& O
 	//
 	// PRIORITY IS EXPLICIT AND THIS IS THE PLUGIN'S ONLY UE::Tasks::Launch, so it sets
 	// the house default. BackgroundHigh, not the implicit ETaskPriority::Normal that
-	// Launch would default to (Tasks/Task.h:302):
-	//  - Normal is a FOREGROUND priority — ForegroundCount is the very next enumerator
-	//    (Async/Fundamental/Task.h:20-33) — and a foreground worker's dequeue caps at
-	//    ForegroundCount (Scheduler.cpp:726), so a background task can never land on
-	//    one. Choosing background makes "image decode does not compete with the frame"
-	//    a scheduler guarantee instead of a hope.
-	//  - The foreground pool is TINY: GNumForegroundWorkers defaults to 2
-	//    (TaskGraph.cpp:131) and the background pool gets every remaining worker
-	//    (TaskGraph.cpp:1284-1285). A document with 40 images at Normal would both
-	//    serialise 40 multi-ms decodes behind 2 workers and evict the highest-priority
-	//    engine work from them. At background it gets more parallelism, not less.
-	//  - BackgroundHigh rather than BackgroundNormal because image latency here IS
-	//    user-visible (an undecoded image is a transparent hole at document load), and
-	//    BackgroundHigh is the tier the engine maps ordinary queued work to
-	//    (QueuedThreadPoolWrapper.h:490: EQueuedWorkPriority::Normal -> BackgroundHigh)
-	//    and the tier FImage's own detached work uses (ImageCore.cpp:993). Queueing
-	//    behind shader-cache and asset-gatherer jobs at BackgroundNormal buys nothing.
-	//  - The residual cost is a lower OS thread priority
-	//    (FPlatformAffinity::GetTaskBPThreadPriority(), TaskGraph.cpp:1287), so a
-	//    decode can be preempted. It cannot be starved for want of a worker: there is
-	//    always at least one background worker (FMath::Max(1, ...), TaskGraph.cpp:1284).
+	// Launch would default to (Tasks/Task.h:302). ONE ARGUMENT CARRIES THE DECISION, and it
+	// is a guarantee rather than a hope:
+	//  - A foreground worker can NEVER dequeue a background task. Its scan is capped at
+	//    ForegroundCount — MaxPriority is Count only when bPermitBackgroundWork
+	//    (Scheduler.cpp:726, the loop at :728) — and Normal sits below that cap while
+	//    BackgroundHigh IS that cap (BackgroundHigh == ForegroundCount,
+	//    Async/Fundamental/Task.h:20-33). So a decode at BackgroundHigh cannot land on a
+	//    foreground worker, and "image decode never competes with the frame for one" stops
+	//    being a hope about scheduler behaviour and becomes a structural property. At Normal
+	//    it would be exactly the opposite: a multi-ms decode could occupy one of the two
+	//    workers the engine reserves for latency-critical work.
+	//
+	// THE HONEST TRADE, because the cap is ONE-DIRECTIONAL and it is easy to get backwards:
+	// a BACKGROUND worker scans from priority index 0 too (Scheduler.cpp:728), so it happily
+	// runs — and in fact PREFERS — High and Normal tasks. Choosing background therefore
+	// COSTS parallelism rather than gaining it: at Normal these decodes would be eligible for
+	// every worker, at BackgroundHigh only for the background pool. The cost is exactly
+	// GNumForegroundWorkers workers (NumBackgroundWorkers = NumWorkerThreads -
+	// GNumForegroundWorkers, TaskGraph.cpp:1284-1285), which is 2 on any machine the editor
+	// runs on — so all-but-two instead of all, plus a lower OS thread priority
+	// (FPlatformAffinity::GetTaskBPThreadPriority(), TaskGraph.cpp:1287) so a decode can be
+	// preempted. Cheap, and bought for the guarantee above. Starvation is not part of the
+	// price: there is always at least one background worker (FMath::Max(1, ...),
+	// TaskGraph.cpp:1284) and the scheduler wakes one on every cross-pool launch precisely
+	// because "foreground threads are not allowed to process them" (Scheduler.cpp:546-552).
+	//
+	// BackgroundHigh rather than BackgroundNormal because image latency here IS user-visible
+	// (an undecoded image is a transparent hole at document load), and BackgroundHigh
+	// genuinely outranks routine thread-pool work: FQueuedLowLevelThreadPool maps the
+	// DEFAULT EQueuedWorkPriority::Normal to BackgroundNormal, one tier below us
+	// (QueuedThreadPoolWrapper.h:488-491 indexed by EQueuedWorkPriority, QueuedThreadPool.h:
+	// 13-22 — BackgroundHigh is where EQueuedWorkPriority::High lands, not Normal), and in
+	// the editor GThreadPool schedules onto exactly that pool (LaunchEngineLoop.cpp:2621,
+	// :2630). So shader-cache and asset-gatherer jobs queued at the default do not sit in
+	// front of a decode. It is also the tier FImage's own detached work uses
+	// (ImageCore.cpp:986-993).
+	//
+	// (WHY "2 ON ANY MACHINE" and not just "the default is 2": GNumForegroundWorkers = 2 at
+	// TaskGraph.cpp:131 is only the INITIALIZER, and quoting it as the answer would be wrong.
+	// Startup overwrites it with FMath::Max(FMath::DivideAndRoundUp(NumThreads, 21), 2)
+	// (TaskGraph.cpp:1790) where NumThreads is NumberOfWorkerThreadsToSpawn()
+	// (LaunchEngineLoop.cpp:2592), then applies a -foregroundworkers= override (:1793); the
+	// scheduler additionally clamps it to 1 below four worker threads (:1279-1282). So it
+	// lands on 2 for any NumThreads below 42, and the worker count is cores-1 generically
+	// (GenericPlatformMisc.cpp:1984) or logical-cores-2 on Unix with hyperthreading
+	// (UnixPlatformMisc.cpp:1695-1706) — 30 on the 16-core/32-thread box this was measured
+	// on, hence 28 background workers there. Nowhere near 42 either way.)
 	//
 	// SourcePath costs one small FString allocation on the UI thread, kept knowingly:
 	// the only alternative is handing the worker a std::string copy of the path, which
@@ -340,15 +467,12 @@ Rml::TextureHandle FVaCuusRecordingRenderInterface::LoadTexture(Rml::Vector2i& O
 			// GetRaw(ERGBFormat, int32, TArray<uint8>&) is the overload the engine
 			// header labels "this is often broken, should only be used with InFormat ==
 			// GetFormat() / DEPRECATED, use GetRaw() with 1 argument or GetRawImage()"
-			// (IImageWrapper.h:318-319). The caveat is live for us: JPEG's GetFormat()
-			// is BGRA (JpegImageWrapper.cpp:354) while we ask for RGBA. It is satisfied
-			// anyway because ConvertTJpegPixelFormat handles ERGBFormat::RGBA
-			// explicitly (JpegImageWrapper.cpp:53) and PNG's UncompressPNGData branches
-			// on InFormat rather than Format (PngImageWrapper.cpp:437-471). KEPT rather
-			// than migrated to GetRawImage(FImage&): that returns an FImage in
-			// ERawImageFormat terms (BGRA8 for these wrappers), so it would move the
-			// channel-order conversion into this plugin and is a wider change than a
-			// review pass should carry. Filed, not half-done.
+			// (IImageWrapper.h:318-319). The caveat is live for us: JPEG's GetFormat() is
+			// BGRA for anything not 4:0:0 subsampled (JpegImageWrapper.cpp:354 — the
+			// greyscale arm of that ternary reports Gray) while we ask for RGBA. It is
+			// satisfied anyway, for the three formats the whitelist in LoadTexture lets
+			// through and ONLY for those — see that comment for the per-wrapper reading and
+			// for why this is not migrated to GetRawImage(FImage&).
 			if (ImageWrapper.IsValid() && ImageWrapper->SetCompressed(Bytes.data(), Bytes.size()) &&
 				ImageWrapper->GetRaw(ERGBFormat::RGBA, 8, RawRGBA))
 			{
@@ -372,6 +496,18 @@ Rml::TextureHandle FVaCuusRecordingRenderInterface::LoadTexture(Rml::Vector2i& O
 					// Two SetCompressed passes over the same bytes disagreeing means the
 					// DECODER disagreed with itself, which is a different bug report
 					// from "this asset will not decode" — hence its own reason code.
+					//
+					// AND THAT IS NOW TRUE OF THIS BRANCH, which it was not before. Every
+					// format that survives LoadTexture's whitelist derives its byte count
+					// from the REQUESTED format, so W*H*4 is arithmetic rather than luck
+					// (PNG at PngImageWrapper.cpp:450, JPEG at JpegImageWrapper.cpp:427-430).
+					// The one input that used to arrive here without any decoder
+					// contradicting anything — a greyscale UEJPEG, W*H bytes from a wrapper
+					// that ignores InFormat — is refused at the probe now, so the message
+					// the drain prints for this code no longer misdirects. What is left is a
+					// genuine self-contradiction: UEJPEG re-reads width, height and component
+					// count from its own decoder (UEJpegImageWrapper.cpp:269-276) and could
+					// in principle disagree with what SetCompressed reported.
 					Result.Failure = EVaCuusTextureDecodeFailure::SizeMismatch;
 				}
 				else if (Sink->bAbandoned.load(std::memory_order_acquire))
@@ -397,21 +533,48 @@ Rml::TextureHandle FVaCuusRecordingRenderInterface::LoadTexture(Rml::Vector2i& O
 					uint8* const Begin = RawRGBA.GetData();
 					uint8* const End = Begin + RawRGBA.Num();
 
-					// JPEG SUPPLIES NO ALPHA, so the invariant has to be imposed rather
-					// than trusted. RawData is AddUninitialized
-					// (JpegImageWrapper.cpp:446-447) and ConvertTJpegPixelFormat maps
-					// RGBA -> TJPF_RGBA under the engine's own note that "libjpeg-turbo
-					// currently does not actually read/write A - TJPF_BGRA is a synonym
-					// for TJPF_BGRX" (JpegImageWrapper.cpp:47-48); turbojpeg documents
-					// the alpha component as undefined on decompress. Latent, not live:
-					// libjpeg-turbo's extended-RGB converter happens to store 0xFF
-					// there, which is why JPEGs have always rendered. But "premultiplied
-					// RGBA" is a documented invariant of FVaCuusTextureData now, and
-					// branching a premultiply on an undefined byte that then feeds an
-					// InverseSourceAlpha blend is not something to leave to a
-					// third-party filler value. Stamp opaque; premultiply by 255 is a
-					// no-op, so this replaces the pass rather than adding one.
-					if (Format == EImageFormat::JPEG || Format == EImageFormat::GrayscaleJPEG)
+					// JPEG CARRIES NO ALPHA CHANNEL, so A=255 is a fact about the format,
+					// not about the buffer. The buffer is guaranteed too, and the guarantee
+					// is worth citing precisely because an earlier version of this comment
+					// claimed the opposite: UE maps ERGBFormat::RGBA to TJPF_RGBA
+					// (JpegImageWrapper.cpp:53), and turbojpeg documents TJPF_RGBA as
+					// "the same as TJPF_RGBX, except that when decompressing, the X
+					// component is guaranteed to be equal to the maximum sample value,
+					// which can be interpreted as an opaque alpha channel"
+					// (ThirdParty/libjpeg-turbo/3.0.0/include/turbojpeg.h:264-269). The
+					// "ignored when compressing and undefined when decompressing" language
+					// belongs to TJPF_RGBX/BGRX/XBGR/XRGB (turbojpeg.h:233-234, and the same
+					// sentence at :240-241, :247-248, :254-255) — NOT to the A variants.
+					//
+					// WHAT MISLEADS A READER HERE, and the reason this paragraph is long:
+					// the engine's own neighbouring comment says "libjpeg-turbo currently
+					// does not actually read/write A - TJPF_BGRA is a synonym for
+					// TJPF_BGRX" (JpegImageWrapper.cpp:47-48). That is accurate for
+					// COMPRESS, where the X/A distinction genuinely does not exist
+					// (turbojpeg.h:231-234), and it is stale for DECOMPRESS, which is the
+					// only direction this code uses. It has already cost one review cycle.
+					//
+					// The stamp is therefore BELT AND BRACES, kept because it makes the
+					// invariant LOCAL: FVaCuusTextureData documents premultiplied RGBA, and
+					// this loop establishes it here instead of inheriting it from a
+					// third-party header that a dependency bump could change. RawData is
+					// AddUninitialized (JpegImageWrapper.cpp:446-447), so "local" is not
+					// nothing. Free either way: premultiplying by 255 is a no-op, so this
+					// replaces the general pass rather than adding one.
+					//
+					// JPEG alone, no GrayscaleJPEG arm: DetectImageFormat cannot return
+					// GrayscaleJPEG (ImageWrapperModule.cpp:169 carries the engine's
+					// "@Todo: Should we detect grayscale vs non-grayscale?"), so that arm was
+					// unreachable and read as coverage that did not exist. A 4:0:0 JPEG
+					// arrives here as EImageFormat::JPEG like any other and takes this
+					// branch; nothing is lost. GrayscaleUEJPEG is unreachable for the same
+					// reason (:173), and UEJPEG is excluded from the stamp on purpose: its
+					// fourth channel is the alpha its encoder was handed, not a filler
+					// (SetCompressed reports RGBA for four components,
+					// UEJpegImageWrapper.cpp:144-146; Compress feeds NumComponents straight
+					// from the raw buffer, :232), so the general path below is the correct
+					// one for it and must not be short-circuited to opaque.
+					if (Format == EImageFormat::JPEG)
 					{
 						for (uint8* Pixel = Begin; Pixel < End; Pixel += 4)
 						{
@@ -442,7 +605,10 @@ Rml::TextureHandle FVaCuusRecordingRenderInterface::LoadTexture(Rml::Vector2i& O
 					Result.Failure = EVaCuusTextureDecodeFailure::None;
 				}
 			}
-			// else: Result.Data keeps its zero Size, which the drain reads as failure.
+			// else: Result.Failure keeps the Decode it was initialised with, which is what
+			// the drain reads. Note the ONE place the two assignments above must stay
+			// together: Failure becomes None only after Data is filled, so "Failure == None"
+			// implies a valid payload and is the single source of truth for the drain.
 
 			// Third and last abandon check, immediately before the hand-off. Enqueuing
 			// after teardown would be SAFE — the sink is refcounted and TMpscQueue
@@ -630,7 +796,11 @@ void FVaCuusRecordingRenderInterface::DrainCompletedDecodes()
 			continue;
 		}
 
-		if (Completed->Data.Size.X <= 0 || Completed->Data.Size.Y <= 0)
+		// ONE source of truth for "did this decode succeed". This used to test
+		// Data.Size.X <= 0 first and read Failure only to pick a message, so the same fact
+		// lived in two fields kept in sync by convention; Failure alone is sufficient and
+		// unambiguous (the worker sets it to None only after filling Data, see the task).
+		if (Completed->Failure != EVaCuusTextureDecodeFailure::None)
 		{
 			// A file that read and parsed but would not decode. The handle KEEPS its
 			// transparent placeholder rather than being retired here: RmlUi still owns

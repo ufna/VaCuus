@@ -16,9 +16,13 @@
 class IImageWrapperModule;
 
 /**
- * Why a decode produced no payload. Carried back so the UI thread can name the
- * actual cause: "the decoder disagreed with itself" sends a reader somewhere very
- * different from "this asset will not decode", and both used to log the same line.
+ * Whether a decode produced a payload, and if not, why. THE outcome field: the drain
+ * branches on this alone (it used to infer failure from a zero Data.Size and read this
+ * only to pick a message, which made one fact live in two places).
+ *
+ * The reason codes exist because "the decoder disagreed with itself" sends a reader
+ * somewhere very different from "this asset will not decode", and both used to log the
+ * same line.
  */
 enum class EVaCuusTextureDecodeFailure : uint8
 {
@@ -37,10 +41,10 @@ struct FVaCuusTextureDecode
 {
 	FVaCuusTextureHandle Handle = 0;
 
-	/** Premultiplied RGBA8, ready for NewTextures. A zero Size means the decode FAILED. */
+	/** Premultiplied RGBA8, ready for NewTextures. Only valid when Failure is None. */
 	FVaCuusTextureData Data;
 
-	/** Only meaningful when Data.Size is zero; picks the log line the drain emits. */
+	/** Whether Data holds a payload, and otherwise which log line the drain emits. */
 	EVaCuusTextureDecodeFailure Failure = EVaCuusTextureDecodeFailure::None;
 
 	/** Source path, kept only so a failed decode can name the file it choked on. */

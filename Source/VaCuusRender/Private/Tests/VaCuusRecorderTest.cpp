@@ -90,6 +90,40 @@ bool SaveVaCuusProbeJpeg(const FString& Path, FIntPoint Size)
 }
 
 /**
+ * Writes a small opaque image in a format LoadTexture must REFUSE, using the engine's own
+ * encoder so the bytes are exactly what DetectImageFormat will sniff them as. No pixels
+ * come back: nothing downstream is supposed to decode these.
+ *
+ * BGRA8 because that is the only raw format these two encoders accept — BMP asserts
+ * check(Format == ERGBFormat::BGRA || Gray) and check(BitDepth == 8)
+ * (BmpImageWrapper.cpp:575-576), TGA asserts check(Image.Format == ERawImageFormat::BGRA8)
+ * (TgaImageWrapper.cpp:40). Both then write 24-bit output because the alpha is all 255
+ * (BmpImageWrapper.cpp:597-609, TgaImageWrapper.cpp:44-45), which is fine: the magic
+ * bytes are what matters ('BM' at ImageWrapperModule.cpp:175-178; TGA is recognised from
+ * ColorMapType/ImageTypeCode alone, TgaImageWrapper.cpp:152-156).
+ */
+bool SaveVaCuusUnsupportedProbe(const FString& Path, EImageFormat ImageFormat, FIntPoint Size)
+{
+	TArray<uint8> Pixels;
+	Pixels.SetNumUninitialized(Size.X * Size.Y * 4);
+	for (int32 Index = 0; Index < Pixels.Num(); ++Index)
+	{
+		Pixels[Index] = (Index % 4 == 3) ? 255 : uint8(Index * 7 + 3);
+	}
+
+	IImageWrapperModule& ImageWrapperModule = FModuleManager::LoadModuleChecked<IImageWrapperModule>("ImageWrapper");
+	const TSharedPtr<IImageWrapper> Encoder = ImageWrapperModule.CreateImageWrapper(ImageFormat);
+	if (!Encoder.IsValid() ||
+		!Encoder->SetRaw(Pixels.GetData(), Pixels.Num(), Size.X, Size.Y, ERGBFormat::BGRA, 8))
+	{
+		return false;
+	}
+
+	const TArray64<uint8> Compressed = Encoder->GetCompressed();
+	return Compressed.Num() > 0 && FFileHelper::SaveArrayToFile(Compressed, *Path);
+}
+
+/**
  * INDEPENDENT oracle for the recorder's premultiply — deliberately NOT the production
  * expression restated. Production computes the integer (c*a + 127) / 255; this computes
  * round(c*a / 255.0) in floating point.
@@ -264,6 +298,8 @@ bool FVaCuusRecorderLoadTextureTest::RunTest(const FString& Parameters)
 	const FString ReleasedPngPath = TestDir / TEXT("recorder_released.png");
 	const FString FakePngPath = TestDir / TEXT("recorder_fake.png");
 	const FString JpegPath = TestDir / TEXT("recorder_probe.jpg");
+	const FString BmpPath = TestDir / TEXT("recorder_probe.bmp");
+	const FString TgaPath = TestDir / TEXT("recorder_probe.tga");
 	ON_SCOPE_EXIT
 	{
 		IFileManager::Get().Delete(*PngPath);
@@ -271,6 +307,8 @@ bool FVaCuusRecorderLoadTextureTest::RunTest(const FString& Parameters)
 		IFileManager::Get().Delete(*ReleasedPngPath);
 		IFileManager::Get().Delete(*FakePngPath);
 		IFileManager::Get().Delete(*JpegPath);
+		IFileManager::Get().Delete(*BmpPath);
+		IFileManager::Get().Delete(*TgaPath);
 		IFileManager::Get().DeleteDirectory(*TestDir);
 	};
 
@@ -331,6 +369,33 @@ bool FVaCuusRecorderLoadTextureTest::RunTest(const FString& Parameters)
 		Rml::Vector2i FakeDimensions(0, 0);
 		TestTrue(TEXT("Non-image content yields zero handle"),
 			Recorder.LoadTexture(FakeDimensions, Rml::String(TCHAR_TO_UTF8(*FakePngPath))) == Rml::TextureHandle(0));
+	}
+
+	// Failure: a PERFECTLY VALID image in a format the decode cannot ask for as RGBA8.
+	// These two are why LoadTexture whitelists formats at all, and they are BOTH here
+	// because they fail in two different ways:
+	//  - BMP took the whole editor down. FBmpImageWrapper::UncompressBMPData opens with
+	//    check(InFormat == ERGBFormat::BGRA) (BmpImageWrapper.cpp:69), which is fatal in
+	//    every DO_CHECK build and used to fire on a DECODE WORKER, so a document with one
+	//    <img src="*.bmp"> killed the process. Nothing before the whitelist stopped it: the
+	//    'BM' sniff succeeds (ImageWrapperModule.cpp:175-178) and FBmpImageWrapper::
+	//    SetCompressed only reads the header, so the synchronous probe was happy.
+	//  - TGA was the silent one, and the reason the fix is a whitelist rather than a
+	//    BMP/DDS blocklist: FTgaImageWrapper::Uncompress ignores InFormat and always writes
+	//    BGRA order (TgaImageWrapper.cpp:131-133). The byte count is still W*H*4, so every
+	//    check on the worker passed and red and blue simply came out swapped. A test that
+	//    only covered the crash would not have pinned the shape of the fix.
+	if (TestTrue(TEXT("Probe BMP saved"), SaveVaCuusUnsupportedProbe(BmpPath, EImageFormat::BMP, FIntPoint(4, 2))))
+	{
+		Rml::Vector2i BmpDimensions(0, 0);
+		TestTrue(TEXT("A valid BMP yields zero handle instead of crashing a decode worker"),
+			Recorder.LoadTexture(BmpDimensions, Rml::String(TCHAR_TO_UTF8(*BmpPath))) == Rml::TextureHandle(0));
+	}
+	if (TestTrue(TEXT("Probe TGA saved"), SaveVaCuusUnsupportedProbe(TgaPath, EImageFormat::TGA, FIntPoint(4, 2))))
+	{
+		Rml::Vector2i TgaDimensions(0, 0);
+		TestTrue(TEXT("A valid TGA yields zero handle instead of channel-swapped pixels"),
+			Recorder.LoadTexture(TgaDimensions, Rml::String(TCHAR_TO_UTF8(*TgaPath))) == Rml::TextureHandle(0));
 	}
 
 	// A draw issued in the same frame as the load: the replayer resolves textures
@@ -432,15 +497,25 @@ bool FVaCuusRecorderLoadTextureTest::RunTest(const FString& Parameters)
 		}
 	}
 
-	// JPEG supplies no alpha: RawData is AddUninitialized and libjpeg-turbo maps RGBA to
-	// TJPF_RGBA, which "does not actually read/write A" (JpegImageWrapper.cpp:47-48). The
-	// recorder therefore stamps 255 rather than trusting the byte.
+	// JPEG carries no alpha channel, so A=255 is what a correct decode must produce. The
+	// recorder stamps it rather than reading it, and this pins the result.
 	//
-	// HONEST LIMIT OF THIS ASSERTION: libjpeg-turbo's extended-RGB converter currently
-	// stores 0xFF in the X byte anyway, so deleting the stamp would not make this fail
-	// today. What it does buy is coverage of the JPEG branch itself (a stamp that
-	// corrupted colours, skipped texels or mis-strided would fail on the non-alpha bytes
-	// below) and a tripwire for the day the filler value changes. Colours are only
+	// WHAT THIS ASSERTION DOES AND DOES NOT PROVE: it does NOT prove the stamp is load-
+	// bearing, and the stamp is not. Deleting it would leave this passing, because
+	// turbojpeg DOCUMENTS the guarantee: TJPF_RGBA — which is what UE maps
+	// ERGBFormat::RGBA to (JpegImageWrapper.cpp:53) — is TJPF_RGBX "except that when
+	// decompressing, the X component is guaranteed to be equal to the maximum sample
+	// value, which can be interpreted as an opaque alpha channel"
+	// (ThirdParty/libjpeg-turbo/3.0.0/include/turbojpeg.h:264-269). Beware the engine's
+	// own comment at the head of that same switch, which says libjpeg-turbo "does not
+	// actually read/write A" (JpegImageWrapper.cpp:47-48): that is true of COMPRESS
+	// (turbojpeg.h:233-234) and stale for decompress, and it has already misled one
+	// reviewer of this file into calling the guarantee an implementation accident.
+	//
+	// What this DOES buy is coverage of the JPEG branch itself — a stamp that corrupted
+	// colours, skipped texels or mis-strided would fail on the non-alpha bytes below —
+	// and a tripwire if the mapping at JpegImageWrapper.cpp:53 ever moves to an X
+	// variant, where the byte really would be undefined. Colours are only
 	// sanity-checked, not pinned: JPEG is lossy.
 	const FVaCuusTextureData* Jpeg = Second->NewTextures.Find(FVaCuusTextureHandle(JpegHandle));
 	if (TestNotNull(TEXT("JPEG payload lands under the same handle"), Jpeg))
@@ -531,9 +606,15 @@ bool FVaCuusRecorderDecodeFailureTest::RunTest(const FString& Parameters)
 	};
 
 	// Fixture: a valid RGBA8 PNG cut so that IHDR survives and IDAT does not. The cut is
-	// made at the IDAT chunk TAG plus 8 bytes (the rest of the 8-byte chunk header, then
-	// 4 bytes of deflate data) rather than at a fixed offset, because the chunks libpng
-	// writes before IDAT are libpng's choice, not ours.
+	// made relative to the IDAT TAG rather than at a fixed offset, because which chunks
+	// libpng writes before IDAT is libpng's choice, not ours.
+	//
+	// WHAT +8 ACTUALLY KEEPS, since a PNG chunk is length(4), type(4), data(length),
+	// CRC(4) — the length comes BEFORE the type, so the scan below finds the tag with its
+	// length already behind it. Keeping IdatTagIndex + 8 therefore keeps the 4-byte tag
+	// plus the first 4 bytes of the compressed DATA, and drops the rest of the data and
+	// the CRC. The declared length is intact and larger than what remains, which is
+	// exactly the shape that makes the read below run off the end.
 	//
 	// What each stage then does: DetectImageFormat passes on the 8-byte signature;
 	// SetCompressed -> LoadPNGHeader passes because png_read_info only needs IHDR and the
