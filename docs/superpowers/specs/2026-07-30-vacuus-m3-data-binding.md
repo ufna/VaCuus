@@ -359,10 +359,24 @@ down races the load.
 
 ## 8. Diagnostics, because the library's are gone
 
-**Every RmlUi assert and error log is compiled out in every configuration we build** — `NDEBUG=1`
-is keyed on `bUseDebugCRT`, which defaults **false even in Debug**, so `RMLUI_DEBUG` is never
-defined; and `RMLUI_LOG_TYPE_ERROR` is the assert macro. The library's entire self-diagnosis is
-absent, including for M1/M2 code already shipped. Tracked plugin-wide.
+**Every RmlUi assert is compiled out in every configuration we build** — `NDEBUG=1` is keyed on
+`bUseDebugCRT`, which defaults **false even in Debug**, so `RMLUI_DEBUG` is never defined.
+
+**CORRECTED after the pre-merge review — v2 said "and error log", and that half was false.**
+`Rml::Log::Message` is an ordinary function forwarding to the registered system interface, and
+VaCuus's routes `LT_ERROR` → `UE_LOG(LogVaCuus, Error)`. So RmlUi's error and warning *logging*
+works in every configuration, including Shipping. The macro that genuinely is the assert,
+`RMLUI_LOG_TYPE_ERROR`, exists in only three headers — the **templated type-registration path this
+design deliberately bypasses**. The one place the claim held is the one place this plugin does not go.
+
+The consequence matters: this milestone's signature failure is **not** silent. `Element.cpp:2218`
+emits `Could not locate data model '%s' in element %s.` at `LT_ERROR`, which lands in our log.
+Fourteen code comments repeated the false version and were corrected.
+
+What survives, and is the reason VaCuus still checks its own preconditions: RmlUi's **asserts** are
+gone, so any API whose *only* failure signal is an assert needs the caller to check. And where RmlUi
+does log, its line usually names the symptom rather than the cause, and arrives on the wrong thread
+or at the wrong time to be actionable.
 
 So VaCuus checks its own preconditions and logs through `LogVaCuus`: duplicate model name, duplicate
 member, unsupported property kind, illegal wire name (§3.3), layout/type mismatch (§7), and a
