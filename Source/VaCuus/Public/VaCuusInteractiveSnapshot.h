@@ -47,6 +47,15 @@ enum class EVaCuusRectFlags : uint8
 	 * click. Focusability is a property of the GEOMETRY, which is a frame old but
 	 * correct, so asking "is the rect under this point focusable" answers on the FIRST
 	 * click.
+	 *
+	 * FOR TASK 9 (IME), WHICH NEEDS BOTH HALVES AND ONLY ONE OF THEM IS HERE. This flag
+	 * answers "would a click at this point focus something that takes text", which is
+	 * what `OnMouseButtonDown` needs in order to activate the platform IME context on the
+	 * SAME click that focuses the field -- add a `TextInput` bit alongside this one (six
+	 * are free) rather than a parallel array. But activation also has to be undone, and
+	 * "is a text control focused RIGHT NOW" is a view-level fact about UI-thread state,
+	 * not about geometry: it belongs next to bWantsKeyboardFocus, whose staleness it
+	 * shares. Deriving either from the other is the mistake D11 was fixing.
 	 */
 	Focusable = 1 << 1
 };

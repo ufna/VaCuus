@@ -181,6 +181,16 @@ public:
 	 */
 	int32 GetNumAnalogNavKeys_Debug() const { return NumAnalogNavKeys; }
 
+	/**
+	 * Whether this widget believes it is holding Slate focus that it asked for itself.
+	 *
+	 * Exposed for VaCuus.Input.AnalogNavGate, which asserts that the release in
+	 * TickKeyboardFocusRelease is edge-triggered and actually fires: the Slate half of it
+	 * (handing focus to the game viewport) needs a real window and cannot run headless,
+	 * but the bookkeeping that decides whether to release can.
+	 */
+	bool HasSelfRequestedUserFocus_Debug() const { return bSelfRequestedUserFocus; }
+
 private:
 	/** Which way the left stick is currently pushed, once the dead zone has been applied. */
 	enum class EAnalogNavDirection : uint8
@@ -251,14 +261,31 @@ private:
 	/** Queues one synthesized nav press (down and up) and counts it. */
 	void SendAnalogNavKey(EAnalogNavDirection Direction);
 
+	/**
+	 * Hands back the Slate focus this widget took itself, once the view stops wanting the
+	 * keyboard.
+	 *
+	 * Slate never un-focuses a widget on its own, so without this one click on a text
+	 * field leaves this widget owning the focus path for the rest of the session -- which
+	 * keeps FNullNavigationConfig installed on the whole application and keeps every key
+	 * and stick event routing here to be declined one at a time. Edge-triggered on
+	 * bWantsKeyboardFocus going true -> false, and only for focus this widget requested.
+	 */
+	void TickKeyboardFocusRelease();
+
 	/** The FKey a synthesized stick direction is queued as; the UI thread maps it to KI_*. */
 	static FKey AnalogNavDirectionToKey(EAnalogNavDirection Direction);
 
 	/**
 	 * Installs FNullNavigationConfig, saving the exact config that was there (D12).
 	 * Idempotent, and a no-op without Slate.
+	 *
+	 * UserIndex is only used to check, and log, whether the config that will ACTUALLY be
+	 * consulted for that user is the one we installed -- see the known limitation in the
+	 * implementation: SetNavigationConfig replaces the global config, while resolution
+	 * goes through GetRelevantNavConfig(UserIndex).
 	 */
-	void OverrideNavigationConfig();
+	void OverrideNavigationConfig(int32 UserIndex);
 
 	/**
 	 * Puts the saved config back -- but only if ours is still the installed one, so a
@@ -331,6 +358,20 @@ private:
 
 	/** Synthesized nav presses so far; diagnostics and VaCuus.Input.SlateRouting. */
 	int32 NumAnalogNavKeys = 0;
+
+	/**
+	 * True while this widget holds Slate focus that IT asked for, on a click over a
+	 * focusable rect.
+	 *
+	 * The distinction is what keeps TickKeyboardFocusRelease from fighting the game: a
+	 * game that focuses this widget deliberately (it just opened a pad-driven menu) does
+	 * so while nothing inside the document is focused yet, which is exactly the state
+	 * that would otherwise look like "the UI is done with the keyboard".
+	 */
+	bool bSelfRequestedUserFocus = false;
+
+	/** Previous frame's bWantsKeyboardFocus; makes the release above edge-triggered. */
+	bool bLastWantedKeyboardFocus = false;
 
 	bool bAutoShotDone = false;
 };

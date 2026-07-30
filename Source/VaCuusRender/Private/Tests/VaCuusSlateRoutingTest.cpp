@@ -791,4 +791,186 @@ bool FVaCuusSlateRoutingTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+/**
+ * The analog throttle must not navigate a UI that does not own the keyboard -- and must
+ * hand back the focus it took when the UI stops owning it.
+ *
+ * THE BUG THIS GUARDS (found in review): the first version of TickAnalogNavigation
+ * synthesized nav keys whenever the stick was past the dead zone, while every FReply path
+ * correctly gated on bWantsKeyboardFocus. Slate never un-focuses a widget on its own, so
+ * after ANY single click on the HUD this widget kept receiving analog events forever; a
+ * player then simply holding the left stick to WALK would, 0.4 s later, have a synthesized
+ * direction key delivered to a document whose own element holds focus -- which RmlUi
+ * treats as "enter the grid" (FindNextNavigationElement short-cuts `current_element ==
+ * this` to tab order, ElementDocument.cpp:795-796). From that frame on the view wanted the
+ * keyboard, the stick was answered Handled, and movement input vanished.
+ *
+ * WHY VaCuus.Input.SlateRouting CANNOT CATCH IT: that test establishes
+ * bWantsKeyboardFocus == true as a PREREQUISITE for its analog assertions, which is the
+ * one state in which the missing gate is invisible. This test is the same code driven from
+ * the opposite state, which is also the state a walking player is in.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusAnalogNavGateTest, "VaCuus.Input.AnalogNavGate",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusAnalogNavGateTest::RunTest(const FString& Parameters)
+{
+	using namespace VaCuusSlateRoutingTest;
+
+	if (!FPlatformProcess::SupportsMultithreading())
+	{
+		AddInfo(TEXT("Skipped: no multithreading support, so there is no worker thread to drive"));
+		return true;
+	}
+
+	if (!TestFalse(TEXT("RmlUi is down before the test"), FVaCuusEngine::Get().IsInitialized()))
+	{
+		return false;
+	}
+
+	FVaCuusModule& Module = FVaCuusModule::Get();
+	FVaCuusUIThread* UIThread = Module.GetOrStartUIThread();
+	if (!TestNotNull(TEXT("UI thread"), UIThread))
+	{
+		return false;
+	}
+
+	ON_SCOPE_EXIT
+	{
+		Module.StopUIThread();
+	};
+
+	const FIntPoint ViewSize(400, 300);
+	const TSharedRef<FVaCuusViewStatus> Status = MakeShared<FVaCuusViewStatus>();
+
+	TUniquePtr<FProbeHost> OwnedHost = MakeUnique<FProbeHost>();
+	FProbeHost* Host = OwnedHost.Get();
+
+	const uint32 ViewId = UIThread->AllocateViewId();
+	UIThread->EnqueueAddView(ViewId, MoveTemp(OwnedHost), ViewSize, Status);
+	UIThread->EnqueueLoadDocumentFromMemory(ViewId, GDocument, /*LoadSerial=*/1);
+
+	TStrongObjectPtr<UGameInstance> GameInstance(NewObject<UGameInstance>());
+	TStrongObjectPtr<UVaCuusSubsystem> Subsystem(NewObject<UVaCuusSubsystem>(GameInstance.Get()));
+	TStrongObjectPtr<UVaCuusView> View(NewObject<UVaCuusView>(Subsystem.Get()));
+	View->InitializeView(Subsystem.Get(), ViewId, Status, ViewSize);
+
+	const TSharedRef<FVaCuusSlateElement> Element = MakeShared<FVaCuusSlateElement>();
+	TSharedRef<SVaCuusWidget> Widget = SNew(SVaCuusWidget, View.Get(), Element);
+	const FGeometry Geometry = FGeometry::MakeRoot(FVector2f(ViewSize.X, ViewSize.Y), FSlateLayoutTransform());
+
+	if (!TestTrue(TEXT("UI frames ran"), RunFrames(*UIThread, 2)))
+	{
+		return false;
+	}
+	View->PollStatus();
+
+	// THE TRIGGERING STATE, and the whole point of this test: a document is up, so its own
+	// element holds focus (Show(FocusFlag::Document)), but nothing focusable inside it does
+	// -- which is precisely what a player walking around with the HUD on top looks like.
+	if (!TestFalse(TEXT("The view does not want the keyboard (only the document holds focus)"),
+			View->GetSnapshot().bWantsKeyboardFocus))
+	{
+		return false;
+	}
+
+	const TSet<FKey> NoButtons;
+	const TSet<FKey> LeftOnly = {EKeys::LeftMouseButton};
+
+	{
+		const int32 NavKeysBefore = Widget->GetNumAnalogNavKeys_Debug();
+		const uint64 QueuedBefore = View->GetNumInputEventsQueued();
+
+		// The player pushes the movement stick a long way and holds it.
+		const FReply Walking = Widget->OnAnalogValueChanged(Geometry, MakeAnalogEvent(EKeys::Gamepad_LeftY, 0.95f));
+		TestFalse(TEXT("A stick the UI does not own is not consumed"), Walking.IsEventHandled());
+
+		// Held well past the initial delay and many repeat intervals -- the old code would
+		// have fired at 0.4 s and then every 0.12 s.
+		double Time = 5000.0;
+		for (int32 Step = 0; Step < 40; ++Step)
+		{
+			Widget->Tick(Geometry, Time, 0.016f);
+			Time += 0.05;
+		}
+
+		TestEqual(TEXT("A held stick never navigates a UI that does not own the keyboard"),
+			Widget->GetNumAnalogNavKeys_Debug(), NavKeysBefore);
+		TestEqual(TEXT("...and queues nothing for the UI thread, so movement is not stolen"),
+			View->GetNumInputEventsQueued(), QueuedBefore);
+
+		// And RmlUi never "entered the grid": the document still holds focus, so the view
+		// still does not want the keyboard and the player keeps walking.
+		if (!TestTrue(TEXT("UI frame ran after two seconds of held stick"), RunFrames(*UIThread, 1)))
+		{
+			return false;
+		}
+		View->PollStatus();
+		TestFalse(TEXT("Holding the stick did not focus anything in the document"),
+			View->GetSnapshot().bWantsKeyboardFocus);
+		TestEqual(TEXT("Nothing inside the document took focus"), Host->FocusId, FString());
+
+		// THE POSITIVE CONTROL: the gate is a gate, not a disable. One click on a focusable
+		// rect and the same still-held stick navigates immediately -- a direction that was
+		// gated out is not remembered as "already held", which is why the reset in the gate
+		// matters.
+		Widget->OnMouseButtonDown(Geometry, MakePointerEvent(GButtonPoint, LeftOnly, EKeys::LeftMouseButton));
+		Widget->OnMouseButtonUp(Geometry, MakePointerEvent(GButtonPoint, NoButtons, EKeys::LeftMouseButton));
+		TestTrue(TEXT("The click took focus this widget asked for itself"),
+			Widget->HasSelfRequestedUserFocus_Debug());
+
+		if (!TestTrue(TEXT("UI frame ran after the click"), RunFrames(*UIThread, 1)))
+		{
+			return false;
+		}
+		View->PollStatus();
+		if (!TestTrue(TEXT("Clicking the button makes the view want the keyboard"),
+				View->GetSnapshot().bWantsKeyboardFocus))
+		{
+			return false;
+		}
+
+		Widget->Tick(Geometry, Time, 0.016f);
+		TestEqual(TEXT("Once the UI owns the keyboard the held stick navigates at once"),
+			Widget->GetNumAnalogNavKeys_Debug(), NavKeysBefore + 1);
+
+		// FIX 3: when the view stops wanting the keyboard, the focus this widget took is
+		// handed back. Back is what a player presses to get there.
+		UIThread->EnqueueInput(ViewId, FVaCuusInputEvent::NavigateBack());
+		if (!TestTrue(TEXT("UI frame ran after Back"), RunFrames(*UIThread, 1)))
+		{
+			return false;
+		}
+		View->PollStatus();
+		if (!TestFalse(TEXT("Back stops the view wanting the keyboard"),
+				View->GetSnapshot().bWantsKeyboardFocus))
+		{
+			return false;
+		}
+
+		// Edge-triggered, so it is this Tick that releases. Headless has no window and
+		// therefore no Slate focus path to hand back -- what is observable here is the
+		// bookkeeping deciding to release and clearing itself, which is the half that
+		// decides whether the release happens at all.
+		Widget->Tick(Geometry, Time + 0.05, 0.016f);
+		TestFalse(TEXT("The widget released the Slate focus it had taken"),
+			Widget->HasSelfRequestedUserFocus_Debug());
+
+		// And the stick is gated again, so a player who backed out of the UI can walk.
+		const int32 NavKeysAfterRelease = Widget->GetNumAnalogNavKeys_Debug();
+		for (int32 Step = 0; Step < 20; ++Step)
+		{
+			Widget->Tick(Geometry, Time + 1.0 + Step * 0.05, 0.016f);
+		}
+		TestEqual(TEXT("After backing out, the held stick is gated again"),
+			Widget->GetNumAnalogNavKeys_Debug(), NavKeysAfterRelease);
+	}
+
+	Widget->DetachView();
+	UIThread->EnqueueRemoveView(ViewId);
+	TestTrue(TEXT("UI frames survive the removal"), RunFrames(*UIThread, 2));
+
+	return true;
+}
+
 #endif	// WITH_DEV_AUTOMATION_TESTS

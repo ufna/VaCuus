@@ -11,6 +11,7 @@
 
 #include "Framework/Application/NavigationConfig.h"
 #include "Framework/Application/SlateApplication.h"
+#include "Framework/Application/SlateUser.h"
 #include "HAL/IConsoleManager.h"
 #include "Rendering/DrawElements.h"
 #include "RenderingThread.h"
@@ -128,6 +129,10 @@ void SVaCuusWidget::Tick(const FGeometry& AllottedGeometry, const double InCurre
 	// No trigger here: UVaCuusSubsystem::Tick is the once-per-frame pulse, which is
 	// a better slot than a widget's Tick (and the only one that works for views
 	// without a widget).
+
+	// Focus first: the analog clock below is gated on the UI wanting the keyboard, and
+	// this is what makes that condition stop being true.
+	TickKeyboardFocusRelease();
 
 	// The analog stick's repeat clock (D13). Here rather than in OnAnalogValueChanged
 	// because a held stick stops producing events.
@@ -293,6 +298,12 @@ FReply SVaCuusWidget::OnMouseButtonDown(const FGeometry& MyGeometry, const FPoin
 	if (Snapshot.IsFocusableAt(Position))
 	{
 		Reply.SetUserFocus(SharedThis(this), EFocusCause::Mouse);
+
+		// Remembered so Tick can give the focus BACK when the UI stops wanting it (see
+		// TickKeyboardFocusRelease). Only focus this widget asked for is ever released;
+		// focus a game handed us deliberately -- because it opened a menu -- is that
+		// game's to take away again.
+		bSelfRequestedUserFocus = true;
 	}
 
 	return Reply;
@@ -553,6 +564,14 @@ FReply SVaCuusWidget::OnAnalogValueChanged(const FGeometry& MyGeometry, const FA
 	const FKey Key = InAnalogInputEvent.GetKey();
 	const float Value = InAnalogInputEvent.GetAnalogValue();
 
+	// SCOPE NOTE: InAnalogInputEvent.GetUserIndex() is deliberately ignored, so every
+	// connected controller writes the same two axes and the last one to move wins. That
+	// is the right trade for a single-player dev HUD and wrong for split-screen or any
+	// couch-multiplayer UI, where each local player needs their own view, their own
+	// snapshot and their own stick state. The fix when it is needed is per-user analog
+	// state keyed on GetUserIndex() (and a per-user view), not a filter here -- filtering
+	// to user 0 would silently ignore player two rather than serve them.
+
 	// LEFT STICK ONLY. The right stick and the trigger axes are left entirely to the
 	// game: a camera stick that also moved the UI focus would be unusable, and there is
 	// no second navigation axis for it to drive.
@@ -641,6 +660,32 @@ void SVaCuusWidget::SendAnalogNavKey(EAnalogNavDirection Direction)
 
 void SVaCuusWidget::TickAnalogNavigation(double InCurrentTime)
 {
+	// GATED ON THE UI ACTUALLY OWNING THE KEYBOARD, and this gate is not symmetry for
+	// its own sake -- without it the repeat clock eats the player's movement stick.
+	//
+	// The chain: Slate never takes focus away from a widget on its own, so after any
+	// single click on the HUD this widget keeps receiving analog events forever. A player
+	// then simply holding the left stick to walk would be past the dead zone, the
+	// throttle would synthesize a direction key, and RmlUi treats the first direction key
+	// delivered while the DOCUMENT holds focus as "enter the grid"
+	// (FindNextNavigationElement short-cuts `current_element == this` to tab order,
+	// ElementDocument.cpp:795-796). From that moment bWantsKeyboardFocus is true, every
+	// later stick event is answered Handled, and the player's movement input is silently
+	// eaten -- 0.4 s after they started walking.
+	//
+	// So the stick may only navigate a UI that already owns the keyboard. Entering the UI
+	// is the DPad's job (OnKeyDown enqueues regardless), or the game's, by focusing this
+	// widget deliberately. The other half of the fix is in Tick: focus this widget took
+	// itself is released again as soon as the view stops wanting the keyboard.
+	if (!GetSnapshot().bWantsKeyboardFocus)
+	{
+		// Reset, not just skip: otherwise a stick held across the transition would count
+		// as "already held" and its first press after the UI regains focus would be
+		// swallowed as a repeat that is not due yet.
+		HeldAnalogDirection = EAnalogNavDirection::None;
+		return;
+	}
+
 	const EAnalogNavDirection Direction = ResolveAnalogNavDirection();
 
 	if (Direction == EAnalogNavDirection::None)
@@ -672,7 +717,80 @@ void SVaCuusWidget::TickAnalogNavigation(double InCurrentTime)
 	}
 }
 
-void SVaCuusWidget::OverrideNavigationConfig()
+void SVaCuusWidget::TickKeyboardFocusRelease()
+{
+	// Edge-triggered on the view's own answer, not level-triggered: this must fire once,
+	// on the frame the UI stops wanting the keyboard, and then stay quiet -- otherwise it
+	// would fight anything that focuses this widget while no element is focused, which is
+	// exactly how a pad-driven menu is opened.
+	const bool bWantsKeyboard = GetSnapshot().bWantsKeyboardFocus;
+	const bool bLost = bLastWantedKeyboardFocus && !bWantsKeyboard;
+	bLastWantedKeyboardFocus = bWantsKeyboard;
+
+	if (!bLost || !bSelfRequestedUserFocus || !FSlateApplication::IsInitialized())
+	{
+		return;
+	}
+
+	// WHY RELEASE AT ALL: Slate never takes focus away from a widget on its own, so
+	// without this a single click on the HUD leaves this widget holding the focus path
+	// forever -- which keeps FNullNavigationConfig installed (so the rest of the
+	// application loses arrow-key navigation) and keeps every key and analog event coming
+	// here to be answered Unhandled one at a time. Blurring the last focused element (the
+	// pad's Back, or a script) is the player saying they are done with the UI.
+	FSlateApplication& Slate = FSlateApplication::Get();
+
+	// Only the users whose focus is actually on THIS widget. ForEachUser rather than
+	// HasAnyUserFocus() + ClearAllUserFocus(), because the latter would also drop focus
+	// for users who are looking at something else entirely.
+	TArray<int32, TInlineAllocator<4>> UsersToRelease;
+	Slate.ForEachUser(
+		[this, &UsersToRelease](FSlateUser& User)
+		{
+			if (User.GetFocusedWidget().Get() == this)
+			{
+				UsersToRelease.Add(User.GetUserIndex());
+			}
+		});
+
+	if (UsersToRelease.IsEmpty())
+	{
+		// Focus already moved on by itself; nothing to hand back, and nothing to remember.
+		bSelfRequestedUserFocus = false;
+		return;
+	}
+
+	// HANDED TO THE GAME VIEWPORT, not cleared. ClearUserFocus() leaves the user with an
+	// empty focus path, and FSlateApplication routes keys ALONG the focus path
+	// (ProcessKeyDownEvent -> SlateUser->GetFocusPath()), so the game viewport would stop
+	// receiving keys altogether -- the same class of bug as the one this fix is for.
+	// SetUserFocusToGameViewport is the engine's own idiom for this
+	// (UGameViewportClient.cpp:3354); it no-ops when there is no game viewport, which is
+	// why the clear below is the fallback rather than the default.
+	const bool bHasGameViewport = Slate.GetGameViewport().IsValid();
+	for (const int32 UserIndex : UsersToRelease)
+	{
+		if (bHasGameViewport)
+		{
+			Slate.SetUserFocusToGameViewport(UserIndex, EFocusCause::SetDirectly);
+		}
+		else
+		{
+			Slate.ClearUserFocus(UserIndex, EFocusCause::SetDirectly);
+		}
+	}
+
+	// OnFocusLost has run by now and cleared the flag; this is belt and braces for the
+	// case where the focus change did not produce one (no game viewport, no other widget).
+	bSelfRequestedUserFocus = false;
+
+	UE_LOG(LogVaCuus, Verbose,
+		TEXT("VaCuus widget released the Slate focus it took (%d user(s)) because the view stopped wanting the keyboard; ")
+		TEXT("focus went to %s"),
+		UsersToRelease.Num(), bHasGameViewport ? TEXT("the game viewport") : TEXT("nothing (no game viewport)"));
+}
+
+void SVaCuusWidget::OverrideNavigationConfig(int32 UserIndex)
 {
 	check(IsInGameThread());
 
@@ -710,6 +828,40 @@ void SVaCuusWidget::OverrideNavigationConfig()
 		TEXT("VaCuus widget installed FNullNavigationConfig while focused (previous config '%s'); ")
 		TEXT("RmlUi's nav-* graph now owns arrows, Tab and the stick"),
 		*SavedNavigationConfig->ToString());
+
+	// KNOWN LIMITATION -- SetNavigationConfig() only replaces the GLOBAL config, while
+	// GetNavigationDirectionFromKey/FromAnalog resolve through
+	// FSlateApplication::GetRelevantNavConfig(UserIndex), which prefers a config
+	// registered for that specific user and, in editor builds, substitutes
+	// EditorNavigationConfig for widget paths outside AllGameViewports. So an application
+	// that registers per-user navigation configs (CommonUI does) or a document hosted in
+	// an editor utility widget can still have its arrows eaten before OnKeyDown, and our
+	// save/restore would not notice.
+	//
+	// Detected rather than assumed away: the divergence is logged here so a "the pad does
+	// nothing in this one context" report has a first line to check, instead of looking
+	// like a VaCuus bug. Widening the fix (per-user overrides, or an IInputProcessor that
+	// intercepts before navigation runs at all) is deferred until something actually needs
+	// it -- both cost more global state than this milestone can justify.
+	//
+	// PROBED BEHAVIOURALLY, not by comparing config pointers: GetRelevantNavConfig itself
+	// is protected, and the question that matters is not "is our object installed" but
+	// "will Slate still turn an arrow into navigation for this user". Asking
+	// GetNavigationDirectionFromKey answers exactly that -- it resolves through
+	// GetRelevantNavConfig(InKeyEvent.GetUserIndex()), the same call the real key path
+	// makes, and the analog path resolves identically. Anything other than Invalid means
+	// some other config is winning.
+	const FKeyEvent ProbeEvent(EKeys::Right, FModifierKeysState(), uint32(UserIndex), /*bIsRepeat=*/false,
+		/*CharacterCode=*/0, /*KeyCode=*/0);
+	if (const EUINavigation ProbeDirection = Slate.GetNavigationDirectionFromKey(ProbeEvent);
+		ProbeDirection != EUINavigation::Invalid)
+	{
+		UE_LOG(LogVaCuus, Verbose,
+			TEXT("VaCuus widget: the effective navigation config for user %d still resolves the Right arrow to ")
+			TEXT("navigation (%d) despite our override -- a per-user or editor config takes precedence over the ")
+			TEXT("global one, so Slate may consume arrows and the stick before OnKeyDown"),
+			UserIndex, int32(ProbeDirection));
+	}
 }
 
 void SVaCuusWidget::RestoreNavigationConfig()
@@ -759,8 +911,9 @@ FReply SVaCuusWidget::OnFocusReceived(const FGeometry& MyGeometry, const FFocusE
 	UE_LOG(LogVaCuus, Verbose, TEXT("VaCuus widget received Slate focus (cause %d)"), int32(InFocusEvent.GetCause()));
 
 	// Controller decision D12: while we own the keyboard, Slate must stop eating
-	// directions before OnKeyDown sees them.
-	OverrideNavigationConfig();
+	// directions before OnKeyDown sees them. The user index is passed through only for
+	// the per-user divergence check documented in OverrideNavigationConfig.
+	OverrideNavigationConfig(int32(InFocusEvent.GetUser()));
 	return FReply::Handled();
 }
 
@@ -781,6 +934,10 @@ void SVaCuusWidget::OnFocusLost(const FFocusEvent& InFocusEvent)
 	AnalogAxisX = 0.0f;
 	AnalogAxisY = 0.0f;
 	HeldAnalogDirection = EAnalogNavDirection::None;
+
+	// Whatever focus we were holding is gone, so there is nothing left for
+	// TickKeyboardFocusRelease to hand back.
+	bSelfRequestedUserFocus = false;
 
 	// Hand navigation back. Not conditional on anything: whoever has focus now owns
 	// arrow keys, and it is not us.

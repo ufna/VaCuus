@@ -262,6 +262,37 @@ input { display: block; position: absolute; nav: auto; tab-index: auto; }
 </body>
 </rml>)");
 
+/**
+ * The Back regression document: a focusable NESTED INSIDE A PLAIN WRAPPER DIV, which is
+ * how real content is shaped and what the first version of Back got wrong.
+ *
+ * Deliberately mirrors the shipped HUD's `<div id="ability-bar">` wrapping `.slot`:
+ * #wrap is an ordinary div with no tab-index, and #inner is the focusable inside it.
+ * Both other documents in this suite put their focusables as direct children of <body>,
+ * which is exactly why the bug survived them -- with the focusable one level down,
+ * Element::Blur()'s single hop to the immediate parent lands on the wrapper, not on the
+ * document, and the wrapper accepts focus because `focus` is inherited and defaults to
+ * auto while Element::Focus() has no tab-index gate.
+ *
+ * Two levels of nesting rather than one, so the assertion also rules out a fix that just
+ * hops twice.
+ */
+static const TCHAR* GNestedDocument = TEXT(R"(<rml>
+<head>
+<style>
+body { display: block; width: 100%; height: 100%; nav: auto; }
+div { display: block; }
+button { display: block; position: absolute; nav: auto; tab-index: auto; }
+#wrap  { position: absolute; left: 10px; top: 10px; width: 200px; height: 200px; }
+#group { position: absolute; left: 5px;  top: 5px;  width: 180px; height: 180px; }
+#inner { left: 10px; top: 10px; width: 80px; height: 40px; }
+</style>
+</head>
+<body>
+	<div id="wrap"><div id="group"><button id="inner"/></div></div>
+</body>
+</rml>)");
+
 /** Sends one synthesized gamepad/keyboard press and runs the frame that consumes it. */
 static bool PressKey(FVaCuusUIThread& UIThread, uint32 ViewId, const FKey& Key,
 	const FVaCuusModifierState& Modifiers = FVaCuusModifierState())
@@ -439,6 +470,127 @@ bool FVaCuusSpatialNavTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("UI frame ran after the final DPad right"),
 		PressKey(*UIThread, ViewId, EKeys::Gamepad_DPad_Right));
 	TestEqual(TEXT("Navigation still works after a redundant Back"), Host->FocusId, FString(TEXT("a")));
+
+	UIThread->EnqueueRemoveView(ViewId);
+	TestTrue(TEXT("UI frames survive the removal"), RunFrames(*UIThread, 2));
+
+	return true;
+}
+
+/**
+ * Back on NESTED content, which is the shape all real content has.
+ *
+ * THE BUG THIS GUARDS (found in review, reachable through our own shipped HUD):
+ * Element::Blur() hands focus to the IMMEDIATE PARENT only (Element.cpp:2016-2031), and
+ * Element::Focus() succeeds on any element whose computed `focus` is not none
+ * (Element.cpp:2003-2008) -- there is no tab-index gate, and `focus` is inherited with a
+ * default of auto (StyleSheetSpecification.cpp:375). So a single blur lands on whatever
+ * plain <div> happens to wrap the focusable. D9 counts that wrapper as a real focus
+ * element, because it excludes only the context root and document elements, so
+ * bWantsKeyboardFocus stays TRUE and the UI keeps eating the player's keys -- one Back
+ * press per level of nesting before the keyboard actually comes back.
+ *
+ * `m1_hud.rml` nests `.slot` inside `<div id="ability-bar">`, so this was reachable in
+ * the demo; VaCuus.Input.SpatialNav missed it only because its focusables are direct
+ * children of <body>, where one hop happens to be enough.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusNavBackNestedTest, "VaCuus.Input.NavBackNested",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusNavBackNestedTest::RunTest(const FString& Parameters)
+{
+	using namespace VaCuusSpatialNavTest;
+
+	if (!FPlatformProcess::SupportsMultithreading())
+	{
+		AddInfo(TEXT("Skipped: no multithreading support, so there is no worker thread to drive"));
+		return true;
+	}
+
+	if (!TestFalse(TEXT("RmlUi is down before the test"), FVaCuusEngine::Get().IsInitialized()))
+	{
+		return false;
+	}
+
+	FVaCuusModule& Module = FVaCuusModule::Get();
+	FVaCuusUIThread* UIThread = Module.GetOrStartUIThread();
+	if (!TestNotNull(TEXT("UI thread"), UIThread))
+	{
+		return false;
+	}
+
+	ON_SCOPE_EXIT
+	{
+		Module.StopUIThread();
+	};
+
+	const FIntPoint ViewSize(400, 300);
+	const TSharedRef<FVaCuusViewStatus> Status = MakeShared<FVaCuusViewStatus>();
+
+	TUniquePtr<FProbeHost> OwnedHost = MakeUnique<FProbeHost>();
+	FProbeHost* Host = OwnedHost.Get();
+
+	const uint32 ViewId = UIThread->AllocateViewId();
+	UIThread->EnqueueAddView(ViewId, MoveTemp(OwnedHost), ViewSize, Status);
+	UIThread->EnqueueLoadDocumentFromMemory(ViewId, GNestedDocument, /*LoadSerial=*/1);
+
+	if (!TestTrue(TEXT("UI frames ran"), RunFrames(*UIThread, 2)))
+	{
+		return false;
+	}
+	if (!TestTrue(TEXT("Document loaded"),
+			Status->LoadCompletedSerial.load(std::memory_order_acquire) == 1 &&
+				Status->LoadResult.load(std::memory_order_relaxed) == uint8(EVaCuusLoadResult::Succeeded)))
+	{
+		return false;
+	}
+
+	// Focus the nested button. Tab reaches it because it is the only focusable in the
+	// document; the wrappers are skipped precisely BECAUSE they have no tab-index -- which
+	// is the asymmetry the bug exploited (RmlUi will not tab TO them, but it will happily
+	// blur INTO them).
+	if (!TestTrue(TEXT("UI frame ran after Tab"), PressKey(*UIThread, ViewId, EKeys::Tab)))
+	{
+		return false;
+	}
+	if (!TestEqual(TEXT("Tab focuses the nested button"), Host->FocusId, FString(TEXT("inner"))))
+	{
+		return false;
+	}
+	{
+		const FVaCuusInteractiveSnapshot Snapshot = Status->AcquireSnapshot();
+		TestTrue(TEXT("A nested focused element makes the view want the keyboard"),
+			Snapshot.bWantsKeyboardFocus);
+	}
+
+	// ONE Back, and the keyboard must be back with the game. The two assertions are the
+	// two halves of the bug: focus is on the DOCUMENT (not on '#group', which is where a
+	// single blur would have left it), and the published snapshot says the view no longer
+	// wants the keyboard.
+	UIThread->EnqueueInput(ViewId, FVaCuusInputEvent::NavigateBack());
+	if (!TestTrue(TEXT("UI frame ran after Back"), RunFrames(*UIThread, 1)))
+	{
+		return false;
+	}
+
+	AddInfo(FString::Printf(TEXT("Focus after one Back: '%s' (document: %s)"),
+		*Host->FocusId, Host->bFocusIsDocument ? TEXT("yes") : TEXT("no")));
+
+	TestEqual(TEXT("ONE Back leaves no wrapper element focused"), Host->FocusId, FString());
+	TestTrue(TEXT("ONE Back puts focus on the document, however deeply nested the element was"),
+		Host->bFocusIsDocument);
+	{
+		const FVaCuusInteractiveSnapshot Snapshot = Status->AcquireSnapshot();
+		TestFalse(TEXT("ONE Back is enough for the view to stop wanting the keyboard"),
+			Snapshot.bWantsKeyboardFocus);
+	}
+
+	// And the document is still navigable: Back releases the keyboard, it does not strand
+	// focus somewhere ProcessDefaultAction cannot run from.
+	TestTrue(TEXT("UI frame ran after Back + DPad right"),
+		PressKey(*UIThread, ViewId, EKeys::Gamepad_DPad_Right));
+	TestEqual(TEXT("Navigation re-enters the nested content after Back"),
+		Host->FocusId, FString(TEXT("inner")));
 
 	UIThread->EnqueueRemoveView(ViewId);
 	TestTrue(TEXT("UI frames survive the removal"), RunFrames(*UIThread, 2));

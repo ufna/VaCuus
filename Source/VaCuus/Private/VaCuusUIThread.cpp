@@ -208,18 +208,43 @@ void DispatchInputEvent(Rml::Context& Context, const FVaCuusInputEvent& Event)
 				break;
 			}
 
-			// Blur() hands focus to the parent chain, which lands on the document (a
-			// document element is always focusable: Element::Focus only requires
-			// `focus != none`, Element.cpp:2003-2008). So the view keeps a valid focus
-			// element while no longer claiming the keyboard.
+			// NOT Element::Blur(), and this is the whole bug fix.
+			//
+			// Blur() hands focus to the IMMEDIATE PARENT (Element.cpp:2016-2031), and
+			// Element::Focus() has no tab-index gate -- it succeeds on any element whose
+			// computed `focus` is not none (Element.cpp:2003-2008), while `focus` is
+			// inherited and defaults to auto (StyleSheetSpecification.cpp:375). So ANY plain
+			// wrapper div accepts the focus Blur() pushes at it. On our own shipped HUD,
+			// where `.slot` sits inside <div id="ability-bar">, Back moved focus onto the
+			// wrapper -- which D9 still counts as a real focus element, since it excludes
+			// only the context root and document elements -- so bWantsKeyboardFocus stayed
+			// true and the player needed one Back press per level of nesting.
+			//
+			// Focusing the owner document is the single step that always lands where Back
+			// means to land: the document keeps focus, so ProcessDefaultAction still runs
+			// and a later direction key can re-enter the UI, while D9 stops counting it as
+			// "the UI wants the keyboard". Focus(false), not Focus(true): there is nothing
+			// to draw a :focus-visible ring around.
 			const Rml::String BlurredId = Focus->GetId();
-			Focus->Blur();
+			Rml::ElementDocument* const Document = Focus->GetOwnerDocument();
+			if (Document == nullptr || !Document->Focus())
+			{
+				// A document with `focus: none` on it, which also means nothing inside it was
+				// ever focusable -- so this should be unreachable. Fall back to the old
+				// single-step blur rather than leaving focus where it was, and say so.
+				UE_LOG(LogVaCuus, Warning,
+					TEXT("View %u: Back could not focus the owner document of '%s'; falling back to a single blur, ")
+					TEXT("so the view may still claim the keyboard"),
+					Event.ViewId, UTF8_TO_TCHAR(BlurredId.c_str()));
+				Focus->Blur();
+				break;
+			}
 
 			// Log, not silence: for M2 this is ALL that Back does, and a player pressing B
 			// and seeing only "the highlight went away" deserves to be explainable. A real
 			// Back binding (close the menu, pop a screen) is game-side policy.
 			UE_LOG(LogVaCuus, Log,
-				TEXT("View %u: Back blurred the focused element ('%s'); the keyboard returns to the game. ")
+				TEXT("View %u: Back moved focus from '%s' to its document; the keyboard returns to the game. ")
 				TEXT("Any further Back semantics are the game's own binding."),
 				Event.ViewId, UTF8_TO_TCHAR(BlurredId.c_str()));
 			break;
