@@ -149,7 +149,7 @@ void FVaCuusRmlDocumentHost::LoadDocumentFromFile(const FString& VfsPath, uint64
 
 	// Goes through Rml::GetFileInterface() (FVaCuusFileInterface): relative paths --
 	// including the document's own <link>/<img> references -- resolve against
-	// <Project>/Content/DevUI.
+	// the ordered DevUI roots (plugin's Content/DevUI first -- D19).
 	AdoptDocument(Context->LoadDocument(Rml::String(TCHAR_TO_UTF8(*VfsPath))),
 		FString::Printf(TEXT("VFS ('%s')"), *VfsPath), LoadSerial);
 }

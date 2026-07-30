@@ -1,6 +1,7 @@
 // Copyright 2026 Vladimir Alyamkin. All Rights Reserved.
 
 #include "SVaCuusWidget.h"
+#include "VaCuusContentPaths.h"
 #include "VaCuusDefines.h"
 #include "VaCuusRmlDocumentHost.h"
 #include "VaCuusSlateElement.h"
@@ -28,13 +29,13 @@
 namespace VaCuusM1HUD
 {
 /**
- * VFS path of the M1 HUD document; FVaCuusFileInterface resolves relative
- * paths against <Project>/Content/DevUI.
+ * VFS path of the M1 HUD document; FVaCuusFileInterface resolves relative paths
+ * against the ordered DevUI roots (plugin's Content/DevUI first -- D19).
  */
 static const TCHAR* GHudDocumentVfsPath = TEXT("m1_hud.rml");
 
 /**
- * Inline fallback document, used when Content/DevUI/m1_hud.rml is missing OR
+ * Inline fallback document, used when DevUI/m1_hud.rml is missing under every root OR
  * when it exists but fails to load (a broken RML/RCSS edit is exactly when a
  * working fallback matters most).
  * The pure red and pure blue divs are the channel-order probe: if the left
@@ -281,10 +282,10 @@ static void Toggle()
 	const FIntPoint InitialViewSize =
 		Viewport->Viewport ? Viewport->Viewport->GetSizeXY() : FIntPoint(1280, 720);
 
-	// Prefer the real document from the project's DevUI content; fall back to
-	// the inline probe document so the toggle keeps working on a bare project.
-	const FString DocumentDiskPath = FPaths::ProjectContentDir() / TEXT("DevUI") / GHudDocumentVfsPath;
-	const bool bLoadFromFile = FPaths::FileExists(DocumentDiskPath);
+	// Prefer the real document from the DevUI roots (plugin first, then project -- D19);
+	// fall back to the inline probe document so the toggle keeps working on a bare project.
+	const FString DocumentDiskPath = VaCuusContentPaths::ResolveExistingDocument(GHudDocumentVfsPath);
+	const bool bLoadFromFile = !DocumentDiskPath.IsEmpty();
 	if (bLoadFromFile)
 	{
 		UE_LOG(LogVaCuus, Log, TEXT("M1 HUD: loading document via VFS path '%s' ('%s')"),
@@ -292,8 +293,8 @@ static void Toggle()
 	}
 	else
 	{
-		UE_LOG(LogVaCuus, Log, TEXT("M1 HUD: '%s' not found, using the inline fallback document"),
-			*DocumentDiskPath);
+		UE_LOG(LogVaCuus, Log, TEXT("M1 HUD: '%s' not found under any DevUI root (%s), using the inline fallback document"),
+			GHudDocumentVfsPath, *FString::Join(VaCuusContentPaths::GetDocumentRoots(), TEXT(" | ")));
 	}
 
 	TSharedRef<FVaCuusSlateElement> Element = MakeShared<FVaCuusSlateElement>();
@@ -892,7 +893,7 @@ static FAutoConsoleCommand GNavShotCommand(
 
 static FAutoConsoleCommand GToggleCommand(
 	TEXT("vacuus.M1HUD"),
-	TEXT("Toggle the M1 render-spike HUD: records an RmlUi document (Content/DevUI/m1_hud.rml, or an inline fallback) ")
+	TEXT("Toggle the M1 render-spike HUD: records an RmlUi document (DevUI/m1_hud.rml, or an inline fallback) ")
 	TEXT("each frame and composites it over the game viewport."),
 	FConsoleCommandDelegate::CreateStatic(&Toggle));
 } // namespace VaCuusM1HUD

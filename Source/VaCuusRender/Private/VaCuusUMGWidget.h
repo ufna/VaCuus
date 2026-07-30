@@ -78,7 +78,7 @@ class UVaCuusWidget : public UWidget
 public:
 	/**
 	 * Document to show, as an RmlUi VFS path (resolved against
-	 * <Project>/Content/DevUI by FVaCuusFileInterface). Empty means "no document";
+	 * a DevUI root by FVaCuusFileInterface -- see VaCuusContentPaths.h). Empty means "no document";
 	 * call LoadDocument() at runtime instead.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "VaCuus", meta = (DisplayName = "Document"))

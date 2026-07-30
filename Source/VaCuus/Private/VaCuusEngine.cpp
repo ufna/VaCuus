@@ -3,6 +3,7 @@
 #include "VaCuusEngine.h"
 
 #include "VaCuus.h"
+#include "VaCuusContentPaths.h"
 #include "VaCuusDefines.h"
 #include "VaCuusFileInterface.h"
 #include "VaCuusSystemInterface.h"
@@ -132,19 +133,24 @@ bool FVaCuusEngine::Initialize()
 		return false;
 	}
 
-	// Default font face; missing font is a warning, not a boot failure.
-	const FString FontDiskPath = FPaths::ProjectContentDir() / TEXT("DevUI/fonts/LatoLatin-Regular.ttf");
-	if (FPaths::FileExists(FontDiskPath))
+	// Default font face; missing font is a warning, not a boot failure. The existence
+	// check goes through the same ordered roots the file interface uses (D19), so it
+	// cannot disagree with the LoadFontFace() below about which copy exists.
+	static const TCHAR* DefaultFontVfsPath = TEXT("fonts/LatoLatin-Regular.ttf");
+	const FString FontDiskPath = VaCuusContentPaths::ResolveExistingDocument(DefaultFontVfsPath);
+	if (!FontDiskPath.IsEmpty())
 	{
-		// Relative path: resolved by FVaCuusFileInterface against <Project>/Content/DevUI/.
-		if (!Rml::LoadFontFace("fonts/LatoLatin-Regular.ttf"))
+		// Relative path: resolved by FVaCuusFileInterface against the DevUI roots.
+		if (!Rml::LoadFontFace(TCHAR_TO_UTF8(DefaultFontVfsPath)))
 		{
 			UE_LOG(LogVaCuus, Warning, TEXT("Failed to load default font face from '%s'"), *FontDiskPath);
 		}
 	}
 	else
 	{
-		UE_LOG(LogVaCuus, Warning, TEXT("Default font not found at '%s'; text will not be rendered"), *FontDiskPath);
+		UE_LOG(LogVaCuus, Warning,
+			TEXT("Default font '%s' not found under any DevUI root (%s); text will not be rendered"),
+			DefaultFontVfsPath, *FString::Join(VaCuusContentPaths::GetDocumentRoots(), TEXT(" | ")));
 	}
 
 	// Published last: a reader that sees a non-zero refcount sees a booted library.

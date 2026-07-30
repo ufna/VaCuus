@@ -25,6 +25,10 @@ public class VaCuus : ModuleRules
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[] {
+			// IPluginManager, for the plugin's own Content/DevUI document root (D19).
+			// Runtime module, so a packaged game resolves the same root.
+			"Projects",
+
 			"VaCuusRml"
 		});
 	}

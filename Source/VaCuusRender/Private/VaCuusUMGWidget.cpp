@@ -399,7 +399,7 @@ static void Toggle()
 
 static FAutoConsoleCommand GToggleCommand(
 	TEXT("vacuus.UMGDemo"),
-	TEXT("Toggle a UVaCuusWidget (the UMG wrapper) hosting Content/DevUI/m1_hud.rml over the game viewport. ")
+	TEXT("Toggle a UVaCuusWidget (the UMG wrapper) hosting DevUI/m1_hud.rml over the game viewport. ")
 	TEXT("Proves the UMG path renders the same document as vacuus.M1HUD."),
 	FConsoleCommandDelegate::CreateStatic(&Toggle));
 }	 // namespace VaCuusUMGDemo

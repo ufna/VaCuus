@@ -1,0 +1,62 @@
+// Copyright 2026 Vladimir Alyamkin. All Rights Reserved.
+
+#pragma once
+
+#include "CoreMinimal.h"
+
+/**
+ * The ONE place that knows where a VaCuus UI document lives on disk.
+ *
+ * WHY IT EXISTS (controller decision D19, bead VaCuus-akj.6.3): the plugin ships
+ * `Plugins/VaCuus/Content/DevUI/` and it is the git-tracked copy, but the file
+ * interface used to resolve relative paths against `<Project>/Content/DevUI/` only.
+ * Every task therefore hand-copied the documents into the host project, and twice
+ * (M2 tasks 7 and 9) a change was made to one copy and verified against the other.
+ * Live reload makes that fatal rather than merely annoying: inotify watches inodes,
+ * so a watcher on one copy cannot see an edit to the other.
+ *
+ * THE ROOT ORDER IS PLUGIN-FIRST, and that is the decision, not an accident:
+ *
+ *   1. <Plugin>/Content/DevUI   -- canonical, git-tracked, what the watcher watches
+ *   2. <Project>/Content/DevUI  -- optional, for documents a project adds itself
+ *
+ * A CONSEQUENCE WORTH STATING PLAINLY: with the plugin first, a project CANNOT
+ * shadow a document the plugin ships by putting a same-named file in its own
+ * Content/DevUI -- the plugin copy wins. The project root is an EXTENSION point, not
+ * an override point. That is the right trade for M2: a project-first order would let
+ * exactly the stale-duplicate bug this decision exists to kill come back (a forgotten
+ * project copy would silently shadow the plugin document the watcher is watching, and
+ * live reload would appear broken). Per-document overriding, if it is ever wanted,
+ * belongs in a project setting rather than in path precedence.
+ *
+ * NOT EDITOR-ONLY: IPlugin::GetContentDir() is `FPaths::GetPath(FileName)/Content`
+ * (PluginManager.cpp:406-409) in the Runtime `Projects` module, so a packaged game
+ * resolves the same root. Loose DevUI files still have to be STAGED for that to find
+ * anything -- see Config/FilterPlugin.ini -- which is a packaging task, not a path one.
+ */
+namespace VaCuusContentPaths
+{
+/**
+ * The ordered DevUI roots, absolute and normalised, plugin first (see above).
+ *
+ * Resolved once, on first call, and cached: FindPlugin() is a map lookup into state
+ * that is fixed after plugin discovery, but it is not documented as thread-safe and
+ * this is called from the UI thread. FVaCuusModule::StartupModule() primes the cache
+ * on the game thread so the first UI-thread call can never be the one that races
+ * plugin mounting.
+ *
+ * A root is listed whether or not it exists on disk; callers that need existence say
+ * so (ResolveExistingDocument, or IFileManager::DirectoryExists for a watch root).
+ */
+VACUUS_API const TArray<FString>& GetDocumentRoots();
+
+/**
+ * Absolute path of the first root that actually contains VfsPath, or an empty string.
+ *
+ * An absolute VfsPath is answered about itself (existence-checked, no root involved),
+ * which is what keeps the file interface's absolute passthrough honest.
+ * OutRoot, when supplied, receives the root that satisfied the request (empty for the
+ * absolute case) so callers can log WHICH copy they got -- the whole point of D19.
+ */
+VACUUS_API FString ResolveExistingDocument(const FString& VfsPath, FString* OutRoot = nullptr);
+}	 // namespace VaCuusContentPaths

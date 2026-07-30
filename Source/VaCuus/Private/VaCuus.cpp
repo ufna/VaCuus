@@ -2,6 +2,7 @@
 
 #include "VaCuus.h"
 
+#include "VaCuusContentPaths.h"
 #include "VaCuusDefines.h"
 #include "VaCuusEngine.h"
 #include "VaCuusUIThread.h"
@@ -28,6 +29,11 @@ FVaCuusModule::~FVaCuusModule() = default;
 void FVaCuusModule::StartupModule()
 {
 	Engine = MakeUnique<FVaCuusEngine>();
+
+	// Primed HERE, on the game thread, and that is the only reason the call is not
+	// simply left to the first document load: it resolves through
+	// IPluginManager::FindPlugin(), and the first load happens on the UI thread.
+	VaCuusContentPaths::GetDocumentRoots();
 
 	UE_LOG(LogVaCuus, Log, TEXT("VaCuus runtime module started"));
 }

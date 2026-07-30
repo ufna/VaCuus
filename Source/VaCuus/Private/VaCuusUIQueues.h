@@ -33,7 +33,7 @@ enum class EVaCuusCommandKind : uint8
 	/** Retires the view: closes its document, drops its context, keeps the host retired (see below). */
 	RemoveView,
 
-	/** Payload is a path for the RmlUi file interface (relative to <Project>/Content/DevUI). */
+	/** Payload is a path for the RmlUi file interface (relative to a DevUI root -- see VaCuusContentPaths.h). */
 	LoadDocumentFile,
 
 	/** Payload is RML source text, loaded from memory. */

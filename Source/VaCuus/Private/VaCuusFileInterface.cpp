@@ -2,6 +2,7 @@
 
 #include "VaCuusFileInterface.h"
 
+#include "VaCuusContentPaths.h"
 #include "VaCuusDefines.h"
 
 #include "GenericPlatform/GenericPlatformFile.h"
@@ -20,10 +21,22 @@ Rml::FileHandle FVaCuusFileInterface::Open(const Rml::String& Path)
 {
 	const FString RequestedPath = UTF8_TO_TCHAR(Path.c_str());
 
-	FString FullPath = RequestedPath;
-	if (FPaths::IsRelative(RequestedPath))
+	// Ordered roots, plugin first (D19). ResolveExistingDocument() existence-checks as it
+	// goes, so a hit is a file that opened a moment ago; a miss falls through to the FIRST
+	// root below purely so the failure log names a concrete path rather than nothing.
+	FString SatisfyingRoot;
+	FString FullPath = VaCuusContentPaths::ResolveExistingDocument(RequestedPath, &SatisfyingRoot);
+	if (FullPath.IsEmpty())
 	{
-		FullPath = FPaths::ProjectContentDir() / TEXT("DevUI") / RequestedPath;
+		const TArray<FString>& Roots = VaCuusContentPaths::GetDocumentRoots();
+		FullPath = (FPaths::IsRelative(RequestedPath) && Roots.Num() > 0) ? Roots[0] / RequestedPath : RequestedPath;
+	}
+	else if (!SatisfyingRoot.IsEmpty())
+	{
+		// WHICH copy answered, which is the whole point of the ordered list: a document
+		// that unexpectedly comes from the project root is exactly the stale-duplicate
+		// situation D19 exists to make visible.
+		UE_LOG(LogVaCuus, Verbose, TEXT("Resolved '%s' under root '%s'"), *RequestedPath, *SatisfyingRoot);
 	}
 
 	IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();

@@ -3,6 +3,7 @@
 #include "Misc/AutomationTest.h"
 
 #include "VaCuus.h"
+#include "VaCuusContentPaths.h"
 #include "VaCuusEngine.h"
 #include "VaCuusSubsystem.h"
 #include "VaCuusUIThread.h"
@@ -201,8 +202,13 @@ bool FVaCuusUMGWidgetTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("RmlUi booted with the UI thread"), FVaCuusEngine::Get().IsInitialized());
 
 	// 4. LoadDocument() forwards to the view and updates the exposed property.
-	const FString DocumentDiskPath = FPaths::ProjectContentDir() / TEXT("DevUI") / TEXT("m1_hud.rml");
-	if (FPaths::FileExists(DocumentDiskPath))
+	//
+	// Resolved through the ordered DevUI roots rather than against
+	// FPaths::ProjectContentDir(): the document now ships in the PLUGIN's Content/DevUI
+	// (controller decision D19) and the project copy has been deleted, so the old
+	// project-only check silently skipped everything below it.
+	const FString DocumentDiskPath = VaCuusContentPaths::ResolveExistingDocument(TEXT("m1_hud.rml"));
+	if (!DocumentDiskPath.IsEmpty())
 	{
 		const uint64 SerialBefore = View->GetLastRequestedLoadSerial();
 		Widget->LoadDocument(TEXT("m1_hud.rml"));
@@ -225,8 +231,7 @@ bool FVaCuusUMGWidgetTest::RunTest(const FString& Parameters)
 	}
 	else
 	{
-		AddInfo(FString::Printf(
-			TEXT("Skipped the LoadDocument()/Close() assertions: '%s' is not in this project"), *DocumentDiskPath));
+		AddInfo(TEXT("Skipped the LoadDocument()/Close() assertions: m1_hud.rml is under no DevUI root"));
 	}
 
 	// 5. THE TEARDOWN OBLIGATION. ReleaseSlateResources() must retire the view, not just
