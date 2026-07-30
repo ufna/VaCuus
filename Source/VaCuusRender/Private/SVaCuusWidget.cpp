@@ -192,40 +192,53 @@ void SVaCuusWidget::ReleaseOwnPointerCapture(const TCHAR* Reason)
 
 void SVaCuusWidget::Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime)
 {
-	// Cached for the handlers Slate gives no geometry to (OnMouseLeave, OnFocusLost)
-	// and for the debug mouse command. Kept even when the view is gone, so a late
-	// query answers with the last real layout instead of an identity transform.
-	CachedInputGeometry = AllottedGeometry;
-
-	UVaCuusView* ViewPtr = View.Get();
-	if (ViewPtr == nullptr)
 	{
-		return;
+		// The other half of the spec's game-thread budget (Task 14): the per-frame work a
+		// HOSTED view costs, next to UVaCuusSubsystem::Tick's snapshot poll. The scope stops
+		// before TickLog() below, which is the logger's own 5-second print -- inside it, the
+		// print would be the max sample of every window that contained one.
+		VACUUS_PERF_SCOPE(SlateTick);
+
+		// Cached for the handlers Slate gives no geometry to (OnMouseLeave, OnFocusLost)
+		// and for the debug mouse command. Kept even when the view is gone, so a late
+		// query answers with the last real layout instead of an identity transform.
+		CachedInputGeometry = AllottedGeometry;
+
+		UVaCuusView* ViewPtr = View.Get();
+		if (ViewPtr == nullptr)
+		{
+			// Unchanged: a detached widget stops driving the log too, so its frames do not
+			// inflate the window's fps for a view that no longer exists.
+			return;
+		}
+
+		// Resize is a command, not a direct call: Context::SetDimensions belongs to the
+		// UI thread. The view itself drops unchanged sizes, so the steady state costs
+		// nothing and a burst of resizes coalesces into one relayout.
+		ViewPtr->Resize(ComputeWindowRect(AllottedGeometry).Size());
+
+		// No trigger here: UVaCuusSubsystem::Tick is the once-per-frame pulse, which is
+		// a better slot than a widget's Tick (and the only one that works for views
+		// without a widget).
+
+		// Focus first: the analog clock below is gated on the UI wanting the keyboard, and
+		// this is what makes that condition stop being true.
+		TickKeyboardFocusRelease();
+
+		// The analog stick's repeat clock (D13). Here rather than in OnAnalogValueChanged
+		// because a held stick stops producing events.
+		TickAnalogNavigation(InCurrentTime);
+
+		// The IME's coordinate basis (Task 9). Once per frame rather than on demand, because the
+		// rect it publishes is what the OS candidate window is anchored to and a viewport can be
+		// resized or dragged without any input reaching this widget at all.
+		PushImeSurface();
+
+		TickAutoShot();
 	}
 
-	// Resize is a command, not a direct call: Context::SetDimensions belongs to the
-	// UI thread. The view itself drops unchanged sizes, so the steady state costs
-	// nothing and a burst of resizes coalesces into one relayout.
-	ViewPtr->Resize(ComputeWindowRect(AllottedGeometry).Size());
-
-	// No trigger here: UVaCuusSubsystem::Tick is the once-per-frame pulse, which is
-	// a better slot than a widget's Tick (and the only one that works for views
-	// without a widget).
-
-	// Focus first: the analog clock below is gated on the UI wanting the keyboard, and
-	// this is what makes that condition stop being true.
-	TickKeyboardFocusRelease();
-
-	// The analog stick's repeat clock (D13). Here rather than in OnAnalogValueChanged
-	// because a held stick stops producing events.
-	TickAnalogNavigation(InCurrentTime);
-
-	// The IME's coordinate basis (Task 9). Once per frame rather than on demand, because the
-	// rect it publishes is what the OS candidate window is anchored to and a viewport can be
-	// resized or dragged without any input reaching this widget at all.
-	PushImeSurface();
-
-	TickAutoShot();
+	// OUTSIDE the SlateTick scope: this is the logger's own 5-second window print, and a
+	// sample that contained it would report the print as the frame's cost.
 	FVaCuusPerfLog::TickLog();
 }
 
@@ -377,6 +390,17 @@ void SVaCuusWidget::SendInput(const FVaCuusInputEvent& Event)
 
 FReply SVaCuusWidget::OnMouseMove(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent)
 {
+	// THE "input" HALF OF THE SPEC'S GAME-THREAD BUDGET (Task 14), and every handler below
+	// carries the same scope. ONE SAMPLE PER EVENT, covering the whole handler rather than
+	// only the enqueue: the transform, the snapshot scan that produces the FReply and the
+	// queue push are all game-thread cost the budget is stated against, and the scan is the
+	// part that grows with a document's rect count.
+	//
+	// Note what a sample here is NOT: a per-frame figure. A frame with four events pays four
+	// of these, so the budget arithmetic is GameTick + SlateTick + (events x Input) -- which
+	// is why the three are separate scopes.
+	VACUUS_PERF_SCOPE(Input);
+
 	const FIntPoint Position = ToViewPixels(MyGeometry, MouseEvent.GetScreenSpacePosition());
 	SendInput(FVaCuusInputEvent::MouseMove(Position, ToModifierState(MouseEvent)));
 
@@ -393,6 +417,8 @@ FReply SVaCuusWidget::OnMouseMove(const FGeometry& MyGeometry, const FPointerEve
 
 FReply SVaCuusWidget::OnMouseButtonDown(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent)
 {
+	VACUUS_PERF_SCOPE(Input);
+
 	const FIntPoint Position = ToViewPixels(MyGeometry, MouseEvent.GetScreenSpacePosition());
 	SendInput(FVaCuusInputEvent::MouseButton(
 		/*bDown=*/true, Position, MouseEvent.GetEffectingButton(), ToModifierState(MouseEvent)));
@@ -465,6 +491,8 @@ FReply SVaCuusWidget::OnMouseButtonDown(const FGeometry& MyGeometry, const FPoin
 
 FReply SVaCuusWidget::OnMouseButtonUp(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent)
 {
+	VACUUS_PERF_SCOPE(Input);
+
 	const FIntPoint Position = ToViewPixels(MyGeometry, MouseEvent.GetScreenSpacePosition());
 	SendInput(FVaCuusInputEvent::MouseButton(
 		/*bDown=*/false, Position, MouseEvent.GetEffectingButton(), ToModifierState(MouseEvent)));
@@ -516,6 +544,8 @@ FReply SVaCuusWidget::OnMouseButtonDoubleClick(const FGeometry& InMyGeometry, co
 
 FReply SVaCuusWidget::OnMouseWheel(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent)
 {
+	VACUUS_PERF_SCOPE(Input);
+
 	const FIntPoint Position = ToViewPixels(MyGeometry, MouseEvent.GetScreenSpacePosition());
 
 	// UE's sign and unit are carried through unchanged; the flip to RmlUi's
@@ -573,6 +603,8 @@ void SVaCuusWidget::OnMouseCaptureLost(const FCaptureLostEvent& CaptureLostEvent
 
 FCursorReply SVaCuusWidget::OnCursorQuery(const FGeometry& MyGeometry, const FPointerEvent& CursorEvent) const
 {
+	VACUUS_PERF_SCOPE(Input);
+
 	// const, so this may only read the snapshot -- which is precisely why the cursor
 	// shape is published in it rather than queried from RmlUi.
 	const FIntPoint Position = ToViewPixels(MyGeometry, CursorEvent.GetScreenSpacePosition());
@@ -589,8 +621,72 @@ FCursorReply SVaCuusWidget::OnCursorQuery(const FGeometry& MyGeometry, const FPo
 	return FCursorReply::Cursor(Snapshot.Cursor);
 }
 
+bool SVaCuusWidget::DoesKeyEnterUIFocus(const FKey& Key, const FVaCuusInteractiveSnapshot& Snapshot)
+{
+	// TASK 14 ACCEPTANCE DECISION A1, and the whole of it is here.
+	//
+	// THE BEHAVIOUR BEING CHOSEN: the press that moves RmlUi's focus INTO a document is
+	// consumed, so the game does not also see it. Before this, the entering press was
+	// answered from bWantsKeyboardFocus alone -- which is false until the frame AFTER the
+	// press has landed -- so it was Unhandled, bubbled to SViewport, and a player who
+	// opened a pad-driven menu and pressed a direction got both the menu highlight moving
+	// and their character stepping. Every press after the first was already consumed, so
+	// the old behaviour was not even self-consistent.
+	//
+	// WHY CONSUMING IS SAFE, which is the half that is easy to get wrong: this handler only
+	// runs when THIS WIDGET HOLDS SLATE KEYBOARD FOCUS -- FSlateApplication routes key
+	// events along the focus path and nothing else. Focus gets here two ways: a click on a
+	// focusable rect (OnMouseButtonDown's SetUserFocus), or the game putting it here
+	// deliberately because it just opened a menu. In both cases somebody has already
+	// decided the UI is the keyboard's target, so there is no third party whose direction
+	// key we could be stealing. The cost the alternative feared -- "a swallowed first input
+	// in the other direction" -- is a swallowed key in a state the game itself asked for.
+	//
+	// WHY IT IS GATED ON THE TWO PUBLISHED FLAGS RATHER THAN ON "a document is up": if the
+	// UI cannot act on the key, consuming it costs the player an input and buys nothing.
+	// bTabEntersFocus and bDirectionEntersFocus are exactly RmlUi's own preconditions, read
+	// off the frame the UI thread published; see their comments.
+	if (Key == EKeys::Tab)
+	{
+		return Snapshot.bTabEntersFocus;
+	}
+
+	if (Key == EKeys::Up || Key == EKeys::Down || Key == EKeys::Left || Key == EKeys::Right ||
+		Key == EKeys::Gamepad_DPad_Up || Key == EKeys::Gamepad_DPad_Down || Key == EKeys::Gamepad_DPad_Left ||
+		Key == EKeys::Gamepad_DPad_Right)
+	{
+		return Snapshot.bDirectionEntersFocus;
+	}
+
+	// THE LEFT-STICK KEYS ARE DELIBERATELY ABSENT, and this is the one exclusion that
+	// carries a bug with it if it is undone. Gamepad_LeftStick_Up/Down/Left/Right are not a
+	// second DPad: they are what a HELD MOVEMENT STICK produces on the platforms that
+	// digitize the axes -- FLinuxApplication raises OnControllerButtonPressed for
+	// FGamepadKeyNames::LeftStickUp when the axis crosses its own dead zone
+	// (Linux/LinuxApplication.cpp:626-632, released at :634-638), and XInput maps
+	// Buttons[16..19] onto the same four names (XInputDevice/XInputInterface.cpp:100-103).
+	// Controller decision D13 already answered "may a walking player's stick enter the UI"
+	// with NO -- that is what the gate in TickAnalogNavigation is -- and letting these keys
+	// enter here would answer YES through a different door, 0.0 s instead of 0.4 s after
+	// the player started walking. Entering the UI is the DPad's job, the arrows', Tab's, or
+	// the game's by focusing this widget.
+	//
+	// ACTIVATION KEYS ARE ABSENT FOR A DIFFERENT AND STRONGER REASON: they provably do
+	// nothing in this state. Return/NumpadEnter/Space resolve GetFocusLeafNode(), which
+	// returns the document itself when no child holds focus (Element.cpp:879-885), and then
+	// click it only if THAT element has `tab-index: auto` (ElementDocument.cpp:641-650) --
+	// which a document does not, since tab-index defaults to none and is not inherited
+	// (StyleSheetSpecification.cpp:375). So an Enter with nothing focused clicks nothing,
+	// and consuming it would eat the player's jump or fire to achieve exactly that. Once
+	// something focusable IS focused, bWantsKeyboardFocus consumes them, which is the
+	// existing rule and the right one.
+	return false;
+}
+
 FReply SVaCuusWidget::OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent)
 {
+	VACUUS_PERF_SCOPE(Input);
+
 	const FKey Key = InKeyEvent.GetKey();
 
 	// The pass-through set (controller decision D12): not consumed AND not queued, so
@@ -602,15 +698,19 @@ FReply SVaCuusWidget::OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& In
 	}
 
 	// Answered from the snapshot exactly like pointer events are: keys are consumed
-	// only while a real focusable element holds RmlUi focus. Otherwise they bubble on
-	// -- so a document that merely happens to hold Slate focus cannot swallow the
-	// game's movement keys.
+	// only while a real focusable element holds RmlUi focus, OR while this key is the one
+	// that would give it focus (Task 14 decision A1, see DoesKeyEnterUIFocus). Otherwise
+	// they bubble on -- so a document that merely happens to hold Slate focus cannot
+	// swallow the game's movement keys.
 	//
 	// Note this is a per-view verdict, not a per-key one, and it cannot be anything
 	// else: RmlUi's own "was it consumed" answer is produced on the UI thread, frames
 	// later in queue terms, and Slate needs an answer now. That asymmetry is precisely
-	// why the pass-through set above exists as a declared contract.
-	const bool bConsumeKeys = GetSnapshot().bWantsKeyboardFocus;
+	// why the pass-through set above exists as a declared contract. The entry rule is the
+	// one case where the game thread can PREDICT the UI's answer instead of guessing it,
+	// because both of RmlUi's preconditions are published facts.
+	const FVaCuusInteractiveSnapshot& Snapshot = GetSnapshot();
+	const bool bConsumeKeys = Snapshot.bWantsKeyboardFocus || DoesKeyEnterUIFocus(Key, Snapshot);
 	const FReply Reply = bConsumeKeys ? FReply::Handled() : FReply::Unhandled();
 
 	// The pad's Back button (D13). Not a key: RmlUi has no identifier for "cancel" and
@@ -631,6 +731,8 @@ FReply SVaCuusWidget::OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& In
 
 FReply SVaCuusWidget::OnKeyUp(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent)
 {
+	VACUUS_PERF_SCOPE(Input);
+
 	const FKey Key = InKeyEvent.GetKey();
 
 	if (PassThroughKeys.Contains(Key))
@@ -638,7 +740,14 @@ FReply SVaCuusWidget::OnKeyUp(const FGeometry& MyGeometry, const FKeyEvent& InKe
 		return FReply::Unhandled();
 	}
 
-	const bool bConsumeKeys = GetSnapshot().bWantsKeyboardFocus;
+	// THE SAME VERDICT AS THE PRESS, and it has to be: the snapshot the game thread holds
+	// is stable for the whole frame and the entering press has not been drained yet, so
+	// both halves of one key see the same answer. If the release were answered from
+	// bWantsKeyboardFocus alone it would fall through while its press did not, and the game
+	// would see a key release it never saw pressed -- which is how a game ends up believing
+	// a direction is held forever.
+	const FVaCuusInteractiveSnapshot& Snapshot = GetSnapshot();
+	const bool bConsumeKeys = Snapshot.bWantsKeyboardFocus || DoesKeyEnterUIFocus(Key, Snapshot);
 	const FReply Reply = bConsumeKeys ? FReply::Handled() : FReply::Unhandled();
 
 	// Back was fully handled on the press; there is no "un-blur" and no key identifier
@@ -654,6 +763,8 @@ FReply SVaCuusWidget::OnKeyUp(const FGeometry& MyGeometry, const FKeyEvent& InKe
 
 FReply SVaCuusWidget::OnKeyChar(const FGeometry& MyGeometry, const FCharacterEvent& InCharacterEvent)
 {
+	VACUUS_PERF_SCOPE(Input);
+
 	// Fetched once: the verdict cannot change inside one handler (the snapshot is a
 	// per-frame value), and this handler has several early returns -- with more coming
 	// when Task 9 adds the IME path.
@@ -715,6 +826,8 @@ FReply SVaCuusWidget::OnKeyChar(const FGeometry& MyGeometry, const FCharacterEve
 
 FReply SVaCuusWidget::OnAnalogValueChanged(const FGeometry& MyGeometry, const FAnalogInputEvent& InAnalogInputEvent)
 {
+	VACUUS_PERF_SCOPE(Input);
+
 	const FKey Key = InAnalogInputEvent.GetKey();
 	const float Value = InAnalogInputEvent.GetAnalogValue();
 

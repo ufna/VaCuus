@@ -264,6 +264,48 @@ button, input { nav: auto; }
 </body>
 </rml>)");
 
+/**
+ * The two CONTROLS for VaCuus.Input.NavEntry, which is about a distinction the document
+ * above cannot show because it satisfies every precondition at once.
+ *
+ * GNoNavDocument: focusables, but no `nav-*` anywhere -- not on the buttons and, crucially,
+ * not on <body>. RmlUi's Tab branch does not consult nav at all
+ * (ElementDocument.cpp:581-591), while its arrow branch does nothing without a local nav
+ * property on the focus node (:628-638), which with nothing focused resolves to the
+ * document (:625). So this document is enterable by Tab and NOT by an arrow -- the whole
+ * reason bTabEntersFocus and bDirectionEntersFocus are two flags and not one.
+ *
+ * GNoFocusableDocument: `nav` on the document, and nothing for FindNextTabElement to land
+ * on. Neither key can enter, so neither may be consumed.
+ */
+static const TCHAR* GNoNavDocument = TEXT(R"(<rml>
+<head>
+<style>
+body { display: block; width: 100%; height: 100%; }
+button { display: block; position: absolute; tab-index: auto; }
+#btn  { left: 20px; top: 20px; width: 100px; height: 40px; }
+#btn2 { left: 20px; top: 80px; width: 100px; height: 40px; }
+</style>
+</head>
+<body>
+	<button id="btn"/>
+	<button id="btn2"/>
+</body>
+</rml>)");
+
+static const TCHAR* GNoFocusableDocument = TEXT(R"(<rml>
+<head>
+<style>
+body { display: block; width: 100%; height: 100%; nav: auto; }
+div { display: block; position: absolute; }
+#plain { left: 20px; top: 20px; width: 100px; height: 40px; }
+</style>
+</head>
+<body>
+	<div id="plain"/>
+</body>
+</rml>)");
+
 static const FVector2D GButtonPoint(70.0, 40.0);
 static const FVector2D GFieldPoint(260.0, 165.0);
 
@@ -964,6 +1006,294 @@ bool FVaCuusAnalogNavGateTest::RunTest(const FString& Parameters)
 		}
 		TestEqual(TEXT("After backing out, the held stick is gated again"),
 			Widget->GetNumAnalogNavKeys_Debug(), NavKeysAfterRelease);
+	}
+
+	Widget->DetachView();
+	UIThread->EnqueueRemoveView(ViewId);
+	TestTrue(TEXT("UI frames survive the removal"), RunFrames(*UIThread, 2));
+
+	return true;
+}
+
+/**
+ * TASK 14 ACCEPTANCE DECISION A1: the press that ENTERS the UI's focus is consumed, so the
+ * game does not act on it as well.
+ *
+ * THE BEHAVIOUR BEFORE THIS, and it was never deliberate -- it fell out of answering every
+ * key from bWantsKeyboardFocus alone. That flag means "something focusable HAS focus", which
+ * cannot be true until the frame AFTER the entering press has been drained, so the entering
+ * press was answered Unhandled, bubbled to SViewport and reached the game -- while the UI
+ * acted on it too. A player opening a pad-driven menu and pressing a direction got the
+ * highlight moving AND their character stepping; every press after the first was consumed, so
+ * the old rule was not even self-consistent.
+ *
+ * WHAT MAKES THE FIX PREDICTIVE RATHER THAN A GUESS: RmlUi's two preconditions for a
+ * navigation key moving focus are both observable on the UI thread, so they are published
+ * (FVaCuusInteractiveSnapshot::bTabEntersFocus / bDirectionEntersFocus) instead of being
+ * approximated on the game thread. This test drives all three states those flags distinguish,
+ * and asserts BOTH halves each time -- the FReply Slate sees, and where RmlUi's focus actually
+ * went, on the same real queue.
+ *
+ * THE TWO DELIBERATE NON-MEMBERS of the entry set are asserted too, because both are places a
+ * later change would silently do damage: the left-stick keys (which is a HELD MOVEMENT STICK
+ * on Linux and XInput, and D13's whole point is that it must not enter the UI) and the
+ * activation keys (which provably click nothing while only the document holds focus).
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusNavEntryTest, "VaCuus.Input.NavEntry",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusNavEntryTest::RunTest(const FString& Parameters)
+{
+	using namespace VaCuusSlateRoutingTest;
+
+	if (!FPlatformProcess::SupportsMultithreading())
+	{
+		AddInfo(TEXT("Skipped: no multithreading support, so there is no worker thread to drive"));
+		return true;
+	}
+
+	if (!TestFalse(TEXT("RmlUi is down before the test"), FVaCuusEngine::Get().IsInitialized()))
+	{
+		return false;
+	}
+
+	FVaCuusModule& Module = FVaCuusModule::Get();
+	FVaCuusUIThread* UIThread = Module.GetOrStartUIThread();
+	if (!TestNotNull(TEXT("UI thread"), UIThread))
+	{
+		return false;
+	}
+
+	ON_SCOPE_EXIT
+	{
+		Module.StopUIThread();
+	};
+
+	const FIntPoint ViewSize(400, 300);
+	const TSharedRef<FVaCuusViewStatus> Status = MakeShared<FVaCuusViewStatus>();
+
+	TUniquePtr<FProbeHost> OwnedHost = MakeUnique<FProbeHost>();
+	FProbeHost* Host = OwnedHost.Get();
+
+	const uint32 ViewId = UIThread->AllocateViewId();
+	UIThread->EnqueueAddView(ViewId, MoveTemp(OwnedHost), ViewSize, Status);
+	UIThread->EnqueueLoadDocumentFromMemory(ViewId, GDocument, /*LoadSerial=*/1);
+
+	TStrongObjectPtr<UGameInstance> GameInstance(NewObject<UGameInstance>());
+	TStrongObjectPtr<UVaCuusSubsystem> Subsystem(NewObject<UVaCuusSubsystem>(GameInstance.Get()));
+	TStrongObjectPtr<UVaCuusView> View(NewObject<UVaCuusView>(Subsystem.Get()));
+	View->InitializeView(Subsystem.Get(), ViewId, Status, ViewSize);
+
+	const TSharedRef<FVaCuusSlateElement> Element = MakeShared<FVaCuusSlateElement>();
+	TSharedRef<SVaCuusWidget> Widget = SNew(SVaCuusWidget, View.Get(), Element);
+	const FGeometry Geometry = FGeometry::MakeRoot(FVector2f(ViewSize.X, ViewSize.Y), FSlateLayoutTransform());
+
+	if (!TestTrue(TEXT("UI frames ran"), RunFrames(*UIThread, 2)))
+	{
+		return false;
+	}
+	View->PollStatus();
+
+	// STATE 1: a document with `nav` on its root and focusables inside it -- the state every
+	// VaCuus document is in the instant after it loads, and the one a game opens a menu into.
+	{
+		const FVaCuusInteractiveSnapshot& Snapshot = View->GetSnapshot();
+		if (!TestFalse(TEXT("Nothing focusable holds focus yet, so the view does not want the keyboard"),
+				Snapshot.bWantsKeyboardFocus))
+		{
+			return false;
+		}
+		if (!TestTrue(TEXT("...but Tab would enter this document"), Snapshot.bTabEntersFocus))
+		{
+			return false;
+		}
+		if (!TestTrue(TEXT("...and so would a direction key, because <body> carries nav"),
+				Snapshot.bDirectionEntersFocus))
+		{
+			return false;
+		}
+
+		// THE ASSERTION THIS TEST EXISTS FOR. Handled means the press does NOT bubble to
+		// SViewport, i.e. the game does not also strafe.
+		const uint64 QueuedBefore = View->GetNumInputEventsQueued();
+		const FReply Down = Widget->OnKeyDown(Geometry, MakeKeyEvent(EKeys::Gamepad_DPad_Right));
+		TestTrue(TEXT("The ENTERING direction press is consumed by the UI"), Down.IsEventHandled());
+		TestEqual(TEXT("...and is still forwarded to the UI thread"),
+			View->GetNumInputEventsQueued(), QueuedBefore + 1);
+
+		// The release must agree with the press, or the game sees a release for a press it
+		// never got. Asserted before the frame runs, i.e. against the same stale snapshot the
+		// press was answered from -- which is the situation that makes them agree.
+		const FReply Up = Widget->OnKeyUp(Geometry, MakeKeyEvent(EKeys::Gamepad_DPad_Right));
+		TestTrue(TEXT("The matching release is consumed too"), Up.IsEventHandled());
+
+		// And the press really did what the flags predicted: not a guess, a prediction.
+		if (!TestTrue(TEXT("UI frame ran after the entering press"), RunFrames(*UIThread, 1)))
+		{
+			return false;
+		}
+		TestEqual(TEXT("The entering press moved RmlUi's focus into the document"),
+			Host->FocusId, FString(TEXT("btn")));
+
+		View->PollStatus();
+		TestTrue(TEXT("From the next frame the ordinary rule takes over"),
+			View->GetSnapshot().bWantsKeyboardFocus);
+		TestFalse(TEXT("...and the entry flags are false, because the document no longer holds focus"),
+			View->GetSnapshot().bTabEntersFocus);
+	}
+
+	// Back to the document-focus state, which is where the two exclusions matter.
+	UIThread->EnqueueInput(ViewId, FVaCuusInputEvent::NavigateBack());
+	if (!TestTrue(TEXT("UI frame ran after Back"), RunFrames(*UIThread, 1)))
+	{
+		return false;
+	}
+	View->PollStatus();
+	if (!TestTrue(TEXT("Back put the document back in the entry state"), View->GetSnapshot().bTabEntersFocus))
+	{
+		return false;
+	}
+
+	{
+		// EXCLUSION 1: activation. With only the document focused, RmlUi's Return/Space branch
+		// resolves the focus leaf to the document itself (Element.cpp:879-885) and clicks it
+		// only if THAT has `tab-index: auto` (ElementDocument.cpp:641-650), which a document
+		// does not. So there is nothing to consume for, and eating the player's jump would be
+		// pure loss. Asserted BEFORE the stick below, because the stick does move focus and
+		// then an activation press would have something to click.
+		const FReply Accept = Widget->OnKeyDown(Geometry, MakeKeyEvent(EKeys::Gamepad_FaceButton_Bottom));
+		TestFalse(TEXT("An activation press with nothing focused falls through to the game"),
+			Accept.IsEventHandled());
+		Widget->OnKeyUp(Geometry, MakeKeyEvent(EKeys::Gamepad_FaceButton_Bottom));
+
+		const FReply Enter = Widget->OnKeyDown(Geometry, MakeKeyEvent(EKeys::Enter));
+		TestFalse(TEXT("...and so does Enter"), Enter.IsEventHandled());
+		Widget->OnKeyUp(Geometry, MakeKeyEvent(EKeys::Enter));
+
+		// Proof that "not consumed" is the right answer rather than a lost input: those presses
+		// really were no-ops in the UI too, so nothing was thrown away.
+		if (!TestTrue(TEXT("UI frame ran after the activation keys"), RunFrames(*UIThread, 1)))
+		{
+			return false;
+		}
+		TestEqual(TEXT("An activation key with nothing focused moves no focus and clicks nothing"),
+			Host->FocusId, FString());
+	}
+
+	{
+		// EXCLUSION 2: the digital left-stick keys. On Linux these are raised by
+		// FLinuxApplication when a HELD stick crosses its own dead zone
+		// (Linux/LinuxApplication.cpp:626-632, released at :634-638); XInput maps
+		// Buttons[16..19] onto the same four names (XInputDevice/XInputInterface.cpp:100-103).
+		// Controller decision D13 says a walking player's stick must not enter the UI -- that is
+		// what the gate in TickAnalogNavigation is -- so the entry rule must not consume them,
+		// or the same bug returns through the key path at 0.0 s instead of 0.4 s.
+		const FReply Stick = Widget->OnKeyDown(Geometry, MakeKeyEvent(EKeys::Gamepad_LeftStick_Right));
+		TestFalse(TEXT("A digital left-stick direction is NOT consumed as an entry key (D13)"),
+			Stick.IsEventHandled());
+		Widget->OnKeyUp(Geometry, MakeKeyEvent(EKeys::Gamepad_LeftStick_Right));
+
+		if (!TestTrue(TEXT("UI frame ran after the stick key"), RunFrames(*UIThread, 1)))
+		{
+			return false;
+		}
+
+		// AND HERE IS A PRE-EXISTING HOLE, ASSERTED RATHER THAN GLOSSED, because it is the one
+		// place where this decision cannot make the two answers agree.
+		//
+		// OnKeyDown ENQUEUES every non-pass-through key unconditionally -- consumption and
+		// forwarding are independent by design (see SVaCuusWidget's class comment) -- so the
+		// stick key still reaches Rml::Context, still maps to KI_RIGHT (VaCuusInputMap), and
+		// still enters the grid. The result is exactly the double-action this decision removes
+		// for the DPad: the UI acts AND the game sees the key. It predates Task 14 (the enqueue
+		// has always been unconditional) and Task 14 neither creates nor widens it.
+		//
+		// FIXING IT IS A SEPARATE POLICY CALL, and deliberately not made here: the only clean
+		// mechanism is D12's pass-through set, which is a static FKey set rather than a
+		// state-dependent one, and suppressing the enqueue would mean a pad player can no longer
+		// enter a VaCuus menu with the stick AT ALL -- the analog path is gated on
+		// bWantsKeyboardFocus, so this accident is currently the only stick-based entry there is.
+		// Choosing between "a walking player can lose the stick" and "a pad player must use the
+		// DPad to enter a menu" belongs to whoever owns D13.
+		//
+		// This assertion is deliberately about the CURRENT behaviour, so it fails loudly whichever
+		// way that decision goes -- which is the point of writing it down instead of a comment.
+		TestEqual(TEXT("A stick key is still FORWARDED and still enters the grid (pre-existing, see above)"),
+			Host->FocusId, FString(TEXT("btn")));
+
+		// Put focus back on the document for the next state, so the loads below start where the
+		// other two states do.
+		UIThread->EnqueueInput(ViewId, FVaCuusInputEvent::NavigateBack());
+		if (!TestTrue(TEXT("UI frame ran after the second Back"), RunFrames(*UIThread, 1)))
+		{
+			return false;
+		}
+	}
+
+	// STATE 2: focusables, but no `nav` anywhere. Tab enters; an arrow provably cannot.
+	UIThread->EnqueueLoadDocumentFromMemory(ViewId, GNoNavDocument, /*LoadSerial=*/2);
+	if (!TestTrue(TEXT("UI frames ran after loading the no-nav document"), RunFrames(*UIThread, 2)))
+	{
+		return false;
+	}
+	View->PollStatus();
+
+	{
+		const FVaCuusInteractiveSnapshot& Snapshot = View->GetSnapshot();
+		if (!TestTrue(TEXT("Tab still enters a document with no nav declarations"), Snapshot.bTabEntersFocus))
+		{
+			return false;
+		}
+		TestFalse(TEXT("A direction key does NOT, because there is no local nav on the document"),
+			Snapshot.bDirectionEntersFocus);
+
+		const FReply Direction = Widget->OnKeyDown(Geometry, MakeKeyEvent(EKeys::Gamepad_DPad_Right));
+		TestFalse(TEXT("So the direction press falls through to the game"), Direction.IsEventHandled());
+		Widget->OnKeyUp(Geometry, MakeKeyEvent(EKeys::Gamepad_DPad_Right));
+
+		// THE OTHER HALF, and it is what makes "falls through" correct rather than lazy: the
+		// press was forwarded, the UI thread ran, and RmlUi did nothing with it.
+		if (!TestTrue(TEXT("UI frame ran after the direction press"), RunFrames(*UIThread, 1)))
+		{
+			return false;
+		}
+		TestEqual(TEXT("RmlUi moved no focus for it, exactly as the flag said"), Host->FocusId, FString());
+
+		// And Tab, from the identical state, IS consumed and DOES move focus -- which is the
+		// evidence that the two flags describe two different RmlUi code paths and not one fact
+		// counted twice.
+		const FReply Tab = Widget->OnKeyDown(Geometry, MakeKeyEvent(EKeys::Tab));
+		TestTrue(TEXT("Tab from the same state IS consumed"), Tab.IsEventHandled());
+		Widget->OnKeyUp(Geometry, MakeKeyEvent(EKeys::Tab));
+
+		if (!TestTrue(TEXT("UI frame ran after Tab"), RunFrames(*UIThread, 1)))
+		{
+			return false;
+		}
+		TestEqual(TEXT("...and Tab needs no nav property to enter"), Host->FocusId, FString(TEXT("btn")));
+	}
+
+	// STATE 3: `nav` on the document, nothing focusable. FindNextTabElement has nowhere to
+	// land, so neither key may be consumed.
+	UIThread->EnqueueLoadDocumentFromMemory(ViewId, GNoFocusableDocument, /*LoadSerial=*/3);
+	if (!TestTrue(TEXT("UI frames ran after loading the focusable-free document"), RunFrames(*UIThread, 2)))
+	{
+		return false;
+	}
+	View->PollStatus();
+
+	{
+		const FVaCuusInteractiveSnapshot& Snapshot = View->GetSnapshot();
+		TestFalse(TEXT("Tab cannot enter a document with nothing focusable"), Snapshot.bTabEntersFocus);
+		TestFalse(TEXT("Neither can a direction key"), Snapshot.bDirectionEntersFocus);
+
+		TestFalse(TEXT("Tab therefore falls through to the game"),
+			Widget->OnKeyDown(Geometry, MakeKeyEvent(EKeys::Tab)).IsEventHandled());
+		Widget->OnKeyUp(Geometry, MakeKeyEvent(EKeys::Tab));
+
+		TestFalse(TEXT("...and so does a direction key"),
+			Widget->OnKeyDown(Geometry, MakeKeyEvent(EKeys::Gamepad_DPad_Right)).IsEventHandled());
+		Widget->OnKeyUp(Geometry, MakeKeyEvent(EKeys::Gamepad_DPad_Right));
 	}
 
 	Widget->DetachView();

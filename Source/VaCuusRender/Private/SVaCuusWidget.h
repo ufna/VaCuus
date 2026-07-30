@@ -320,6 +320,18 @@ private:
 	static FKey AnalogNavDirectionToKey(EAnalogNavDirection Direction);
 
 	/**
+	 * Would this key move RmlUi's focus INTO the document, given what the snapshot says?
+	 *
+	 * Task 14 acceptance decision A1: the press that ENTERS the UI is consumed rather than
+	 * being handed to the game as well. The whole argument -- including why the left-stick
+	 * keys and the activation keys are deliberately not in the set -- is on the definition.
+	 *
+	 * Static and snapshot-driven so it is pure: no member state can make the press and the
+	 * release disagree.
+	 */
+	static bool DoesKeyEnterUIFocus(const FKey& Key, const FVaCuusInteractiveSnapshot& Snapshot);
+
+	/**
 	 * Installs FNullNavigationConfig, saving the exact config that was there (D12).
 	 * Idempotent, and a no-op without Slate.
 	 *

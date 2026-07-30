@@ -218,7 +218,7 @@ void DispatchInputEvent(Rml::Context& Context, const FVaCuusInputEvent& Event)
 			// Blur() hands focus to the IMMEDIATE PARENT (Element.cpp:2016-2031), and
 			// Element::Focus() has no tab-index gate -- it succeeds on any element whose
 			// computed `focus` is not none (Element.cpp:2003-2008), while `focus` is
-			// inherited and defaults to auto (StyleSheetSpecification.cpp:375). So ANY plain
+			// inherited and defaults to auto (StyleSheetSpecification.cpp:376). So ANY plain
 			// wrapper div accepts the focus Blur() pushes at it. On our own shipped HUD,
 			// where `.slot` sits inside <div id="ability-bar">, Back moved focus onto the
 			// wrapper -- which D9 still counts as a real focus element, since it excludes

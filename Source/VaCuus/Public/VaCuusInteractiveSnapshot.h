@@ -337,6 +337,61 @@ struct FVaCuusInteractiveSnapshot
 	bool bWantsKeyboardFocus = false;
 
 	/**
+	 * Would a TAB press move RmlUi's focus INTO this view's document from where it is
+	 * now? (Task 14 acceptance decision A1.)
+	 *
+	 * WHAT PROBLEM THIS SOLVES. bWantsKeyboardFocus above is "something focusable HAS
+	 * focus", and the key handlers used it alone -- so the press that ENTERS the UI was
+	 * answered Unhandled and reached the game as well as the UI. A player who opens a
+	 * pad-driven menu and presses a direction got both: the menu highlight moved AND the
+	 * character stepped. This is the fact that closes that gap, and it is published rather
+	 * than guessed because the game thread cannot ask RmlUi anything.
+	 *
+	 * EXACTLY RmlUi's OWN PRECONDITIONS, both of them:
+	 *
+	 *  1. A DOCUMENT ELEMENT holds focus. Context::ProcessKeyDown dispatches to `focus`,
+	 *     or to the context ROOT when there is none (Context.cpp:534-537); the root is not
+	 *     an ElementDocument, so ElementDocument::ProcessDefaultAction -- where every Tab,
+	 *     arrow and Return handler lives -- never runs and no key can move focus at all.
+	 *  2. At least one element in the context passes RmlUi's focusability test, because
+	 *     FindNextTabElement has to have somewhere to land (ElementDocument.cpp:581-591
+	 *     calls it; SearchFocusSubtree gates every candidate on CanFocusElement,
+	 *     :728-733, and CanFocusElement is :30-43).
+	 *
+	 * NOT DERIVABLE FROM RectFlags: a focusable element with a zero-area or fully clipped
+	 * box is tabbable but is not REPORTED (the rect list gates on Area() > 0), so counting
+	 * Focusable rects would answer "no" for a document Tab can enter perfectly well.
+	 *
+	 * MEANINGLESS WHILE bWantsKeyboardFocus IS TRUE, and it is false then by construction:
+	 * if something focusable holds focus, the document does not, so (1) fails. The two are
+	 * therefore never both true, and the key path can simply OR them.
+	 */
+	bool bTabEntersFocus = false;
+
+	/**
+	 * The same question for a DIRECTION key (arrows and the DPad), which needs one thing
+	 * Tab does not.
+	 *
+	 * WHY IT IS A SEPARATE BOOL. Tab is handled unconditionally
+	 * (ElementDocument.cpp:581-591 goes straight to FindNextTabElement), but the arrow
+	 * branch first reads a `nav-*` property off the focus node with GetLocalProperty and
+	 * does NOTHING AT ALL when there is none -- every line that could move focus sits
+	 * inside `if (const Property* nav_property = ...)` (ElementDocument.cpp:628-638). With
+	 * nothing focusable focused the focus node resolves to the document itself (:625), so
+	 * the property has to be on the DOCUMENT element -- which is what `body { nav: auto; }`
+	 * is for, and why every VaCuus document carries it.
+	 *
+	 * So a document with focusables but no `nav` on its root can be entered by Tab and NOT
+	 * by an arrow. Collapsing the two into one bool would make the widget consume a
+	 * direction key that provably moves nothing -- swallowing the player's input to
+	 * achieve exactly nothing, which is the worse of the two errors this decision is
+	 * choosing between.
+	 *
+	 * Implies bTabEntersFocus (same two preconditions plus the property).
+	 */
+	bool bDirectionEntersFocus = false;
+
+	/**
 	 * True when a TEXT control -- one with a caret, a selection and a
 	 * Rml::TextInputContext -- holds RmlUi focus right now (controller decision D14b).
 	 *
@@ -425,6 +480,8 @@ struct FVaCuusInteractiveSnapshot
 		RectFlags.Reset();
 		Cursor = EMouseCursor::Default;
 		bWantsKeyboardFocus = false;
+		bTabEntersFocus = false;
+		bDirectionEntersFocus = false;
 		bTextInputFocused = false;
 
 		// Keeps Value's allocation, like the rect arrays above: the publisher rotates

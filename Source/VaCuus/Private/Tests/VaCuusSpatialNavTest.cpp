@@ -484,7 +484,7 @@ bool FVaCuusSpatialNavTest::RunTest(const FString& Parameters)
  * Element::Blur() hands focus to the IMMEDIATE PARENT only (Element.cpp:2016-2031), and
  * Element::Focus() succeeds on any element whose computed `focus` is not none
  * (Element.cpp:2003-2008) -- there is no tab-index gate, and `focus` is inherited with a
- * default of auto (StyleSheetSpecification.cpp:375). So a single blur lands on whatever
+ * default of auto (StyleSheetSpecification.cpp:376). So a single blur lands on whatever
  * plain <div> happens to wrap the focusable. D9 counts that wrapper as a real focus
  * element, because it excludes only the context root and document elements, so
  * bWantsKeyboardFocus stays TRUE and the UI keeps eating the player's keys -- one Back

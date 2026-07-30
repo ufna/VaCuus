@@ -112,6 +112,38 @@ static bool IsKnownInteractiveTag(const Rml::String& Tag)
 		Tag == "scrollbarvertical" || Tag == "scrollbarhorizontal" || Tag == "scrollbarcorner";
 }
 
+/**
+ * Does this element carry a LOCAL `nav-*` declaration in any of the four directions?
+ *
+ * THE GATE ON RmlUi'S ARROW-KEY BRANCH, asked of the element the branch would read it
+ * from. ElementDocument::ProcessDefaultAction resolves a focus node, then wraps
+ * everything that could move focus in `if (const Property* nav_property =
+ * focus_node->GetLocalProperty(property_id))` (ElementDocument.cpp:628-638) -- so a
+ * missing declaration is not a default, it is a dead branch.
+ *
+ * LOCAL, not computed, because that is what RmlUi reads: all four properties are
+ * registered with inherited=false (StyleSheetSpecification.cpp:378-381), so an
+ * ancestor's `nav` does not reach a descendant and GetComputedValues would answer a
+ * different question. GetLocalProperty sees inline styles plus the element's own
+ * matched definition (ElementStyle::GetLocalProperty).
+ *
+ * ANY of the four rather than the specific direction the player will press: this feeds
+ * ONE published bool, and the alternative is four (or a per-direction mask) for a
+ * distinction no document in practice makes -- `nav` is a Box shorthand
+ * (StyleSheetSpecification.cpp:382) and one value sets all four. The cost of being
+ * coarse is bounded and named: a document that declares only `nav-up` would have a
+ * left press consumed without moving focus. A document that declares none -- the case
+ * that actually happens, because it is what forgetting `body { nav: auto; }` looks
+ * like -- is answered exactly.
+ */
+static bool HasLocalNavProperty(Rml::Element& Element)
+{
+	return Element.GetLocalProperty(Rml::PropertyId::NavUp) != nullptr ||
+		Element.GetLocalProperty(Rml::PropertyId::NavDown) != nullptr ||
+		Element.GetLocalProperty(Rml::PropertyId::NavLeft) != nullptr ||
+		Element.GetLocalProperty(Rml::PropertyId::NavRight) != nullptr;
+}
+
 /** Window-space AABB of an element's box area, snapped outwards to whole pixels. */
 static FIntRect ToPixelRect(Rml::Vector2f Position, Rml::Vector2f Size)
 {
@@ -146,6 +178,20 @@ struct FSnapshotWalk
 
 	FVaCuusInteractiveSnapshot& Out;
 	int32 NumElementsVisited = 0;
+
+	/**
+	 * Did the walk see ANY element RmlUi would let Tab land on?
+	 *
+	 * DELIBERATELY NOT "did any Focusable rect get reported": a rect is only appended
+	 * when the element is also INTERACTIVE by the predicate and its clipped box has
+	 * area (see the `bInteractive && Rect.Area() > 0` test below), while
+	 * FindNextTabElement only cares about CanFocusElement. A focusable element that is
+	 * scrolled out of its clip container, or has collapsed to zero height, is tabbable
+	 * and unreported -- so deriving this from RectFlags would answer "Tab cannot enter"
+	 * for a document Tab enters perfectly well, and the key would be handed to the game
+	 * while the UI acted on it. Which is the exact bug the flag exists to close.
+	 */
+	bool bAnyFocusable = false;
 };
 
 void FSnapshotWalk::Visit(Rml::Element* Element, const FIntRect& Clip, bool bFocusBlocked)
@@ -227,6 +273,10 @@ void FSnapshotWalk::Visit(Rml::Element* Element, const FIntRect& Clip, bool bFoc
 	// CanFocusElement (ElementDocument.cpp:30-43), which is what Tab, the arrow keys and
 	// a mouse press all resolve focus through.
 	const bool bFocusable = !bFocusBlocked && Computed.tab_index() == Rml::Style::TabIndex::Auto;
+
+	// Recorded here rather than from the rects, and before the reporting test below,
+	// because that test is narrower than RmlUi's focusability rule (see bAnyFocusable).
+	bAnyFocusable = bAnyFocusable || bFocusable;
 
 	if (bInteractive && Rect.Area() > 0)
 	{
@@ -324,6 +374,11 @@ FVaCuusSnapshotBuildStats BuildVaCuusInteractiveSnapshot(
 	// (PullDocumentToFront appends to the root's children, Context.cpp:468-481). The
 	// order does not change the union, but it costs nothing to produce the rects in
 	// the order RmlUi would have hit-tested them.
+	// The document element that holds focus, if focus is on a document at all. Both
+	// entry flags below need it: it is the element ProcessDefaultAction would run on and
+	// the element whose local `nav-*` the arrow branch would read.
+	Rml::ElementDocument* FocusedDocument = nullptr;
+
 	const int32 NumDocuments = Context.GetNumDocuments();
 	const FIntRect ViewRect(0, 0, ViewSize.X, ViewSize.Y);
 	for (int32 Index = NumDocuments - 1; Index >= 0; --Index)
@@ -339,10 +394,11 @@ FVaCuusSnapshotBuildStats BuildVaCuusInteractiveSnapshot(
 			if (Document == Focus)
 			{
 				bFocusIsRealElement = false;
+				FocusedDocument = Document;
 			}
 
 			// bFocusBlocked starts false: `focus` defaults to auto and is inherited
-			// (StyleSheetSpecification.cpp:375), so a document is focusable until an
+			// (StyleSheetSpecification.cpp:376), so a document is focusable until an
 			// author says otherwise -- and RmlUi relies on that, since Show() focuses the
 			// document element itself.
 			Walk.Visit(Document, ViewRect, /*bFocusBlocked=*/false);
@@ -350,6 +406,20 @@ FVaCuusSnapshotBuildStats BuildVaCuusInteractiveSnapshot(
 	}
 
 	OutSnapshot.bWantsKeyboardFocus = bFocusIsRealElement;
+
+	// Task 14 acceptance decision A1: can a navigation key ENTER this document's focus
+	// from where focus is now? See the two flags' comments for why they are separate and
+	// why neither is derivable from the rects.
+	//
+	// A DOCUMENT MUST HOLD FOCUS, not merely exist. If focus is null or on the context
+	// root, ProcessKeyDown dispatches to the root (Context.cpp:534-537), whose
+	// ProcessDefaultAction is Element's and has no navigation in it -- so no key moves
+	// focus and consuming one would be a lie. If focus is on something INSIDE a document,
+	// bWantsKeyboardFocus is already true and these are irrelevant (and false: the loop
+	// above only sets FocusedDocument when the focus IS a document element).
+	OutSnapshot.bTabEntersFocus = FocusedDocument != nullptr && Walk.bAnyFocusable;
+	OutSnapshot.bDirectionEntersFocus =
+		OutSnapshot.bTabEntersFocus && HasLocalNavProperty(*FocusedDocument);
 
 	// Controller decision D14b, and the second half of the IME contract: whether a control
 	// that takes TEXT holds focus right now, plus everything the platform IME will pull about
