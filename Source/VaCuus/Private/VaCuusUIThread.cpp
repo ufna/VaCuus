@@ -16,6 +16,10 @@
 #include <RmlUi/Core/Context.h>
 #include <RmlUi/Core/Element.h>
 
+// Rml::Factory::ClearStyleSheetCache/ClearTemplateCache, the live-reload path's
+// cache drop (see DrainCommands).
+#include <RmlUi/Core/Factory.h>
+
 // ElementDocument, complete rather than forward-declared: the Back handler asks
 // "is the focused element a document element?" by comparing GetOwnerDocument()
 // against the element itself, and that derived-to-base pointer conversion needs the
@@ -497,7 +501,8 @@ void FVaCuusUIThread::EnqueueRemoveView(uint32 ViewId)
 	Enqueue(MoveTemp(Command));
 }
 
-void FVaCuusUIThread::EnqueueLoadDocumentFile(uint32 ViewId, const FString& VfsPath, uint64 LoadSerial, FIntPoint ViewSize)
+void FVaCuusUIThread::EnqueueLoadDocumentFile(uint32 ViewId, const FString& VfsPath, uint64 LoadSerial, FIntPoint ViewSize,
+	bool bClearAssetCaches)
 {
 	FVaCuusUICommand Command;
 	Command.Kind = EVaCuusCommandKind::LoadDocumentFile;
@@ -505,6 +510,7 @@ void FVaCuusUIThread::EnqueueLoadDocumentFile(uint32 ViewId, const FString& VfsP
 	Command.Payload = VfsPath;
 	Command.ViewSize = ViewSize;
 	Command.LoadSerial = LoadSerial;
+	Command.bClearAssetCaches = bClearAssetCaches;
 	Enqueue(MoveTemp(Command));
 }
 
@@ -830,6 +836,26 @@ void FVaCuusUIThread::DrainCommands()
 		switch (Command->Kind)
 		{
 			case EVaCuusCommandKind::LoadDocumentFile:
+				if (Command->bClearAssetCaches)
+				{
+					// LIVE RELOAD'S ACTUAL MECHANISM, and it has to happen here rather than
+					// anywhere on the game thread: Rml::Factory keys parsed stylesheets and
+					// templates on their file name and hands the same StyleSheetContainer back
+					// for a second load, so re-loading an .rml whose .rcss changed would show
+					// the OLD colours. RmlUi does exactly this pair in its own
+					// ElementDocument::ReloadStyleSheet (ElementDocument.cpp:296-297).
+					//
+					// Process-wide, not per-view: the caches are global statics, so one clear
+					// serves every view reloaded in this drain. Textures are deliberately NOT
+					// released -- see the note in FVaCuusLiveReload.
+					Rml::Factory::ClearStyleSheetCache();
+					Rml::Factory::ClearTemplateCache();
+
+					UE_LOG(LogVaCuus, Verbose,
+						TEXT("View %u: cleared the RmlUi stylesheet/template caches before reloading '%s'"),
+						Command->ViewId, *Command->Payload);
+				}
+
 				Host->LoadDocumentFromFile(Command->Payload, Command->LoadSerial);
 				break;
 

@@ -88,6 +88,16 @@ struct FVaCuusUICommand
 	/** Load kinds only: echoed into the status when the load completes. */
 	uint64 LoadSerial = 0;
 
+	/**
+	 * LoadDocumentFile only: drop RmlUi's parsed stylesheet/template caches immediately
+	 * before the load. Set exactly by UVaCuusView::ReloadDocument() (live reload).
+	 *
+	 * NOT THE DEFAULT, on purpose: the caches are what make a second view of the same
+	 * document cheap, and clearing them on every ordinary load would re-parse every
+	 * stylesheet each time a view swaps documents.
+	 */
+	bool bClearAssetCaches = false;
+
 	/** AddView only: the view's document host, handed over to the UI thread. */
 	TUniquePtr<IVaCuusDocumentHost> Host;
 

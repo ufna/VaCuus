@@ -118,11 +118,44 @@ public:
 	void Invalidate();
 
 	/**
-	 * Loads a document through the RmlUi file interface (paths resolve against
-	 * <Project>/Content/DevUI). Asynchronous: OnLoadCompleted reports the outcome.
+	 * Loads a document through the RmlUi file interface (paths resolve against the
+	 * ordered DevUI roots -- see VaCuusContentPaths.h). Asynchronous: OnLoadCompleted
+	 * reports the outcome.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "VaCuus")
 	void LoadDocument(const FString& VfsPath);
+
+	/**
+	 * The VFS path of the document this view was last asked to load from FILE, or empty
+	 * when there is none (never loaded, loaded from memory, or closed).
+	 *
+	 * IT IS THE RELOAD KEY, which is the only reason it is remembered at all: live
+	 * reload has to re-issue a load without knowing who asked for the first one, and
+	 * neither the widget (whose own copy is guarded, see UVaCuusWidget) nor the UI thread
+	 * (which keeps an Rml::ElementDocument, not a path) can answer for it.
+	 *
+	 * DELIBERATELY EMPTY AFTER LoadDocumentFromMemory(): an inline document has no file
+	 * to have changed, so reloading it would only destroy and rebuild identical content
+	 * -- and would silently undo a fallback (vacuus.M1HUD's inline document is exactly
+	 * that case) by re-loading the file that failed.
+	 */
+	const FString& GetDocumentPath() const { return DocumentPath; }
+
+	/**
+	 * Re-issues the last file load, forcing RmlUi to re-read the document AND to drop
+	 * its parsed-stylesheet/template caches first (controller decision D21's editor live
+	 * reload, and what vacuus.ReloadUI does).
+	 *
+	 * WHY THE CACHE DROP IS PART OF IT AND NOT AN EXTRA: Rml::Factory keys parsed
+	 * stylesheets on their file name, so a second LoadDocument of the same .rml happily
+	 * re-parses the RML and then reuses the CACHED .rcss -- an edited colour would not
+	 * appear and live reload would look broken for the most common kind of edit there is.
+	 * The clear happens on the UI thread, immediately before the load, inside the same
+	 * command.
+	 *
+	 * Returns false when there is nothing to reload (invalid view, or no file document).
+	 */
+	bool ReloadDocument();
 
 	/** Same, from RML source text. */
 	UFUNCTION(BlueprintCallable, Category = "VaCuus")
@@ -371,6 +404,9 @@ private:
 
 	/** Backs GetNumInputEventsQueued(); game thread only, like everything else here. */
 	uint64 NumInputEventsQueued = 0;
+
+	/** Backs GetDocumentPath(); see there for why it is only ever a FILE path. */
+	FString DocumentPath;
 
 	/** Next load's serial. Strictly increasing, so a stale completion cannot be mistaken for a new one. */
 	uint64 NextLoadSerial = 1;

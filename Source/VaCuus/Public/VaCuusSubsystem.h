@@ -71,6 +71,18 @@ public:
 	/** Retires the view on the UI thread and invalidates the handle. Safe with a stale handle. */
 	void DestroyView(UVaCuusView* View);
 
+	/**
+	 * Re-issues the last file load on every view of this game instance that has one.
+	 * Returns how many views were reloaded. Game thread. See UVaCuusView::ReloadDocument().
+	 *
+	 * THE FAN-OUT LIVES HERE, not in the editor watcher (controller decision D21): the
+	 * watcher has a changed FILE and no way to find views, and it must not become the thing
+	 * that keeps a registry of them. Views is that registry and it is private, so this is
+	 * the one door -- which also keeps "which views does a reload reach" answerable in one
+	 * place rather than at every call site.
+	 */
+	int32 ReloadAllDocuments();
+
 	/** The process-wide UI thread, or null if none is running. Does not start one. */
 	FVaCuusUIThread* GetUIThread() const;
 

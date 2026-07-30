@@ -166,6 +166,22 @@ void UVaCuusSubsystem::DestroyView(UVaCuusView* View)
 	Views.Remove(View);
 }
 
+int32 UVaCuusSubsystem::ReloadAllDocuments()
+{
+	check(IsInGameThread());
+
+	int32 NumReloaded = 0;
+	for (const TObjectPtr<UVaCuusView>& View : Views)
+	{
+		if (UVaCuusView* ViewPtr = View.Get())
+		{
+			NumReloaded += ViewPtr->ReloadDocument() ? 1 : 0;
+		}
+	}
+
+	return NumReloaded;
+}
+
 FVaCuusUIThread* UVaCuusSubsystem::GetUIThread() const
 {
 	// GetPtr(), not Get(): this also runs on teardown paths, where reloading the

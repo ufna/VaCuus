@@ -15,6 +15,13 @@ public class VaCuusEditor : ModuleRules
 
 		PrivateDependencyModuleNames.AddRange(new string[] {
 			"CoreUObject",
+
+			// The DevUI file watcher (controller decision D20). Unconditional, which is
+			// what an "Editor" module may do -- UnrealEd itself depends on it directly.
+			// A Runtime module would need the bBuildEditor guard AND would never receive
+			// an event, since only UEditorEngine::Tick pumps the watcher.
+			"DirectoryWatcher",
+
 			"Engine",
 			"Slate",
 			"SlateCore",

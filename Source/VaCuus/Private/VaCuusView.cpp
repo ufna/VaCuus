@@ -136,9 +136,40 @@ void UVaCuusView::LoadDocument(const FString& VfsPath)
 		return;
 	}
 
+	DocumentPath = VfsPath;
+
 	const uint64 Serial = NextLoadSerial++;
 	Status->LoadRequestSerial.store(Serial, std::memory_order_relaxed);
 	UIThread->EnqueueLoadDocumentFile(ViewId, VfsPath, Serial, LastViewSize);
+}
+
+bool UVaCuusView::ReloadDocument()
+{
+	check(IsInGameThread());
+
+	if (DocumentPath.IsEmpty())
+	{
+		return false;
+	}
+
+	FVaCuusUIThread* UIThread = GetUIThread();
+	if (!UIThread)
+	{
+		// Ordinary during teardown, and the caller (a watcher flush) is fanning out over
+		// whatever it found a moment ago -- so this is not worth a Warning.
+		UE_LOG(LogVaCuus, Verbose, TEXT("ReloadDocument() on an invalid view is ignored"));
+		return false;
+	}
+
+	const uint64 Serial = NextLoadSerial++;
+	Status->LoadRequestSerial.store(Serial, std::memory_order_relaxed);
+
+	// bClearAssetCaches: see UVaCuusView::ReloadDocument's comment in the header for why
+	// this, and not the load itself, is what makes an RCSS edit visible.
+	UIThread->EnqueueLoadDocumentFile(ViewId, DocumentPath, Serial, LastViewSize, /*bClearAssetCaches=*/true);
+
+	UE_LOG(LogVaCuus, Log, TEXT("View %u: reload of '%s' queued (load serial %llu)"), ViewId, *DocumentPath, Serial);
+	return true;
 }
 
 void UVaCuusView::LoadDocumentFromMemory(const FString& RmlSource)
@@ -152,6 +183,10 @@ void UVaCuusView::LoadDocumentFromMemory(const FString& RmlSource)
 		return;
 	}
 
+	// Cleared, not kept: an inline document has no file behind it, and leaving a stale
+	// path here would let a live reload replace it with the file it fell back FROM.
+	DocumentPath.Reset();
+
 	const uint64 Serial = NextLoadSerial++;
 	Status->LoadRequestSerial.store(Serial, std::memory_order_relaxed);
 	UIThread->EnqueueLoadDocumentFromMemory(ViewId, RmlSource, Serial, LastViewSize);
@@ -160,6 +195,9 @@ void UVaCuusView::LoadDocumentFromMemory(const FString& RmlSource)
 void UVaCuusView::Close()
 {
 	check(IsInGameThread());
+
+	// Nothing is up any more, so nothing is reloadable.
+	DocumentPath.Reset();
 
 	if (FVaCuusUIThread* UIThread = GetUIThread())
 	{

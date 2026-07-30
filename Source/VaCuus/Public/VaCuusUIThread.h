@@ -135,7 +135,13 @@ public:
 	/** Retires a view; the rest of the views keep running. */
 	void EnqueueRemoveView(uint32 ViewId);
 
-	void EnqueueLoadDocumentFile(uint32 ViewId, const FString& VfsPath, uint64 LoadSerial, FIntPoint ViewSize = FIntPoint::ZeroValue);
+	/**
+	 * bClearAssetCaches drops RmlUi's parsed stylesheet and template caches on the UI
+	 * thread immediately before the load -- the live-reload path (D21). See
+	 * UVaCuusView::ReloadDocument() for why an ordinary load must NOT set it.
+	 */
+	void EnqueueLoadDocumentFile(uint32 ViewId, const FString& VfsPath, uint64 LoadSerial,
+		FIntPoint ViewSize = FIntPoint::ZeroValue, bool bClearAssetCaches = false);
 	void EnqueueLoadDocumentFromMemory(uint32 ViewId, const FString& RmlSource, uint64 LoadSerial, FIntPoint ViewSize = FIntPoint::ZeroValue);
 	void EnqueueCloseDocument(uint32 ViewId);
 	void EnqueueResize(uint32 ViewId, FIntPoint ViewSize);
