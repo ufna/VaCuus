@@ -17,13 +17,14 @@ DEFINE_STAT(STAT_VaCuusComposite);
 DEFINE_STAT(STAT_VaCuusGameTick);
 DEFINE_STAT(STAT_VaCuusSlateTick);
 DEFINE_STAT(STAT_VaCuusInput);
+DEFINE_STAT(STAT_VaCuusModelSample);
 DEFINE_STAT(STAT_VaCuusDrawCalls);
 DEFINE_STAT(STAT_VaCuusCommands);
 
 static TAutoConsoleVariable<int32> CVarVaCuusPerfLog(
 	TEXT("vacuus.M1HUD.PerfLog"),
 	0,
-	TEXT("1 = print every VaCuus scope's timings (avg/p50/p99/max, window + cumulative) to the log every 5 seconds: the UI thread's DrainCommands/DrainInput/DataApply/Update/Record, the render thread's Replay/Composite, and the game thread's GameTick/SlateTick/Input."));
+	TEXT("1 = print every VaCuus scope's timings (avg/p50/p99/max, window + cumulative) to the log every 5 seconds: the UI thread's DrainCommands/DrainInput/DataApply/Update/Record, the render thread's Replay/Composite, and the game thread's GameTick/SlateTick/Input/ModelSample."));
 
 namespace VaCuusPerfLogPrivate
 {
@@ -42,6 +43,7 @@ static const TCHAR* GScopeNames[FVaCuusPerfLog::Num] = {
 	TEXT("GameTick      (GT)"),
 	TEXT("SlateTick     (GT)"),
 	TEXT("Input         (GT)"),
+	TEXT("ModelSample   (GT)"),
 };
 static_assert(UE_ARRAY_COUNT(GScopeNames) == FVaCuusPerfLog::Num,
 	"Every EScope needs a name here, or the log prints past the end of the array");

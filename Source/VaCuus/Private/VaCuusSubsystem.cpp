@@ -65,12 +65,23 @@ void UVaCuusSubsystem::Tick(float DeltaTime)
 	// the amount nobody thought to measure.
 	VACUUS_PERF_SCOPE(GameTick);
 
-	// Turns any load result the UI thread published into a game-thread broadcast.
+	// Turns any load result the UI thread published into a game-thread broadcast, and hands
+	// the UI thread whatever this frame's UpdateModel() calls marked.
 	for (TObjectPtr<UVaCuusView>& View : Views)
 	{
 		if (UVaCuusView* ViewPtr = View.Get())
 		{
 			ViewPtr->PollStatus();
+
+			// THE PUBLISH HALF OF THE M3a DATA PIPELINE, HERE AND NOT IN UpdateModel(). Two
+			// reasons, and the first is not about measurement: several UpdateModel calls in one
+			// frame -- one per actor, one per subsystem -- become ONE triple-buffer swap
+			// carrying each field's latest value, rather than one swap per call. The second is
+			// spec 6's: this is inside the GameTick scope above, which is where the game-thread
+			// budget is measured. It costs nothing when nothing changed (no outstanding field
+			// means no swap, no generation bump and therefore no UI-thread work at all), which
+			// is what spec 9's "idle -> 0 published frames" row rests on.
+			ViewPtr->PublishModelUpdates();
 		}
 	}
 

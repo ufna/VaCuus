@@ -2,14 +2,18 @@
 
 #include "VaCuusView.h"
 
+#include "VaCuusBoundModel.h"
 #include "VaCuusDefines.h"
 #include "VaCuusInputEvent.h"
+#include "VaCuusStats.h"
 #include "VaCuusSubsystem.h"
 #include "VaCuusTextInput.h"
 #include "VaCuusUIThread.h"
 #include "VaCuusViewStatus.h"
 
 #include "CoreGlobals.h"
+#include "UObject/Class.h"
+#include "UObject/UnrealType.h"
 
 void UVaCuusView::InitializeView(UVaCuusSubsystem* InSubsystem, uint32 InViewId,
 	const TSharedRef<FVaCuusViewStatus>& InStatus, FIntPoint InInitialViewSize)
@@ -245,6 +249,245 @@ void UVaCuusView::Resize(FIntPoint ViewSize)
 	UIThread->EnqueueResize(ViewId, ViewSize);
 
 	UE_LOG(LogVaCuus, Verbose, TEXT("View %u: queued resize to %dx%d"), ViewId, ViewSize.X, ViewSize.Y);
+}
+
+bool UVaCuusView::BindModel(FName ModelName, const UScriptStruct* Type)
+{
+	check(IsInGameThread());
+
+	if (Type == nullptr)
+	{
+		UE_LOG(LogVaCuus, Error, TEXT("View %u: BindModel('%s') needs a struct type"), ViewId, *ModelName.ToString());
+		return false;
+	}
+
+	if (ModelName.IsNone())
+	{
+		// The name is what a document's `data-model` attribute is compared against
+		// (Element.cpp:2203-2206), so an unnamed model is one no document can reach.
+		UE_LOG(LogVaCuus, Error, TEXT("View %u: BindModel needs a name; a document addresses a model by its `data-model` attribute"),
+			ViewId);
+		return false;
+	}
+
+	FVaCuusUIThread* UIThread = GetUIThread();
+	if (!UIThread)
+	{
+		UE_LOG(LogVaCuus, Warning, TEXT("BindModel('%s') on an invalid view is ignored"), *ModelName.ToString());
+		return false;
+	}
+
+	if (Models.Contains(ModelName))
+	{
+		// Refused here rather than left to RmlUi, which would also refuse it -- and which
+		// would do so through a log line that is compiled out (spec 8), leaving the second
+		// model's values going nowhere while the FIRST model's shadow stayed on screen.
+		UE_LOG(LogVaCuus, Error,
+			TEXT("View %u already has a model called '%s'; the second BindModel is ignored (there is no unbind in RmlUi, so a ")
+			TEXT("name cannot be reused on one view)"),
+			ViewId, *ModelName.ToString());
+		return false;
+	}
+
+	if (NextLoadSerial > 1)
+	{
+		// THE ONLY WARNING THERE IS FOR CONTRACT 1, and it exists because RmlUi's own is not
+		// one: `data-model` is resolved in Element::SetParent (Element.cpp:2202-2219) and a
+		// miss is a Log::LT_ERROR that this project compiles out. A model created now cannot
+		// attach to a document that is already up.
+		//
+		// A WARNING AND NOT A REFUSAL: the model is still correct for the NEXT load, which is
+		// exactly what a live reload or a view that swaps documents will do -- and refusing
+		// would break that. The load serial is used rather than a bLoaded flag because it
+		// counts REQUESTS, so this fires even while the first load is still in flight.
+		UE_LOG(LogVaCuus, Warning,
+			TEXT("View %u: BindModel('%s') after a document load was already requested. RmlUi resolves `data-model` once, when a ")
+			TEXT("document is parented into the context, so this model will NOT attach to the document that is up -- only to the ")
+			TEXT("next one loaded. Bind every model before the first LoadDocument."),
+			ViewId, *ModelName.ToString());
+	}
+
+	const TSharedRef<FVaCuusBoundModel> Model = MakeShared<FVaCuusBoundModel>(ModelName, Type);
+	if (!Model->IsValid())
+	{
+		// The layout walk has already logged whatever it could not resolve.
+		UE_LOG(LogVaCuus, Error, TEXT("View %u: BindModel('%s') could not build a model over '%s'"), ViewId, *ModelName.ToString(),
+			*Type->GetName());
+		return false;
+	}
+
+	if (Model->GetLayout().GetFields().Num() == 0)
+	{
+		// Bound anyway: `data-model` still has to resolve or the whole subtree is inert. But a
+		// struct that contributed nothing is almost always a mistake (every property refused
+		// by the exposure rule, or by RmlUi's name rule), and the per-property lines that say
+		// which are easy to miss among a frame's logging.
+		UE_LOG(LogVaCuus, Warning,
+			TEXT("View %u: model '%s' over '%s' has no bindable field; the model is created so `data-model` resolves, but every ")
+			TEXT("expression against it will be empty (see the per-property lines above)"),
+			ViewId, *ModelName.ToString(), *Type->GetName());
+	}
+
+	// The game-thread half is live from here; the UI thread creates the RmlUi model when it
+	// drains the command below.
+	Models.Add(ModelName, Model);
+	UIThread->EnqueueBindModel(ViewId, Model);
+
+	UE_LOG(LogVaCuus, Log, TEXT("View %u: model '%s' over '%s' queued for binding (%d field(s), %d top-level name(s))"), ViewId,
+		*ModelName.ToString(), *Type->GetName(), Model->GetLayout().GetFields().Num(), Model->GetLayout().GetTopLevelNames().Num());
+	return true;
+}
+
+void UVaCuusView::UpdateModel(FName ModelName, const UScriptStruct* Type, const void* Data)
+{
+	// The same guard every other mutator here carries, and the same reason: this reads
+	// gameplay memory, which has no engine synchronisation of any kind.
+	check(IsInGameThread());
+
+	const TSharedPtr<FVaCuusBoundModel>* Found = Models.Find(ModelName);
+	if (Found == nullptr)
+	{
+		UE_LOG(LogVaCuus, Warning,
+			TEXT("View %u: UpdateModel('%s') before anything was bound under that name; nothing was read. Call BindModel(), and ")
+			TEXT("call it before LoadDocument()."),
+			ViewId, *ModelName.ToString());
+		return;
+	}
+
+	FVaCuusBoundModel& Model = **Found;
+
+	// FIRST OF THE THREE VALUE CHECKS, because it is the one that cannot be recovered from:
+	// every offset the sampler is about to use came out of THIS model's layout, and applying
+	// them to an instance of another type reads whatever sits at those bytes.
+	if (Type != Model.GetLayout().GetStruct())
+	{
+		UE_LOG(LogVaCuus, Error,
+			TEXT("View %u: UpdateModel('%s') was given a '%s' but the model is bound over '%s'; nothing was read"), ViewId,
+			*ModelName.ToString(), Type != nullptr ? *Type->GetName() : TEXT("none"),
+			Model.GetLayout().GetStruct() != nullptr ? *Model.GetLayout().GetStruct()->GetName() : TEXT("none"));
+		return;
+	}
+
+	if (Data == nullptr)
+	{
+		UE_LOG(LogVaCuus, Warning, TEXT("View %u: UpdateModel('%s') was given a null pointer; nothing was read"), ViewId,
+			*ModelName.ToString());
+		return;
+	}
+
+	if (GetUIThread() == nullptr)
+	{
+		// The registration gate, at Verbose for the reason SendInput() gives: this runs at
+		// frame rate, and a view can outlive the thing driving it by a frame during teardown.
+		UE_LOG(LogVaCuus, Verbose, TEXT("UpdateModel('%s') on an invalid view is ignored"), *ModelName.ToString());
+		return;
+	}
+
+	// MEASURED HERE RATHER THAN INSIDE THE GameTick SCOPE, and that is a deliberate deviation
+	// from spec 6's wording ("must be driven from UVaCuusSubsystem::Tick"). The sample can
+	// only run where the data is: the only pointer to the live struct VaCuus ever sees is this
+	// argument, and a Blueprint wildcard pin's pointer is valid for the duration of the call
+	// and no longer. Deferring the diff to Tick would mean copying the whole struct into a
+	// third buffer first -- roughly doubling the very cost spec 9 budgets -- so what moves to
+	// Tick is the PUBLISH (see PublishModelUpdates), and the sample gets a scope of its own so
+	// that "outside every measurement" does not happen either way.
+	//
+	// Per CALL, not per frame, like the Input scope: read it as a sum over the frame.
+	VACUUS_PERF_SCOPE(ModelSample);
+	Model.Sample(Type, Data);
+}
+
+bool UVaCuusView::HasModel(FName ModelName) const
+{
+	check(IsInGameThread());
+	return Models.Contains(ModelName);
+}
+
+int32 UVaCuusView::NumOutstandingModelFields(FName ModelName)
+{
+	check(IsInGameThread());
+
+	const TSharedPtr<FVaCuusBoundModel>* Found = Models.Find(ModelName);
+	return Found != nullptr ? (*Found)->NumOutstandingFields() : INDEX_NONE;
+}
+
+void UVaCuusView::PublishModelUpdates()
+{
+	check(IsInGameThread());
+
+	if (!bRegistered)
+	{
+		// Nothing is consuming the channel any more -- the UI thread dropped its models when
+		// it drained the RemoveView -- so a publish here would only swap buffers nobody reads.
+		return;
+	}
+
+	for (const TPair<FName, TSharedPtr<FVaCuusBoundModel>>& Pair : Models)
+	{
+		// Free when nothing is outstanding: no swap, no generation bump, no UI-thread work.
+		// That is what makes a bound-but-unchanging model cost zero published frames.
+		Pair.Value->PublishPending();
+	}
+}
+
+bool UVaCuusView::CreateModelFromStruct(FName ModelName, const int32& Struct)
+{
+	// Never called: the UFUNCTION is CustomThunk, so Blueprint dispatches to
+	// execCreateModelFromStruct below and C++ callers use BindModel() directly. A body exists
+	// only because the declaration does. Same shape as the engine's own wildcard nodes
+	// (UBlueprintMapLibrary::Map_Add and friends).
+	checkNoEntry();
+	return false;
+}
+
+void UVaCuusView::UpdateWholeModel(FName ModelName, const int32& Struct)
+{
+	checkNoEntry();
+}
+
+DEFINE_FUNCTION(UVaCuusView::execCreateModelFromStruct)
+{
+	P_GET_PROPERTY(FNameProperty, ModelName);
+
+	// THE WILDCARD PIN, AND WHERE THE TYPE COMES FROM. StepCompiledIn<FStructProperty> walks
+	// the next argument on the script stack and leaves MostRecentProperty describing whatever
+	// struct the designer actually wired in -- which is the whole reason the Blueprint node
+	// needs no type parameter and yet reaches exactly the same check C++ does. Both pointers
+	// are cleared first because Step only writes them when the argument is a property
+	// reference rather than a temporary.
+	Stack.MostRecentProperty = nullptr;
+	Stack.MostRecentPropertyAddress = nullptr;
+	Stack.StepCompiledIn<FStructProperty>(nullptr);
+	const FStructProperty* StructProperty = CastField<FStructProperty>(Stack.MostRecentProperty);
+
+	P_FINISH;
+
+	bool bResult = false;
+	P_NATIVE_BEGIN;
+	bResult = P_THIS->BindModel(ModelName, StructProperty != nullptr ? StructProperty->Struct : nullptr);
+	P_NATIVE_END;
+
+	*static_cast<bool*>(RESULT_PARAM) = bResult;
+}
+
+DEFINE_FUNCTION(UVaCuusView::execUpdateWholeModel)
+{
+	P_GET_PROPERTY(FNameProperty, ModelName);
+
+	Stack.MostRecentProperty = nullptr;
+	Stack.MostRecentPropertyAddress = nullptr;
+	Stack.StepCompiledIn<FStructProperty>(nullptr);
+	const FStructProperty* StructProperty = CastField<FStructProperty>(Stack.MostRecentProperty);
+	const void* StructData = Stack.MostRecentPropertyAddress;
+
+	P_FINISH;
+
+	P_NATIVE_BEGIN;
+	// The type and the data come from the ONE pin, so they cannot disagree -- and both go
+	// through UpdateModel(), so an unconnected pin (null property, null address) produces the
+	// same two log lines a C++ caller would get rather than a special Blueprint path.
+	P_THIS->UpdateModel(ModelName, StructProperty != nullptr ? StructProperty->Struct : nullptr, StructData);
+	P_NATIVE_END;
 }
 
 void UVaCuusView::SendInput(const FVaCuusInputEvent& Event)

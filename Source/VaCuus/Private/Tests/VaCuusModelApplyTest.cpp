@@ -12,6 +12,7 @@
 #include "VaCuusViewStatus.h"
 
 #include "VaCuusModelLayoutTestTypes.h"
+#include "VaCuusModelTestHost.h"
 
 #include "HAL/PlatformProcess.h"
 #include "Misc/ScopeExit.h"
@@ -54,226 +55,7 @@
  */
 namespace VaCuusModelApplyTest
 {
-/** The model name in the document's `data-model` attribute. */
-static const char* GModelName = "hud";
-
-/**
- * `{{Title}}` is the end-to-end evidence -- a data expression in element text, resolved by
- * RmlUi's own DataViewText and read back out of the DOM. Health rides along through
- * `data-attr-p` because an attribute is readable without a laid-out text run, so a failure
- * tells the two apart.
- */
-static const TCHAR* GDocument = TEXT(R"(<rml>
-<head><style>body { display: block; } div { display: block; }</style></head>
-<body data-model="hud">
-	<div id="title">{{Title}}</div>
-	<div id="health" data-attr-p="Health"/>
-</body>
-</rml>)");
-
-/** What the document is showing, as of the last Context::Update(). */
-struct FObserved
-{
-	FString Title;
-	FString Health;
-
-	bool operator==(const FObserved& Other) const { return Title == Other.Title && Health == Other.Health; }
-	bool operator!=(const FObserved& Other) const { return !(*this == Other); }
-};
-
-/**
- * A real Rml::Context on the real UI thread, updated once per recorded frame.
- *
- * WHY A PROBE AND NOT FVaCuusRmlDocumentHost: that host lives in VaCuusRender along with the
- * recorder it needs, and VaCuusRender depends on VaCuus rather than the other way round --
- * FVaCuusBoundModel is a Private header of THIS module, so a test that constructs one cannot
- * live over there. The split is the same one IVaCuusDocumentHost exists for.
- *
- * THREAD HAND-OFF: plain members written on the UI thread, read on the test thread only after
- * WaitForFrameCount() saw the frame counter advance -- which the UI thread stores with release
- * ordering after RunFrame() returns. Same rule as VaCuus.Model.Binding's probe.
- */
-class FProbeHost final : public IVaCuusDocumentHost
-{
-public:
-	virtual bool Initialize(uint32 InViewId, const TSharedRef<FVaCuusViewStatus>& InStatus) override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-
-		Status = InStatus;
-		ContextName = FString::Printf(TEXT("vacuus_apply_view_%u"), InViewId);
-		Context = Rml::CreateContext(Rml::String(TCHAR_TO_UTF8(*ContextName)), Rml::Vector2i(1, 1));
-		return Context != nullptr;
-	}
-
-	virtual void Shutdown() override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-
-		CloseDocument();
-		if (Context)
-		{
-			Rml::RemoveContext(Rml::String(TCHAR_TO_UTF8(*ContextName)));
-			Context = nullptr;
-		}
-	}
-
-	virtual void SetViewSize(FIntPoint InViewSize) override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-
-		ViewSize = InViewSize;
-		if (Context)
-		{
-			Context->SetDimensions(Rml::Vector2i(ViewSize.X, ViewSize.Y));
-		}
-	}
-
-	virtual void LoadDocumentFromFile(const FString& VfsPath, uint64 LoadSerial) override { Report(LoadSerial, /*bSuccess=*/false); }
-
-	virtual void LoadDocumentFromMemory(const FString& RmlSource, uint64 LoadSerial) override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-
-		if (Context == nullptr)
-		{
-			Report(LoadSerial, /*bSuccess=*/false);
-			return;
-		}
-
-		Rml::ElementDocument* NewDocument =
-			Context->LoadDocumentFromMemory(Rml::String(TCHAR_TO_UTF8(*RmlSource)), "vacuus://apply.rml");
-		if (NewDocument == nullptr)
-		{
-			Report(LoadSerial, /*bSuccess=*/false);
-			return;
-		}
-
-		CloseDocument();
-		RmlDocument = NewDocument;
-		RmlDocument->Show(Rml::ModalFlag::None, Rml::FocusFlag::Document);
-		Report(LoadSerial, /*bSuccess=*/true);
-	}
-
-	virtual void CloseDocument() override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-
-		if (RmlDocument)
-		{
-			RmlDocument->Close();
-			RmlDocument = nullptr;
-		}
-	}
-
-	virtual void SetVisible(bool bVisible) override {}
-
-	virtual bool HasView() const override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-
-		// THE SAME SHAPE AS THE PRODUCTION HOST'S, and the size clause is the one that matters
-		// here: FVaCuusRmlDocumentHost::HasView() also requires ViewSize.X > 0 && ViewSize.Y > 0,
-		// so a view that has not been laid out yet is not recorded. The sizeless view in the test
-		// below never satisfies this, which is exactly the case the apply must not be gated on.
-		return Context != nullptr && RmlDocument != nullptr && ViewSize.X > 0 && ViewSize.Y > 0;
-	}
-
-	virtual Rml::Context* GetContext() const override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-		return Context;
-	}
-
-	virtual void RecordAndPublishFrame() override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-
-		Context->Update();
-
-		const FObserved Now = Capture();
-		if (NumRecordedFrames == 0 || Now != Latest)
-		{
-			++NumDomChanges;
-		}
-		Latest = Now;
-		++NumRecordedFrames;
-
-		Status->FramesRecorded.fetch_add(1, std::memory_order_release);
-	}
-
-	//~ Post-frame observations; see the class comment for why plain members are safe.
-
-	/** What the document is showing right now. */
-	FObserved Latest;
-
-	/**
-	 * Frames whose DOM differed from the previous frame's (the first counts as one).
-	 *
-	 * THE IDLE ASSERTION'S OBSERVABLE. It stands in for the recorder's published-frame counter
-	 * one level up: what makes an idle UI frame free is that nothing writes the DOM, so the
-	 * command list -- and therefore the frame hash -- does not move. If a bound model dirtied a
-	 * variable every frame, this would climb even though nothing changed.
-	 */
-	int32 NumDomChanges = 0;
-	int32 NumRecordedFrames = 0;
-
-private:
-	void Report(uint64 LoadSerial, bool bSuccess)
-	{
-		if (Status.IsValid() && LoadSerial != 0)
-		{
-			Status->LoadResult.store(
-				static_cast<uint8>(bSuccess ? EVaCuusLoadResult::Succeeded : EVaCuusLoadResult::Failed), std::memory_order_relaxed);
-			Status->LoadCompletedSerial.store(LoadSerial, std::memory_order_release);
-		}
-	}
-
-	FObserved Capture() const
-	{
-		FObserved Out;
-		if (RmlDocument == nullptr)
-		{
-			return Out;
-		}
-
-		// InnerRML, because that is where a `{{Field}}` substitution lands: DataViewText::Update
-		// calls ElementText::SetText (DataViewDefault.cpp), and ElementText::GetRML appends the
-		// CURRENT text (ElementText.cpp), so the div's inner RML is the resolved value rather
-		// than the `{{Title}}` source.
-		if (Rml::Element* TitleElement = RmlDocument->GetElementById("title"))
-		{
-			Out.Title = FString(UTF8_TO_TCHAR(TitleElement->GetInnerRML().c_str()));
-		}
-		if (Rml::Element* HealthElement = RmlDocument->GetElementById("health"))
-		{
-			Out.Health = FString(UTF8_TO_TCHAR(HealthElement->GetAttribute<Rml::String>("p", Rml::String()).c_str()));
-		}
-		return Out;
-	}
-
-	TSharedPtr<FVaCuusViewStatus> Status;
-	FString ContextName;
-	Rml::Context* Context = nullptr;
-	Rml::ElementDocument* RmlDocument = nullptr;
-	FIntPoint ViewSize = FIntPoint::ZeroValue;
-};
-
-/** One UI frame at a time; the wake event coalesces, so N triggers are not N frames. */
-static bool RunFrames(FVaCuusUIThread& UIThread, int32 NumFrames)
-{
-	for (int32 Index = 0; Index < NumFrames; ++Index)
-	{
-		const uint64 Before = UIThread.GetFrameCount();
-		UIThread.Trigger();
-		if (!UIThread.WaitForFrameCount(Before + 1, 5.0))
-		{
-			return false;
-		}
-	}
-
-	return true;
-}
+using namespace VaCuusModelTest;
 
 /** One FString field, read out of any instance of the model type through the layout. */
 static FString ReadString(const FVaCuusModelLayout& Layout, const FVaCuusModelShadow& Shadow, const TCHAR* WireName)
@@ -336,8 +118,8 @@ bool FVaCuusModelApplyTest::RunTest(const FString& Parameters)
 	const TSharedRef<FVaCuusViewStatus> SizedStatus = MakeShared<FVaCuusViewStatus>();
 	const TSharedRef<FVaCuusViewStatus> SizelessStatus = MakeShared<FVaCuusViewStatus>();
 
-	TUniquePtr<FProbeHost> OwnedSized = MakeUnique<FProbeHost>();
-	TUniquePtr<FProbeHost> OwnedSizeless = MakeUnique<FProbeHost>();
+	TUniquePtr<FProbeHost> OwnedSized = MakeUnique<FProbeHost>(TEXT("vacuus_apply_view"));
+	TUniquePtr<FProbeHost> OwnedSizeless = MakeUnique<FProbeHost>(TEXT("vacuus_apply_view"));
 	FProbeHost* Sized = OwnedSized.Get();
 	FProbeHost* Sizeless = OwnedSizeless.Get();
 

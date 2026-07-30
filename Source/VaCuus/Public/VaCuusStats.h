@@ -56,6 +56,7 @@ DECLARE_CYCLE_STAT_EXTERN(TEXT("VaCuus Composite (RT)"), STAT_VaCuusComposite, S
 DECLARE_CYCLE_STAT_EXTERN(TEXT("VaCuus GameTick (GT)"), STAT_VaCuusGameTick, STATGROUP_VaCuus, VACUUS_API);
 DECLARE_CYCLE_STAT_EXTERN(TEXT("VaCuus SlateTick (GT)"), STAT_VaCuusSlateTick, STATGROUP_VaCuus, VACUUS_API);
 DECLARE_CYCLE_STAT_EXTERN(TEXT("VaCuus Input (GT)"), STAT_VaCuusInput, STATGROUP_VaCuus, VACUUS_API);
+DECLARE_CYCLE_STAT_EXTERN(TEXT("VaCuus ModelSample (GT)"), STAT_VaCuusModelSample, STATGROUP_VaCuus, VACUUS_API);
 
 /** Per-frame counters (cleared by the stats system every frame). */
 DECLARE_DWORD_COUNTER_STAT_EXTERN(TEXT("VaCuus Draw Calls"), STAT_VaCuusDrawCalls, STATGROUP_VaCuus, VACUUS_API);
@@ -108,10 +109,21 @@ public:
 		 *   Input     -- one sample per input EVENT, covering the whole handler: the
 		 *                screen-to-view transform, the snapshot scan that produces the FReply,
 		 *                and the enqueue. The "input" half of the budget.
+		 *
+		 * ModelSample (M3a) is the fourth, and it is its own scope rather than part of
+		 * GameTick for a reason spec 6 did not anticipate: the sample can only run where the
+		 * live struct is, i.e. inside UVaCuusView::UpdateModel, wherever the game calls it
+		 * from. Folding it into GameTick would need a full extra copy of the struct per update
+		 * (the pointer a Blueprint wildcard pin hands over dies with the call), and adding
+		 * GameTick SAMPLES from a per-call site would break that scope's one-per-frame
+		 * meaning. Its own line keeps the spec 9 budget measurable either way. One sample per
+		 * UpdateModel call; read it as a sum over the frame, exactly like Input. The publish
+		 * half does run inside GameTick (UVaCuusView::PublishModelUpdates).
 		 */
 		GameTick,
 		SlateTick,
 		Input,
+		ModelSample,
 
 		Num
 	};
