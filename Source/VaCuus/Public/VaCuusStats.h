@@ -24,8 +24,25 @@ DECLARE_STATS_GROUP(TEXT("VaCuus"), STATGROUP_VaCuus, STATCAT_Advanced);
  * from VaCuusRender.
  */
 
-// (UI) == the dedicated VaCuus UI thread; these two used to be game-thread costs
-// and moved off it in M2 Task 3.
+// (UI) == the dedicated VaCuus UI thread; Update and Record used to be game-thread
+// costs and moved off it in M2 Task 3.
+//
+// THE THREE DRAIN/APPLY SCOPES (M3a Task 0). Until M3a, FVaCuusUIThread::RunFrame() had
+// no scope of its own at all, so the only measured parts of a UI frame were the two
+// inside RecordAndPublishFrame(). That left the two phases that run BEFORE them
+// unmeasured, and they are not small in the frames that matter: DrainCommands() performs
+// a full document parse plus the first layout on a load (VaCuusUIThread.cpp:900-906 ->
+// IVaCuusDocumentHost::LoadDocumentFrom*), and DrainInput() runs hit-testing, focus
+// resolution and the IME surface push per event (VaCuusUIThread.cpp:927+).
+//
+// DataApply is declared here with no sampler yet on purpose: the M3a data apply lands at
+// RunFrame()'s `(data snapshots: M3)` marker (spec 3.6), i.e. between the two phases
+// above and Context::Update(). Adding its scope AFTER the apply exists would leave its
+// cost folded into whichever neighbour happened to grow, which is exactly the
+// unattributable result this task exists to prevent.
+DECLARE_CYCLE_STAT_EXTERN(TEXT("VaCuus DrainCommands (UI)"), STAT_VaCuusDrainCommands, STATGROUP_VaCuus, VACUUS_API);
+DECLARE_CYCLE_STAT_EXTERN(TEXT("VaCuus DrainInput (UI)"), STAT_VaCuusDrainInput, STATGROUP_VaCuus, VACUUS_API);
+DECLARE_CYCLE_STAT_EXTERN(TEXT("VaCuus DataApply (UI)"), STAT_VaCuusDataApply, STATGROUP_VaCuus, VACUUS_API);
 DECLARE_CYCLE_STAT_EXTERN(TEXT("VaCuus Update (UI)"), STAT_VaCuusUpdate, STATGROUP_VaCuus, VACUUS_API);
 DECLARE_CYCLE_STAT_EXTERN(TEXT("VaCuus Record (UI)"), STAT_VaCuusRecord, STATGROUP_VaCuus, VACUUS_API);
 DECLARE_CYCLE_STAT_EXTERN(TEXT("VaCuus Replay (RT)"), STAT_VaCuusReplay, STATGROUP_VaCuus, VACUUS_API);
@@ -56,10 +73,23 @@ DECLARE_DWORD_COUNTER_STAT_EXTERN(TEXT("VaCuus Commands"), STAT_VaCuusCommands, 
 class VACUUS_API FVaCuusPerfLog
 {
 public:
+	/**
+	 * ORDERED AS ONE FRAME RUNS, and the order is load-bearing in exactly one place:
+	 * VaCuusPerfLogPrivate::GScopeNames is a positional array indexed by these values,
+	 * so an enumerator inserted anywhere must have its name inserted at the same
+	 * position. The static_assert next to that array catches a MISSING name; only
+	 * reading the two lists together catches a mis-ORDERED one.
+	 */
 	enum EScope : int32
 	{
-		Update = 0,
+		// The UI thread's own frame, in FVaCuusUIThread::RunFrame() order.
+		DrainCommands = 0,
+		DrainInput,
+		DataApply,
+		Update,
 		Record,
+
+		// The render thread.
 		Replay,
 		Composite,
 

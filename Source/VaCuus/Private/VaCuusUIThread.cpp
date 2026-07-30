@@ -6,6 +6,7 @@
 #include "VaCuusDocumentHost.h"
 #include "VaCuusEngine.h"
 #include "VaCuusInputMap.h"
+#include "VaCuusStats.h"
 #include "VaCuusTextInput.h"
 #include "VaCuusUIQueues.h"
 
@@ -804,9 +805,31 @@ void FVaCuusUIThread::RunFrame()
 	// Commands first, then input: a view that was registered, resized or reloaded by
 	// this frame's commands receives this frame's input against its new state, never
 	// against the previous one.
-	DrainCommands();
-	DrainInput();
-	// (data snapshots: M3)
+	//
+	// SCOPED AT THE CALL SITE RATHER THAN INSIDE EACH FUNCTION so that the three phases
+	// of a UI frame sit next to each other and can be read as a decomposition of it: the
+	// remainder of RunFrame() is the per-view record loop, which is already covered by
+	// Update and Record inside RecordAndPublishFrame(). Nothing wraps that loop, because a
+	// scope around it would double-count those two into every window it printed.
+	{
+		VACUUS_PERF_SCOPE(DrainCommands);
+		DrainCommands();
+	}
+	{
+		VACUUS_PERF_SCOPE(DrainInput);
+		DrainInput();
+	}
+	{
+		// (data snapshots: M3)
+		//
+		// EMPTY AND MEASURED ANYWAY. The M3a apply belongs here -- after both drains so it
+		// sees this frame's commands and input, and before Context::Update() so the
+		// re-evaluation a dirtied variable causes is paid inside Update, where spec 9
+		// budgets it. Until Task 6 fills it in, the samples this emits are the wall-clock
+		// cost of FVaCuusPerfScopeTimer itself on this machine, which is the only honest
+		// noise floor to judge the apply against later.
+		VACUUS_PERF_SCOPE(DataApply);
+	}
 
 	// One recorded frame per view, each publishing its own command buffer straight to
 	// the render thread and its own interactive-region snapshot straight to the game

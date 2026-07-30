@@ -7,6 +7,9 @@
 #include "HAL/IConsoleManager.h"
 #include "Misc/ScopeLock.h"
 
+DEFINE_STAT(STAT_VaCuusDrainCommands);
+DEFINE_STAT(STAT_VaCuusDrainInput);
+DEFINE_STAT(STAT_VaCuusDataApply);
 DEFINE_STAT(STAT_VaCuusUpdate);
 DEFINE_STAT(STAT_VaCuusRecord);
 DEFINE_STAT(STAT_VaCuusReplay);
@@ -20,20 +23,25 @@ DEFINE_STAT(STAT_VaCuusCommands);
 static TAutoConsoleVariable<int32> CVarVaCuusPerfLog(
 	TEXT("vacuus.M1HUD.PerfLog"),
 	0,
-	TEXT("1 = print VaCuus Update/Record/Replay/Composite timings (avg/p50/p99/max, window + cumulative) to the log every 5 seconds."));
+	TEXT("1 = print every VaCuus scope's timings (avg/p50/p99/max, window + cumulative) to the log every 5 seconds: the UI thread's DrainCommands/DrainInput/DataApply/Update/Record, the render thread's Replay/Composite, and the game thread's GameTick/SlateTick/Input."));
 
 namespace VaCuusPerfLogPrivate
 {
 static constexpr double WindowSeconds = 5.0;
 
+// POSITIONAL: indexed by EScope, so this list must stay in the enum's order, not just at
+// its length. Padded to a common width so a window's ten lines read as a column.
 static const TCHAR* GScopeNames[FVaCuusPerfLog::Num] = {
-	TEXT("Update    (UI)"),
-	TEXT("Record    (UI)"),
-	TEXT("Replay    (RT)"),
-	TEXT("Composite (RT)"),
-	TEXT("GameTick  (GT)"),
-	TEXT("SlateTick (GT)"),
-	TEXT("Input     (GT)"),
+	TEXT("DrainCommands (UI)"),
+	TEXT("DrainInput    (UI)"),
+	TEXT("DataApply     (UI)"),
+	TEXT("Update        (UI)"),
+	TEXT("Record        (UI)"),
+	TEXT("Replay        (RT)"),
+	TEXT("Composite     (RT)"),
+	TEXT("GameTick      (GT)"),
+	TEXT("SlateTick     (GT)"),
+	TEXT("Input         (GT)"),
 };
 static_assert(UE_ARRAY_COUNT(GScopeNames) == FVaCuusPerfLog::Num,
 	"Every EScope needs a name here, or the log prints past the end of the array");
