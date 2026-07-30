@@ -3,12 +3,14 @@
 #include "Misc/AutomationTest.h"
 
 #include "VaCuusCommandBuffer.h"
+#include "VaCuusEngine.h"
 #include "VaCuusRecordingRenderInterface.h"
 
 #include "HAL/IConsoleManager.h"
 #include "Misc/ScopeExit.h"
 #include "Templates/Function.h"
 
+#include <RmlUi/Core.h>
 #include <RmlUi/Core/Types.h>
 #include <RmlUi/Core/Vertex.h>
 
@@ -18,14 +20,21 @@
  * The idle short-circuit (M2 Task 12): a recorded frame that draws exactly what the
  * render thread already has is NOT published.
  *
- * Driven straight against FVaCuusRecordingRenderInterface, with no Rml::Context in
- * sight, because every property here is about the gate's decision and none of them is
- * about RmlUi. Two consequences worth naming:
+ * All but the last of these are driven straight against FVaCuusRecordingRenderInterface,
+ * with no Rml::Context in sight, because every property they assert is about the gate's
+ * decision and none of them is about RmlUi. Two consequences worth naming:
  *  - the frames are byte-exact by construction, where a real document's are only
  *    "unchanged as far as anyone can tell";
  *  - "an unchanged frame is not published" needs an observable to be a test at all.
  *    GetNumFramesPublished()/GetNumFramesSkipped() are it: the screen looks identical
  *    whether the gate works or not.
+ *
+ * THE EXCEPTION IS DELIBERATE. VaCuus.Render.IdleGate.HoverRecolour at the bottom of this
+ * file drives a real Rml::Context, because the one thing the gate's completeness rests on
+ * that this file cannot synthesise is RmlUi's own behaviour: vertex colours are not in the
+ * frame hash, so a colour-only restyle publishes solely because RmlUi has no way to change
+ * a compiled geometry's colours except by compiling new geometry. See the argument next to
+ * VaCuusHashFrameContent().
  *
  * VaCuus.Threading.MultiView carries the matching integration check -- the gate firing
  * on a real static RmlUi document driven by the real UI thread.
@@ -603,6 +612,175 @@ bool FVaCuusIdleGateHashPaddingTest::RunTest(const FString& Parameters)
 	FVaCuusCommandBuffer Renumbered = Clean;
 	Renumbered.Generation = 4242;
 	TestTrue(TEXT("Generation is NOT part of the frame hash"), VaCuusHashFrameContent(Renumbered) == Baseline);
+
+	return true;
+}
+
+/**
+ * THE ONE GATE TEST WITH A REAL RmlUi CONTEXT IN IT, and the only one that could notice the
+ * assumption the gate's completeness actually rests on.
+ *
+ * Vertex colours are not in the frame hash -- they live in NewGeometry's payloads, which the
+ * hash never reads. A `:hover` colour change moves nothing else: same element, same box, same
+ * position, so the same commands at the same translation. It publishes anyway, because Rml's
+ * render interface has no way to recolour an already-compiled geometry (RenderInterface.h:40-48)
+ * and RmlUi therefore releases and re-compiles -- new handle in the command AND resource
+ * traffic. The full citation trail is next to VaCuusHashFrameContent().
+ *
+ * The five tests above drive the recorder directly, so every one of them would keep passing
+ * if RmlUi 6.x+1 started re-colouring in place, or if this recorder ever started handing an
+ * existing handle back for changed content. This one would not: it asserts the end-to-end
+ * property (a colour restyle reaches the render thread) rather than the mechanism.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusIdleGateHoverRecolourTest, "VaCuus.Render.IdleGate.HoverRecolour",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusIdleGateHoverRecolourTest::RunTest(const FString& Parameters)
+{
+	using namespace VaCuusIdleGateTest;
+
+	// This test boots RmlUi on the test thread and owns it for its duration, which only
+	// works while nobody else does (FVaCuusEngine's owner-thread contract).
+	if (!TestFalse(TEXT("RmlUi is down before the test"), FVaCuusEngine::Get().IsInitialized()))
+	{
+		return false;
+	}
+
+	FVaCuusEngine& Engine = FVaCuusEngine::Get();
+	if (!TestTrue(TEXT("Initialized"), Engine.Initialize()))
+	{
+		return false;
+	}
+	ON_SCOPE_EXIT
+	{
+		Engine.Shutdown();
+	};
+
+	// Per-context render interface, exactly as FVaCuusRmlDocumentHost::Initialize does it.
+	FVaCuusRecordingRenderInterface Recorder;
+	const Rml::String ContextName("vacuus_hover_gate_test");
+	Rml::Context* Context = Rml::CreateContext(ContextName, Rml::Vector2i(GViewSize.X, GViewSize.Y), &Recorder);
+	if (!TestNotNull(TEXT("Context"), Context))
+	{
+		return false;
+	}
+	ON_SCOPE_EXIT
+	{
+		Rml::RemoveContext(ContextName);
+	};
+
+	// One absolutely positioned box whose ONLY hover rule is a colour. No size, no offset,
+	// no border, no text -- so a hover that produced a different command list would mean
+	// RmlUi had changed something this test did not ask for, and the assertions below say so.
+	static const TCHAR* Source =
+		TEXT("<rml><head><style>")
+		TEXT("body{display:block;width:100%;height:100%;}")
+		TEXT("#box{display:block;position:absolute;left:20px;top:20px;width:100px;height:60px;background-color:#204080;}")
+		TEXT("#box:hover{background-color:#FF8000;}")
+		TEXT("</style></head><body><div id=\"box\"/></body></rml>");
+
+	Rml::ElementDocument* Document =
+		Context->LoadDocumentFromMemory(Rml::String(TCHAR_TO_UTF8(Source)), "vacuus://hover_test.rml");
+	if (!TestNotNull(TEXT("Document"), Document))
+	{
+		return false;
+	}
+	Document->Show();
+
+	const auto RecordFrame = [&Recorder, Context]()
+	{
+		Recorder.BeginFrame(GViewSize);
+		Context->Update();
+		Context->Render();
+		return Recorder.EndFrameAndPublish();
+	};
+
+	/** Colour of the first vertex of the first geometry this buffer both creates and draws. */
+	const auto DrawnColour = [](const FVaCuusCommandBuffer& Buffer, FColor& OutColour) -> bool
+	{
+		for (const FVaCuusCommand& Command : Buffer.Commands)
+		{
+			if (Command.Type != EVaCuusCommandType::DrawGeometry)
+			{
+				continue;
+			}
+			if (const FVaCuusGeometryData* Data = Buffer.NewGeometry.Find(Command.Geometry))
+			{
+				if (Data->Vertices.Num() > 0)
+				{
+					OutColour = Data->Vertices[0].Color;
+					return true;
+				}
+			}
+		}
+		return false;
+	};
+
+	const TUniquePtr<FVaCuusCommandBuffer> Plain = RecordFrame();
+	if (!TestNotNull(TEXT("The unhovered document publishes its first frame"), Plain.Get()))
+	{
+		return false;
+	}
+
+	FColor PlainColour = FColor::Transparent;
+	if (!TestTrue(TEXT("...drawing geometry it also created"), DrawnColour(*Plain, PlainColour)))
+	{
+		return false;
+	}
+
+	// Arms the gate. Without this the publish below would prove nothing: a recorder that
+	// published everything would pass every assertion after it.
+	if (!TestNull(TEXT("A second, identical frame is withheld"), RecordFrame().Get()))
+	{
+		return false;
+	}
+
+	// Into the box (it spans x 20..120, y 20..80). Modifiers 0; the hover chain is rebuilt
+	// here and the restyle is applied by the Update() in the next frame.
+	Context->ProcessMouseMove(70, 50, 0);
+
+	const TUniquePtr<FVaCuusCommandBuffer> Hovered = RecordFrame();
+	if (!TestNotNull(TEXT("A :hover colour change publishes"), Hovered.Get()))
+	{
+		return false;
+	}
+
+	// POSITIVE CONTROL. Without it the publish above could have come from anything -- a
+	// relayout, a scrollbar, a stray release -- and the test would pass while the colour
+	// change itself went unnoticed. This is the assertion that the pixels really differ.
+	FColor HoverColour = FColor::Transparent;
+	if (!TestTrue(TEXT("...publishing geometry it also created"), DrawnColour(*Hovered, HoverColour)))
+	{
+		return false;
+	}
+	TestTrue(TEXT("...and that geometry really is a different colour"), HoverColour != PlainColour);
+
+	// NOTHING BUT THE COLOUR MOVED, which is what makes this a test of the gate rather than
+	// of RmlUi's layout: same number of commands, and a different geometry handle behind them
+	// (the re-compile). If the handle ever stopped changing, the two legs of the argument next
+	// to VaCuusHashFrameContent() would both be gone and this test would be the only warning.
+	TestEqual(TEXT("The hovered frame has the same number of commands"),
+		Hovered->Commands.Num(), Plain->Commands.Num());
+	TestTrue(TEXT("...and re-compiled its geometry rather than recolouring it in place"),
+		Hovered->NewGeometry.Num() > 0 && Hovered->ReleasedGeometry.Num() > 0);
+
+	// THE EXCLUSION THIS TEST POLICES, made concrete instead of argued. Put the hovered
+	// colours into the FIRST frame's payload, behind its own unchanged handle, and the hash
+	// does not move -- so a colour change that arrived without a new handle and without
+	// resource traffic would be withheld, and the screen would keep the old colour for good.
+	FVaCuusCommandBuffer Repainted = *Plain;
+	for (TPair<FVaCuusGeometryHandle, FVaCuusGeometryData>& Pair : Repainted.NewGeometry)
+	{
+		for (FVaCuusVertex& Vertex : Pair.Value.Vertices)
+		{
+			Vertex.Color = HoverColour;
+		}
+	}
+	TestTrue(TEXT("The frame hash alone is blind to vertex colour"),
+		VaCuusHashFrameContent(Repainted) == VaCuusHashFrameContent(*Plain));
+
+	// And it settles: the hovered document is static again, so the gate takes over.
+	TestNull(TEXT("The hovered state then goes idle again"), RecordFrame().Get());
 
 	return true;
 }

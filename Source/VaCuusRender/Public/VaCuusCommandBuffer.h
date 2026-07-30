@@ -284,7 +284,7 @@ static_assert(sizeof(FVaCuusCommandHashImage) ==
  * resizes and the composite stretches stale pixels forever. One number to compare, and
  * no second condition to forget at the gate.
  *
- * WHAT IS OUT, and why neither can cause a false "unchanged":
+ * WHAT IS OUT, and why none of it can cause a false "unchanged":
  *  - Generation: identifies the buffer, not its content. Hashing it would make every
  *    frame differ from every other and the gate would never fire.
  *  - NewGeometry / NewTextures / ReleasedGeometry / ReleasedTextures: resource traffic
@@ -292,6 +292,65 @@ static_assert(sizeof(FVaCuusCommandHashImage) ==
  *    for emptiness DIRECTLY (FVaCuusCommandBuffer::HasResourceTraffic) instead of
  *    hashing their payloads -- cheaper (no megabyte texture walked per frame) and safer,
  *    since "any traffic at all forces a publish" cannot be fooled by a hash collision.
+ *  - VERTEX COLOURS, which are the interesting case, because they are the one thing a
+ *    frame can change with no command difference at all. They live inside NewGeometry's
+ *    payloads, so the bullet above is what covers them -- see the argument below, which is
+ *    the only claim in this header that rests on code we do not own.
+ *
+ * WHY A COLOUR-ONLY RESTYLE STILL PUBLISHES -- `div:hover { background-color: ... }`, which
+ * moves nothing this function reads.
+ *
+ * THE STRUCTURAL REASON, and it is stronger than "RmlUi happens to re-compile": Rml's render
+ * interface has no operation that mutates an already-compiled geometry. Its whole geometry
+ * vocabulary is CompileGeometry / RenderGeometry / ReleaseGeometry
+ * (ThirdParty/RmlUi/Include/RmlUi/Core/RenderInterface.h:40-48), plus RenderToClipMask (:86)
+ * and RenderShader (:137), which only CONSUME a handle. New vertex colours therefore cannot
+ * reach the replayer at all except as a fresh CompileGeometry -- which lands in NewGeometry,
+ * which is resource traffic, which forces the publish. The division of labour is complete by
+ * construction rather than by luck: this hash covers what the replayer draws WITH (the
+ * command list), HasResourceTraffic() covers what it draws (the payloads), and there is no
+ * third channel into the replayer.
+ *
+ * The recorder holds up its end of it: CompileGeometry mints a strictly increasing handle and
+ * ReleaseGeometry never recycles one (VaCuusRecordingRenderInterface.cpp:140, :173-181), so a
+ * re-compile also changes the Geometry field of every command that draws with it and this
+ * hash sees the change on its own. Double-covered; either leg alone would suffice.
+ *
+ * TEXTURES ARE THE ONE PLACE A HANDLE'S CONTENT REALLY DOES CHANGE UNDER A STABLE HANDLE --
+ * the async image decode swaps the real payload in for the 1x1 placeholder without minting a
+ * new handle (see FVaCuusCommandBuffer::NewTextures). It arrives through NewTextures, i.e.
+ * through the traffic predicate. That case is what the traffic leg is FOR, and it is why
+ * "resource traffic" is not merely a bookkeeping concern.
+ *
+ * WHAT RMLUI 6.x ACTUALLY DOES, opened and checked so nobody has to re-derive it:
+ *  - backgrounds and borders: ElementBackgroundBorder::GenerateGeometry does
+ *    geometry.Release(ClearMesh) and then render_manager->MakeGeometry(...) unconditionally
+ *    (ThirdParty/RmlUi/Source/Core/ElementBackgroundBorder.cpp:131-137). Release reaches
+ *    render_interface->ReleaseGeometry via RenderManager::ReleaseResource
+ *    (Source/Core/RenderManager.cpp:345-354), and the compile is deferred to the first draw
+ *    (:205-206), i.e. to Context::Render().
+ *  - text: a colour change sets geometry_dirty (Source/Core/ElementText.cpp:425-428), and the
+ *    regeneration REUSES existing geometry when the mesh compares equal
+ *    (ElementText.cpp:530-539) -- so it is the mesh comparison that decides this case, and it
+ *    is colour-sensitive: Mesh::operator== compares vertices and Vertex::operator== compares
+ *    `colour` (Include/RmlUi/Core/Mesh.h:14, Include/RmlUi/Core/Vertex.h:20-23). A recoloured
+ *    string never matches, and the assignment that replaces it move-assigns onto a live
+ *    UniqueRenderResource, which releases the old handle first
+ *    (Include/RmlUi/Core/UniqueRenderResource.h:30-35).
+ *
+ * RmlUi also contains something that LOOKS like the counter-example, named here so it is not
+ * mistaken for one later: ElementText::OnPropertyChange re-colours the text-decoration mesh
+ * IN PLACE -- Release(), overwrite every vertex.colour, put it back (ElementText.cpp:430-439).
+ * The "in place" is in RmlUi's CPU-side Rml::Mesh; the put-back is MakeGeometry, so the render
+ * interface still sees a release and a new compile. It could not be otherwise, for want of an
+ * API to do anything else.
+ *
+ * NOTHING HERE CAN BE A static_assert. The two below guard OUR structs; no compile-time check
+ * can speak for a vendored library's next version. The substitute is one end-to-end test that
+ * drives a real :hover colour change through a real Rml::Context and requires the publish --
+ * VaCuus.Render.IdleGate.HoverRecolour. Every other idle-gate test drives the recorder
+ * directly (and says so at the top of that file), so none of them would notice either leg
+ * above breaking.
  *
  * Every FVaCuusCommand field is hashed, including the ones a given command type does
  * not use (Scissor on a DrawGeometry, say). Those are default-initialised by the
