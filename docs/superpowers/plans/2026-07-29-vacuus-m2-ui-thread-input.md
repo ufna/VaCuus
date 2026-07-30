@@ -741,7 +741,20 @@ publish on the frame a texture lands.
       any more (the recorder header moved to Private in M1's wrap-up) — move `VaCuusRml` from
       `PublicDependencyModuleNames` to `PrivateDependencyModuleNames` and delete the stale
       comment. Rebuild to confirm.
-- [ ] **Step 13.3: Commit:** `git commit -am "fix: exact-EOF Tell(); private VaCuusRml dep (closes VaCuus-akj.6.1, VaCuus-akj.6.4)"`
+- [ ] **Step 13.3: Task 10 re-review follow-ups (`VaCuus-akj.6.28`).** Added mid-flight; the
+      re-review of Task 10's fixes approved with five minor items, and this is the right task to
+      absorb them. The one that matters is a **contract gap, not a bug**: after the C1 fix the RmlUi
+      cache clear lives in the **editor-only** `FVaCuusLiveReload::ReloadAllLiveViews`, while
+      `UVaCuusSubsystem::ReloadAllDocuments()` is `VACUUS_API` and its doc still calls itself "the one
+      door". An M3 runtime reload hook that trusts that sentence reintroduces C1 verbatim — RML edits
+      apply, RCSS edits silently do not — and no existing test catches it, because the C1 test
+      exercises the editor dispatcher. One sentence on the declaration closes it. The other four:
+      `LiveReload.AssetCaches` should poll the clear counter rather than the frame counter (the
+      coalescing wake latch makes the frame wait racy); the `WatcherEvent` probe file needs a
+      `.gitignore` line (it must be written inside a watched root, which is git-tracked);
+      `DebouncePollSeconds` is still public under a claim no test honours (I5 left one constant
+      behind); and `FlushNow()` now has no production caller. Nits listed on the bead.
+- [ ] **Step 13.4: Commit:** `git commit -am "fix: exact-EOF Tell(); private VaCuusRml dep; task 10 review follow-ups (closes VaCuus-akj.6.1, VaCuus-akj.6.4, VaCuus-akj.6.28)"`
 
 ---
 
