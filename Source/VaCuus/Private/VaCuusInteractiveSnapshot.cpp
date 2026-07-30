@@ -10,10 +10,25 @@
 namespace VaCuusInteractiveSnapshot
 {
 /**
- * Marker attributes. LOWERCASE IS LOAD-BEARING: RmlUi's XML parser lowercases
- * every attribute name as it reads it (XMLParser.cpp:136,167), so a
- * `vacuus-PassThrough` in a document arrives here as `vacuus-passthrough` and a
- * mixed-case lookup would never match.
+ * Marker attributes.
+ *
+ * ATTRIBUTE NAMES ARE CASE-SENSITIVE IN RmlUi, so the match below is not. Only
+ * *tag* names get lowercased while parsing (StringUtilities::ToLower on the
+ * element name, XMLParser.cpp:136,167); attribute names pass through verbatim --
+ * BaseXMLParser::ReadAttributes stores `attributes[attribute] = ...` with the
+ * author's exact spelling (BaseXMLParser.cpp:306-345) -- and
+ * Element::HasAttribute is a plain map find (Element.cpp:861-864). A lowercase-only
+ * lookup would therefore miss `vacuus-PassThrough` completely, and silently
+ * ignoring an opt-OUT is the worst possible failure here: it eats the very clicks
+ * the author asked us to let through to the game.
+ *
+ * So lowercase is the authoring CONVENTION (what the docs and tests use), while
+ * the lookup accepts any casing. The cost is one pass over the element's own
+ * attribute map -- zero to a handful of entries -- where a length compare rejects
+ * nearly every name before a single character is examined. That is cheaper than
+ * what it replaces: both marker names are 18 characters, past libstdc++'s 15-char
+ * small-string limit, so each `HasAttribute("vacuus-...")` built a heap-allocated
+ * temporary Rml::String per element per frame.
  *
  * Plain attributes rather than `data-*` names on purpose:
  * ElementUtilities::ApplyDataViewsControllers parses any `data-<type>-<modifier>`
@@ -21,8 +36,61 @@ namespace VaCuusInteractiveSnapshot
  * type_name="vacuus" to Factory::InstanceDataView. Harmless, but it puts our
  * markers inside someone else's grammar.
  */
-static const char* const GPassthroughAttribute = "vacuus-passthrough";
-static const char* const GInteractiveAttribute = "vacuus-interactive";
+static constexpr char GPassthroughAttribute[] = "vacuus-passthrough";
+static constexpr char GInteractiveAttribute[] = "vacuus-interactive";
+
+/** ASCII case-insensitive compare against a lowercase literal; length-gated first. */
+template <SIZE_T Length>
+static bool EqualsIgnoreCaseAscii(const Rml::String& Name, const char (&Lowercase)[Length])
+{
+	constexpr SIZE_T NumChars = Length - 1;
+	if (Name.size() != NumChars)
+	{
+		return false;
+	}
+
+	for (SIZE_T Index = 0; Index < NumChars; ++Index)
+	{
+		const char Character = Name[Index];
+		const char Folded = (Character >= 'A' && Character <= 'Z') ? char(Character - 'A' + 'a') : Character;
+		if (Folded != Lowercase[Index])
+		{
+			return false;
+		}
+	}
+
+	return true;
+}
+
+/** Which VaCuus markers this element carries, in one pass over its attributes. */
+struct FMarkerAttributes
+{
+	bool bPassthrough = false;
+	bool bInteractive = false;
+};
+
+static FMarkerAttributes ReadMarkerAttributes(const Rml::Element& Element)
+{
+	FMarkerAttributes Markers;
+
+	// `auto` on purpose: ElementAttributes is a config-dependent alias whose
+	// value_type is std::pair<String, Variant> for itlib::flat_map but
+	// std::pair<const String, Variant> for the std::unordered_map configuration --
+	// naming either one explicitly would silently copy every entry in the other.
+	for (const auto& Attribute : Element.GetAttributes())
+	{
+		if (EqualsIgnoreCaseAscii(Attribute.first, GPassthroughAttribute))
+		{
+			Markers.bPassthrough = true;
+		}
+		else if (EqualsIgnoreCaseAscii(Attribute.first, GInteractiveAttribute))
+		{
+			Markers.bInteractive = true;
+		}
+	}
+
+	return Markers;
+}
 
 /**
  * The tag half of the interactive predicate (see the header for the whole rule).
@@ -79,13 +147,17 @@ void FSnapshotWalk::Visit(Rml::Element* Element, const FIntRect& Clip)
 		return;
 	}
 
+	// Both markers in one pass over this element's attributes; see the comment on
+	// the marker names for why the match is case-insensitive.
+	const FMarkerAttributes Markers = ReadMarkerAttributes(*Element);
+
 	// The opt-out: `vacuus-passthrough` removes this element AND its subtree from
 	// the snapshot, so the region reads as "not covered" and clicks reach the game.
 	// A subtree prune (not a per-element skip) because that is what an author means
 	// by marking a region pass-through; the inverse opt-back-in (`vacuus-capture`
 	// on a descendant) is deliberately not implemented in M2 -- no use for it yet,
 	// and it would make the rule two-sided for no gain.
-	if (Element->HasAttribute(GPassthroughAttribute))
+	if (Markers.bPassthrough)
 	{
 		return;
 	}
@@ -127,7 +199,7 @@ void FSnapshotWalk::Visit(Rml::Element* Element, const FIntRect& Clip)
 	// parent IS hit -- and must therefore still be reported here.
 	const bool bInteractive = Computed.pointer_events() != Rml::Style::PointerEvents::None &&
 		(Computed.tab_index() == Rml::Style::TabIndex::Auto || IsKnownInteractiveTag(Element->GetTagName()) ||
-			Element->HasAttribute(GInteractiveAttribute));
+			Markers.bInteractive);
 
 	if (bInteractive && Rect.Area() > 0)
 	{

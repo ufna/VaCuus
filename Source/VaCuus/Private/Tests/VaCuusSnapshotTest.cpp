@@ -220,6 +220,14 @@ static bool RunFrames(FVaCuusUIThread& UIThread, int32 NumFrames)
  *  #clip       overflow:hidden, 100x50 at (200,20)            -> not interactive
  *  #clipped    a 100x200 button inside it                     -> clipped to #clip
  *  #marked     a plain <div> with `vacuus-interactive`         -> reported
+ *  #pass-mixed tab-index:auto under `vacuus-PassThrough`       -> NOT reported
+ *  #mark-mixed a plain <div> with `VACUUS-INTERACTIVE`         -> reported
+ *
+ * The last two are the case guard: RmlUi lowercases TAG names while parsing but
+ * leaves attribute names exactly as the author typed them
+ * (BaseXMLParser.cpp:306-345) and HasAttribute is a case-sensitive find
+ * (Element.cpp:861-864), so a lowercase-only marker lookup silently ignores both
+ * of them -- which for the opt-OUT means eating clicks meant for the game.
  *
  * Coordinates are absolute and border-box-sized (no borders, no padding) so the
  * expected rects are exactly what the RCSS says.
@@ -237,6 +245,8 @@ div, button { display: block; position: absolute; }
 #clip       { left: 200px; top: 20px;  width: 100px; height: 50px; overflow: hidden; }
 #clipped    { left: 0px;   top: 0px;   width: 100px; height: 200px; }
 #marked     { left: 200px; top: 200px; width: 60px;  height: 30px; }
+#pass-mixed { left: 20px;  top: 250px; width: 100px; height: 40px; tab-index: auto; }
+#mark-mixed { left: 280px; top: 250px; width: 60px;  height: 30px; }
 </style>
 </head>
 <body>
@@ -245,6 +255,8 @@ div, button { display: block; position: absolute; }
 	<div id="pass" vacuus-passthrough><button id="pass-kid"/></div>
 	<div id="clip"><button id="clipped"/></div>
 	<div id="marked" vacuus-interactive/>
+	<div id="pass-mixed" vacuus-PassThrough/>
+	<div id="mark-mixed" VACUUS-INTERACTIVE/>
 </body>
 </rml>)");
 }	 // namespace VaCuusSnapshotTest
@@ -369,6 +381,13 @@ bool FVaCuusSnapshotTest::RunTest(const FString& Parameters)
 	// 5. The explicit opt-in makes a plain div interactive.
 	TestTrue(TEXT("A vacuus-interactive div is reported"),
 		Snapshot.InteractiveRects.Contains(FIntRect(200, 200, 260, 230)));
+
+	// 5b. Marker names are matched case-insensitively. RmlUi keeps attribute names
+	// verbatim, so without this an author's `vacuus-PassThrough` would be ignored --
+	// and an ignored opt-out means the UI eats clicks the author routed to the game.
+	TestFalse(TEXT("A mixed-case vacuus-PassThrough opts out too"), Snapshot.Contains(FIntPoint(70, 270)));
+	TestTrue(TEXT("An upper-case VACUUS-INTERACTIVE div is reported"),
+		Snapshot.InteractiveRects.Contains(FIntRect(280, 250, 340, 280)));
 
 	// 6. A document holding focus is what makes keyboard input reach the UI at all.
 	TestTrue(TEXT("A shown document wants the keyboard"), Snapshot.bWantsKeyboardFocus);
