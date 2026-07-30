@@ -284,11 +284,14 @@ private:
  * (research 2.1's crash table: BindCustomDataVariable stores the 16-byte {definition, ptr}
  * pair by value and owns neither), so somebody has to, and this is it.
  *
- * NEVER CLEARED, deliberately, and it costs one pinned UScriptStruct per distinct model
- * type ever bound. That is the same property RmlUi's own DataTypeRegister has
- * (research 8.6: it exposes only RegisterDefinition and GetDefinition), and for the same
- * reason -- a definition handed out once may still be reachable from any live model, and
- * there is no unbind API anywhere to tell.
+ * NEVER CLEARED WHILE THE UI THREAD IS UP, deliberately, and it costs one pinned
+ * UScriptStruct per distinct model type ever bound. That is the same property RmlUi's own
+ * DataTypeRegister has (research 8.6: it exposes only RegisterDefinition and
+ * GetDefinition), and for the same reason -- a definition handed out once may still be
+ * reachable from any live model, and there is no unbind API anywhere to tell.
+ *
+ * IT IS CLEARED IN EXACTLY ONE PLACE, FVaCuusUIThread::Exit(), through ReleaseAll(). See
+ * that function for why leaving it to static destruction is not an option.
  */
 class FVaCuusDefinitionRegistry
 {
@@ -298,6 +301,13 @@ public:
 
 	/** Cached model types. The registry's only observable, and what the cache-hit test asserts. */
 	static int32 Num();
+
+	/**
+	 * Drops every cached definition set. Returns how many were released. UI thread only, and
+	 * called from FVaCuusUIThread::Exit() and nowhere else -- see the .cpp for the
+	 * static-destruction argument and for why Exit() is the one point where this is provable.
+	 */
+	static int32 ReleaseAll();
 };
 
 namespace VaCuusData

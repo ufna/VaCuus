@@ -3,6 +3,7 @@
 #include "VaCuusUIThread.h"
 
 #include "VaCuusBoundModel.h"
+#include "VaCuusDataVariable.h"
 #include "VaCuusDefines.h"
 #include "VaCuusDocumentHost.h"
 #include "VaCuusEngine.h"
@@ -824,6 +825,20 @@ void FVaCuusUIThread::Exit()
 	RetiredHosts.Empty();
 	Models.Empty();
 	NumBoundModels.store(0, std::memory_order_release);
+
+	// 4. And the process-wide definition cache, HERE RATHER THAN AT STATIC DESTRUCTION. Its
+	// entries hold TStrongObjectPtr<const UScriptStruct>, so leaving the map to the C++ runtime
+	// means calling UObjectBase::ReleaseRef after main returns, against a UObject system that
+	// may already be gone (FVaCuusDefinitionRegistry::ReleaseAll carries the argument). Step 3
+	// above is what makes this the safe point: every context, RmlUi itself, every host and every
+	// model are down, so nothing else can still reach a definition.
+	//
+	// Logged rather than silent because this line is otherwise unobservable -- it runs on a
+	// thread nobody is watching, at a moment nothing else reports.
+	if (const int32 NumDefinitions = FVaCuusDefinitionRegistry::ReleaseAll(); NumDefinitions > 0)
+	{
+		UE_LOG(LogVaCuus, Log, TEXT("UI thread exit: released %d cached model definition set(s)"), NumDefinitions);
+	}
 
 	GVaCuusUIThreadId.store(0, std::memory_order_release);
 	ThreadId.store(0, std::memory_order_release);

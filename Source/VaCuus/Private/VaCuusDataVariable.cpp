@@ -533,6 +533,34 @@ int32 FVaCuusDefinitionRegistry::Num()
 	return GDefinitionsByStruct.Num();
 }
 
+int32 FVaCuusDefinitionRegistry::ReleaseAll()
+{
+	check(FVaCuusUIThread::IsInUIThread());
+
+	// THE REASON THIS EXISTS IS STATIC DESTRUCTION, NOT MEMORY. GDefinitionsByStruct is a
+	// namespace-scope global (top of this file) whose values hold a
+	// TStrongObjectPtr<const UScriptStruct> (VaCuusDataVariable.h, FVaCuusModelDefinitions::
+	// Struct). Left alone the map is destroyed by the C++ runtime AFTER main returns, and
+	// TStrongObjectPtr's destructor calls UObjectBase::ReleaseRef into a UObject system --
+	// GUObjectArray and its reference-count table -- that by then may already be gone. That is
+	// an at-exit crash whose stack points at a global nobody thinks of as code.
+	//
+	// FVaCuusUIThread::Exit() IS THE POINT WHERE THIS IS PROVABLE. By the time it calls here
+	// every host has been Shutdown(), Rml::Core is down, and Hosts/RetiredHosts/Models are all
+	// empty -- so no Rml::DataModel holds a VariableDefinition* into these sets any more, and
+	// nothing but this map still refers to a definition or pins its UScriptStruct. Exit() also
+	// runs ON the UI thread, which is what the assert above needs and what a destructor running
+	// on the owner's thread could not offer.
+	//
+	// RE-ENTRY IS FINE: a later UI thread rebuilds on first use, which is what GetOrCreate
+	// already does for a type it has not seen. The cost is one rebuild per model type per
+	// UI-thread lifetime, and outside the test suite a process has exactly one.
+	const int32 NumReleased = GDefinitionsByStruct.Num();
+	GDefinitionsByStruct.Empty();
+
+	return NumReleased;
+}
+
 // ---------------------------------------------------------------------------------------
 // VaCuusData
 // ---------------------------------------------------------------------------------------
