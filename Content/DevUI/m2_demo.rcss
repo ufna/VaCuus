@@ -1,0 +1,346 @@
+/* VaCuus M2 interaction demo - stylesheet.
+
+   RENDERER SUBSET, same as m1_hud.rcss and for the same reason: the M1 recorder
+   implements solid fills (including alpha), 1px borders, border-radius as plain
+   geometry, text, <img>, 2D transforms, and scissor clipping via a non-visible
+   `overflow`. NO decorators/gradients, NO box-shadow, NO filter or
+   backdrop-filter, NO transitions or animations (M5+).
+
+   ONE HARD RULE FOLLOWS FROM THAT: #list-clip below must have NEITHER
+   border-radius NOR transform. Either would push RmlUi off the scissor path onto
+   the clip-mask path, which this recorder does not implement, and the list would
+   render unclipped over the rest of the screen. */
+
+/* RmlUi ships NO user-agent stylesheet -- verified rather than repeated: there is
+   not one .rcss file anywhere in Source/ThirdParty/RmlUi, and `display` is
+   registered with a default of "inline"
+   (ThirdParty/RmlUi/Source/Core/StyleSheetSpecification.cpp:306). So every tag
+   that needs a box has to be told, including the scrollbar internals further
+   down. */
+div { display: block; }
+span { display: inline; }
+
+body
+{
+	display: block;
+	width: 100%;
+	height: 100%;
+	font-family: LatoLatin;
+	font-size: 16px;
+	color: #D2E9F2;
+
+	/* THE NAVIGATION BOOTSTRAP, and it is load-bearing twice over.
+
+	   <body> IS the document element in RML (Factory registers the `body` tag to
+	   the ElementDocument instancer, ThirdParty/RmlUi/Source/Core/Factory.cpp:180),
+	   and AdoptDocument shows the document with FocusFlag::Document -- so at load
+	   the document element itself holds focus.
+
+	   The arrow-key branch of ElementDocument::ProcessDefaultAction then resolves
+	   `focus_node` to the nearest focusable ancestor of the focus leaf and FALLS
+	   BACK TO THE DOCUMENT when there is none (ElementDocument.cpp:618-626), and
+	   reads the nav property off THAT element with GetLocalProperty
+	   (ElementDocument.cpp:628). With no local `nav-*` on the document the lookup
+	   returns null and the whole branch is skipped: the first direction key is a
+	   silent no-op and the UI looks dead to a pad. With it,
+	   FindNextNavigationElement short-cuts `current_element == this` to tab order
+	   (ElementDocument.cpp:798-799) and the press enters the grid.
+
+	   (The brief and several M2 comments cite 795-796 for that short-cut; at the
+	   vendored SHA 0ae381e it is 798-799 -- :795 is the Nav::TreeOrder case.)
+
+	   `nav` is a Box SHORTHAND over nav-up/right/down/left
+	   (StyleSheetSpecification.cpp:382), so one value sets all four. */
+	nav: auto;
+}
+
+/* ------------------------------------------------------------------ */
+/* Spatial navigation and focusability, per element                    */
+/*                                                                     */
+/* PER ELEMENT BY NECESSITY. All four nav-* properties are registered   */
+/* with inherited=false (StyleSheetSpecification.cpp:378-381) and are   */
+/* read with GetLocalProperty (ElementDocument.cpp:628), which sees     */
+/* only inline styles and the element's OWN matched definition. The     */
+/* `body { nav: auto }` above therefore does nothing for anything       */
+/* inside body.                                                        */
+/*                                                                     */
+/* `tab-index: auto` comes along because it is RmlUi's focusability     */
+/* requirement (CanFocusElement, ElementDocument.cpp:30-43) -- without  */
+/* it an element is skipped by Tab, by the arrows and by the pad, and   */
+/* Return/Space will not click it either (ElementDocument.cpp:641-650   */
+/* gates Click() on the focus leaf's computed tab-index).              */
+/* ------------------------------------------------------------------ */
+button, input
+{
+	nav: auto;
+	tab-index: auto;
+}
+
+#m2-title
+{
+	position: absolute;
+	left: 40px;
+	top: 22px;
+	font-size: 19px;
+	color: #7DE6FF;
+}
+
+/* ------------------------------------------------------------------ */
+/* Panels. Plain divs: no tab-index, no marker attribute, so the        */
+/* interactive predicate does NOT report them.                          */
+/*                                                                     */
+/* THAT IS NOT COSMETIC. A reported panel rect would cover its own      */
+/* children, and because pass-through is the absence of coverage rather */
+/* than an occluder (FVaCuusInteractiveSnapshot's class comment), an    */
+/* interactive #p-pass would take the very clicks #pass-zone exists to  */
+/* let through. Keeping the panels inert is what makes section 4 work.  */
+/* ------------------------------------------------------------------ */
+#p-buttons, #p-list, #p-input, #p-pass
+{
+	position: absolute;
+	width: 420px;
+	padding: 10px;
+	background-color: #10202AE6;
+	border: 1px #3A5A6C;
+	border-radius: 8px;
+}
+#p-buttons { left: 40px;  top: 60px; }
+#p-list    { left: 40px;  top: 250px; }
+#p-input   { left: 500px; top: 60px; }
+#p-pass    { left: 500px; top: 250px; }
+
+.panel-title
+{
+	margin-bottom: 10px;
+	font-size: 12px;
+	color: #8FA9B5;
+}
+
+.hint
+{
+	margin-top: 8px;
+	font-size: 11px;
+	color: #6F8894;
+}
+
+/* ------------------------------------------------------------------ */
+/* 1. Buttons                                                          */
+/*                                                                     */
+/* Three unmistakably different states, because a screenshot is the     */
+/* evidence: dark slate -> amber on :hover -> orange on :active ->      */
+/* magenta on :focus. Magenta for focus specifically so a pad-driven    */
+/* screenshot with no cursor anywhere near the button cannot be read as */
+/* a hover.                                                            */
+/* ------------------------------------------------------------------ */
+.m2-btn
+{
+	display: inline-block;
+	width: 120px;
+	height: 44px;
+	margin-right: 8px;
+	line-height: 42px;
+	text-align: center;
+	font-size: 15px;
+	color: #9FDCEF;
+	background-color: #0D1B22;
+	border: 1px #2F5566;
+	border-radius: 6px;
+
+	/* Latched by FVaCuusSystemInterface::SetMouseCursor and published in the
+	   snapshot, which is what SVaCuusWidget::OnCursorQuery answers Slate from. */
+	cursor: pointer;
+}
+.m2-btn.last { margin-right: 0; }
+
+.m2-btn:hover
+{
+	color: #05090C;
+	background-color: #FFC44D;
+	border-color: #FFE9AE;
+}
+
+/* :active is set by RmlUi on mouse-DOWN, for the primary button only and only
+   while the point is inside the element (Element.cpp:2018-2023). It is also set
+   on every ancestor in the bubble chain that contains the point -- which is why
+   no panel here styles :active. */
+.m2-btn:active
+{
+	color: #FFFFFF;
+	background-color: #FF6A2A;
+	border-color: #FFC44D;
+}
+
+.m2-btn:focus
+{
+	color: #FFFFFF;
+	background-color: #7A2A8F;
+	border-color: #FF6AF0;
+}
+
+/* An explicit nav edge, to exercise the string form of the property: from the
+   last button, "right" leaves the row and goes to the text field instead of
+   wrapping. The leading '#' is REQUIRED -- without it RmlUi logs a warning and
+   navigates nowhere (ElementDocument.cpp:760-766) -- and the quotes are required
+   too, because the value is parsed by the "string" parser after the keyword
+   parser rejects it (StyleSheetSpecification.cpp:378-381). */
+#btn-c { nav-right: "#m2-input"; }
+
+/* ------------------------------------------------------------------ */
+/* 2. Wheel-scrollable list                                            */
+/*                                                                     */
+/* THREE THINGS ARE ALL REQUIRED for the wheel to move anything, and    */
+/* dropping any one of them fails silently:                             */
+/*                                                                     */
+/*  - display: block. An `inline` element is routed to FormatInlineBox  */
+/*    and never becomes a ContainerBox, so it can never be a scroll     */
+/*    container -- and RmlUi does NOT blockify on `overflow`.           */
+/*  - an explicit height. With height:auto the available space degrades */
+/*    to HUGE_VALF (Layout/ContainerBox.cpp:137-141), the box grows to  */
+/*    fit, and GetScrollHeight() > GetClientHeight() stays false        */
+/*    (Element.cpp:2005-2006) -- so GetClosestScrollableContainer       */
+/*    returns the parent and the wheel scrolls nothing.                 */
+/*  - overflow-y: auto or scroll. Those are the only two values         */
+/*    Element::GetClosestScrollableContainer accepts                    */
+/*    (Element.cpp:2002-2003).                                          */
+/*                                                                     */
+/* `scroll` rather than `auto` so the bar exists unconditionally         */
+/* (Layout/ContainerBox.cpp:17,22) and is therefore always draggable in */
+/* a screenshot; overflow-x stays hidden so a long row cannot add a      */
+/* second bar and change the layout under the test.                     */
+/* ------------------------------------------------------------------ */
+#list-clip
+{
+	display: block;
+	height: 176px;
+	overflow-y: scroll;
+	overflow-x: hidden;
+	background-color: #0A141AC8;
+	border: 1px #223844;
+	/* NO border-radius and NO transform here -- see the file header. */
+}
+
+.row
+{
+	height: 24px;
+	padding: 0 8px;
+	font-size: 13px;
+	line-height: 24px;
+	color: #C4DEE9;
+}
+.row.alt { background-color: #14222CB4; }
+
+/* The scrollbar internals. RmlUi creates them as non-DOM children under the tags
+   `scrollbarvertical` (ElementScroll.cpp:193) and `slidertrack` / `sliderbar` /
+   `sliderarrowdec` / `sliderarrowinc` (WidgetScroll.cpp:84-87), and with no
+   user-agent stylesheet they are invisible and zero-sized until styled here.
+
+   The vertical scrollbar's WIDTH is what ElementScroll measures to reserve space
+   (ElementScroll.cpp:43-44), so it has to be set. The bar's LENGTH is computed
+   from the scroll ratio while its height is auto, with min-height honoured
+   (WidgetScroll.cpp:295-301) -- hence min-height rather than height, or a
+   twenty-row list would give a bar too small to grab.
+
+   The two arrows are deliberately left unsized: WidgetScroll clamps a negative
+   box to (0,0) (WidgetScroll.cpp:215-218), so no rule means no arrows. */
+scrollbarvertical
+{
+	display: block;
+	width: 14px;
+	background-color: #071016;
+}
+slidertrack
+{
+	display: block;
+	background-color: #0C1A21;
+}
+sliderbar
+{
+	display: block;
+	width: 14px;
+	min-height: 28px;
+	background-color: #2F5566;
+	border-radius: 3px;
+}
+sliderbar:hover { background-color: #4E869D; }
+sliderbar:active { background-color: #7DE6FF; }
+
+/* ------------------------------------------------------------------ */
+/* 3. Text input                                                       */
+/* ------------------------------------------------------------------ */
+/* `cursor: text` is not decoration: RmlUi pushes the name through
+   SystemInterface::SetMouseCursor, VaCuus latches it into the published snapshot
+   and SVaCuusWidget::OnCursorQuery answers Slate from it -- so an I-beam here and
+   an arrow over the buttons is evidence that the geometry deciding
+   EVaCuusRectFlags::TextInput is the same geometry the cursor came from. */
+#m2-input
+{
+	display: block;
+	width: 380px;
+	height: 34px;
+	padding: 0px 8px;
+	font-size: 15px;
+	color: #DCF2FA;
+	background-color: #0A1419;
+	border: 1px #2F5566;
+	border-radius: 6px;
+	cursor: text;
+}
+/* Styled differently from .m2-btn:focus on purpose: a screenshot has to say which
+   control holds the caret, and "the border went cyan" is readable at 1920x1080
+   where a one-pixel caret is not. */
+#m2-input:focus
+{
+	background-color: #0E2430;
+	border-color: #5FE0FF;
+}
+/* RmlUi's own selection element, for the IME composition span. Unreachable on
+   Linux (no ITextInputMethodSystem, so no composition ever starts) and styled
+   anyway, because it is where a Windows validation pass would look. */
+#m2-input selection
+{
+	color: #05090C;
+	background-color: #5FE0FF;
+}
+
+/* ------------------------------------------------------------------ */
+/* 4. Pass-through region                                              */
+/*                                                                     */
+/* `tab-index: auto` is what makes this zone interactive AND focusable  */
+/* by the snapshot's own predicate, so the `vacuus-passthrough`         */
+/* attribute in the RML is the ONLY reason it is not reported. Remove   */
+/* the attribute and clicks here stop reaching the game -- that is the  */
+/* before/after this section exists to make available.                  */
+/*                                                                     */
+/* Deliberately NOT styled with :focus/:hover: the zone never receives  */
+/* either, because it is never reported and therefore never hit -- and  */
+/* a rule that could not fire would be a lie in a stylesheet.          */
+/* ------------------------------------------------------------------ */
+#pass-zone
+{
+	display: block;
+	height: 130px;
+	padding: 10px;
+	tab-index: auto;
+	background-color: #1A0F1EB4;
+	border: 1px #6B4A7A;
+	border-radius: 6px;
+}
+#pass-label
+{
+	font-size: 12px;
+	color: #C79FD8;
+}
+#pass-inner
+{
+	display: block;
+	width: 200px;
+	height: 34px;
+	margin-top: 12px;
+	line-height: 32px;
+	text-align: center;
+	font-size: 12px;
+	color: #C79FD8;
+	background-color: #241429;
+	border: 1px #6B4A7A;
+	border-radius: 4px;
+}

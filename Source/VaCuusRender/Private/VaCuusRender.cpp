@@ -30,10 +30,25 @@
 namespace VaCuusM1HUD
 {
 /**
- * VFS path of the M1 HUD document; FVaCuusFileInterface resolves relative paths
- * against the ordered DevUI roots (plugin's Content/DevUI first -- D19).
+ * The demo documents this toggle can bring up. FVaCuusFileInterface resolves relative
+ * paths against the ordered DevUI roots (plugin's Content/DevUI first -- D19).
  */
-static const TCHAR* GHudDocumentVfsPath = TEXT("m1_hud.rml");
+static const TCHAR* GM1HudVfsPath = TEXT("m1_hud.rml");
+static const TCHAR* GM2DemoVfsPath = TEXT("m2_demo.rml");
+
+/**
+ * Which document the toggle is showing, or will show next.
+ *
+ * A VARIABLE RATHER THAN TWO COPIES OF EVERYTHING (Task 14): vacuus.M2Demo differs from
+ * vacuus.M1HUD in exactly one respect, the file name, and every sub-command below --
+ * .Mouse, .Nav, .NavShot, .Type, .TypeShot, .HoverShot, .PassThroughKey, and the
+ * .AutoShot/.PerfLog cvars in other files -- is about the view rather than the document.
+ * Duplicating the toggle would have doubled the fallback, live-reload re-arm and teardown
+ * logic for a string, and the second copy is where the two would have drifted.
+ *
+ * Only ever written by Toggle(), i.e. on the game thread from a console command.
+ */
+static const TCHAR* GDocumentVfsPath = GM1HudVfsPath;
 
 /**
  * Inline fallback document, used when DevUI/m1_hud.rml is missing under every root OR
@@ -94,7 +109,7 @@ static void SetUIInputMode(UWorld* World, bool bEnable)
 	if (!PlayerController)
 	{
 		UE_LOG(LogVaCuus, Warning,
-			TEXT("M1 HUD: no player controller, so the input mode is unchanged; pointer input will not reach the UI"));
+			TEXT("VaCuus demo: no player controller, so the input mode is unchanged; pointer input will not reach the UI"));
 		return;
 	}
 
@@ -112,7 +127,7 @@ static void SetUIInputMode(UWorld* World, bool bEnable)
 		PlayerController->SetShowMouseCursor(false);
 	}
 
-	UE_LOG(LogVaCuus, Log, TEXT("M1 HUD: input mode is now %s"),
+	UE_LOG(LogVaCuus, Log, TEXT("VaCuus demo: input mode is now %s"),
 		bEnable ? TEXT("GameAndUI (pointer events reach viewport overlays)") : TEXT("GameOnly"));
 }
 
@@ -197,7 +212,7 @@ static void TearDown()
 		// Task 8's UMG wrapper needs the same care in ReleaseSlateResources(): any path
 		// that can drop an SVaCuusWidget while it holds capture has to release first, and
 		// it calls the same helper.
-		State->Widget->ReleaseOwnPointerCapture(TEXT("M1 HUD teardown"));
+		State->Widget->ReleaseOwnPointerCapture(TEXT("VaCuus demo teardown"));
 
 		if (UGameViewportClient* Viewport = State->Viewport.Get())
 		{
@@ -225,7 +240,7 @@ static void TearDown()
 	// ordered after the view's last publish because the UI thread enqueues both.
 	State->Element.Reset();
 
-	UE_LOG(LogVaCuus, Log, TEXT("M1 HUD off"));
+	UE_LOG(LogVaCuus, Log, TEXT("VaCuus demo off"));
 }
 
 /**
@@ -237,7 +252,7 @@ static void OnWorldBeginTearDown(UWorld* World)
 {
 	if (GState)
 	{
-		UE_LOG(LogVaCuus, Log, TEXT("M1 HUD: world tear-down, switching HUD off"));
+		UE_LOG(LogVaCuus, Log, TEXT("VaCuus demo: world tear-down, switching HUD off"));
 		TearDown();
 	}
 }
@@ -267,7 +282,7 @@ static void OnViewLoadCompleted(UVaCuusView* View, bool bSuccess)
 		// Live reload made this branch reachable (it used to need a broken file AND a
 		// broken inline document): a fan-out reload of a document that now has a typo in it
 		// lands here, because bLoadingFromFile was cleared when the file last loaded fine.
-		UE_LOG(LogVaCuus, Error, TEXT("M1 HUD: document load failed and no fallback is left; %s"),
+		UE_LOG(LogVaCuus, Error, TEXT("VaCuus demo: document load failed and no fallback is left; %s"),
 			GState->bAnyDocumentShown
 				? TEXT("the reload failed and the previous document is still up")
 				: TEXT("the HUD stays empty"));
@@ -278,8 +293,8 @@ static void OnViewLoadCompleted(UVaCuusView* View, bool bSuccess)
 	GState->bTriedInlineFallback = true;
 
 	UE_LOG(LogVaCuus, Warning,
-		TEXT("M1 HUD: '%s' exists but failed to load; falling back to the inline document"),
-		GHudDocumentVfsPath);
+		TEXT("VaCuus demo: '%s' exists but failed to load; falling back to the inline document"),
+		GDocumentVfsPath);
 	View->LoadDocumentFromMemory(GTestDocumentRml);
 }
 
@@ -327,13 +342,13 @@ static void OnDocumentsReloadRequested(int32& InOutNumReloaded)
 		return;
 	}
 
-	const FString DocumentDiskPath = VaCuusContentPaths::ResolveExistingDocument(GHudDocumentVfsPath);
+	const FString DocumentDiskPath = VaCuusContentPaths::ResolveExistingDocument(GDocumentVfsPath);
 	if (DocumentDiskPath.IsEmpty())
 	{
 		// Verbose, not Warning: every flush while the file is still absent would say this.
 		UE_LOG(LogVaCuus, Verbose,
-			TEXT("M1 HUD: reload requested, but '%s' still does not exist under any DevUI root"),
-			GHudDocumentVfsPath);
+			TEXT("VaCuus demo: reload requested, but '%s' still does not exist under any DevUI root"),
+			GDocumentVfsPath);
 		return;
 	}
 
@@ -341,27 +356,46 @@ static void OnDocumentsReloadRequested(int32& InOutNumReloaded)
 	GState->bTriedInlineFallback = false;
 
 	UE_LOG(LogVaCuus, Log,
-		TEXT("M1 HUD: '%s' ('%s') is loadable again; re-loading it over the inline fallback"),
-		GHudDocumentVfsPath, *DocumentDiskPath);
+		TEXT("VaCuus demo: '%s' ('%s') is loadable again; re-loading it over the inline fallback"),
+		GDocumentVfsPath, *DocumentDiskPath);
 
-	View->LoadDocument(GHudDocumentVfsPath);
+	View->LoadDocument(GDocumentVfsPath);
 
 	// Counted, because the flush's log line reports "reloaded N view(s)" and this is one.
 	++InOutNumReloaded;
 }
 
-static void Toggle()
+/**
+ * Brings the named document up, or takes it down if it is already the one showing.
+ *
+ * SWITCHING BETWEEN THE TWO DOCUMENTS IS A TEARDOWN PLUS A BRING-UP, not a reload, and
+ * that is deliberate: the two documents want different view sizes and different input
+ * modes in principle, and one live view at a time is what makes the sub-commands
+ * (.Mouse, .Nav, .Rects, ...) unambiguous -- they all reach GState, which holds exactly
+ * one view.
+ */
+static void Toggle(const TCHAR* DocumentVfsPath)
 {
 	if (GState)
 	{
+		// Compared by CONTENT, not by pointer: the two call sites pass the file-static
+		// literals so a pointer compare would work today, but it would silently start
+		// answering "different document" the day someone passes a computed path.
+		const bool bSwitchingDocument = FCString::Strcmp(GDocumentVfsPath, DocumentVfsPath) != 0;
+
 		TearDown();
-		return;
+		if (!bSwitchingDocument)
+		{
+			return;
+		}
 	}
+
+	GDocumentVfsPath = DocumentVfsPath;
 
 	if (!GEngine || !GEngine->GameViewport)
 	{
 		UE_LOG(LogVaCuus, Error,
-			TEXT("vacuus.M1HUD needs a game viewport (PIE or -game); it does nothing in a pure editor session"));
+			TEXT("The VaCuus demo toggles need a game viewport (PIE or -game); they do nothing in a pure editor session"));
 		return;
 	}
 
@@ -371,7 +405,7 @@ static void Toggle()
 	UVaCuusSubsystem* Subsystem = GameInstance ? GameInstance->GetSubsystem<UVaCuusSubsystem>() : nullptr;
 	if (!Subsystem)
 	{
-		UE_LOG(LogVaCuus, Error, TEXT("vacuus.M1HUD: no UVaCuusSubsystem on this game instance"));
+		UE_LOG(LogVaCuus, Error, TEXT("VaCuus demo: no UVaCuusSubsystem on this game instance"));
 		return;
 	}
 
@@ -380,17 +414,17 @@ static void Toggle()
 
 	// Prefer the real document from the DevUI roots (plugin first, then project -- D19);
 	// fall back to the inline probe document so the toggle keeps working on a bare project.
-	const FString DocumentDiskPath = VaCuusContentPaths::ResolveExistingDocument(GHudDocumentVfsPath);
+	const FString DocumentDiskPath = VaCuusContentPaths::ResolveExistingDocument(GDocumentVfsPath);
 	const bool bLoadFromFile = !DocumentDiskPath.IsEmpty();
 	if (bLoadFromFile)
 	{
-		UE_LOG(LogVaCuus, Log, TEXT("M1 HUD: loading document via VFS path '%s' ('%s')"),
-			GHudDocumentVfsPath, *DocumentDiskPath);
+		UE_LOG(LogVaCuus, Log, TEXT("VaCuus demo: loading document via VFS path '%s' ('%s')"),
+			GDocumentVfsPath, *DocumentDiskPath);
 	}
 	else
 	{
-		UE_LOG(LogVaCuus, Log, TEXT("M1 HUD: '%s' not found under any DevUI root (%s), using the inline fallback document"),
-			GHudDocumentVfsPath, *FString::Join(VaCuusContentPaths::GetDocumentRoots(), TEXT(" | ")));
+		UE_LOG(LogVaCuus, Log, TEXT("VaCuus demo: '%s' not found under any DevUI root (%s), using the inline fallback document"),
+			GDocumentVfsPath, *FString::Join(VaCuusContentPaths::GetDocumentRoots(), TEXT(" | ")));
 	}
 
 	TSharedRef<FVaCuusSlateElement> Element = MakeShared<FVaCuusSlateElement>();
@@ -429,7 +463,7 @@ static void Toggle()
 	// frame. The view size rides along so the very first layout is at the right size.
 	if (bLoadFromFile)
 	{
-		View->LoadDocument(GHudDocumentVfsPath);
+		View->LoadDocument(GDocumentVfsPath);
 	}
 	else
 	{
@@ -444,8 +478,159 @@ static void Toggle()
 	// that already has something to route to.
 	SetUIInputMode(World, /*bEnable=*/true);
 
-	UE_LOG(LogVaCuus, Log, TEXT("M1 HUD on (view %u, initial view %dx%d)"),
-		View->GetViewId(), InitialViewSize.X, InitialViewSize.Y);
+	UE_LOG(LogVaCuus, Log, TEXT("VaCuus demo on: '%s' (view %u, initial view %dx%d)"),
+		GDocumentVfsPath, View->GetViewId(), InitialViewSize.X, InitialViewSize.Y);
+}
+
+/** One rect's flags as a readable list, for the dump below. */
+static FString DescribeRectFlags(EVaCuusRectFlags Flags)
+{
+	TArray<FString, TInlineAllocator<3>> Names;
+	if (EnumHasAnyFlags(Flags, EVaCuusRectFlags::Interactive))
+	{
+		Names.Add(TEXT("Interactive"));
+	}
+	if (EnumHasAnyFlags(Flags, EVaCuusRectFlags::Focusable))
+	{
+		Names.Add(TEXT("Focusable"));
+	}
+	if (EnumHasAnyFlags(Flags, EVaCuusRectFlags::TextInput))
+	{
+		Names.Add(TEXT("TextInput"));
+	}
+
+	return Names.IsEmpty() ? FString(TEXT("None")) : FString::Join(Names, TEXT("|"));
+}
+
+/**
+ * Prints the interactive-region snapshot the game thread is currently answering Slate
+ * from (Task 14).
+ *
+ * WHY THIS EXISTS RATHER THAN COORDINATES IN A SCRIPT: every other headless check here
+ * takes an <x> <y> the author read off a stylesheet, and that is a guess about layout --
+ * it is wrong the moment a padding value changes, and when it is wrong the failure looks
+ * like "input is broken" rather than "the coordinate missed". This prints the rects RmlUi
+ * actually produced, with their flags, so an acceptance run can aim at measured geometry
+ * and can assert the two facts a screenshot cannot show: that a region IS covered and
+ * flagged the way the document intended, and that the `vacuus-passthrough` region is NOT
+ * in the list at all.
+ *
+ * READS THE VIEW'S CACHED SNAPSHOT, i.e. exactly what SVaCuusWidget's handlers see this
+ * frame (UVaCuusView::GetSnapshot), not a fresh query -- there is no such thing as a
+ * fresh query from this thread, which is the whole design.
+ */
+/**
+ * Runs Work after DelaySeconds, or immediately when it is not positive.
+ *
+ * WHY THE DELAY EXISTS AT ALL: every `-ExecCmds` command runs on the SAME early tick, before
+ * the widget has ever been arranged and before any frame has been published -- so a rect dump
+ * issued there prints an empty default snapshot and a hit test answers "no" for every point.
+ * HoverShot, NavShot and TypeShot all solve this with a timed second step; this is the same
+ * pattern for the two read-only commands, so a headless acceptance run can put the query on
+ * the same command line as the toggle.
+ */
+static void ScheduleAfter(float DelaySeconds, TFunction<void()> Work)
+{
+	if (DelaySeconds <= 0.0f)
+	{
+		Work();
+		return;
+	}
+
+	FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda(
+		[Work = MoveTemp(Work)](float)
+		{
+			Work();
+			return false;
+		}),
+		DelaySeconds);
+}
+
+static void DumpRects()
+{
+	if (!GState || !GState->View.IsValid())
+	{
+		UE_LOG(LogVaCuus, Error, TEXT("vacuus.M2Demo.Rects needs a demo to be on"));
+		return;
+	}
+
+	const UVaCuusView* View = GState->View.Get();
+	const FVaCuusInteractiveSnapshot& Snapshot = View->GetSnapshot();
+
+	UE_LOG(LogVaCuus, Log,
+		TEXT("Rects: view %u '%s' generation=%llu viewSize=%dx%d rects=%d cursor=%d ")
+		TEXT("wantsKeyboard=%s tabEnters=%s directionEnters=%s textInputFocused=%s"),
+		View->GetViewId(), GDocumentVfsPath, Snapshot.Generation, Snapshot.ViewSize.X, Snapshot.ViewSize.Y,
+		Snapshot.InteractiveRects.Num(), int32(Snapshot.Cursor),
+		Snapshot.bWantsKeyboardFocus ? TEXT("yes") : TEXT("no"),
+		Snapshot.bTabEntersFocus ? TEXT("yes") : TEXT("no"),
+		Snapshot.bDirectionEntersFocus ? TEXT("yes") : TEXT("no"),
+		Snapshot.bTextInputFocused ? TEXT("yes") : TEXT("no"));
+
+	// Min() rather than either count: the two arrays are an invariant, not a guarantee a
+	// debug dump may assume, and printing past the end of the shorter one would be the
+	// least useful possible way to find out they had diverged.
+	const int32 NumRects = FMath::Min(Snapshot.InteractiveRects.Num(), Snapshot.RectFlags.Num());
+	for (int32 Index = 0; Index < NumRects; ++Index)
+	{
+		const FIntRect& Rect = Snapshot.InteractiveRects[Index];
+		UE_LOG(LogVaCuus, Log, TEXT("Rects:   [%2d] (%4d,%4d)-(%4d,%4d) centre (%4d,%4d) %s"),
+			Index, Rect.Min.X, Rect.Min.Y, Rect.Max.X, Rect.Max.Y,
+			(Rect.Min.X + Rect.Max.X) / 2, (Rect.Min.Y + Rect.Max.Y) / 2, *DescribeRectFlags(Snapshot.RectFlags[Index]));
+	}
+
+	if (Snapshot.RectFlags.Num() != Snapshot.InteractiveRects.Num())
+	{
+		UE_LOG(LogVaCuus, Error, TEXT("Rects: the parallel arrays disagree (%d rects, %d flags)"),
+			Snapshot.InteractiveRects.Num(), Snapshot.RectFlags.Num());
+	}
+}
+
+/**
+ * Answers "is this point covered, and how" the way the widget's handlers would.
+ *
+ * The complement of the dump above: the dump says what the UI claims, this says what a
+ * click at one place would do -- which is the assertion an acceptance run wants for the
+ * pass-through region, because "not in the list" and "Contains() is false" are two
+ * different statements and only the second is what SVaCuusWidget returns Unhandled from.
+ */
+static void Rects(const TArray<FString>& Args)
+{
+	ScheduleAfter(Args.Num() > 0 ? FCString::Atof(*Args[0]) : 0.0f, &DumpRects);
+}
+
+static void HitTestAt(FIntPoint Point)
+{
+	if (!GState || !GState->View.IsValid())
+	{
+		UE_LOG(LogVaCuus, Error, TEXT("vacuus.M2Demo.Hit needs a demo to be on"));
+		return;
+	}
+
+	const FVaCuusInteractiveSnapshot& Snapshot = GState->View->GetSnapshot();
+
+	UE_LOG(LogVaCuus, Log,
+		TEXT("Hit (%d,%d): covered=%s focusable=%s textInput=%s -- so a press there would be answered %s"),
+		Point.X, Point.Y,
+		Snapshot.Contains(Point) ? TEXT("yes") : TEXT("no"),
+		Snapshot.IsFocusableAt(Point) ? TEXT("yes") : TEXT("no"),
+		Snapshot.IsTextInputAt(Point) ? TEXT("yes") : TEXT("no"),
+		Snapshot.Contains(Point) ? TEXT("Handled (the UI takes it)") : TEXT("Unhandled (it reaches the game)"));
+}
+
+static void HitTest(const TArray<FString>& Args)
+{
+	if (Args.Num() < 2)
+	{
+		UE_LOG(LogVaCuus, Error,
+			TEXT("vacuus.M2Demo.Hit expects <x> <y> [delaySeconds]: the point in VIEW pixels"));
+		return;
+	}
+
+	const FIntPoint Point(FCString::Atoi(*Args[0]), FCString::Atoi(*Args[1]));
+	const float DelaySeconds = Args.Num() > 2 ? FCString::Atof(*Args[2]) : 0.0f;
+
+	ScheduleAfter(DelaySeconds, [Point] { HitTestAt(Point); });
 }
 
 /**
@@ -996,7 +1181,27 @@ static FAutoConsoleCommand GToggleCommand(
 	TEXT("vacuus.M1HUD"),
 	TEXT("Toggle the M1 render-spike HUD: records an RmlUi document (DevUI/m1_hud.rml, or an inline fallback) ")
 	TEXT("each frame and composites it over the game viewport."),
-	FConsoleCommandDelegate::CreateStatic(&Toggle));
+	FConsoleCommandDelegate::CreateLambda([] { Toggle(GM1HudVfsPath); }));
+
+static FAutoConsoleCommand GM2DemoCommand(
+	TEXT("vacuus.M2Demo"),
+	TEXT("Toggle the M2 interaction demo (DevUI/m2_demo.rml): buttons with :hover/:active/:focus, a ")
+	TEXT("wheel-scrollable list, a text field, a vacuus-passthrough region and nav-annotated focusables. ")
+	TEXT("Shares every vacuus.M1HUD.* sub-command, because those are about the view and not the document."),
+	FConsoleCommandDelegate::CreateLambda([] { Toggle(GM2DemoVfsPath); }));
+
+static FAutoConsoleCommand GRectsCommand(
+	TEXT("vacuus.M2Demo.Rects"),
+	TEXT("Print the interactive-region snapshot the game thread is answering Slate from: every rect, its ")
+	TEXT("flags, and the view-level focus/entry facts. Optional [delaySeconds] for -ExecCmds use, where ")
+	TEXT("everything runs before the first frame. Works for whichever demo is on."),
+	FConsoleCommandWithArgsDelegate::CreateStatic(&Rects));
+
+static FAutoConsoleCommand GHitCommand(
+	TEXT("vacuus.M2Demo.Hit"),
+	TEXT("Ask the published snapshot what a press at <x> <y> (VIEW pixels) would be answered: covered, ")
+	TEXT("focusable, text-input. Optional [delaySeconds]. The pass-through assertion."),
+	FConsoleCommandWithArgsDelegate::CreateStatic(&HitTest));
 } // namespace VaCuusM1HUD
 
 class FVaCuusRenderModule : public IModuleInterface
