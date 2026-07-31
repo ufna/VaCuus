@@ -409,18 +409,71 @@ static FString MangledMemberName(const TCHAR* Base, int32 UniqueId, const TCHAR*
 	return FString::Printf(TEXT("%s_%d_%s"), Base, UniqueId, Guid32);
 }
 
-/** A linked UUserDefinedStruct carrying the given int32 members, by raw (mangled) name. */
-static UUserDefinedStruct* MakeUserStruct(const TArray<FString>& MemberNames)
+/**
+ * An empty transient UUserDefinedStruct, ready for hand-built members; the caller links.
+ *
+ * PrepareCppStructOps() UP FRONT, because linking is not per-struct: FStructProperty::
+ * LinkInternal asks the MEMBER type for its ops (`Struct->GetCppStructOps()`,
+ * PropertyStruct.cpp:115-118), and GetCppStructOps asserts bPrepareCppStructOpsCompleted
+ * (Class.h:2369) -- which the plain NewObject constructor path never sets. A pair of
+ * structs that reference each other therefore cannot be linked in ANY order unless both
+ * were prepared first; for a Blueprint struct the editor's serialize path does this
+ * (Class.cpp:3328), and this call is that step for a hand-built one. A no-op result for a
+ * UDS -- no native ops exist to find -- but the completed flag is the point.
+ */
+static UUserDefinedStruct* NewUserStruct()
 {
 	UUserDefinedStruct* Struct = NewObject<UUserDefinedStruct>(GetTransientPackage(), NAME_None, RF_Transient);
 	Struct->Guid = FGuid::NewGuid();
 	Struct->Status = EUserDefinedStructureStatus::UDSS_UpToDate;
+	Struct->PrepareCppStructOps();
+	return Struct;
+}
+
+/** Appends `int32 <Name>`, Blueprint-visible, to an un-linked user struct. */
+static void AddIntMember(UUserDefinedStruct* Struct, const TCHAR* Name)
+{
+	FIntProperty* Prop = new FIntProperty(Struct, FName(Name));
+	Prop->SetPropertyFlags(CPF_BlueprintVisible);
+	Struct->AddCppProperty(Prop);
+}
+
+/** Appends `<MemberType> <Name>` by value, Blueprint-visible. */
+static void AddStructMember(UUserDefinedStruct* Struct, const TCHAR* Name, UScriptStruct* MemberType)
+{
+	FStructProperty* Prop = new FStructProperty(Struct, FName(Name));
+	Prop->Struct = MemberType;
+	Prop->SetPropertyFlags(CPF_BlueprintVisible);
+	Struct->AddCppProperty(Prop);
+}
+
+/**
+ * Appends `TArray<ElementType> <Name>`, Blueprint-visible. The same two-property shape the
+ * engine builds from UHT output: the inner FStructProperty is OWNED by the array property
+ * (its FFieldVariant owner), and FArrayProperty::AddCppProperty is the blessed way to seat
+ * it as Inner (PropertyArray.cpp:1252-1258). ElementType may still be un-linked here --
+ * FStructProperty::LinkInternal only reads its PropertiesSize (PropertyStruct.cpp:94-115),
+ * so a cross-referencing pair links in either order; a not-yet-linked element just leaves
+ * the inner's size 0, which nothing in a LAYOUT build reads.
+ */
+static void AddArrayOfStructMember(UUserDefinedStruct* Struct, const TCHAR* Name, UScriptStruct* ElementType)
+{
+	FArrayProperty* ArrayProp = new FArrayProperty(Struct, FName(Name));
+	FStructProperty* InnerProp = new FStructProperty(ArrayProp, FName(*(FString(Name) + TEXT("_ElementProp"))));
+	InnerProp->Struct = ElementType;
+	ArrayProp->AddCppProperty(InnerProp);
+	ArrayProp->SetPropertyFlags(CPF_BlueprintVisible);
+	Struct->AddCppProperty(ArrayProp);
+}
+
+/** A linked UUserDefinedStruct carrying the given int32 members, by raw (mangled) name. */
+static UUserDefinedStruct* MakeUserStruct(const TArray<FString>& MemberNames)
+{
+	UUserDefinedStruct* Struct = NewUserStruct();
 
 	for (const FString& MemberName : MemberNames)
 	{
-		FIntProperty* Prop = new FIntProperty(Struct, FName(*MemberName));
-		Prop->SetPropertyFlags(CPF_BlueprintVisible);
-		Struct->AddCppProperty(Prop);
+		AddIntMember(Struct, *MemberName);
 	}
 
 	Struct->Bind();
@@ -843,17 +896,27 @@ bool FVaCuusModelLayoutArrayRefusalsTest::RunTest(const FString& Parameters)
 	AddExpectedMessagePlain(
 		TEXT("cannot be bound under the name 'Size'"), ELogVerbosity::Error, EAutomationExpectedMessageFlags::Contains, 1);
 
-	// The map member inside a row: the shared classifier refuses the MEMBER, as on a root.
+	// The map and set members inside a row: the shared classifier refuses each MEMBER, as
+	// on a root -- two expectations because they are two different classifier branches.
 	AddExpectedMessagePlain(TEXT("property 'Lookup'"), ELogVerbosity::Warning, EAutomationExpectedMessageFlags::Contains, 1);
+	AddExpectedMessagePlain(TEXT("property 'Tags'"), ELogVerbosity::Warning, EAutomationExpectedMessageFlags::Contains, 1);
+
+	// The zero-bindable row type: the Warning names the ARRAY property, not the row type --
+	// and no root-flavored "no property could be bound" line fires for the row (an
+	// unexpected Warning fails the test, so its absence is asserted by there being no
+	// expectation for it).
+	AddExpectedMessagePlain(TEXT("array property 'BarrenRows'"), ELogVerbosity::Warning,
+		EAutomationExpectedMessageFlags::Contains, 1);
 
 	const FVaCuusModelLayout Layout(FVaCuusArrayRefusalModel::StaticStruct());
 	TestTrue(TEXT("the layout resolved its struct"), Layout.IsValid());
 
-	// Refused whole: Text elements, Text anywhere in the element subtree, and a container
-	// anywhere in the element subtree.
+	// Refused whole: Text elements, Text anywhere in the element subtree, a container
+	// anywhere in the element subtree, and a row type with nothing bindable in it.
 	TestNull(TEXT("TArray<FText> is refused"), Layout.FindField(TEXT("Texts")));
 	TestNull(TEXT("a row with an FText member is refused whole"), Layout.FindField(TEXT("TextRows")));
 	TestNull(TEXT("a row with a TArray member is refused whole"), Layout.FindField(TEXT("NestedRows")));
+	TestNull(TEXT("a row type with no bindable member is refused whole"), Layout.FindField(TEXT("BarrenRows")));
 
 	// Survivors: the scalar control and the two arrays whose offending MEMBERS -- not the
 	// arrays themselves -- were refused.
@@ -871,14 +934,94 @@ bool FVaCuusModelLayoutArrayRefusalsTest::RunTest(const FString& Parameters)
 	}
 
 	const FVaCuusModelField* MapRows = Layout.FindField(TEXT("MapRows"));
-	if (TestNotNull(TEXT("a TMap member does not refuse its array"), MapRows)
+	if (TestNotNull(TEXT("a TMap or TSet member does not refuse its array"), MapRows)
 		&& TestNotNull(TEXT("its desc exists"), MapRows->ArrayDesc)
 		&& TestTrue(TEXT("with a struct element layout"), MapRows->ArrayDesc->IsStructElement()))
 	{
 		TestNull(TEXT("the map member is dropped by the shared classifier"),
 			MapRows->ArrayDesc->ElementLayout->FindField(TEXT("Lookup")));
-		TestNotNull(TEXT("and its sibling binds"), MapRows->ArrayDesc->ElementLayout->FindField(TEXT("Kept")));
+		TestNull(TEXT("the set member is dropped by the shared classifier"),
+			MapRows->ArrayDesc->ElementLayout->FindField(TEXT("Tags")));
+		TestNotNull(TEXT("and their sibling binds"), MapRows->ArrayDesc->ElementLayout->FindField(TEXT("Kept")));
 	}
+
+	return true;
+}
+
+/**
+ * CONTAINER CYCLES (review finding on M3b Task 1). Without the build-stack guard, a
+ * container-cyclic type graph recurses the layout build to a process-killing stack
+ * overflow at BIND time -- the guard refuses the array field that closes the loop, names
+ * the cycle, and takes nothing else with it.
+ *
+ * HAND-BUILT UUserDefinedStructs, BECAUSE NATIVE FIXTURES CANNOT EXIST: UHT refuses the
+ * direct shape outright (`structProperty.ScriptStruct == outerStruct`,
+ * UhtArrayProperty.cs:216-222) and every indirect shape at the forward reference it needs
+ * ("the code generation hash is zero", UhtProperty.cs:3066-3071) -- the fixture header
+ * records the attempt. That refusal is NOT protection: nothing validates the FProperty
+ * graph itself, so the cycle arrives exactly the way this test builds it, and the layout
+ * is the first thing that would walk into it.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusModelLayoutCycleTest, "VaCuus.Model.LayoutCycle",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusModelLayoutCycleTest::RunTest(const FString& Parameters)
+{
+	using namespace VaCuusModelLayoutTest;
+
+	// ---- The mutual pair: A{TArray<B>} / B{TArray<A>}. The cycle closes one level down,
+	// so the OUTER array binds and the refusal lands inside the element layout. ----
+	AddExpectedMessagePlain(TEXT("array property 'As'"), ELogVerbosity::Warning, EAutomationExpectedMessageFlags::Contains, 1);
+
+	TStrongObjectPtr<UUserDefinedStruct> StructA(NewUserStruct());
+	TStrongObjectPtr<UUserDefinedStruct> StructB(NewUserStruct());
+	AddIntMember(StructA.Get(), TEXT("Kept"));
+	AddArrayOfStructMember(StructA.Get(), TEXT("Bs"), StructB.Get());
+	AddIntMember(StructB.Get(), TEXT("Kept"));
+	AddArrayOfStructMember(StructB.Get(), TEXT("As"), StructA.Get());
+	StructA->Bind();
+	StructA->StaticLink(/*bRelinkExistingProperties=*/true);
+	StructB->Bind();
+	StructB->StaticLink(/*bRelinkExistingProperties=*/true);
+
+	const FVaCuusModelLayout Layout(StructA.Get());
+	TestTrue(TEXT("the layout resolved its struct"), Layout.IsValid());
+	TestNotNull(TEXT("the root's bindable sibling survives"), Layout.FindField(TEXT("Kept")));
+
+	const FVaCuusModelField* Bs = Layout.FindField(TEXT("Bs"));
+	if (TestNotNull(TEXT("the outer array binds -- only the loop-closing edge is refused"), Bs)
+		&& TestNotNull(TEXT("with a desc"), Bs->ArrayDesc)
+		&& TestTrue(TEXT("whose elements are structs"), Bs->ArrayDesc->IsStructElement()))
+	{
+		const FVaCuusModelLayout& RowLayout = *Bs->ArrayDesc->ElementLayout;
+		TestNull(TEXT("the cycling array is absent from the element layout"), RowLayout.FindField(TEXT("As")));
+		TestNotNull(TEXT("and the row's bindable sibling survives"), RowLayout.FindField(TEXT("Kept")));
+	}
+
+	// ---- The by-value hop: Row{Sub} / Sub{TArray<Row>}. The cycle closes on the root type
+	// itself, so the refused array is a member of THIS layout and its absence is assertable
+	// at top level. Sub links first: Row's by-value member needs Sub's real size, while
+	// Sub's array inner tolerates an un-linked Row (see AddArrayOfStructMember). ----
+	AddExpectedMessagePlain(
+		TEXT("array property 'Sub.Rows'"), ELogVerbosity::Warning, EAutomationExpectedMessageFlags::Contains, 1);
+
+	TStrongObjectPtr<UUserDefinedStruct> RowStruct(NewUserStruct());
+	TStrongObjectPtr<UUserDefinedStruct> SubStruct(NewUserStruct());
+	AddIntMember(SubStruct.Get(), TEXT("SubKept"));
+	AddArrayOfStructMember(SubStruct.Get(), TEXT("Rows"), RowStruct.Get());
+	AddIntMember(RowStruct.Get(), TEXT("RowKept"));
+	AddStructMember(RowStruct.Get(), TEXT("Sub"), SubStruct.Get());
+	SubStruct->Bind();
+	SubStruct->StaticLink(/*bRelinkExistingProperties=*/true);
+	RowStruct->Bind();
+	RowStruct->StaticLink(/*bRelinkExistingProperties=*/true);
+
+	const FVaCuusModelLayout RowRoot(RowStruct.Get());
+	TestTrue(TEXT("the row-rooted layout resolved its struct"), RowRoot.IsValid());
+	TestNull(TEXT("the loop-closing array is refused"), RowRoot.FindField(TEXT("Sub.Rows")));
+	TestNotNull(TEXT("the root scalar survives"), RowRoot.FindField(TEXT("RowKept")));
+	TestNotNull(TEXT("and so does the nested one"), RowRoot.FindField(TEXT("Sub.SubKept")));
+	TestEqual(TEXT("exactly the two scalars bind"), RowRoot.GetFields().Num(), 2);
 
 	return true;
 }

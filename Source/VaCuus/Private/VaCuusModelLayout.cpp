@@ -40,8 +40,16 @@ void FVaCuusModelArrayDesc::SyncCopy(void* DestValuePtr, const void* SrcValuePtr
 	// (TProperty::CopyValuesInternal, UnrealType.h:1626-1632), whose reallocation rule is
 	// grow-only -- ReallocForCopy reallocates iff the quantized reserve of the source exceeds
 	// the destination's capacity, else the buffer is reused outright (TArray::operator= at
-	// Array.h:1011-1019 -> ReallocForCopy at :710-751, `NewMax > PrevMax`). Net: allocations
-	// only where content outgrew capacity or Num grew, at every pipeline stage (spec 3.3).
+	// Array.h:1011-1019 -> ReallocForCopy at :710-751, `NewMax > PrevMax`). Net: GROW-ONLY
+	// reuse -- allocations where content outgrew capacity or Num grew -- at every pipeline
+	// stage (spec 3.3). The SHRINK side is weaker, deliberately left to the allocator:
+	// Resize's shrink is RemoveValues, which forwards to FScriptArray::Remove with shrinking
+	// ALLOWED (UnrealType.h:4477-4483, ScriptArray.h:191-222), and ResizeShrink then
+	// reallocates the container block whenever DefaultCalculateSlackShrink asks -- (slack >=
+	// 16384 bytes OR Num < 2/3 of Max) AND (slack > 64 elements OR Num == 0)
+	// (ScriptArray.h:255-263, ContainerAllocationPolicies.h:140-168) -- so a large trim can
+	// move the survivors. Spec 3.4 measures the grow/shrink alternation rather than assuming
+	// it away.
 	FScriptArrayHelper DestHelper(ArrayProperty, DestValuePtr);
 	FScriptArrayHelper SrcHelper(ArrayProperty, SrcValuePtr);
 
@@ -466,10 +474,17 @@ static bool ClassifyProperty(const FProperty* Property, EVaCuusFieldKind& OutKin
 
 	// After the soft/weak tests above, so this catches only the HARD ones (and
 	// FClassProperty, which derives from it).
+	//
+	// "BOUND OR READ", NOT "NEVER IN THE SHADOW". Since arrays, the weaker wording would be
+	// false: an UNEXPOSED hard reference inside a bound array row is copied into every shadow
+	// with its row -- SyncCopy's whole-row CopyCompleteValue applies no exposure filter (see
+	// the desc-build scan) -- as inert bytes with no leaf. What this refusal enforces is the
+	// invariant that actually protects the UI thread: no UObject* is ever bound, so none is
+	// ever read or dereferenced from a shadow the collector cannot see.
 	if (CastField<FObjectProperty>(Property) != nullptr)
 	{
-		OutReason = TEXT("a hard UObject reference cannot enter the shadow buffer: the shadow is a UScriptStruct instance "
-						 "the UI thread owns, nothing calls AddStructReferencedObjects on it, so it is invisible to GC and "
+		OutReason = TEXT("a hard UObject reference cannot be bound: the shadow is a UScriptStruct instance the UI thread "
+						 "owns, nothing calls AddStructReferencedObjects on it, so it is invisible to GC and a read through "
 						 "the pointer would dangle with no diagnostic");
 		return false;
 	}
@@ -553,11 +568,29 @@ const TCHAR* VaCuusWireName::ValidateNested(const FString& Name)
 
 FVaCuusModelLayout::FVaCuusModelLayout(const UScriptStruct* InStruct)
 {
+	// The stack lives on THIS frame and threads by reference through every element layout
+	// constructed below it -- per build TREE, not per layout, which is the only scope a
+	// container cycle is visible at (see the private constructor in the header).
+	TArray<const UScriptStruct*> BuildStack;
+	Build(InStruct, BuildStack);
+}
+
+FVaCuusModelLayout::FVaCuusModelLayout(const UScriptStruct* InStruct, TArray<const UScriptStruct*>& BuildStack)
+{
+	Build(InStruct, BuildStack);
+}
+
+void FVaCuusModelLayout::Build(const UScriptStruct* InStruct, TArray<const UScriptStruct*>& BuildStack)
+{
 	if (InStruct == nullptr)
 	{
 		UE_LOG(LogVaCuus, Error, TEXT("VaCuus model layout: no struct type was given; nothing is bound"));
 		return;
 	}
+
+	// Root build or element build? Decided by the stack rather than a flag: only the public
+	// constructor starts with an empty one.
+	const bool bRootBuild = BuildStack.IsEmpty();
 
 	// STRONG, not raw. A native UScriptStruct is created with RF_MarkAsNative, which
 	// becomes EInternalObjectFlags::Native, which is one of the GC keep flags
@@ -568,7 +601,12 @@ FVaCuusModelLayout::FVaCuusModelLayout(const UScriptStruct* InStruct)
 	// from the native one at every use site.
 	Struct.Reset(InStruct);
 
-	BuildLevel(InStruct, FString(), /*BaseOffset=*/0, /*TopLevelNameIndex=*/INDEX_NONE, /*Depth=*/0);
+	// ON THE STACK FOR THE DURATION of this layout's build: the array interception refuses
+	// any element type it finds in here, which is what terminates a container-cyclic type
+	// graph that neither UHT nor MaxNestingDepth can stop (the guard carries the argument).
+	BuildStack.Push(InStruct);
+	BuildLevel(InStruct, FString(), /*BaseOffset=*/0, /*TopLevelNameIndex=*/INDEX_NONE, /*Depth=*/0, BuildStack);
+	BuildStack.Pop();
 
 	// ARRAY-DESC FIX-UP, AFTER THE BUILD AND NEVER DURING IT. BuildLevel appends to ArrayDescs
 	// while it appends to Fields, so mid-build the table can still reallocate and only the
@@ -585,7 +623,12 @@ FVaCuusModelLayout::FVaCuusModelLayout(const UScriptStruct* InStruct)
 		}
 	}
 
-	if (Fields.IsEmpty())
+	// ROOT BUILDS ONLY. For an element layout this line is wrong twice over: it names the
+	// row type as if it were a model root, and "the document will resolve nothing against
+	// this model" is false -- the document resolves against the ARRAY, whose desc build
+	// refuses the field with a Warning naming the array property (the one diagnostic that
+	// case gets).
+	if (Fields.IsEmpty() && bRootBuild)
 	{
 		UE_LOG(LogVaCuus, Warning,
 			TEXT("VaCuus model '%s': no property could be bound; the document will resolve nothing against this model"),
@@ -598,8 +641,8 @@ const FVaCuusModelField* FVaCuusModelLayout::FindField(FStringView InWireName) c
 	return Fields.FindByPredicate([InWireName](const FVaCuusModelField& Field) { return Field.WireName == InWireName; });
 }
 
-void FVaCuusModelLayout::BuildLevel(
-	const UScriptStruct* InStruct, const FString& Prefix, int32 BaseOffset, int32 TopLevelNameIndex, int32 Depth)
+void FVaCuusModelLayout::BuildLevel(const UScriptStruct* InStruct, const FString& Prefix, int32 BaseOffset,
+	int32 TopLevelNameIndex, int32 Depth, TArray<const UScriptStruct*>& BuildStack)
 {
 	using namespace VaCuusModelLayoutPrivate;
 
@@ -747,6 +790,40 @@ void FVaCuusModelLayout::BuildLevel(
 					continue;
 				}
 
+				// THE CYCLE GUARD, and it must run BEFORE the element layout is constructed:
+				// building one for a type that is still being built above us recurses until the
+				// process stack overflows. Nothing else stops the shape at THIS level. A TArray
+				// member is heap indirection, so the infinite-size argument that terminates
+				// by-value nesting dies at the pointer; and MaxNestingDepth never fires on the
+				// way down, because each element layout is a fresh build whose Depth restarts
+				// at 0. UHT refuses every NATIVE writing of the loop -- the direct shape by its
+				// explicit check, `structProperty.ScriptStruct == outerStruct`
+				// (UhtArrayProperty.cs:216-222), the mutual pair FA{TArray<FB>}/FB{TArray<FA>}
+				// and the by-value hop FRow{FSub}/FSub{TArray<FRow>} at the forward reference
+				// they cannot avoid (zero code-generation hash, UhtProperty.cs:3066-3071) --
+				// but UHT guards source text, not the FProperty graph: a runtime-built
+				// UUserDefinedStruct closes the loop with no validator anywhere on the path,
+				// and this build is the first thing that would walk it.
+				if (BuildStack.Contains(InnerStruct->Struct))
+				{
+					// The loop by name, from the element type's first appearance back to
+					// itself, so the log reader sees the whole cycle and not just its last edge.
+					FString Cycle;
+					for (int32 StackIndex = BuildStack.IndexOfByKey(InnerStruct->Struct); StackIndex < BuildStack.Num();
+						 ++StackIndex)
+					{
+						Cycle += BuildStack[StackIndex]->GetName() + TEXT(" -> ");
+					}
+					Cycle += InnerStruct->Struct->GetName();
+
+					UE_LOG(LogVaCuus, Warning,
+						TEXT("VaCuus model '%s': array property '%s' (%s) cannot be bound -- element type '%s' participates in "
+							 "a container cycle (%s), which a flat layout cannot terminate; break the cycle or bind a "
+							 "different type"),
+						*ModelName, *WireName, *Property->GetCPPType(), *InnerStruct->Struct->GetName(), *Cycle);
+					continue;
+				}
+
 				// A PLAIN LAYOUT, DELIBERATELY (spec 3.1): the element type gets the same
 				// flattening, classifier, name rules and pinning a model root gets, because the
 				// definition registry keys on the raw UScriptStruct* and a type used both as a
@@ -754,11 +831,28 @@ void FVaCuusModelLayout::BuildLevel(
 				// element TOP-LEVEL member names obey the full root rule -- a row member named
 				// `Size` is refused with the root Error, and the fix is a rename -- while what
 				// a shared layout cannot refuse, the scan below refuses on the ARRAY FIELD.
-				Desc.ElementLayout = MakeUnique<FVaCuusModelLayout>(InnerStruct->Struct);
+				// Plain `new`, not MakeUnique, only because the stack-sharing constructor is
+				// private and MakeUnique is not a friend.
+				Desc.ElementLayout = TUniquePtr<FVaCuusModelLayout>(new FVaCuusModelLayout(InnerStruct->Struct, BuildStack));
 
-				// THE DESC-BUILD SCAN, over the element layout's FLAT leaf list -- flattening
-				// has already surfaced every member of every nested struct, so one linear pass
-				// sees the whole element subtree. Two kinds refuse the whole array field:
+				// A ROW TYPE WITH NOTHING TO BIND refuses the array too. With zero element
+				// leaves the only observable left is Num(), so the binding would render row
+				// counts and never row content -- a document that looks bound and shows
+				// nothing, this milestone's signature failure. The element build suppressed
+				// its root-flavored "no property could be bound" line (see Build), so this
+				// Warning, naming the ARRAY property, is the one diagnostic.
+				if (Desc.ElementLayout->GetFields().IsEmpty())
+				{
+					UE_LOG(LogVaCuus, Warning,
+						TEXT("VaCuus model '%s': array property '%s' (%s) cannot be bound -- row type '%s' has no bindable "
+							 "member, so only the element count could ever reach a document; expose a member of the row type"),
+						*ModelName, *WireName, *Property->GetCPPType(), *InnerStruct->Struct->GetName());
+					continue;
+				}
+
+				// THE DESC-BUILD SCAN, over the element layout's flat leaf list: every BINDABLE
+				// leaf within MaxNestingDepth of the element type, which is exactly the set the
+				// binding will ever read. Two kinds refuse the whole array field:
 				//
 				//  - Text, ANYWHERE in the subtree: M3a's Text contract -- shadow and compare
 				//    the display string -- is a per-field projection at StoreField
@@ -767,6 +861,19 @@ void FVaCuusModelLayout::BuildLevel(
 				//    thread, the exact race the sampler pins to the game thread.
 				//  - Array, i.e. a nested container: dirtiness is one bit per TOP-LEVEL array,
 				//    so an inner array's cost would multiply invisibly under a single bit.
+				//
+				// WHAT THE SCAN CANNOT SEE RIDES ALONG INERT, and that is safe by shape, not by
+				// luck. A member that is unexposed, deprecated, editor-only, illegally named or
+				// deeper than MaxNestingDepth has no leaf, so it neither surfaces here nor
+				// refuses the array -- yet SyncCopy's whole-row Inner->CopyCompleteValue copies
+				// it anyway: FStructProperty::CopyValuesInternal is UScriptStruct::CopyScriptStruct
+				// (PropertyStruct.cpp:341-344), whose property loop applies no exposure filter
+				// (Class.cpp:3697-3731). Payload with no leaf is never read and never diffed,
+				// so: a hidden FText copies as an atomic refcount bump and resolves no
+				// localization (FText's copy is defaulted over TRefCountPtr<ITextData>,
+				// Text.h:416, :941, thread-safe count via TextHistory.h:143 +
+				// RefCounting.h:190-197); a hidden hard UObject* copies as bytes no stage
+				// dereferences (see the classifier's refusal for the invariant as enforced).
 				//
 				// One Warning, first offender: finding one is enough to refuse, and one line
 				// naming the array, the member and the reason is what a designer can act on.
@@ -873,7 +980,7 @@ void FVaCuusModelLayout::BuildLevel(
 			// downstream still goes through the blessed accessor, via
 			// FVaCuusModelField::ContainerPtr.
 			BuildLevel(StructProperty->Struct, WireName + TEXT("."), BaseOffset + StructProperty->GetOffset_ForInternal(),
-				NestedNameIndex, Depth + 1);
+				NestedNameIndex, Depth + 1, BuildStack);
 
 			if (Fields.Num() == FieldsBefore)
 			{

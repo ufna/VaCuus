@@ -264,7 +264,12 @@ struct FVaCuusShadowProbeModel
 	~FVaCuusShadowProbeModel() { ++VaCuusShadowProbe::NumDestructed; }
 };
 
-/** A nested struct with no exposed member: contributes nothing, and must say so. */
+/**
+ * A struct with no exposed member, worn two ways: NESTED it contributes nothing and must
+ * say so (the empty-nested test); as an array ROW TYPE it refuses the whole array field
+ * (FVaCuusArrayRefusalModel::BarrenRows). One type for both because the two diagnostics
+ * must stay distinguishable for the same input.
+ */
 USTRUCT()
 struct FVaCuusLayoutTestEmptyInner
 {
@@ -665,10 +670,12 @@ struct FVaCuusTestReservedNameRow
 };
 
 /**
- * A row with a TMap member: the shared classifier drops the MEMBER, exactly as it would on
- * a model root, and the array binds without it -- unlike a nested TArray, which refuses the
- * whole field (spec 3.2: an inner array's cost would hide under the one dirty bit; a map
- * was never bindable to begin with).
+ * A row with a TMap member AND a TSet member: the shared classifier drops each MEMBER,
+ * exactly as it would on a model root, and the array binds without them -- unlike a nested
+ * TArray, which refuses the whole field (spec 3.2: an inner array's cost would hide under
+ * the one dirty bit; a map or set was never bindable to begin with). Both container kinds
+ * are here because they are refused by two different classifier branches, and only a pair
+ * proves the deviation holds for each.
  */
 USTRUCT()
 struct FVaCuusTestMapRow
@@ -677,6 +684,9 @@ struct FVaCuusTestMapRow
 
 	UPROPERTY(EditAnywhere, Category = "Test")
 	TMap<FName, int32> Lookup;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	TSet<FName> Tags;
 
 	UPROPERTY(EditAnywhere, Category = "Test")
 	FString Kept;
@@ -705,4 +715,27 @@ struct FVaCuusArrayRefusalModel
 
 	UPROPERTY(EditAnywhere, Category = "Test")
 	TArray<FVaCuusTestMapRow> MapRows;
+
+	/**
+	 * A row type with NO bindable member (the same struct the empty-nested test uses):
+	 * with zero element leaves only Num() would ever be observable, so the whole array
+	 * field is refused with a Warning naming THIS property -- and the element build stays
+	 * silent about it, so the misleading root-flavored "no property could be bound" line
+	 * never fires here.
+	 */
+	UPROPERTY(EditAnywhere, Category = "Test")
+	TArray<FVaCuusLayoutTestEmptyInner> BarrenRows;
 };
+
+/*
+ * THERE IS NO NATIVE CONTAINER-CYCLE FIXTURE, AND THAT IS UHT'S DOING, NOT A GAP. The
+ * direct shape (TArray<FSelf> inside FSelf) is refused outright
+ * (UhtArrayProperty.cs:216-222), and every indirect shape -- the mutual pair
+ * FA{TArray<FB>}/FB{TArray<FA>}, the by-value hop FRow{FSub}/FSub{TArray<FRow>} -- needs a
+ * forward reference to a type defined later, which UHT's code-generation hash refuses:
+ * "references type ... but the code generation hash is zero" (UhtProperty.cs:3066-3071).
+ * The cycle is still CONSTRUCTIBLE at the FProperty level, where nothing validates the
+ * graph -- a hand-built UUserDefinedStruct pair proves it -- so the layout's cycle guard is
+ * tested from exactly there: see FVaCuusModelLayoutCycleTest, which builds both shapes the
+ * way FVaCuusModelLayoutDuplicateNameTest builds its structs.
+ */

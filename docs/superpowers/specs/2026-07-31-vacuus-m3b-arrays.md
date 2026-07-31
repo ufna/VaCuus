@@ -138,9 +138,30 @@ The consequences are owned explicitly:
   `ValidateNested` rule, as in M3a.
 - **What a shared layout cannot refuse, the array-desc build refuses.** At array-desc build time
   the element layout's *flat leaf list* is scanned once: any leaf of kind `Text`, or any leaf of
-  kind `Array` (a nested container anywhere in the element subtree — flattening surfaces them all)
-  → **the whole array field is refused**, with one Warning naming the array property, the offending
-  element member and the reason. The element layout itself stays valid for its other uses.
+  kind `Array` (a nested container anywhere in the **bindable** element subtree — flattening
+  surfaces every bindable leaf within `MaxNestingDepth`, and only those) → **the whole array field
+  is refused**, with one Warning naming the array property, the offending element member and the
+  reason. The element layout itself stays valid for its other uses. What the scan cannot see rides
+  along inert: an unexposed, deprecated, editor-only, illegally named or over-deep member has no
+  leaf, so it neither surfaces nor refuses the array — `SyncCopy`'s whole-row `CopyCompleteValue`
+  copies it with its row (`CopyScriptStruct`'s property loop applies no exposure filter,
+  Class.cpp:3697-3731), and payload with no leaf is never read and never diffed: a hidden `FText`
+  copies as an atomic refcount bump and resolves no localization; a hidden hard `UObject*` copies
+  as bytes no stage dereferences.
+- **Two refusals run before the scan.** (1) *Container cycles*: a mutual pair
+  `FA{TArray<FB>}`/`FB{TArray<FA>}` or a by-value hop `FRow{FSub}`/`FSub{TArray<FRow>}` would
+  recurse the layout build to a stack overflow, since every element layout restarts the depth
+  count at 0. UHT refuses every *native* writing of the shape — the direct one explicitly
+  (UhtArrayProperty.cs:216-222), the indirect ones at the forward reference they need (zero
+  code-generation hash, UhtProperty.cs:3066-3071) — but nothing validates the `FProperty` graph
+  itself, which a runtime-built `UUserDefinedStruct` assembles freely. A build stack of
+  in-progress root types threads through the element-layout constructors; an element type already
+  on the stack refuses the array field *before* its layout is constructed, with one Warning naming
+  the array property and the cycle. (2) *Zero-bindable
+  rows*: a row type whose element layout has no fields would make `Num()` the only observable —
+  row counts rendered, row content never — so the whole array field is refused with one Warning
+  naming the array property and the row type; the element build suppresses the root-flavored
+  "no property could be bound" line, so that Warning is the one diagnostic.
 
 ### 3.2 Element type coverage
 
@@ -153,7 +174,7 @@ The consequences are owned explicitly:
 | struct | ✅ | flattened inside the element via `ElementLayout`; depth limit applies |
 | `FText` — as the element type **or anywhere inside a struct element** | ❌ | **the whole array field is refused with a Warning** (§3.1). M3a's Text contract — shadow and compare the *display string* — is a per-field projection at `StoreField` (VaCuusModelSampler.cpp:228-244) that a whole-container copy bypasses; an unprojected `FText` in the UI shadow would make `FVaCuusScalarDefinition::Get` resolve localization on the UI thread (VaCuusDataVariable.cpp:130), the exact race the M3a sampler pins to the game thread (VaCuusModelSampler.h:56-70). Per-element projection is a real design, deferred; the workaround (`FString`, projected by the game) is one line |
 | nested `TArray` / `TMap` / `TSet` inside an element struct | ❌ | legal in UHT (m3b-ue-arrays.md §6); maps/sets are refused by the shared classifier as in M3a, nested arrays by the array-desc scan (§3.1): dirtiness is one bit per *top-level* array, so an inner array's cost multiplies invisibly under a single bit. Revisit on demand |
-| hard / weak `UObject` refs | ❌ | refused by the shared classifier — same GC and thread arguments as M3a §3.4 |
+| hard / weak `UObject` refs | ❌ | refused by the shared classifier — same GC and thread arguments as M3a §3.4. Scope, since arrays: an *unexposed* hard reference inside a bound row is still copied into the shadows with its row, as inert never-read payload (§3.1); the enforced invariant is that no `UObject*` is ever **bound or read**, not that the shadow bytes never contain one |
 
 **Fixed-size C arrays (`ArrayDim > 1`) stay refused, and this is the revisit M3a promised.**
 Reasons, in order: (1) they cannot be Blueprint-exposed at all (UhtScriptStruct.cs:1147-1149,

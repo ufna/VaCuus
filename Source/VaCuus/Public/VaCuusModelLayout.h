@@ -155,7 +155,10 @@ struct FVaCuusModelArrayDesc
 	 * keys on the raw UScriptStruct*, so a type used both as a model root and as a row type
 	 * gets one layout policy or none (spec 3.1). What a shared layout cannot refuse -- Text
 	 * anywhere in the element subtree, nested containers -- the desc build refuses on the
-	 * ARRAY FIELD instead.
+	 * ARRAY FIELD instead. Built through the constructor that shares the caller's cycle
+	 * stack, which changes nothing for an acyclic element type; a type already on the stack
+	 * never gets an element layout at all, because the array field is refused first
+	 * (BuildLevel's cycle guard).
 	 */
 	TUniquePtr<FVaCuusModelLayout> ElementLayout;
 
@@ -172,8 +175,12 @@ struct FVaCuusModelArrayDesc
 	 * values -- then per-element assignment, or one Memcpy for POD inners. Deliberately
 	 * NOT the engine's own whole-array copy, which destroys every destination element
 	 * before rebuilding and so can never reuse an element's buffer; the .cpp carries the
-	 * full argument with the engine citations. Net: allocations only where content outgrew
-	 * capacity or Num grew (spec 3.3).
+	 * full argument with the engine citations. Net: GROW-ONLY reuse -- allocations where
+	 * content outgrew capacity or Num grew -- while a SHRINK may still reallocate the
+	 * container block: the shrink path is RemoveValues -> FScriptArray::Remove with
+	 * shrinking allowed (UnrealType.h:4477-4483, ScriptArray.h:191-222), and the allocator
+	 * reallocates whenever its shrink policy says the slack is too big; the .cpp cites the
+	 * exact thresholds (spec 3.3, scoped by 3.4).
 	 */
 	VACUUS_API void SyncCopy(void* DestValuePtr, const void* SrcValuePtr) const;
 };
@@ -372,11 +379,18 @@ class VACUUS_API FVaCuusModelLayout
 {
 public:
 	/**
-	 * How many struct properties deep the flattening will go. Not a cycle guard: a
-	 * USTRUCT cannot contain itself by value at any depth, because its own size would
-	 * have to be infinite, so the recursion terminates by construction. This bounds
-	 * the wire names instead -- every level adds a dotted segment that a document
-	 * author has to type.
+	 * How many struct properties deep the flattening will go. Not a cycle guard, and with
+	 * arrays in the type graph one is needed ELSEWHERE: by-value nesting still cannot cycle
+	 * -- a USTRUCT containing itself by value would need infinite size -- but a TArray
+	 * member is heap indirection, so a TYPE GRAPH can loop through one, and this limit
+	 * would never fire on the way down because every element layout restarts Depth at 0.
+	 * UHT happens to refuse every native writing of the shape -- the direct one explicitly
+	 * (UhtArrayProperty.cs:216-222), the indirect ones at the forward reference they need
+	 * (zero code-generation hash, UhtProperty.cs:3066-3071) -- but nothing validates the
+	 * FProperty graph itself, which a runtime-built UUserDefinedStruct assembles freely.
+	 * That cycle is refused by the build stack at BuildLevel's array interception. What
+	 * this constant bounds is the wire names -- every level adds a dotted segment that a
+	 * document author has to type.
 	 */
 	static constexpr int32 MaxNestingDepth = 4;
 
@@ -400,8 +414,22 @@ public:
 	const FVaCuusModelField* FindField(FStringView InWireName) const;
 
 private:
+	/**
+	 * The element-layout form: the same build, threaded through the CALLER'S cycle stack.
+	 * A container cycle is visible only ACROSS layouts -- each element layout is a fresh
+	 * FVaCuusModelLayout whose Depth restarts at 0, so no per-layout state can see the
+	 * recursion; the stack of in-progress build roots is the one thing that spans them.
+	 * Private because the stack only means something mid-build: the sole caller is
+	 * BuildLevel's array interception, which checks the stack BEFORE constructing.
+	 */
+	FVaCuusModelLayout(const UScriptStruct* InStruct, TArray<const UScriptStruct*>& BuildStack);
+
+	/** The one build body behind both constructors; keeps InStruct on the stack for its duration. */
+	void Build(const UScriptStruct* InStruct, TArray<const UScriptStruct*>& BuildStack);
+
 	/** Walks one struct level, appending leaves and recursing into nested structs. */
-	void BuildLevel(const UScriptStruct* InStruct, const FString& Prefix, int32 BaseOffset, int32 TopLevelNameIndex, int32 Depth);
+	void BuildLevel(const UScriptStruct* InStruct, const FString& Prefix, int32 BaseOffset, int32 TopLevelNameIndex, int32 Depth,
+		TArray<const UScriptStruct*>& BuildStack);
 
 	TStrongObjectPtr<const UScriptStruct> Struct;
 	TArray<FVaCuusModelField> Fields;
