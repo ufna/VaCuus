@@ -43,6 +43,24 @@ struct FVaCuusCapturedScript
 	/** True for <script>text</script>; false for <script src="...">. */
 	bool bIsInline = false;
 
+	/**
+	 * True when this external script is an ES module (M4 Task 7, spec 3.7).
+	 *
+	 * THE SURFACE IS A NAMING CONVENTION -- src ends in `.mjs` -- AND CANNOT BE
+	 * `<script type="module">`, because the type attribute never survives the
+	 * parse: the head handler reads ONLY `src` from a <script> tag's attributes
+	 * (XMLNodeHandlerHead.cpp:84-92) and DocumentHeader::Resource has no
+	 * attribute channel at all (path/content/is_inline/line, DocumentHeader.h),
+	 * so by the time LoadExternalScript fires the attribute is gone. Documented
+	 * rather than fought: forking the vendored handler to carry one attribute
+	 * would put VaCuus-side behavior inside the library diff. Consequences,
+	 * stated plainly: inline <head> scripts are ALWAYS classic (no inline
+	 * modules), and a `.js` src is always classic too -- import it FROM an
+	 * `.mjs` entry instead (imports are modules by definition, whatever their
+	 * extension; only the ENTRY is gated by the convention).
+	 */
+	bool bIsModule = false;
+
 	/** Inline only: the script text. */
 	Rml::String Content;
 

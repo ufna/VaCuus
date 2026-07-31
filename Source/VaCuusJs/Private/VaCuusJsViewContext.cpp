@@ -45,6 +45,25 @@ FVaCuusJsViewContext::FVaCuusJsViewContext(FVaCuusJsRuntime& InRuntime, uint32 I
 	}
 
 	JS_SetContextOpaque(Ctx, this);
+
+	// The module loader (M4 Task 7). A per-RUNTIME registration by API shape
+	// (JS_SetModuleLoaderFunc takes the JSRuntime, quickjs.h:1178-1180), so
+	// every context construction re-installs the same three pointers -- an
+	// idempotent write, and doing it here rather than in the runtime's
+	// Construct keeps the runtime module ignorant of this class. The opaque is
+	// DELIBERATELY null: both thunks receive the JSContext and route through
+	// JS_GetContextOpaque -> GetSelfOrNull, because the loader must serve
+	// whichever context is importing RIGHT NOW (with several views one runtime
+	// hosts several worlds), and null is the dead-context answer the thunks
+	// already speak. The module CACHE needs no installation and no teardown of
+	// its own: loaded modules live on the JSContext (ctx->loaded_modules,
+	// quickjs.c:532, initialized :2524, populated :29652) and die inside
+	// JS_FreeContext's sweep (:2605) -- which is exactly why a document reload's
+	// context recycle re-executes every module (spec 3.4/3.7, pinned by
+	// VaCuus.Js.Modules.CacheDiesWithContext).
+	JS_SetModuleLoaderFunc(
+		InRuntime.GetRuntime(), &FVaCuusJsViewContext::ModuleNormalizeThunk, &FVaCuusJsViewContext::ModuleLoaderThunk, nullptr);
+
 	InstallGlobals();
 	InstallDomPrototypes();
 }

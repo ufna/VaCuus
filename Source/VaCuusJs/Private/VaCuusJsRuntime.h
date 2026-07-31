@@ -135,6 +135,17 @@ public:
 	void NoteJobExecuted() { NumJobsExecuted.fetch_add(1, std::memory_order_relaxed); }
 
 	/**
+	 * Counts a surfaced JS-error diagnostic that passed through NEITHER
+	 * ReportException NOR the rejection tracker -- the only two other writers of
+	 * NumErrors. One caller today (M4 Task 7): the host's top-level-await
+	 * refusal, which has no exception to consume (the module promise is merely
+	 * still pending) and no rejection to track, yet is exactly the kind of fired
+	 * diagnostic the counter promises tests and the Task 8 overlay (spec 3.8:
+	 * "the host exposes a total-JS-error counter").
+	 */
+	void NoteSurfacedError() { NumErrors.fetch_add(1, std::memory_order_relaxed); }
+
+	/**
 	 * vacuus.onUnload callbacks actually INVOKED (M4 Task 6) -- a fired-count,
 	 * not a gauge: a close with no callback registered counts nothing. The
 	 * unload dispatch runs in a context that is about to be recycled, so its own

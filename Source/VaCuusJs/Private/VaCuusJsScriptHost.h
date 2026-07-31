@@ -265,6 +265,25 @@ private:
 	 */
 	int32 DrainJobs(FVaCuusJsViewContext& View, int32 Budget, bool& bOutCapHit);
 
+	/**
+	 * The module ENTRY orchestration (M4 Task 7, spec 3.7), RunCapturedScripts'
+	 * `.mjs` branch: eval through the view (which reports compile/resolve
+	 * failures itself), then drain-then-inspect the module promise -- the drain
+	 * REUSES DrainJobs with the pump's own budget, because module init jobs are
+	 * ordinary runtime-wide jobs and a second drain mechanism would be a second
+	 * livelock surface. Then by promise state: PENDING = top-level await against
+	 * a host event, REFUSED with one counted Error naming the module (E1's
+	 * grounding: a TLA-free module reaches FULFILLED within this same drain);
+	 * REJECTED = already logged AND counted by the rejection tracker at reject
+	 * time (quickjs.c:31571-31575 -> :54371-54375), so this path deliberately
+	 * adds NO report of its own -- one Verbose line names the module, nothing
+	 * more. NOTE the engine itself double-fires the tracker for a throw BEFORE
+	 * the first await (body promise + module promise -- the ThrowRejects test
+	 * pins the mechanism with cites); that duplication is upstream of this
+	 * path, not added by it. FULFILLED = done.
+	 */
+	void EvalModule(FVaCuusJsViewContext& View, const FString& Source, const FString& ModuleName);
+
 	const FParams Params;
 
 	/** Params.MaxJobsPerPump with -1 resolved to the cvar, once, at construction. */

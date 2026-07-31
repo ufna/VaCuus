@@ -5,6 +5,7 @@
 #include "VaCuusContentPaths.h"
 #include "VaCuusJs.h"
 #include "VaCuusJsEventListener.h"
+#include "VaCuusJsModules.h"
 #include "VaCuusJsRuntime.h"
 #include "VaCuusJsScriptSource.h"
 #include "VaCuusJsViewContext.h"
@@ -273,6 +274,7 @@ void FVaCuusJsScriptHost::RunCapturedScripts(FVaCuusJsViewContext& View, const F
 
 		FString Source;
 		FString SourceName;
+		bool bIsModule = false;
 		if (Script.bIsInline)
 		{
 			Source = UTF8_TO_TCHAR(Script.Content.c_str());
@@ -311,7 +313,19 @@ void FVaCuusJsScriptHost::RunCapturedScripts(FVaCuusJsViewContext& View, const F
 					View.GetViewId(), *SrcPath, *DocumentUrl);
 				continue;
 			}
-			SourceName = Resolved;
+
+			// The `.mjs` module entry (Task 7; FVaCuusCapturedScript::bIsModule
+			// carries the naming-convention argument). A module is NAMED by its
+			// canonical vfs slot, not by the disk path the resolve happened to
+			// answer with: SrcPath is already root-relative here (un-piped,
+			// scheme-stripped -- the block above), and the vfs name is what the
+			// module's own relative imports resolve against and what the
+			// per-context cache keys on (VaCuusJsModules.h). SourceName for the
+			// classic branch stays the RESOLVED path -- a classic script has no
+			// module identity, and naming the actual file read is the better
+			// backtrace.
+			bIsModule = Script.bIsModule;
+			SourceName = bIsModule ? VaCuusJsModules::MakeModuleName(SrcPath) : Resolved;
 		}
 
 		// The watchdog observable: a trip's uncatchable error is consumed inside
@@ -321,7 +335,14 @@ void FVaCuusJsScriptHost::RunCapturedScripts(FVaCuusJsViewContext& View, const F
 		// budget is per entry, and a head that already burned it once would burn
 		// it N times, freezing the UI thread for N deadlines (spec 3.3).
 		const uint64 TripsBefore = View.GetRuntime().GetNumWatchdogTrips();
-		View.Eval(Source, SourceName);
+		if (bIsModule)
+		{
+			EvalModule(View, Source, SourceName);
+		}
+		else
+		{
+			View.Eval(Source, SourceName);
+		}
 		if (View.GetRuntime().GetNumWatchdogTrips() > TripsBefore)
 		{
 			const int32 NumSkipped = NumScripts - Index - 1;
@@ -461,6 +482,79 @@ int32 FVaCuusJsScriptHost::DrainJobs(FVaCuusJsViewContext& View, int32 Budget, b
 		}
 	}
 	return NumExecuted;
+}
+
+void FVaCuusJsScriptHost::EvalModule(FVaCuusJsViewContext& View, const FString& Source, const FString& ModuleName)
+{
+	JSContext* Ctx = View.GetContext();
+	const JSValue Promise = View.EvalModuleToPromise(Source, ModuleName);
+	if (!JS_IsPromise(Promise))
+	{
+		// Compile/resolve failed and the view already reported it (a missing
+		// import lands here: the loader's ReferenceError rode the exception
+		// channel out of the compile). JS_UNDEFINED needs no free, but freeing
+		// is the shape that stays correct if the un-promise ever isn't.
+		JS_FreeValue(Ctx, Promise);
+		return;
+	}
+
+	// THE DRAIN BEFORE THE VERDICT: a TLA-free async module (await of an
+	// already-settled promise) settles through ordinary jobs, so the promise
+	// state is meaningless until they ran. DrainJobs is the pump's own bounded
+	// drain, budgeted identically -- module-init jobs are not special, and the
+	// cap plus the entry guard's watchdog remain the two livelock defenses
+	// (spec 3.5) on this path too.
+	bool bCapHit = false;
+	DrainJobs(View, MaxJobsPerPump > 0 ? MaxJobsPerPump : -1, bCapHit);
+
+	switch (JS_PromiseState(Ctx, Promise))
+	{
+		case JS_PROMISE_PENDING:
+			// Still pending after a full drain = the module awaits a HOST event
+			// (E1's observed signal -- the engine's has_tla is not public, and the
+			// drained-and-still-pending state is the embedder-visible equivalent).
+			// REFUSED, one counted Error naming the module: the pump will not keep
+			// a document's readiness hostage to an unresolvable await, and the
+			// module's exports never materialize (spec 3.7). bCapHit distinguishes
+			// the one other way to be pending here -- a job chain the budget cut --
+			// so the message never blames await for a livelock or vice versa.
+			View.GetRuntime().NoteSurfacedError();
+			if (bCapHit)
+			{
+				UE_LOG(LogVaCuusJS, Error,
+					TEXT("View %u: module '%s' is still pending after the job drain hit vacuus.Js.MaxJobsPerPump (%d) ")
+					TEXT("-- an init-time job chain is outrunning the drain; the module is refused"),
+					View.GetViewId(), *ModuleName, MaxJobsPerPump);
+			}
+			else
+			{
+				UE_LOG(LogVaCuusJS, Error,
+					TEXT("View %u: module '%s' is still pending after the job drain -- top-level await against a host ")
+					TEXT("event is refused (spec 3.7); the module never finishes loading"),
+					View.GetViewId(), *ModuleName);
+			}
+			break;
+
+		case JS_PROMISE_REJECTED:
+			// The throw already surfaced -- reject fired the tracker with
+			// is_handled=false (quickjs.c:31571-31575 -> :54371-54375), which
+			// logged the reason at Error and counted it. TWICE, in fact, for a
+			// throw before the first await: the engine's sync path never handles
+			// the body's async-function promise (js_execute_sync_module,
+			// quickjs.c:31390-31410), so it and m->promise both reject unhandled
+			// -- the ThrowRejects test pins both counts. An Error here would pile
+			// a THIRD report on that; this line only pins WHICH module, at a
+			// verbosity that cannot double-count anything a test asserts.
+			UE_LOG(LogVaCuusJS, Verbose,
+				TEXT("View %u: module '%s' rejected at init (the rejection tracker carried the reason)"),
+				View.GetViewId(), *ModuleName);
+			break;
+
+		case JS_PROMISE_FULFILLED:
+		default:
+			break;
+	}
+	JS_FreeValue(Ctx, Promise);
 }
 
 void FVaCuusJsScriptHost::CollectGarbage(const TCHAR* Reason)

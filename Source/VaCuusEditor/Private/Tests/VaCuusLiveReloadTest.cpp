@@ -190,6 +190,15 @@ bool FVaCuusLiveReloadFilterTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("An empty filename is not tracked"),
 		FVaCuusLiveReload::ShouldTrackChange(EAction::FCA_Modified, FString()));
 
+	//~ Scripts (M4 Task 7): a .js/.mjs edit triggers the same full-document reload as an
+	//~ .rcss one -- the replace recycles the JSContext and the per-context module cache
+	//~ dies with it (IsWatchedExtension's comment has the whole argument). Before Task 7
+	//~ these two returned false and script edits reloaded nothing.
+	TestTrue(TEXT(".js is tracked (Task 7: script edits ride the document reload)"),
+		FVaCuusLiveReload::ShouldTrackChange(EAction::FCA_Modified, TEXT("DevUI/hud_logic.js")));
+	TestTrue(TEXT(".mjs is tracked (Task 7: the module-entry convention)"),
+		FVaCuusLiveReload::ShouldTrackChange(EAction::FCA_Modified, TEXT("DevUI/hud_main.mjs")));
+
 	//~ Normalisation. FFileChangeData's constructor runs FPaths::MakeStandardFilename, so
 	//~ what the delegate receives is usually relative -- comparing or reloading it as-is
 	//~ is the bug this exists to prevent.

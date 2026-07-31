@@ -82,6 +82,25 @@ public:
 	void Eval(const FString& Source, const FString& SourceName);
 
 	/**
+	 * The module ENTRY point (M4 Task 7, spec 3.7; implementation in
+	 * VaCuusJsModules.cpp): compiles Source as an ES module named ModuleName
+	 * (JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY, quickjs.h:434, :440-444
+	 * -- static imports resolve INSIDE this compile, quickjs.c:37395-37404, each
+	 * through the loader thunk below), stamps import.meta.url = ModuleName, then
+	 * evaluates (JS_EvalFunction, quickjs.h:1244 -> quickjs.c:37274-37287).
+	 *
+	 * Returns the module promise, OWNED by the caller -- module eval always
+	 * returns js_dup(m->promise) (quickjs.c:31553-31554, :31589); a module's
+	 * RUNTIME throw is NOT an eval exception, it rejects that promise
+	 * (quickjs.c:31571-31575). Compile/resolve failures ARE eval exceptions
+	 * (quickjs.c:37411-37416): reported to the sink here, JS_UNDEFINED returned.
+	 * The caller (FVaCuusJsScriptHost::EvalModule) owns the drain-then-inspect
+	 * protocol -- the promise-state reading is meaningless before a job drain,
+	 * and the bounded drain machinery lives on the host (spec 3.5).
+	 */
+	JSValue EvalModuleToPromise(const FString& Source, const FString& ModuleName);
+
+	/**
 	 * This context's two callback phases of the pump, in spec 3.5's order:
 	 * (1) rAF -- swap-out list, so a callback registered during the run lands
 	 * NEXT frame; (2) timers due before the frame started. The caller (the
@@ -238,6 +257,35 @@ private:
 	static JSValue ClearTimerThunk(JSContext* Ctx, JSValueConst This, int Argc, JSValueConst* Argv);
 	static JSValue RequestRafThunk(JSContext* Ctx, JSValueConst This, int Argc, JSValueConst* Argv);
 	static JSValue CancelRafThunk(JSContext* Ctx, JSValueConst This, int Argc, JSValueConst* Argv);
+
+	//~ ---- ES modules (M4 Task 7; implementation in VaCuusJsModules.cpp) ----
+
+	/**
+	 * The JSModuleNormalizeFunc (quickjs.h:1156-1158; "return the module
+	 * specifier (allocated with js_malloc()) or NULL if exception",
+	 * :1154-1155). Specifiers arrive AS WRITTEN IN JS SOURCE -- no head-handler
+	 * pipe-encoding ever reaches here; that transform exists only for <script
+	 * src> attributes (XMLNodeHandlerHead.cpp:14-19), and module entries have it
+	 * undone by RunCapturedScripts before any module name is minted. Relative
+	 * ('./x', '../y') resolves against the IMPORTING module's directory (BaseName
+	 * is the importer's own canonical name -- the engine passes m->module_name,
+	 * i.e. whatever the importer was COMPILED as); bare and vfs://-prefixed
+	 * specifiers are root-relative. Result: "vfs://<canonical>", the per-context
+	 * cache key (VaCuusJsModules.h). Routed through GetSelfOrNull like every
+	 * thunk; a dead context refuses the resolution (exception + NULL).
+	 */
+	static char* ModuleNormalizeThunk(JSContext* Ctx, const char* BaseName, const char* Name, void* Opaque);
+
+	/**
+	 * The JSModuleLoaderFunc (quickjs.h:1164-1165): strips vfs://, resolves
+	 * through the ordered DevUI roots (ResolveExistingDocument), reads via the
+	 * pak-transparent IPlatformFile path (VaCuusJsScriptSource), compiles with
+	 * COMPILE_ONLY and returns the JSModuleDef*. A read miss is our OWN Error
+	 * naming what was probed, plus a thrown ReferenceError in the engine's own
+	 * wording (quickjs.c:30044) that surfaces at the importer -- both
+	 * diagnostics, spec 3.7. NULL on any failure, exception pending.
+	 */
+	static JSModuleDef* ModuleLoaderThunk(JSContext* Ctx, const char* ModuleName, void* Opaque);
 
 	//~ ---- DOM facade internals (VaCuusJsDom.cpp) ----
 

@@ -16,13 +16,28 @@
 
 namespace VaCuusLiveReloadPrivate
 {
-/** Extensions RmlUi actually re-reads when a document is loaded again. */
+/** Extensions a document reload actually re-reads. */
 static bool IsWatchedExtension(const FString& Extension)
 {
 	// Compared lowercase: FPaths::GetExtension preserves case and a file saved as
 	// '.RCSS' is the same file to RmlUi's loader.
+	//
+	// js/mjs (M4 Task 7, spec 3.7): a script edit rides the SAME full-document
+	// reload as an .rcss edit -- no second mechanism -- and that reload is
+	// sufficient BY CONSTRUCTION of the Task 6 path: the reload is a replace,
+	// the replace recycles the view's JSContext (FVaCuusJsScriptHost::
+	// OnDocumentReady), and everything a stale script could hide in dies with
+	// that context -- globals, timers, AND the module cache, which is
+	// per-context state freed inside JS_FreeContext (ctx->loaded_modules,
+	// quickjs.c:532, swept at :2605). The fresh context then re-reads every
+	// <script src> and re-loads every module from disk (nothing above the
+	// context caches script bytes: VaCuusJsScriptSource reads through
+	// IPlatformFile on each call). Before this line, script edits reloaded
+	// nothing at all -- the extension whitelist was the only gate.
 	return Extension.Equals(TEXT("rml"), ESearchCase::IgnoreCase) ||
-		   Extension.Equals(TEXT("rcss"), ESearchCase::IgnoreCase);
+		   Extension.Equals(TEXT("rcss"), ESearchCase::IgnoreCase) ||
+		   Extension.Equals(TEXT("js"), ESearchCase::IgnoreCase) ||
+		   Extension.Equals(TEXT("mjs"), ESearchCase::IgnoreCase);
 }
 
 /**

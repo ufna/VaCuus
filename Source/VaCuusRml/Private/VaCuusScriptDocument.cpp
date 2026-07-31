@@ -27,6 +27,20 @@ void FVaCuusScriptDocument::LoadExternalScript(const Rml::String& SourcePath)
 	FVaCuusCapturedScript& Script = CapturedScripts.emplace_back();
 	Script.bIsInline = false;
 	Script.SourcePath = SourcePath;
+
+	// The `.mjs` naming convention (FVaCuusCapturedScript::bIsModule has the
+	// why-not-type-attribute argument). Sniffed HERE, at capture, so the decision
+	// sits next to the struct that documents it. The captured path is the head
+	// handler's joined-and-pipe-encoded form (':' -> '|', Absolutepath,
+	// XMLNodeHandlerHead.cpp:14-19), which cannot touch the extension -- an
+	// extension with a colon in it was never a file the VFS could resolve.
+	const size_t Length = SourcePath.size();
+	if (Length >= 4)
+	{
+		const char* Tail = SourcePath.c_str() + Length - 4;
+		Script.bIsModule = Tail[0] == '.' && (Tail[1] == 'm' || Tail[1] == 'M') && (Tail[2] == 'j' || Tail[2] == 'J') &&
+						   (Tail[3] == 's' || Tail[3] == 'S');
+	}
 }
 
 FVaCuusScriptDocumentInstancer::FVaCuusScriptDocumentInstancer() = default;

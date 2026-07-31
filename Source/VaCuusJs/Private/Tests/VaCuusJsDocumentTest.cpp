@@ -290,8 +290,11 @@ bool FVaCuusJsDocExternalScriptTest::RunTest(const FString& /*Parameters*/)
 	// The temp-file pattern from the live-reload tests
 	// (VaCuusLiveReloadTest.cpp): plant the file in the FIRST DevUI root -- the
 	// plugin's own Content/DevUI, the same root <script src> resolves through
-	// -- and delete it whatever happens. The watcher cannot misfire on it even
-	// in an editor session: .js is not a watched extension (Task 7 adds it).
+	// -- and delete it whatever happens. Since Task 7, .js IS a watched
+	// extension, so an editor session's watcher may note this plant -- harmless:
+	// its debounced flush reloads only subsystem-registered views
+	// (ClearAssetCachesAndReloadAllViews), and these tests drive raw UI-thread
+	// views the subsystem never learns about.
 	const TArray<FString>& Roots = VaCuusContentPaths::GetDocumentRoots();
 	if (Roots.IsEmpty() || !IFileManager::Get().DirectoryExists(*Roots[0]))
 	{
