@@ -23,6 +23,7 @@
 #include "Misc/CoreDelegates.h"
 #include "Misc/Paths.h"
 #include "Modules/ModuleManager.h"
+#include "UObject/StrongObjectPtr.h"
 #include "RenderingThread.h"
 #include "ShaderCore.h"
 #include "UnrealClient.h"
@@ -37,6 +38,7 @@ namespace VaCuusM1HUD
 static const TCHAR* GM1HudVfsPath = TEXT("m1_hud.rml");
 static const TCHAR* GM2DemoVfsPath = TEXT("m2_demo.rml");
 static const TCHAR* GM3DemoVfsPath = TEXT("m3_demo.rml");
+static const TCHAR* GM4DemoVfsPath = TEXT("m4_demo.rml");
 
 /**
  * The name m3_demo.rml's `data-model` attribute writes, and the name `vacuus.DumpModel hud`
@@ -226,6 +228,25 @@ struct FState
 	 * bug the demo exists to rule out.
 	 */
 	int32 KillfeedSerial = 0;
+
+	//~ ------------------------------------------------------- M4 JS demo (plan Task 10.1)
+
+	/**
+	 * True while the M4 demo document is the one up. It gates the REDUCED driver (spec 9):
+	 * PumpDemoModel keeps feeding the gameplay fields -- Health, the scalar beats, the nested
+	 * struct -- through UpdateModel exactly as M3, and stops feeding what JS now owns: the
+	 * killfeed, Stance, and Ammo's animation (Ammo becomes the accepted-write loop's state,
+	 * mutated only by the OnModelWrite handler below).
+	 */
+	bool bM4Demo = false;
+
+	/**
+	 * The OnModelWrite ear (see UVaCuusDemoWriteListener): the M3 refusal button's click now
+	 * routes (hud, "Ammo", value) to the game thread, this handler applies it to DemoModel,
+	 * and the next pump's UpdateModel echoes it back through binding -- the accepted-write
+	 * loop, one write per click. Strong-pointed because nothing else roots the adapter.
+	 */
+	TStrongObjectPtr<UVaCuusDemoWriteListener> M4WriteListener;
 };
 
 static TUniquePtr<FState> GState;
@@ -245,6 +266,19 @@ static void TearDown()
 	{
 		FCoreDelegates::OnBeginFrame.Remove(State->ModelDriverHandle);
 		State->ModelDriverHandle.Reset();
+	}
+
+	// The M4 write ear goes with the driver it fed: unbind before the view is retired so a
+	// write drained THIS tick cannot reach a handler whose state was just moved out, then
+	// clear the forwarding function so a stale broadcast on any path forwards to nothing.
+	if (State->M4WriteListener.IsValid())
+	{
+		if (UVaCuusView* View = State->View.Get())
+		{
+			View->OnModelWrite.RemoveDynamic(State->M4WriteListener.Get(), &UVaCuusDemoWriteListener::HandleModelWrite);
+		}
+		State->M4WriteListener->OnWrite = nullptr;
+		State->M4WriteListener.Reset();
 	}
 
 	FWorldDelegates::OnWorldBeginTearDown.Remove(State->WorldTearDownHandle);
@@ -475,11 +509,21 @@ static void PumpDemoModel()
 	Model.Health = float(Phase < 5.0 ? 100.0 - Phase * 20.0 : (Phase - 5.0) * 20.0);
 	Model.bAlert = Model.Health < 30.f;
 
-	Model.Ammo = 30 - (int32(Elapsed) % 31);
+	// THE M4 SPLIT (spec 9): the M4 demo keeps this driver for every gameplay-fed field and
+	// hands three surfaces to JS. Ammo stops animating -- it is now the accepted-write loop's
+	// state, written only by the OnModelWrite handler and echoed back through the UpdateModel
+	// below (an animated Ammo would stomp every routed write one frame later). Stance stops
+	// moving -- m4_demo.rml does not bind it; m4_hud_logic.js drives the stance pill through
+	// classList on the same 2 s beat. The killfeed stops being pumped -- the M4 feed is
+	// JS-built DOM with the same serial arithmetic, and two feeds would be two truths.
+	if (!GState->bM4Demo)
+	{
+		Model.Ammo = 30 - (int32(Elapsed) % 31);
 
-	static const TCHAR* StanceNames[] = {TEXT("Standing"), TEXT("Crouched"), TEXT("Prone")};
-	const int32 StanceIndex = int32(Elapsed / 2.0) % UE_ARRAY_COUNT(StanceNames);
-	Model.Stance = static_cast<EVaCuusDemoStance>(StanceIndex);
+		static const TCHAR* StanceNames[] = {TEXT("Standing"), TEXT("Crouched"), TEXT("Prone")};
+		const int32 StanceIndex = int32(Elapsed / 2.0) % UE_ARRAY_COUNT(StanceNames);
+		Model.Stance = static_cast<EVaCuusDemoStance>(StanceIndex);
+	}
 
 	// The three string-shaped kinds move on a slower beat than the numbers, so a screenshot
 	// catches a stable word rather than a blur -- and so that the FText and FName diff rules
@@ -497,7 +541,7 @@ static void PumpDemoModel()
 	// that scrolled per frame would photograph as noise. `>` rather than `!=` so a thaw's beat
 	// reset (see FreezeDemoModel) can only pause the feed, never replay it.
 	const int32 KillBeat = int32(Elapsed / 1.5);
-	if (KillBeat > GState->LastKillfeedBeat)
+	if (!GState->bM4Demo && KillBeat > GState->LastKillfeedBeat)
 	{
 		GState->LastKillfeedBeat = KillBeat;
 		const int32 Serial = GState->KillfeedSerial++;
@@ -575,6 +619,41 @@ static void StartModelDriver(UVaCuusView* View)
 	GState->ModelDriverStartSeconds = FPlatformTime::Seconds();
 	GState->bModelFrozen = false;
 	GState->ModelDriverHandle = FCoreDelegates::OnBeginFrame.AddStatic(&PumpDemoModel);
+
+	// The M4 half of the accepted-write loop (spec 3.10, plan Task 10.1): the button's
+	// routed `Ammo = Ammo - 1` arrives here on the game thread -- Path carries the wire
+	// path WITHOUT the model name (that is the Model parameter) -- the live struct takes
+	// the value, and the next PumpDemoModel's UpdateModel is the echo. The write is heard
+	// exactly ONCE per click: the apply that follows re-renders the control from the
+	// shadow, and any write the re-render's own machinery would fire with the model's
+	// current value is swallowed by the router's echo rule (spec 3.10).
+	if (GState->bM4Demo)
+	{
+		GState->M4WriteListener = TStrongObjectPtr<UVaCuusDemoWriteListener>(NewObject<UVaCuusDemoWriteListener>());
+		GState->M4WriteListener->OnWrite = [](FName Model, const FString& Path, const FVaCuusJsValue& Value)
+		{
+			if (!GState || !GState->bM4Demo)
+			{
+				return;
+			}
+
+			if (Model != FName(GM3ModelName) || Path != TEXT("Ammo") || Value.Kind != EVaCuusJsValueKind::Number)
+			{
+				UE_LOG(LogVaCuus, Warning,
+					TEXT("vacuus.M4Demo: routed write to '%s' path '%s' (kind %d) has no demo meaning; ignored"),
+					*Model.ToString(), *Path, int32(Value.Kind));
+				return;
+			}
+
+			// Clamped, not trusted: the value came from a document expression, and a HUD that
+			// can be clicked into negative ammo is a HUD that can be clicked into anything.
+			GState->DemoModel.Ammo = FMath::Max(0, FMath::RoundToInt32(Value.Number));
+			UE_LOG(LogVaCuus, Display,
+				TEXT("vacuus.M4Demo: accepted routed write Ammo = %d; the next UpdateModel echoes it back through binding"),
+				GState->DemoModel.Ammo);
+		};
+		View->OnModelWrite.AddDynamic(GState->M4WriteListener.Get(), &UVaCuusDemoWriteListener::HandleModelWrite);
+	}
 }
 
 /**
@@ -674,9 +753,13 @@ static void Toggle(const TCHAR* DocumentVfsPath)
 	// BEFORE THE LOAD BELOW, AND THAT ORDER IS RmlUi's REQUIREMENT RATHER THAN A PREFERENCE --
 	// see StartModelDriver. Guarded on the document rather than done unconditionally because a
 	// model bound to a view whose document has no matching `data-model` is a model whose values
-	// go nowhere, and this file's other two documents have none.
-	if (FCString::Strcmp(GDocumentVfsPath, GM3DemoVfsPath) == 0)
+	// go nowhere, and this file's other two documents have none. The M4 demo binds the SAME
+	// model and drives it through the same pump; bM4Demo is what reduces the pump to the
+	// gameplay-fed fields (spec 9) and arms the OnModelWrite ear.
+	if (FCString::Strcmp(GDocumentVfsPath, GM3DemoVfsPath) == 0 ||
+		FCString::Strcmp(GDocumentVfsPath, GM4DemoVfsPath) == 0)
 	{
+		GState->bM4Demo = FCString::Strcmp(GDocumentVfsPath, GM4DemoVfsPath) == 0;
 		StartModelDriver(View);
 	}
 
@@ -1599,6 +1682,72 @@ static FAutoConsoleCommand GM3FreezeCommand(
 	TEXT("Freeze [1] or thaw [0] the M3 demo's values while UpdateModel keeps being called every frame. Frozen is ")
 	TEXT("spec 9's idle row: 0 published frames AND 0 fields applied."),
 	FConsoleCommandWithArgsDelegate::CreateStatic(&FreezeDemoModel));
+
+static FAutoConsoleCommand GM4DemoCommand(
+	TEXT("vacuus.M4Demo"),
+	TEXT("Toggle the M4 JavaScript demo (DevUI/m4_demo.rml + m4_hud_logic.js): the M3 data-binding demo with its ")
+	TEXT("killfeed, damage numbers, stance and a second health bar driven by JS (createElement/remove, timers, ")
+	TEXT("classList, rAF + style proxy), while the game keeps feeding Health and the scalar panels through ")
+	TEXT("UpdateModel -- and the M3 refusal button now lands in OnModelWrite and is echoed back (the accepted-write ")
+	TEXT("loop). Pair it with vacuus.DumpModel and vacuus.M4Demo.Freeze."),
+	FConsoleCommandDelegate::CreateLambda([] { Toggle(GM4DemoVfsPath); }));
+
+/**
+ * The M4 Freeze (spec 9: "Freeze freezes the JS clock inputs") -- BOTH halves, because the
+ * M4 demo has two clocks where M3 had one:
+ *
+ *  - the C++ half is FreezeDemoModel verbatim: the driver keeps calling UpdateModel every
+ *    frame with a byte-identical struct, which is the M3 idle row's proof shape;
+ *  - the JS half is `vacuus.onFreeze(bool)`, dispatched through ExecuteScript: the script
+ *    PAUSES its beats (clearInterval -- a fire-and-ignore interval would still count timer
+ *    fires against the idle counters) and its rAF loop goes inert without disarming, the
+ *    exact analogue of the byte-identical UpdateModel. m4_hud_logic.js documents its side.
+ *
+ * ExecuteScript is fire-and-forget FIFO into the same command queue as everything else, so
+ * the JS pause lands on the UI thread's next frame -- one frame of skew between the two
+ * halves, which no observable here can distinguish. Optional [delaySeconds] third of the
+ * arguments for -ExecCmds runs, where every command executes before the first frame.
+ */
+static void FreezeM4DemoModel(const TArray<FString>& Args)
+{
+	if (!GState || !GState->bM4Demo || !GState->ModelDriverHandle.IsValid())
+	{
+		UE_LOG(LogVaCuus, Error, TEXT("vacuus.M4Demo.Freeze needs the M4 demo to be on"));
+		return;
+	}
+
+	const float DelaySeconds = Args.Num() > 1 ? FCString::Atof(*Args[1]) : 0.0f;
+	const TArray<FString> FreezeArgs = Args.Num() > 0 ? TArray<FString>{Args[0]} : TArray<FString>{};
+
+	ScheduleAfter(DelaySeconds,
+		[FreezeArgs]
+		{
+			if (!GState || !GState->bM4Demo || !GState->ModelDriverHandle.IsValid())
+			{
+				UE_LOG(LogVaCuus, Error, TEXT("vacuus.M4Demo.Freeze fired, but the M4 demo is no longer on"));
+				return;
+			}
+
+			FreezeDemoModel(FreezeArgs);
+
+			if (UVaCuusView* View = GState->View.Get())
+			{
+				// Guarded, not assumed: a document that failed to load (or a future one without
+				// the script) has no callback, and an unguarded call would surface as a JS error
+				// for a console command that did its C++ half fine.
+				View->ExecuteScript(FString::Printf(
+					TEXT("if (typeof vacuus !== 'undefined' && typeof vacuus.onFreeze === 'function') vacuus.onFreeze(%s);"),
+					GState->bModelFrozen ? TEXT("true") : TEXT("false")));
+			}
+		});
+}
+
+static FAutoConsoleCommand GM4FreezeCommand(
+	TEXT("vacuus.M4Demo.Freeze"),
+	TEXT("Freeze [1] or thaw [0] the M4 demo's two clocks, optionally after [delaySeconds]: the C++ driver keeps ")
+	TEXT("calling UpdateModel with a byte-identical struct (the M3 precedent) and vacuus.onFreeze(bool) pauses the ")
+	TEXT("JS beats through ExecuteScript. Frozen, nothing publishes on either path."),
+	FConsoleCommandWithArgsDelegate::CreateStatic(&FreezeM4DemoModel));
 
 static void Wheel(const TArray<FString>& Args)
 {

@@ -3,7 +3,10 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "UObject/Object.h"
 #include "UObject/ObjectMacros.h"
+
+#include "VaCuusJsValue.h"
 
 #include "VaCuusDemoModel.generated.h"
 
@@ -122,7 +125,42 @@ struct FVaCuusDemoModel
 	 * FRONT above 6 rows -- deliberately the expensive direction (spec 3.6): removing element 0
 	 * shifts every survivor, so each trim exercises the all-rows re-render path on screen,
 	 * where an append-only feed would only ever exercise row creation.
+	 *
+	 * The M4 demo binds this same struct but leaves the field UNTOUCHED and unbound in its
+	 * document: m4_demo.rml's killfeed is JS-built DOM (spec 9), and a second feed here would
+	 * be a second truth.
 	 */
 	UPROPERTY(EditAnywhere, Category = "VaCuus")
 	TArray<FVaCuusDemoKillfeedRow> Killfeed;
+};
+
+/**
+ * The M4 demo's game-thread ear for routed document writes (M4 spec 3.10, plan Task 10.1):
+ * `UVaCuusView::OnModelWrite` is a DYNAMIC multicast delegate, which binds only to a
+ * UFUNCTION on a UObject -- the same constraint the router tests document
+ * (VaCuusJsRouterTestTypes.h) -- and the demo driver is file-static code in
+ * VaCuusRender.cpp. This class is the smallest possible adapter: one UFUNCTION forwarding
+ * into a plain TFunction the demo installs at bind time, so the accepted-write logic stays
+ * next to the driver it mutates.
+ *
+ * Game thread only, like the delegate that calls it; kept alive by the demo state's
+ * TStrongObjectPtr for exactly as long as the binding exists.
+ */
+UCLASS()
+class UVaCuusDemoWriteListener : public UObject
+{
+	GENERATED_BODY()
+
+public:
+	/** Installed by StartModelDriver, cleared by TearDown; never called after either. */
+	TFunction<void(FName, const FString&, const FVaCuusJsValue&)> OnWrite;
+
+	UFUNCTION()
+	void HandleModelWrite(FName Model, const FString& Path, const FVaCuusJsValue& Value)
+	{
+		if (OnWrite)
+		{
+			OnWrite(Model, Path, Value);
+		}
+	}
 };

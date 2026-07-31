@@ -5,6 +5,7 @@
 #include "VaCuus.h"
 #include "VaCuusBoundModel.h"
 #include "VaCuusDataVariable.h"
+#include "VaCuusDefines.h"
 #include "VaCuusDocumentHost.h"
 #include "VaCuusEngine.h"
 #include "VaCuusGameBridge.h"
@@ -231,6 +232,17 @@ public:
 				return;
 			}
 		}
+	}
+
+	/** One element's InnerRML, for phase actions that probe DOM the fixed Capture() does not cover. */
+	FString ReadInnerRml(const char* Id) const
+	{
+		check(FVaCuusUIThread::IsInUIThread());
+		if (Rml::Element* Element = RmlDocument != nullptr ? RmlDocument->GetElementById(Id) : nullptr)
+		{
+			return FString(UTF8_TO_TCHAR(Element->GetInnerRML().c_str()));
+		}
+		return FString();
 	}
 
 	const FVaCuusRouterTestModel& ShadowModel() const
@@ -864,6 +876,193 @@ bool FVaCuusRouterQueueBoundTest::RunTest(const FString& /*Parameters*/)
 	TestEqual(TEXT("the queue accepts again after the drain"), static_cast<int32>(Host->RoutedWritesBefore), 1);
 
 	FVaCuusWriteRouter::DrainGameThread();
+	UIThread->EnqueueRemoveView(ViewId);
+	RunFrames(*UIThread, 1);
+
+	return true;
+}
+
+/**
+ * THE M4 IDLE ROW's MODEL HALVES, EXACT (spec 7: a JS-bearing idle document over a
+ * settled window -- 0 published / 0 applied / 0 evaluated): a document that RAN a head
+ * script through the production script host, over a production-bound model the game
+ * keeps sampling byte-identically every frame. The M3b idle gates proved these zeros
+ * for scriptless documents; this is the M4-specific claim that a live JS context under
+ * the document -- pump running every frame -- does not break one of them. The JS-side
+ * exact zeros of the same row (0 timers fired / 0 rAF run / 0 jobs executed) live in
+ * VaCuus.Js.Cost.PumpIdle, in the VaCuusJs module where the fired-counters are
+ * reachable; the two tests together are the row.
+ *
+ * The window's frames each carry a real Sample + PublishPending of the unchanged live
+ * struct -- the vacuus.M3Demo.Freeze shape, "a game pushing its HUD struct every tick,
+ * unchanged" -- not the weaker nobody-called-UpdateModel case.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusJsIdleExactZerosTest, "VaCuus.Js.Cost.IdleExactZeros",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusJsIdleExactZerosTest::RunTest(const FString& /*Parameters*/)
+{
+	using namespace VaCuusJsRouterTest;
+
+	if (!FPlatformProcess::SupportsMultithreading())
+	{
+		AddInfo(TEXT("Skipped: no multithreading support, so there is no UI thread to drive"));
+		return true;
+	}
+
+	if (!TestFalse(TEXT("RmlUi is down before the test"), FVaCuusEngine::Get().IsInitialized()))
+	{
+		return false;
+	}
+
+	// A scripted document over the router-test model: two bound scalars (ScalarGets), a
+	// data-for over the killfeed rows (ArraySizes/ArrayChilds), and a head script whose
+	// DOM mark is the proof the JS side is genuinely present -- an idle test whose
+	// script silently never ran would prove M3b again and call it M4.
+	static const TCHAR* GIdleJsDocument = TEXT(R"(<rml>
+<head><style>body { display: block; font-family: LatoLatin; font-size: 14px; } div { display: block; }</style>
+<script>var m = document.getElementById('jsmark'); if (m !== null) { m.innerRML = 'js-ran'; }</script>
+</head>
+<body data-model="hud">
+	<div id="jsmark">js-not-run</div>
+	<div>{{Ammo}}</div>
+	<div>{{Title}}</div>
+	<div id="rows"><div data-for="kill : Killfeed">{{ kill.Killer }}</div></div>
+</body>
+</rml>)");
+
+	FVaCuusModule& Module = FVaCuusModule::Get();
+	FVaCuusUIThread* UIThread = Module.GetOrStartUIThread();
+	if (!TestNotNull(TEXT("UI thread"), UIThread))
+	{
+		return false;
+	}
+
+	ON_SCOPE_EXIT
+	{
+		Module.StopUIThread();
+	};
+
+	const TSharedRef<FVaCuusBoundModel> Model =
+		MakeShared<FVaCuusBoundModel>(FName(TEXT("hud")), FVaCuusRouterTestModel::StaticStruct());
+	if (!TestTrue(TEXT("the model built"), Model->IsValid()))
+	{
+		return false;
+	}
+
+	FVaCuusRouterTestModel Live;
+	SeedLive(Live);
+	Model->Sample(FVaCuusRouterTestModel::StaticStruct(), &Live);
+	Model->PublishPending();
+
+	// UI-thread observations, captured by the phase actions (the eval counters are
+	// UI-thread-checked accessors). Captured through pointers to these locals, which is
+	// safe under RunPhase's synchronous protocol: the test thread blocks until
+	// CompletedPhase (release) is seen (acquire), and the locals outlive every phase.
+	struct FCounterSnap
+	{
+		int32 ScalarGets = 0;
+		int32 ArraySizes = 0;
+		int32 ArrayChilds = 0;
+		FString JsMark;
+	};
+	FCounterSnap Before, After;
+
+	const TSharedRef<FVaCuusViewStatus> Status = MakeShared<FVaCuusViewStatus>();
+	TUniquePtr<FRouterProbeHost> OwnedHost = MakeUnique<FRouterProbeHost>(TEXT("vacuus_js_idle_view"));
+	FRouterProbeHost* Host = OwnedHost.Get();
+	Host->Model = Model;
+
+	Host->Actions.SetNum(3);
+	Host->Actions[1] = [&Before](FRouterProbeHost& InHost)
+	{
+		Before.ScalarGets = VaCuusData::GetNumScalarGets();
+		Before.ArraySizes = VaCuusData::GetNumArraySizes();
+		Before.ArrayChilds = VaCuusData::GetNumArrayChilds();
+		Before.JsMark = InHost.ReadInnerRml("jsmark");
+	};
+	Host->Actions[2] = [&After](FRouterProbeHost& InHost)
+	{
+		After.ScalarGets = VaCuusData::GetNumScalarGets();
+		After.ArraySizes = VaCuusData::GetNumArraySizes();
+		After.ArrayChilds = VaCuusData::GetNumArrayChilds();
+		After.JsMark = InHost.ReadInnerRml("jsmark");
+	};
+
+	const uint32 ViewId = UIThread->AllocateViewId();
+	UIThread->EnqueueAddView(ViewId, MoveTemp(OwnedHost), FIntPoint(400, 300), Status);
+	UIThread->EnqueueBindModel(ViewId, Model);
+	UIThread->EnqueueLoadDocumentFromMemory(ViewId, GIdleJsDocument, /*LoadSerial=*/1);
+
+	if (!TestTrue(TEXT("the initial phase ran"), RunPhase(*UIThread, *Host, 0)))
+	{
+		return false;
+	}
+	if (!TestTrue(TEXT("the document loaded"),
+			Status->LoadCompletedSerial.load(std::memory_order_acquire) == 1
+				&& Status->LoadResult.load(std::memory_order_relaxed) == uint8(EVaCuusLoadResult::Succeeded)))
+	{
+		return false;
+	}
+
+	// Settle: the forced first publish (I1) applies during these frames, the document
+	// evaluates its bindings once, and everything that will ever allocate has.
+	for (int32 Iteration = 0; Iteration < 8; ++Iteration)
+	{
+		Model->Sample(FVaCuusRouterTestModel::StaticStruct(), &Live);
+		Model->PublishPending();
+		if (!TestTrue(TEXT("settle frames ran"), RunFrames(*UIThread, 1)))
+		{
+			return false;
+		}
+	}
+
+	if (!TestTrue(TEXT("the window-open capture ran"), RunPhase(*UIThread, *Host, 1)))
+	{
+		return false;
+	}
+	if (!TestEqual(TEXT("the head script ran through the production host (the document IS JS-bearing)"),
+			Before.JsMark, FString(TEXT("js-ran"))))
+	{
+		return false;
+	}
+
+	const uint64 PublishesBefore = Model->GetNumPublishes();
+	const uint64 UpdatesAppliedBefore = Model->GetNumUpdatesApplied();
+	const uint64 FieldsAppliedBefore = Model->GetNumFieldsApplied();
+
+	// THE WINDOW: 200 frames, each one a full game-side push of the unchanged struct.
+	for (int32 Iteration = 0; Iteration < 200; ++Iteration)
+	{
+		Model->Sample(FVaCuusRouterTestModel::StaticStruct(), &Live);
+		Model->PublishPending();
+		if (!TestTrue(TEXT("window frames ran"), RunFrames(*UIThread, 1)))
+		{
+			return false;
+		}
+	}
+
+	if (!TestTrue(TEXT("the window-close capture ran"), RunPhase(*UIThread, *Host, 2)))
+	{
+		return false;
+	}
+
+	// ---- The exact zeros. Deltas, not absolutes: the settle frames own their counts. ----
+	TestEqual(TEXT("0 published across the window (the channel declined every unchanged push)"),
+		int32(Model->GetNumPublishes() - PublishesBefore), 0);
+	TestEqual(TEXT("0 updates applied"), int32(Model->GetNumUpdatesApplied() - UpdatesAppliedBefore), 0);
+	TestEqual(TEXT("0 fields applied"), int32(Model->GetNumFieldsApplied() - FieldsAppliedBefore), 0);
+	TestEqual(TEXT("0 scalar evaluations (no dirty -> DataViews touched nothing)"),
+		After.ScalarGets - Before.ScalarGets, 0);
+	TestEqual(TEXT("0 array-size evaluations"), After.ArraySizes - Before.ArraySizes, 0);
+	TestEqual(TEXT("0 array-child evaluations"), After.ArrayChilds - Before.ArrayChilds, 0);
+	TestEqual(TEXT("and the DOM mark is still the script's write (nothing re-rendered over it)"),
+		After.JsMark, FString(TEXT("js-ran")));
+
+	UE_LOG(LogVaCuus, Display,
+		TEXT("VaCuus M4 cost: idle row (JS-bearing document, bound model, 200-frame settled window): ")
+		TEXT("published=0 applied=0 evaluated=0 -- exact; the JS-side zeros are VaCuus.Js.Cost.PumpIdle's"));
+
 	UIThread->EnqueueRemoveView(ViewId);
 	RunFrames(*UIThread, 1);
 
