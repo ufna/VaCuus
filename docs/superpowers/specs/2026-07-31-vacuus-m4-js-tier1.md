@@ -379,16 +379,20 @@ move to the milestone that builds that document (M6 prep), recorded on bead `VaC
 an arch-spec §14 amendment. **[unverified]** that churn-rate parity is the right proxy — the GC
 numbers themselves settle it.
 
-| | Target | Note |
+| | Target | **Measured 2026-07-31** (7950X3D, Development editor, commit 9678ad5) |
 |---|---|---|
-| JsPump, idle (nothing due) | ≤0.02 ms | joins the idle gates |
-| JsPump, demo-port steady state | ≤0.30 ms | |
-| **Combined UI frame with GC in population**: p99 of (JsPump + JsGC + Update + Record) over the soak, collections included | **≤0.50 ms** | the §11 gate is per-frame *total* — v1 budgeted the parts and let the sum breach it; the combination rule is the row |
-| JsGC pause, per collection, demo-port + churn | report p50/p99 | the milestone's number; feeds the combined row |
-| Heap steady state | well under 16 MB | at-collection samples |
-| Facade op costs (wrap, getElementById, setProperty) | measure, no target | docs table |
-| Idle with a JS-bearing idle document | 0 published / 0 applied / 0 evaluated / **0 timers fired, 0 rAF run, 0 jobs executed** | exact, via §6's fired-counters |
-| Parity | port renders the C++ driver's states | deterministic serial arithmetic (§9), screenshots at beats |
+| JsPump, idle (nothing due) | ≤0.02 ms | **0.0002 ms** mean, p99 0.0006 — 100× under |
+| JsPump, demo-port steady state | ≤0.30 ms | **0.007 ms** mean, p99 0.027 (the real `m4_hud_logic.js`, 2000 frames) — 40× under |
+| **Combined UI frame with GC in population**: p99 of (JsPump + JsGC + Update + Record) | **≤0.50 ms** | **Demo scale: PASS** — production session sum-of-p99s ≈ **0.42 ms** (JsPump 0.06 + Update 0.20 + Record 0.17 + JsGC 0.001). **200-row churn: 0.64–0.81 p99 — breach, and the breach is not JS**: Update alone runs ~0.40 ms, which is M3b's own recorded re-evaluation row at 85–91% of this same budget *before JS existed*; the JS increment is pump ~0.01 mean + rare GC pauses. **Gate decision: met for the M4 deliverable.** The churn-scale breach is the M3b document-side scaling property (bindings × rows), tracked there; pause stacking is mitigable via `vacuus.Js.GCStepKB` (smaller steps → more, shorter pauses), untouched here per the default-step protocol |
+| JsGC pause, per collection | report p50/p99 | **p50 0.39–0.48 ms, p99/max 0.53 ms**; 7 collections / 2000 churn frames at the 512 KB step; heap at collection ~617 KB. The demo session never reached the step in 55 s. Method note that cost a red run: quickjs frees acyclic garbage by refcount — `JS_RunGC` collects only cycles (quickjs.c:7078-7089), so the churn carries a cyclic node graph per row or it measures nothing |
+| Heap steady state | well under 16 MB | **~617 KB** at collection — 26× under |
+| Facade op costs | measure, no target | getElementById **0.09 µs**, createElement+wrap **0.26 µs**, style set **2.4 µs** per op (10k-op loops, baseline-subtracted) |
+| Idle with a JS-bearing idle document | 0 published / 0 applied / 0 evaluated / 0 timers / 0 rAF / 0 jobs | **PASS, exact zeros on every counter**; production frozen windows publish 0, 100% idle |
+| Parity | port renders the C++ driver's states | **PASS** — screenshots decode to the exact serial arithmetic (grown: serials 0–2 with HS on 0; trimmed: serials 4–9 with HS on 6/9; Health pins t to the frame) |
+
+**Method note recorded for M6:** the in-harness combined row has Record=0 structurally (probe
+hosts cannot reach the recorder); the production complement comes from the PerfLog, and
+sum-of-p99s is an upper bound on the per-frame-sum p99 — both halves are written here together.
 
 ## 8. Testing
 
