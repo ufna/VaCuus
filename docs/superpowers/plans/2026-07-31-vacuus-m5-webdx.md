@@ -129,8 +129,18 @@ modules; comments cite source, every cited line opened.
 - [ ] **9.1** `vacuus.M5Demo` per spec §8 (TSX HUD + glass + decorators + world quad +
       localized string); AutoShot; the §6 table measured and written into the spec.
 - [ ] **9.2** Full suite green; monolithic build; SIGTERM teardown with all tracks live.
-- [ ] **9.3** Arch-spec amendments (§10's five corrections) committed.
-- [ ] **9.4** Merge `m5-webdx` → master; close beads.
+- [ ] **9.3** **The packaged-game gate (user directive, 2026-08-01):** cook + package VcHost
+      for Linux via `RunUAT BuildCookRun` — first **Development**, then **Shipping** — and run
+      each packaged binary headless WITHOUT the editor: the M5 demo must boot from cooked
+      content (DevUI documents + the committed JS bundle staged and readable through the
+      pak/VFS path, shaders present, JS runtime up in Shipping with its Shipping defaults),
+      screenshots verified. Expected trouble to shake out now, not at M6: content staging
+      rules for loose DevUI files, the global shader library (bead `VaCuus-akj.6.17` is
+      adjacent — that one is UNcooked standalone), Shipping's compiled-out diagnostics.
+      Findings that need engine-side or cook-pipeline work get beads; blockers fixed
+      in-milestone. The full three-platform matrix + the `UVaCuusBundle` cook path remain M6.
+- [ ] **9.4** Arch-spec amendments (§10's five corrections) committed.
+- [ ] **9.5** Merge `m5-webdx` → master; close beads.
 
 ---
 
