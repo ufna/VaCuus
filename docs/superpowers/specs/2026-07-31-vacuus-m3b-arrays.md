@@ -308,10 +308,15 @@ papering over them:
   in two convergence iterations, nowhere near the cap of 10 — which only nesting depth or a
   keep-dirtying view chain can exhaust, and the latter is closed here by one-way binding
   (m3b-rmlui-arrays.md §5).
-- **`{{ Arr.size }}` is the array's element count, always.** An element *member* named `size` is
-  reachable — `Arr[0].size` routes the name to the element struct's `Child`, not the array's
-  (ParseAddress yields the index and the name as separate entries — m3b-rmlui-arrays.md §7) — but
-  `Arr.size` itself never reaches the element. One doc line; no refusal.
+- **`{{ Arr.size }}` is the array's element count, always.** The routing is real — `Arr[0].size`
+  hands the name to the element struct's `Child`, not the array's (ParseAddress yields the index
+  and the name as separate entries — m3b-rmlui-arrays.md §7; the Task 4 test observes the element
+  struct's own missing-member Warning there) — **but nothing bindable can sit at that address**:
+  an element *top-level* member named `Size` is refused by the root rule §3.1 imposes on shared
+  layouts (reserved word). The reachable spelling is one level deeper — `Rows[0].Panel.Size`
+  renders fine, because `ValidateNested` applies no reserved-word rule. One doc line; no refusal.
+  *(Corrected after implementation: v2 claimed `Arr[0].size` itself was reachable, which the
+  shared-layout name rule forecloses.)*
 - **`data-for` re-evaluates every view in every row on any dirty of the root.** DOM writes still
   gate on compare-before-write per view, so O(all bindings) evaluations, O(changed) writes — the
   M3a idle discrimination extends to a third layer here, now observable via §3.5's counters: an
