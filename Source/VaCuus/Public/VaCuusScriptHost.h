@@ -63,15 +63,19 @@ public:
 	 * Context::LoadDocument while the OLD context is still the current one.
 	 * Typed as the Rml pointer rather than an opaque void* for the same reason
 	 * IVaCuusDocumentHost::GetContext() is: both modules see the same forward
-	 * declaration and the compiler checks the handoff. Wired in M4 Task 6.
+	 * declaration and the compiler checks the handoff. The caller reaches this
+	 * through FVaCuusUIThread::GetActiveScriptHost() (M4 Task 6).
 	 */
 	virtual void OnDocumentReady(uint32 ViewId, Rml::ElementDocument* Document) = 0;
 
 	/**
 	 * The view's current document is about to close (document replace, explicit
-	 * close, view removal). Dispatch point for unload JS, at Close() time -- the
-	 * element tree is freed later, by the next Context::Update(). Wired in M4
-	 * Task 6.
+	 * close, either shutdown path). Dispatch point for unload JS, called by the
+	 * document host's CloseDocument BEFORE Document->Close() -- the document is
+	 * still current, and the tree is freed later still, by a Context::Update().
+	 * The one close path that does NOT arrive here in time is view removal:
+	 * there OnViewRemoved runs first and owns the unload, because the context
+	 * dies inside it (M4 Task 6).
 	 */
 	virtual void OnDocumentClosing(uint32 ViewId) = 0;
 
@@ -95,8 +99,8 @@ public:
 
 	/**
 	 * Evaluates Source against ViewId's context, SourceName naming it in errors
-	 * and backtraces. The command plumbing that calls this lands in M4 Task 6;
-	 * per-view contexts in Task 3.
+	 * and backtraces. Called by DrainCommands for the ExecuteScript command kind
+	 * (M4 Task 6); an unknown view is the host's own Error-level refusal.
 	 */
 	virtual void ExecuteScript(uint32 ViewId, const FString& Source, const FString& SourceName) = 0;
 

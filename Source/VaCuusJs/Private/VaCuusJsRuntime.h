@@ -135,6 +135,16 @@ public:
 	void NoteJobExecuted() { NumJobsExecuted.fetch_add(1, std::memory_order_relaxed); }
 
 	/**
+	 * vacuus.onUnload callbacks actually INVOKED (M4 Task 6) -- a fired-count,
+	 * not a gauge: a close with no callback registered counts nothing. The
+	 * unload dispatch runs in a context that is about to be recycled, so its own
+	 * globals cannot testify afterwards; this counter is the survivor-side
+	 * observable the unload tests assert on.
+	 */
+	uint64 GetNumUnloadCallbacksRun() const { return NumUnloadCallbacksRun.load(std::memory_order_relaxed); }
+	void NoteUnloadCallbackRun() { NumUnloadCallbacksRun.fetch_add(1, std::memory_order_relaxed); }
+
+	/**
 	 * THE THREE-DEATH-ORDERS OBSERVABLE (M4 Task 5, spec 2(g)): the number of
 	 * listener-held JS function refs currently alive, a GAUGE, not a fired-count.
 	 * +1 when a listener dups its callback (addEventListener, or an on* snippet
@@ -236,6 +246,7 @@ private:
 	std::atomic<uint64> NumCollections{0};
 	std::atomic<uint64> NumErrors{0};
 	std::atomic<uint64> NumWatchdogTrips{0};
+	std::atomic<uint64> NumUnloadCallbacksRun{0};
 
 	//~ Owning-thread-only bookkeeping; plain members on purpose (see the class
 	//~ comment's counter-pattern note -- these have no cross-thread readers).

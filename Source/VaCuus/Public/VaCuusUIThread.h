@@ -149,6 +149,17 @@ public:
 	void EnqueueCloseDocument(uint32 ViewId);
 	void EnqueueResize(uint32 ViewId, FIntPoint ViewSize);
 	void EnqueueSetVisible(uint32 ViewId, bool bVisible);
+
+	/**
+	 * Evaluates Source against the view's JS context when the drain reaches it
+	 * (M4 Task 6); SourceName names it in errors and backtraces. FIFO from the
+	 * single producer, so an ExecuteScript enqueued after a LoadDocument* runs
+	 * against the loaded document. Before any document, `document` is null
+	 * (spec 3.4); with JS off or an unknown view the drain/script host says so
+	 * at Error (see EVaCuusCommandKind::ExecuteScript).
+	 */
+	void EnqueueExecuteScript(uint32 ViewId, const FString& Source, const FString& SourceName);
+
 	void EnqueueShutdown();
 
 	/**
@@ -264,6 +275,22 @@ public:
 
 	/** True when the calling thread is the VaCuus UI thread. Backs the check() wrappers. */
 	static bool IsInUIThread();
+
+	/**
+	 * The live script host, or null in every JS-less configuration. UI THREAD
+	 * ONLY (checked), and static for the same reason IsInUIThread() is: the
+	 * callers are document-host implementations in modules that depend on this
+	 * one (FVaCuusRmlDocumentHost's AdoptDocument/CloseDocument -- the M4 Task 6
+	 * seam), which hold no FVaCuusUIThread and must not reach one through
+	 * FModuleManager on a worker thread. At most one UI thread exists per
+	 * process (the class comment), so a process-wide slot loses nothing.
+	 *
+	 * Published in Init() after the host is created, retracted in Exit() after
+	 * the host dies -- between those points every drained command, and therefore
+	 * every host call that wants this, sees a stable pointer. MUST NOT BE
+	 * STORED: it dies with the thread.
+	 */
+	static IVaCuusScriptHost* GetActiveScriptHost();
 
 	//~ Begin FRunnable interface
 	/** Asks the worker to leave its loop and wakes it. Idempotent, and safe after it exited. */

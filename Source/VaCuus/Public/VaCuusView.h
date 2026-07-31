@@ -177,6 +177,21 @@ public:
 	void LoadDocumentFromMemory(const FString& RmlSource);
 
 	/**
+	 * Evaluates Source as JavaScript against this view's context (M4). Fire and
+	 * forget like every mutator here: the script runs when the UI thread drains
+	 * the command, its errors land in the log (LogVaCuusJS) named after this
+	 * view, and a dead view drops the call with a Warning.
+	 *
+	 * ORDERING IS THE QUEUE'S FIFO: enqueued after a LoadDocument*, the script
+	 * runs against that document; enqueued before any load, it runs with
+	 * `document === null` (feature-testable, spec 3.4). With JavaScript disabled
+	 * (vacuus.Js.Enable 0 at thread boot, or no VaCuusJs module) the drain
+	 * refuses it at Error rather than losing it silently.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "VaCuus")
+	void ExecuteScript(const FString& Source);
+
+	/**
 	 * Closes the current document; the view (and its context) stays alive and can load
 	 * another. The view goes blank on the next UI frame -- the one the close still owes,
 	 * which clears the render target and is also what makes RmlUi free the document

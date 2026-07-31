@@ -96,12 +96,34 @@ public:
 
 	/**
 	 * Points the `document` global at Document (wrapped through the identity
-	 * cache), or back at null. Production wiring is M4 Task 6's OnDocumentReady;
-	 * until then the caller is FVaCuusJsScriptHost::BindDocumentForTest. UI
-	 * thread in production -- this wraps, and wrapping allocates an ObserverPtr
-	 * block from RmlUi's un-mutexed global pool (ObserverPtr.cpp:6-24).
+	 * cache), or back at null. Production callers (M4 Task 6): OnDocumentReady
+	 * for a document with scripts, EnsureViewContext for a context materialized
+	 * after its view's document was already current; tests keep
+	 * FVaCuusJsScriptHost::BindDocumentForTest. UI thread in production -- this
+	 * wraps, and wrapping allocates an ObserverPtr block from RmlUi's un-mutexed
+	 * global pool (ObserverPtr.cpp:6-24).
 	 */
 	void BindDocument(Rml::ElementDocument* Document);
+
+	/**
+	 * The Tier 1 unload surface (M4 Task 6): invokes `vacuus.onUnload` if a
+	 * script assigned a function to it, under the entry guard, exceptions to the
+	 * sink, counted on the runtime (GetNumUnloadCallbacksRun). Called by the
+	 * script host at Close() time -- document replace, explicit close, view
+	 * removal, and both shutdown paths -- always BEFORE the tree's deferred free
+	 * and BEFORE this context dies, so the callback still sees its DOM.
+	 *
+	 * DELIBERATELY NOT A DOM EVENT: RmlUi dispatches its own `unload` into the
+	 * closing tree inside Context::UnloadDocument (Context.cpp:339-341), so a
+	 * JS-visible DOM unload would either duplicate that dispatch or require
+	 * hooking into it mid-teardown -- and on the view-removal path there is no
+	 * Close() at all, only tree destruction inside the host's Shutdown(). One
+	 * callback slot on the `vacuus` host object (InstallGlobals), invoked by the
+	 * host at a moment IT controls, is the smallest surface that fires
+	 * identically on every death path; Task 9 grows the same object
+	 * (vacuus.model, vacuus.log).
+	 */
+	void DispatchUnload();
 
 	/**
 	 * The identity cache's front door: one wrapper per live element, `===`

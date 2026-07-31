@@ -21,21 +21,38 @@ class ElementDocument;
 class FVaCuusJsEventListener;
 class FVaCuusJsScriptHost;
 class FVaCuusJsViewContext;
+class FVaCuusScriptDocument;
 
 /**
- * The host's ear on RmlUi's process-global plugin bus (M4 Task 4) -- exactly
- * one hook for now, OnElementDestroy, fired from inside ~Element
- * (Element.cpp:99) for EVERY element the process destroys. That is what keeps
- * the identity cache honest: the host probes each live view context's cache by
- * raw pointer and erases the dying element's entry (spec 2(g)); misses cost
- * one TMap lookup. GetEventClasses narrows delivery to element events only
- * (Plugin.h's EVT_ELEMENT), so the registry never calls anything else here.
+ * The host's ear on RmlUi's process-global plugin bus (M4 Task 4) -- two hooks:
+ *
+ * OnElementDestroy, fired from inside ~Element (Element.cpp:99) for EVERY
+ * element the process destroys. That is what keeps the identity cache honest:
+ * the host probes each live view context's cache by raw pointer and erases the
+ * dying element's entry (spec 2(g)); misses cost one TMap lookup.
+ *
+ * OnInitialise (M4 Task 6), the document-instancer registration point:
+ * Factory's instancer map exists only between Rml::Initialise and
+ * Rml::Shutdown, so the constructor cannot register unconditionally -- the
+ * library-level tests build a host with RmlUi down. This hook is exact on both
+ * orderings (FVaCuusScriptDocumentInstancer's class comment): immediate from
+ * RegisterPlugin when RmlUi is already up -- the production order -- and from
+ * NotifyInitialise, after Factory::Initialise installed the default, when a
+ * registered host sees a later boot. EVT_BASIC is claimed for this hook;
+ * NotifyInitialise walks the basic list only (PluginRegistry.cpp:63-69).
+ * The instancer and the document class themselves live in VaCuusRml, NOT here,
+ * and that location is enforced by an observed crash -- the cross-module
+ * custom-RTTI argument in VaCuusScriptDocument.h.
+ *
+ * NOTE the spec-2(f) NON-hook: OnDocumentLoad is deliberately absent. It fires
+ * inside Context::LoadDocument (Context.cpp:299) while a replace's OLD context
+ * is still current -- executing scripts there is v1's recorded bug (spec 12.1).
+ * Script execution is host-ordered through IVaCuusScriptHost::OnDocumentReady.
  *
  * Registered in the host's constructor, unregistered in Shutdown() -- both on
  * the thread that owns the host, and registration is legal before
- * Rml::Initialise (RegisterPlugin only forwards OnInitialise when RmlUi is
- * already up, Core.cpp:353-359), which covers the library-level tests that
- * build a host with RmlUi down. The registry itself is un-mutexed; safe here
+ * Rml::Initialise (RegisterPlugin forwards OnInitialise only when RmlUi is
+ * already up, Core.cpp:353-359). The registry itself is un-mutexed; safe here
  * because a host is only ever created/destroyed while nothing else drives
  * RmlUi (production: the UI thread's own Init/Exit; tests: the exclusivity
  * contract every VaCuusJs test already runs under).
@@ -48,7 +65,8 @@ public:
 	{
 	}
 
-	virtual int GetEventClasses() override { return EVT_ELEMENT; }
+	virtual int GetEventClasses() override { return EVT_BASIC | EVT_ELEMENT; }
+	virtual void OnInitialise() override;
 	virtual void OnElementDestroy(Rml::Element* Element) override;
 
 private:
@@ -92,13 +110,14 @@ private:
  * FVaCuusJsModule::StartupModule registers, destroyed at the top of Exit() --
  * see the interface for the full timing contract.
  *
- * TASK 3 SHAPE: the host owns the process's FVaCuusJsRuntime (lazy, Task 2)
- * plus one FVaCuusJsViewContext per view that has run a script (lazy again:
+ * SHAPE (Tasks 3-6): the host owns the process's FVaCuusJsRuntime (lazy, Task
+ * 2) plus one FVaCuusJsViewContext per view that has run a script (lazy again:
  * OnViewAdded only REGISTERS the id; the context materializes at the first
- * ExecuteScript). PumpFrame is live -- rAF, timers, the bounded job drain, in
- * spec 3.5's order. Documents and the ExecuteScript command plumbing are M4
- * Task 6; until then ExecuteScript's callers are tests (and Task 6 will call
- * exactly this method from the command drain).
+ * script). PumpFrame is live -- rAF, timers, the bounded job drain, in spec
+ * 3.5's order. Since Task 6 the document seam is wired end to end: the
+ * document hosts call OnDocumentClosing at Close() time and OnDocumentReady
+ * after old-close and Show() (through FVaCuusUIThread::GetActiveScriptHost),
+ * and the command drain routes the ExecuteScript kind into ExecuteScript here.
  */
 class FVaCuusJsScriptHost final : public IVaCuusScriptHost
 {
@@ -171,9 +190,10 @@ public:
 	/**
 	 * TEST-ONLY (M4 Task 4): points ViewId's `document` global at a real
 	 * Rml::ElementDocument, materializing the context if needed -- the facade
-	 * tests' stand-in for the production wiring, which is Task 6's
-	 * OnDocumentReady with the spec 2(f) recycle ordering this entry does NOT
-	 * perform. Module-private header, so nothing ships past the seam.
+	 * tests' stand-in for the production wiring, which is OnDocumentReady with
+	 * the spec 2(f) recycle ordering this entry does NOT perform (the Task 4/5
+	 * suites depend on their globals surviving a bind). Module-private header,
+	 * so nothing ships past the seam.
 	 */
 	void BindDocumentForTest(uint32 ViewId, Rml::ElementDocument* Document);
 
@@ -185,16 +205,19 @@ public:
 	/**
 	 * THE on*-ROUTING LOOKUP (M4 Task 5): document -> bound view's context, or
 	 * null. Backed by a TMap<Rml::ElementDocument*, ViewId> written wherever a
-	 * document binds to a context -- today BindDocumentForTest, in M4 Task 6
-	 * OnDocumentReady (which needs this exact map again for its own routing).
-	 * Purge points LIVE today: rebind (BindDocumentForTest drops the view's old
-	 * entry first), OnViewRemoved, and Shutdown. OnDocumentClosing's handler
-	 * also purges, but NOTHING CALLS IT until Task 6 wires the seam -- so until
-	 * then a document closed WITHOUT its view being removed leaves a stale
-	 * entry, and only the by-value probe (raw pointer, never dereferenced)
-	 * keeps that honest: a recycled address would mis-route, not crash, and
-	 * today's only close paths (test rigs, view teardown) hit a live purge
-	 * point before any same-view replacement document can load.
+	 * document becomes a view's current one -- OnDocumentReady in production
+	 * (which needs this exact map again for its own routing), and
+	 * BindDocumentForTest. Purge points: rebind (both writers drop the view's
+	 * old entries first), OnDocumentClosing (wired from the document hosts'
+	 * CloseDocument since Task 6), OnViewRemoved, and Shutdown. The by-value
+	 * probe rule stands regardless: keys are raw pointers, never dereferenced,
+	 * so even a missed purge would mis-route rather than crash.
+	 *
+	 * Null is also the answer for a mapped view whose context never
+	 * materialized: the map carries the VIEW binding, the context stays lazy
+	 * (spec 3.4), so an on* attribute in a document with no <script> and no
+	 * ExecuteScript resolves to nothing and stays inert -- the Task 5 warning
+	 * path, unchanged.
 	 */
 	FVaCuusJsViewContext* FindViewContextForDocument(Rml::ElementDocument* Document) const;
 
@@ -210,11 +233,29 @@ private:
 	void EnsureRuntime();
 
 	/**
-	 * The context-materialization ExecuteScript and BindDocumentForTest share:
-	 * runtime first (process-wide, lazy), then the view's context. Null when
-	 * the view is unknown or JS_NewContext failed (which already logged why).
+	 * The context-materialization ExecuteScript, OnDocumentReady and
+	 * BindDocumentForTest share: runtime first (process-wide, lazy), then the
+	 * view's context -- and, when DocumentViews says the view already has a
+	 * current document, the `document` bind, so an ExecuteScript that
+	 * materializes AFTER an unscripted load still sees the DOM (spec 3.4's
+	 * lazy-context rule would otherwise leave `document` null on exactly that
+	 * path). Null when the view is unknown or JS_NewContext failed (which
+	 * already logged why).
 	 */
 	FVaCuusJsViewContext* EnsureViewContext(uint32 ViewId);
+
+	/**
+	 * OnDocumentReady's tail: runs Document's captured scripts, in document
+	 * order, each under its own guarded Eval. External scripts resolve their src
+	 * through the DevUI roots at run time (VaCuusContentPaths) and read through
+	 * the pak-transparent IPlatformFile path (VaCuusJsScriptSource -- Task 7's
+	 * module loader reuses it); a miss is ONE Error naming document and path,
+	 * and later scripts still run. A watchdog trip inside one script skips
+	 * every script after it with one Error naming how many (spec 3.3) --
+	 * detected by the runtime's trip counter moving across the Eval, the only
+	 * observable a consumed uncatchable leaves behind.
+	 */
+	void RunCapturedScripts(FVaCuusJsViewContext& View, const FVaCuusScriptDocument& Document);
 
 	/**
 	 * Phase 3 of one view's pump segment: the runtime-wide job drain, bounded by

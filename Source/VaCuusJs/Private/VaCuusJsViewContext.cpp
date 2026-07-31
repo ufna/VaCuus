@@ -151,9 +151,18 @@ void FVaCuusJsViewContext::InstallGlobals()
 	// `document` exists from birth and is NULL until a document is ready (spec
 	// 3.4, tested): scripts can feature-test `document === null` instead of
 	// tripping a ReferenceError. BindDocument swaps in the real Document wrapper
-	// -- today only through the host's test-only entry, in M4 Task 6 from
-	// OnDocumentReady.
+	// -- from OnDocumentReady / EnsureViewContext in production (M4 Task 6), or
+	// through the host's test-only entry.
 	JS_SetPropertyStr(Ctx, Global, "document", JS_NULL);
+
+	// The `vacuus` host object (M4 Task 6 mints it, Task 9 populates it with
+	// model()/log). Tier 1 surface: `vacuus.onUnload` -- assign a function and
+	// DispatchUnload invokes it at close time. Seeded NULL rather than left
+	// absent so `vacuus.onUnload === null` feature-tests cleanly, mirroring
+	// `document`.
+	JSValue Vacuus = JS_NewObject(Ctx);
+	JS_SetPropertyStr(Ctx, Vacuus, "onUnload", JS_NULL);
+	JS_SetPropertyStr(Ctx, Global, "vacuus", Vacuus);
 
 	JSValue Console = JS_NewObject(Ctx);
 	JS_SetPropertyStr(Ctx, Console, "log",
@@ -210,6 +219,53 @@ void FVaCuusJsViewContext::Eval(const FString& Source, const FString& SourceName
 		Runtime.ReportException(Ctx, *SourceName);
 	}
 	JS_FreeValue(Ctx, Ret);
+}
+
+void FVaCuusJsViewContext::DispatchUnload()
+{
+	if (Ctx == nullptr)
+	{
+		return;
+	}
+
+	// Read through the property chain at DISPATCH time, not registration time:
+	// whatever function `vacuus.onUnload` holds right now is the callback, so a
+	// script can re-assign or clear it up to the last moment -- the on*
+	// attribute's read-at-fire semantics, one level up. A script that clobbered
+	// the `vacuus` global with a non-object simply has no callback; property
+	// reads on a plain object cannot throw here.
+	JSValue Global = JS_GetGlobalObject(Ctx);
+	JSValue Vacuus = JS_GetPropertyStr(Ctx, Global, "vacuus");
+	JS_FreeValue(Ctx, Global);
+	if (!JS_IsObject(Vacuus))
+	{
+		JS_FreeValue(Ctx, Vacuus);
+		return;
+	}
+
+	JSValue Fn = JS_GetPropertyStr(Ctx, Vacuus, "onUnload");
+	JS_FreeValue(Ctx, Vacuus);
+	if (!JS_IsFunction(Ctx, Fn))
+	{
+		JS_FreeValue(Ctx, Fn);
+		return;
+	}
+
+	// The house entry shape (Eval's): guard wraps the call only, the exception
+	// is consumed after it closes, a throw is the callback's own problem and
+	// never escapes into the close path that asked.
+	JSValue Ret;
+	{
+		FVaCuusJsEntryGuard Guard(Runtime, Ctx, TEXT("vacuus.onUnload"));
+		Ret = JS_Call(Ctx, Fn, JS_UNDEFINED, 0, nullptr);
+	}
+	Runtime.NoteUnloadCallbackRun();
+	if (JS_IsException(Ret))
+	{
+		Runtime.ReportException(Ctx, TEXT("vacuus.onUnload"));
+	}
+	JS_FreeValue(Ctx, Ret);
+	JS_FreeValue(Ctx, Fn);
 }
 
 void FVaCuusJsViewContext::PumpCallbacks(double NowSeconds)

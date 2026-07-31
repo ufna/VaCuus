@@ -200,6 +200,23 @@ void UVaCuusView::LoadDocumentFromMemory(const FString& RmlSource)
 	UIThread->EnqueueLoadDocumentFromMemory(ViewId, RmlSource, Serial, LastViewSize);
 }
 
+void UVaCuusView::ExecuteScript(const FString& Source)
+{
+	check(IsInGameThread());
+
+	FVaCuusUIThread* UIThread = GetUIThread();
+	if (!UIThread)
+	{
+		UE_LOG(LogVaCuus, Warning, TEXT("ExecuteScript() on an invalid view is ignored"));
+		return;
+	}
+
+	// The source name is deliberately deterministic -- view id, no serial -- so
+	// a log reader can attribute an error to the API surface it came through,
+	// and a test can match the refusal lines exactly.
+	UIThread->EnqueueExecuteScript(ViewId, Source, FString::Printf(TEXT("<ExecuteScript view %u>"), ViewId));
+}
+
 void UVaCuusView::Close()
 {
 	check(IsInGameThread());

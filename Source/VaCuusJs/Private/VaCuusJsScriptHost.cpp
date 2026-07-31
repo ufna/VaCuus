@@ -2,14 +2,18 @@
 
 #include "VaCuusJsScriptHost.h"
 
+#include "VaCuusContentPaths.h"
 #include "VaCuusJs.h"
 #include "VaCuusJsEventListener.h"
 #include "VaCuusJsRuntime.h"
+#include "VaCuusJsScriptSource.h"
 #include "VaCuusJsViewContext.h"
+#include "VaCuusScriptDocument.h"
 
 #include "HAL/IConsoleManager.h"
 
 #include <RmlUi/Core/Core.h>
+#include <RmlUi/Core/ElementDocument.h>
 #include <RmlUi/Core/Factory.h>
 
 static TAutoConsoleVariable<int32> CVarVaCuusJsMaxJobsPerPump(
@@ -24,6 +28,15 @@ static TAutoConsoleVariable<int32> CVarVaCuusJsMaxJobsPerPump(
 FVaCuusJsScriptHost::FVaCuusJsScriptHost()
 	: FVaCuusJsScriptHost(FParams())
 {
+}
+
+void FVaCuusJsRmlPlugin::OnInitialise()
+{
+	// The document-instancer registration point -- see the class comment for why
+	// this hook and not the host constructor, and FVaCuusScriptDocumentInstancer
+	// (VaCuusScriptDocument.h, in VaCuusRml for the vtable-locality argument
+	// there) for why the instancer is process-immortal rather than host-owned.
+	FVaCuusScriptDocumentInstancer::RegisterWithFactory();
 }
 
 void FVaCuusJsRmlPlugin::OnElementDestroy(Rml::Element* Element)
@@ -83,6 +96,25 @@ void FVaCuusJsScriptHost::OnViewAdded(uint32 ViewId)
 
 void FVaCuusJsScriptHost::OnViewRemoved(uint32 ViewId)
 {
+	// UNLOAD FIRST, while everything is still alive. The caller (RemoveView)
+	// invokes this BEFORE the document host's Shutdown(), so the view's document
+	// is still open -- but that Shutdown()'s own OnDocumentClosing arrives too
+	// late for JS, because the context dies right here. This is the one close
+	// path where the host must dispatch the unload itself, and only when the
+	// view actually has a current document (the DocumentViews probe): a
+	// document-less view's onUnload is not a close of anything.
+	if (FVaCuusJsViewContext* View = FindViewContext(ViewId))
+	{
+		for (const TPair<Rml::ElementDocument*, uint32>& Pair : DocumentViews)
+		{
+			if (Pair.Value == ViewId)
+			{
+				View->DispatchUnload();
+				break;
+			}
+		}
+	}
+
 	// CONTEXTS DIE HERE, AND THE PUMP ITERATES LIVE CONTEXTS ONLY -- that pair of
 	// rules is the entire pump-vs-retired-views story. OnViewRemoved runs from
 	// DrainCommands, before the same frame's PumpFrame (VaCuusUIThread.cpp
@@ -90,8 +122,10 @@ void FVaCuusJsScriptHost::OnViewRemoved(uint32 ViewId)
 	// reach them; and on the in-band shutdown path -- which closes every DOCUMENT
 	// but removes no view (VaCuusUIThread.cpp's Shutdown command handling) -- the
 	// contexts stay registered and the tail frame legally pumps them: their
-	// `document` is null in Task 3 anyway, and Task 6's OnDocumentClosing will
-	// neuter it on that path before any callback can see a dead tree.
+	// documents closed through OnDocumentClosing (unload dispatched, routing map
+	// purged), leaving `document` a dead wrapper -- and dead handles answer the
+	// dead-handle shape whether the tree is merely closed or already freed by
+	// that frame's own Update, so no callback can reach freed memory.
 	//
 	// Destruction frees every callback JSValue against a still-live Rml tree (the
 	// caller's ordering guarantee) -- load-bearing since Task 4: the context's
@@ -118,21 +152,186 @@ void FVaCuusJsScriptHost::OnViewRemoved(uint32 ViewId)
 	}
 }
 
-void FVaCuusJsScriptHost::OnDocumentReady(uint32 /*ViewId*/, Rml::ElementDocument* /*Document*/)
+void FVaCuusJsScriptHost::OnDocumentReady(uint32 ViewId, Rml::ElementDocument* Document)
 {
-	// (documents: M4 Task 6) The host-ordered recycle-and-run point (spec 2(f)).
-}
+	// THE HOST-ORDERED RECYCLE-AND-RUN POINT (spec 2(f)). The caller is the
+	// document host's AdoptDocument, after the old document's close (whose
+	// OnDocumentClosing already dispatched unload JS into the old context) and
+	// after Show() -- never Plugin::OnDocumentLoad, which fires inside
+	// Context::LoadDocument (Context.cpp:299) while the OLD context is current;
+	// running scripts there is v1's recorded bug (spec 12.1), restored and
+	// observed by the Reload test's red half.
+	TUniquePtr<FVaCuusJsViewContext>* Entry = ViewContexts.Find(ViewId);
+	if (Entry == nullptr || Document == nullptr)
+	{
+		// Unknown view is the BindModel failure shape (a document loaded, its
+		// scripts silently gone); a null document is a caller bug -- AdoptDocument
+		// never adopts one.
+		UE_LOG(LogVaCuusJS, Error,
+			TEXT("OnDocumentReady for %s view %u dropped; its document scripts will never run"),
+			Entry == nullptr ? TEXT("unknown") : TEXT("a document-less"), ViewId);
+		return;
+	}
 
-void FVaCuusJsScriptHost::OnDocumentClosing(uint32 ViewId)
-{
-	// (documents: M4 Task 6) Unload JS dispatch, at Close() time. The map
-	// hygiene lands now (Task 5): the closing view's document leaves the
-	// on*-routing map BEFORE its address can be recycled by a replacement.
+	// THE RECYCLE: replace = destroy + recreate, browser-refresh semantics
+	// (spec 3.4). Moved out of the entry IN PLACE, not removed -- the dying
+	// wrappers fire OnElementDestroy, whose handler iterates ViewContexts, and
+	// that walk must never see the map mid-mutation (the ViewContexts teardown
+	// rule); a present-but-null entry is the map's ordinary "registered, not
+	// materialized" state and the handler skips it. The destructor's neuter
+	// walk and opaque-null land automatically (VaCuusJsViewContext.cpp).
+	if (Entry->IsValid())
+	{
+		TUniquePtr<FVaCuusJsViewContext> Dying = MoveTemp(*Entry);
+		Dying.Reset();
+	}
+
+	// The on*-routing map learns the new document -- UNCONDITIONALLY, before any
+	// context question: the binding is view-level, and EnsureViewContext reads
+	// it back to point `document` at the right tree whenever this view's context
+	// materializes (now, for a scripted document, or later, at the first
+	// ExecuteScript after an unscripted load). Old entries for the view are
+	// already gone -- OnDocumentClosing purged them at close time -- but purge
+	// again for the one caller that closes nothing: a first load into a fresh
+	// view (a no-op walk there).
 	for (auto It = DocumentViews.CreateIterator(); It; ++It)
 	{
 		if (It.Value() == ViewId)
 		{
 			It.RemoveCurrent();
+		}
+	}
+	DocumentViews.Add(Document, ViewId);
+
+	// The capture is only readable on documents OUR instancer built --
+	// IsOurs(), never rmlui_dynamic_cast (the WrapElement comment in
+	// VaCuusJsDom.cpp carries the cross-module argument; VaCuusScriptDocument.h
+	// records the SIGSEGV that pinned it for documents specifically). Every
+	// document loaded while a host exists is ours (the instancer's registration
+	// timing), so the negative branch is a host created into a session that
+	// loaded documents before it -- possible only in exotic test orderings, and
+	// worth a line when it happens.
+	if (!FVaCuusScriptDocumentInstancer::Get().IsOurs(Document))
+	{
+		UE_LOG(LogVaCuusJS, Verbose,
+			TEXT("View %u's document predates the JS document instancer; no scripts to run"), ViewId);
+		return;
+	}
+
+	const FVaCuusScriptDocument* JsDocument = static_cast<const FVaCuusScriptDocument*>(Document);
+	if (JsDocument->GetCapturedScripts().empty())
+	{
+		// No <script> in <head> (a <body> script never reaches the capture --
+		// RmlUi has no body script handler, XMLNodeHandlerHead.cpp:84-91,
+		// :126-130 -- documented, not fought). The context stays lazy: nothing
+		// to run means nothing to pay for (spec 3.4).
+		return;
+	}
+
+	// Fresh context (the recycle above guarantees fresh), bound to the new
+	// document by EnsureViewContext's DocumentViews read, then the captured
+	// scripts in document order. Null only with the JS heap at its cap --
+	// already logged, and the scripts are honestly lost with it.
+	if (FVaCuusJsViewContext* View = EnsureViewContext(ViewId))
+	{
+		RunCapturedScripts(*View, *JsDocument);
+	}
+}
+
+void FVaCuusJsScriptHost::OnDocumentClosing(uint32 ViewId)
+{
+	// Unload JS at Close() time (spec 3.4): the caller is the document host's
+	// CloseDocument, BEFORE Document->Close(), so the callback runs against a
+	// document that is still current and a tree whose deferred free has not
+	// even been queued yet. No materialized context means no script ever ran
+	// and nothing can have registered a callback.
+	if (FVaCuusJsViewContext* View = FindViewContext(ViewId))
+	{
+		View->DispatchUnload();
+	}
+
+	// Map hygiene (Task 5): the closing view's document leaves the on*-routing
+	// map BEFORE its address can be recycled by a replacement.
+	for (auto It = DocumentViews.CreateIterator(); It; ++It)
+	{
+		if (It.Value() == ViewId)
+		{
+			It.RemoveCurrent();
+		}
+	}
+}
+
+void FVaCuusJsScriptHost::RunCapturedScripts(FVaCuusJsViewContext& View, const FVaCuusScriptDocument& Document)
+{
+	const Rml::Vector<FVaCuusCapturedScript>& Scripts = Document.GetCapturedScripts();
+	const int32 NumScripts = static_cast<int32>(Scripts.size());
+	const FString DocumentUrl(UTF8_TO_TCHAR(Document.GetSourceURL().c_str()));
+
+	for (int32 Index = 0; Index < NumScripts; ++Index)
+	{
+		const FVaCuusCapturedScript& Script = Scripts[Index];
+
+		FString Source;
+		FString SourceName;
+		if (Script.bIsInline)
+		{
+			Source = UTF8_TO_TCHAR(Script.Content.c_str());
+			SourceName = FString::Printf(TEXT("%s:%d"), UTF8_TO_TCHAR(Script.SourcePath.c_str()), Script.SourceLine);
+		}
+		else
+		{
+			// THE CAPTURED src IS NOT THE RAW ATTRIBUTE: the head handler joined
+			// it against the DOCUMENT's own URL -- document-relative for a
+			// relative src (SystemInterface::JoinPath, SystemInterface.cpp:52-84)
+			// -- and pipe-encoded every ':' (Absolutepath,
+			// XMLNodeHandlerHead.cpp:14-19). Undo the encoding, then strip any
+			// scheme (a memory document named "vacuus://x.rml" glues "vacuus://"
+			// onto the join): the remainder resolves through the ordered DevUI
+			// roots like every other VFS path. The strip is load-bearing --
+			// FPaths::IsRelative treats "vacuus://x.js" as relative, so an
+			// unstripped scheme would probe "<Root>/vacuus://x.js" and miss
+			// (the plugin-integration note's recorded trap, section 3).
+			//
+			// Resolved at RUN time, read via the pak-transparent IPlatformFile
+			// path (VaCuusJsScriptSource). A miss is one Error naming document
+			// and path, and the LATER scripts still run -- one broken include
+			// must not take the whole head down.
+			FString SrcPath(UTF8_TO_TCHAR(Script.SourcePath.c_str()));
+			SrcPath.ReplaceCharInline(TEXT('|'), TEXT(':'));
+			if (const int32 SchemeEnd = SrcPath.Find(TEXT("://")); SchemeEnd != INDEX_NONE)
+			{
+				SrcPath.RightChopInline(SchemeEnd + 3);
+			}
+			const FString Resolved = VaCuusContentPaths::ResolveExistingDocument(SrcPath);
+			if (Resolved.IsEmpty() || !VaCuusJsScriptSource::ReadScriptFile(Resolved, Source))
+			{
+				UE_LOG(LogVaCuusJS, Error,
+					TEXT("View %u: <script src=\"%s\"> in %s did not resolve to a readable file; the script is skipped ")
+					TEXT("(later scripts still run)"),
+					View.GetViewId(), *SrcPath, *DocumentUrl);
+				continue;
+			}
+			SourceName = Resolved;
+		}
+
+		// The watchdog observable: a trip's uncatchable error is consumed inside
+		// Eval's sink, so the counter moving across the call is the only trace
+		// left (the M2 "invariant with no observable" lesson, applied to a
+		// refusal). One trip skips the REST of this document's scripts -- the
+		// budget is per entry, and a head that already burned it once would burn
+		// it N times, freezing the UI thread for N deadlines (spec 3.3).
+		const uint64 TripsBefore = View.GetRuntime().GetNumWatchdogTrips();
+		View.Eval(Source, SourceName);
+		if (View.GetRuntime().GetNumWatchdogTrips() > TripsBefore)
+		{
+			const int32 NumSkipped = NumScripts - Index - 1;
+			if (NumSkipped > 0)
+			{
+				UE_LOG(LogVaCuusJS, Error,
+					TEXT("View %u: the watchdog tripped in %s; skipping the remaining %d document script(s) of %s"),
+					View.GetViewId(), *SourceName, NumSkipped, *DocumentUrl);
+			}
+			break;
 		}
 	}
 }
@@ -312,6 +511,22 @@ FVaCuusJsViewContext* FVaCuusJsScriptHost::EnsureViewContext(uint32 ViewId)
 			// JS_NewContext already said why, with the view named.
 			return nullptr;
 		}
+
+		// If the view already has a current document (an unscripted load bound
+		// it into the routing map without materializing anything), point
+		// `document` at it now -- an ExecuteScript that materializes the
+		// context after such a load must see the DOM, not null (spec 3.4's
+		// tested contract is "null until a document is READY", not "null until
+		// a script happened to be first").
+		for (const TPair<Rml::ElementDocument*, uint32>& Pair : DocumentViews)
+		{
+			if (Pair.Value == ViewId)
+			{
+				NewContext->BindDocument(Pair.Key);
+				break;
+			}
+		}
+
 		*Entry = MoveTemp(NewContext);
 	}
 

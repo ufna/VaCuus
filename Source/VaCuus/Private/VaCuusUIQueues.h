@@ -85,6 +85,25 @@ enum class EVaCuusCommandKind : uint8
 	/** Shows or hides the view's document per bVisible. */
 	SetVisible,
 
+	/**
+	 * Evaluates Payload as JS source against the view's context (M4 Task 6),
+	 * SourceName naming it in errors and backtraces.
+	 *
+	 * HANDLED BEFORE THE PER-VIEW HOST LOOKUP, like DumpModel and for a sibling
+	 * reason: the target is the SCRIPT host, which keeps its own view registry
+	 * (same membership as the document-host map -- OnViewAdded fires exactly when
+	 * AddView registers) and refuses an unknown view at Error itself. Losing a
+	 * script silently would repeat the BindModel lesson -- nothing downstream
+	 * ever misses it -- so both failure modes are loud: the script host's
+	 * unknown-view Error, and the drain's own Error when no script host exists
+	 * at all (JS disabled, VaCuusJs absent).
+	 *
+	 * ORDERING FOR FREE: FIFO from the single producer means an ExecuteScript
+	 * enqueued after a LoadDocument* runs against the loaded document -- the
+	 * same argument BindModel-before-load rests on above.
+	 */
+	ExecuteScript,
+
 	/** In-band graceful stop: close every document, then leave the frame loop. */
 	Shutdown
 };
@@ -115,8 +134,16 @@ struct FVaCuusUICommand
 	/** View this command applies to; 0 (and Shutdown) means "the whole thread". */
 	uint32 ViewId = 0;
 
-	/** Document path or RML source, per Kind. Empty for the rest. */
+	/** Document path, RML source or JS source, per Kind. Empty for the rest. */
 	FString Payload;
+
+	/**
+	 * ExecuteScript only: the name errors and backtraces report for Payload.
+	 * A second string rather than a packed encoding in Payload, because the
+	 * payload is VERBATIM source -- any separator would be a byte some script
+	 * legally contains.
+	 */
+	FString SourceName;
 
 	/** View size in pixels; ZeroValue means "leave the current size alone". */
 	FIntPoint ViewSize = FIntPoint::ZeroValue;
