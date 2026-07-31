@@ -97,11 +97,11 @@ public:
 
 	/**
 	 * Live bytes currently held from FMemory by this runtime, in the allocator's
-	 * OWN accounting basis: the quantized block size (FMemory::GetAllocSize --
-	 * what FMemory::QuantizeSize promises for the request), not the requested
-	 * byte count. See the malloc hooks for why the two bases coincide. This
-	 * counter -- not JS_ComputeMemoryUsage, which walks the whole heap -- is what
-	 * drives the per-frame GC trigger (spec 2(b)).
+	 * OWN accounting basis: the sum of FMemory::GetAllocSize over live blocks,
+	 * not of requested byte counts. See HookMalloc for the two properties the
+	 * accounting actually rests on -- add/subtract symmetry, and the
+	 * constructor's zero-probe. This counter -- not JS_ComputeMemoryUsage, which
+	 * walks the whole heap -- is what drives the per-frame GC trigger (spec 2(b)).
 	 */
 	int64 GetLiveBytes() const { return LiveBytes.load(std::memory_order_relaxed); }
 
@@ -149,8 +149,9 @@ public:
 	 * The M4 Task 2 error sink (Task 8 builds the overlay on top of it): consumes
 	 * the pending exception -- JS_GetException returns AND clears, "cannot be
 	 * called twice" (quickjs.c:7602-7610) -- logs message plus `stack` to
-	 * LogVaCuusJS, counts it, and arms the OOM fallback when the message is the
-	 * engine's own "out of memory" (JS_ThrowOutOfMemory, quickjs.c:8127-8135).
+	 * LogVaCuusJS, counts it, and arms the OOM fallback when the exception is the
+	 * engine's own InternalError "out of memory" (JS_ThrowOutOfMemory,
+	 * quickjs.c:8127-8136; the implementation has the exact predicate and why).
 	 * Call it AFTER a guarded entry's FVaCuusJsEntryGuard has closed, so a
 	 * watchdog trip has already been made catchable again. Owning thread.
 	 */

@@ -173,16 +173,21 @@ void* FVaCuusJsRuntime::HookCalloc(void* Opaque, size_t Count, size_t Size)
 
 void* FVaCuusJsRuntime::HookMalloc(void* Opaque, size_t Size)
 {
-	// THE ACCOUNTING BASIS, once, for all four hooks: the counter moves by the
-	// allocator's QUANTIZED block size -- FMemory::GetAllocSize(Ptr), which reports
-	// for a live block exactly what FMemory::QuantizeSize promises for the request
-	// (UnrealMemory.h:214, :224: the size the allocation actually uses) -- not by the
-	// requested byte count. Same figure on the add and the subtract, so the counter
-	// self-cancels exactly; and the same figure HookUsableSize feeds quickjs, so our
-	// GC trigger and the engine's cap accounting (usable + MALLOC_OVERHEAD per block,
-	// quickjs.c:1654) count in one currency. Note FMemory::Malloc never returns null
-	// -- UE's allocators report OOM and crash -- but the JS memory cap cannot be the
-	// cause: quickjs enforces it BEFORE the hook is reached (quickjs.c:1645-1647).
+	// THE ACCOUNTING BASIS, once, for all four hooks: the counter moves by
+	// FMemory::GetAllocSize(Ptr) -- the allocator's own answer for the live block
+	// -- not by the requested byte count. GetAllocSize is UNDOCUMENTED
+	// (UnrealMemory.h:213 carries no contract; QuantizeSize at :217-223 promises
+	// only ">= Count", for a REQUEST, not a block), so this accounting leans on
+	// nothing it does not verify: (1) SYMMETRY -- whatever a live block reports at
+	// the add it reports again at the subtract, so the counter self-cancels
+	// exactly and zero at runtime destruction means no block outlived it; (2) the
+	// constructor's zero-probe, which is what catches an allocator that answers 0
+	// instead of a doc promise nobody made. The same figure feeds quickjs through
+	// HookUsableSize, so our GC trigger and the engine's cap accounting (usable +
+	// MALLOC_OVERHEAD per block, quickjs.c:1654) count in one currency. Note
+	// FMemory::Malloc never returns null -- UE's allocators report OOM and crash
+	// -- but the JS memory cap cannot be the cause: quickjs enforces it BEFORE
+	// the hook is reached (quickjs.c:1645-1647).
 	LLM_SCOPE_BYTAG(VaCuusJS);
 	void* Ptr = FMemory::Malloc(Size);
 	static_cast<FVaCuusJsRuntime*>(Opaque)->LiveBytes.fetch_add(
@@ -364,11 +369,22 @@ void FVaCuusJsRuntime::ReportException(JSContext* Ctx, const TCHAR* SourceName)
 
 	NumErrors.fetch_add(1, std::memory_order_relaxed);
 
-	// The OOM recognition that arms the fallback. String-matched because the engine
-	// exposes no error-kind API for it, but the string is a stable single point:
-	// JS_ThrowOutOfMemory is the one thrower of exactly "out of memory"
-	// (quickjs.c:8127-8135, latched by rt->in_out_of_memory so it cannot even nest).
-	if (Message.Contains(TEXT("out of memory")))
+	// The OOM recognition that arms the fallback. The engine's shape is fixed:
+	// JS_ThrowOutOfMemory throws an InternalError with message exactly "out of
+	// memory" (quickjs.c:8127-8136, latched by rt->in_out_of_memory so it cannot
+	// even nest), which stringifies to exactly "InternalError: out of memory".
+	// The predicate below is the tightest the public API allows: an error-KIND
+	// check does not exist -- every native error is built with class
+	// JS_CLASS_ERROR and differs only by prototype (JS_MakeError2,
+	// quickjs.c:7980-7985), and the prototype table is context-private -- so it
+	// is JS_IsError (the class check, quickjs.c:11604-11607) plus WHOLE-string
+	// equality. A script's `throw new Error("... out of memory ...")` stringifies
+	// as "Error: ...": no match (the bug a Contains() here had). Forging the
+	// exact string takes renaming an Error by hand -- the InternalError
+	// constructor is not installed as a global, only handed to internal builtins
+	// (quickjs.c:8598-8600) -- and buys the forger nothing but one spurious
+	// collection at the next frame point.
+	if (JS_IsError(Exception) && Message.Equals(TEXT("InternalError: out of memory")))
 	{
 		NoteOutOfMemory();
 	}

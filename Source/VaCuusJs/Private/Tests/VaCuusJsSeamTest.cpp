@@ -114,6 +114,12 @@ bool FVaCuusJsSeamHostGatingTest::RunTest(const FString& Parameters)
 	}
 	const int32 SavedEnable = EnableCVar->GetInt();
 
+	// Pinned to 1 for the whole test (restored on exit): blocks (a), (b) and (d)
+	// expect a registered factory to produce a host, and an ambient 0 -- left
+	// behind by a config tweak or an earlier crash -- would veto that silently.
+	// Only block (c) exercises the 0 gating, and it sets 0 itself, on purpose.
+	EnableCVar->Set(1, ECVF_SetByConsole);
+
 	// Whatever happens below, leave the process as found: thread down, cvar back,
 	// and the PRODUCTION factory re-registered (this test is inside VaCuusJs, so it
 	// can rebuild what FVaCuusJsModule::StartupModule registered).
