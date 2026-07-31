@@ -130,9 +130,14 @@ by TSR** — documented honestly, post-AA/FXAA guidance), the WS-GAMMA decode de
 switch. One preset asset replaces UMG's six.
 
 **(j) The facade is fifteen gaps away from Preact** — G1 text nodes moderate, traversal/
-discrimination trivial, event-name case fork-side; `className` is **likely a no-op** (Preact
-routes to `setAttribute('class')`, which the facade applies immediately — E-P2 confirms rather
-than budgets a patch); style camelCase→kebab facade-side. **The brace hazard is a real injection
+discrimination trivial, event-name case fork-side; style camelCase→kebab facade-side.
+*(Corrected by E-P observation, 2026-08-01: v2's "className is likely a no-op" was wrong —
+stock preact 10.29.7 emits `setAttribute("className", …)` outside SVG, silently losing the
+class; the className→class rename exists only in its SVG branch. The fork renames it, or the
+facade grows a `className` accessor. Also observed: `createElementNS` is preact's ONLY
+element-creation call and mount adoption walks `dom.attributes` — both landed as facade gaps
+the table missed; `replaceChild` is never called and was dropped; preact appends `px` itself.
+Full record: m5-api-notes/ep-observations.md.)* **The brace hazard is a real injection
 class**: RmlUi's text instancer auto-tags brace-bearing text with `data-text` (Factory.cpp
 :343-392) — a Preact app rendering user strings containing `{{` via text nodes or
 `dangerouslySetInnerHTML` gets data-binding evaluation of user data. **G1's text-node write path
