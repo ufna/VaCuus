@@ -639,4 +639,292 @@ bool FVaCuusModelSamplerCostTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+/**
+ * ARRAY DIFF (M3b): one bit per array, first difference wins -- and BOTH failure
+ * directions matter, as everywhere in this file. A missed change is a row the screen
+ * never shows; an extra bit is a whole-array copy, a publish and a full data-for
+ * re-evaluation per frame for values that did not move.
+ *
+ * The LAST-element case is the one that polices the early-out: "stop at the first
+ * difference" is correct only while the scan that finds no difference still reaches the
+ * tail, and no other case fails if it stops one short.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusModelSamplerArrayDiffTest, "VaCuus.Model.Sampler.ArrayDiff",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusModelSamplerArrayDiffTest::RunTest(const FString& Parameters)
+{
+	using namespace VaCuusModelSamplerTest;
+
+	FPipeline Pipeline(FVaCuusArrayTestModel::StaticStruct());
+	const int32 ScalarIndex = IndexOf(Pipeline.Layout, TEXT("Scalar"));
+	const int32 NumbersIndex = IndexOf(Pipeline.Layout, TEXT("Numbers"));
+	const int32 LabelsIndex = IndexOf(Pipeline.Layout, TEXT("Labels"));
+	const int32 KillfeedIndex = IndexOf(Pipeline.Layout, TEXT("Killfeed"));
+	const int32 PanelItemsIndex = IndexOf(Pipeline.Layout, TEXT("Panel.Items"));
+	if (!TestTrue(TEXT("the fixture resolved every field"),
+			ScalarIndex != INDEX_NONE && NumbersIndex != INDEX_NONE && LabelsIndex != INDEX_NONE && KillfeedIndex != INDEX_NONE
+				&& PanelItemsIndex != INDEX_NONE))
+	{
+		return false;
+	}
+
+	// One assertion shape for "exactly this array's bit, and then quiet": the extra frame
+	// matters because a mis-stored shadow re-reports the same change forever.
+	auto ExpectExactlyOne = [this, &Pipeline](const TCHAR* What, FVaCuusArrayTestModel& Live, int32 ExpectedIndex)
+	{
+		const TArray<int32> Changed = Pipeline.RunFrame(Live);
+		if (TestEqual(*FString::Printf(TEXT("%s: exactly one field is marked"), What), Changed.Num(), 1))
+		{
+			TestEqual(*FString::Printf(TEXT("%s: and it is the right one"), What), Changed[0], ExpectedIndex);
+		}
+		else
+		{
+			for (const int32 Index : Changed)
+			{
+				AddError(FString::Printf(TEXT("%s marked '%s'"), What, *Pipeline.Layout.GetFields()[Index].WireName));
+			}
+		}
+		TestEqual(*FString::Printf(TEXT("%s: the change settles"), What), Pipeline.RunFrame(Live).Num(), 0);
+	};
+
+	FVaCuusArrayTestModel Live;
+	Live.Numbers = {10, 20, 30};
+	Live.Labels = {TEXT("alpha"), TEXT("beta")};
+	Live.Ratios = {0.5, 0.25};
+	Live.Killfeed.SetNum(2);
+	Live.Killfeed[0].Killer = TEXT("Ada");
+	Live.Killfeed[0].Victim = TEXT("Bob");
+	Live.Killfeed[1].Killer = TEXT("Cid");
+	Live.Killfeed[1].Victim = TEXT("Dee");
+	Live.Panel.Items = {1, 2};
+
+	// Frame 1 is the forced full publish (I1); frame 2 is the idle contract.
+	Pipeline.RunFrame(Live);
+	TestEqual(TEXT("an unchanged frame publishes nothing"), Pipeline.RunFrame(Live).Num(), 0);
+
+	// ONE ELEMENT -> the array's bit, and the WHOLE array arrives -- the bit has no finer
+	// meaning to preserve.
+	Live.Numbers[0] = 11;
+	ExpectExactlyOne(TEXT("first element"), Live, NumbersIndex);
+	TestTrue(TEXT("the changed array reached the UI"),
+		Read<TArray<int32>>(Pipeline.Layout, Pipeline.UIShadow.GetData(), TEXT("Numbers")) == TArray<int32>({11, 20, 30}));
+
+	// THE LAST ELEMENT: the no-difference scan must have reached the tail for this to mark.
+	Live.Numbers.Last() = 33;
+	ExpectExactlyOne(TEXT("last element"), Live, NumbersIndex);
+	TestTrue(TEXT("the tail change reached the UI"),
+		Read<TArray<int32>>(Pipeline.Layout, Pipeline.UIShadow.GetData(), TEXT("Numbers")) == TArray<int32>({11, 20, 33}));
+
+	// APPEND, FRONT-TRIM, CLEAR: every Num() change is a change, and the trim is the
+	// killfeed's real shape -- values shift under fixed indices.
+	Live.Labels.Add(TEXT("gamma"));
+	ExpectExactlyOne(TEXT("append"), Live, LabelsIndex);
+	Live.Labels.RemoveAt(0);
+	ExpectExactlyOne(TEXT("front trim"), Live, LabelsIndex);
+	TestTrue(TEXT("the shifted values arrived"),
+		Read<TArray<FString>>(Pipeline.Layout, Pipeline.UIShadow.GetData(), TEXT("Labels"))
+			== TArray<FString>({TEXT("beta"), TEXT("gamma")}));
+	Live.Labels.Empty();
+	ExpectExactlyOne(TEXT("clear"), Live, LabelsIndex);
+	TestEqual(TEXT("the empty array arrived"),
+		Read<TArray<FString>>(Pipeline.Layout, Pipeline.UIShadow.GetData(), TEXT("Labels")).Num(), 0);
+
+	// A STRUCT-ELEMENT LEAF, twice: once through the row's nested struct -- the deepest
+	// path an element compare walks -- and once through the row's native bool.
+	Live.Killfeed[1].Impact.X = 4.f;
+	ExpectExactlyOne(TEXT("nested leaf in a row"), Live, KillfeedIndex);
+	TestEqual(TEXT("the row's nested leaf arrived"),
+		Read<TArray<FVaCuusTestKillfeedRow>>(Pipeline.Layout, Pipeline.UIShadow.GetData(), TEXT("Killfeed"))[1].Impact.X, 4.f);
+	Live.Killfeed[0].bHeadshot = true;
+	ExpectExactlyOne(TEXT("bool leaf in a row"), Live, KillfeedIndex);
+
+	// THE NESTED ARRAY is its own leaf with its own bit.
+	Live.Panel.Items[1] = 9;
+	ExpectExactlyOne(TEXT("array nested in a struct"), Live, PanelItemsIndex);
+
+	// THE SCALAR CONTROL: array compares must not leak onto neighbours in either direction.
+	Live.Scalar = 5;
+	ExpectExactlyOne(TEXT("scalar neighbour"), Live, ScalarIndex);
+
+	// 200 UNCHANGED ROWS -> NO BIT, repeatedly: the idle answer must not depend on size.
+	FPipeline BigPipeline(FVaCuusArrayTestModel::StaticStruct());
+	FVaCuusArrayTestModel Big;
+	Big.Killfeed.SetNum(200);
+	for (int32 Row = 0; Row < 200; ++Row)
+	{
+		Big.Killfeed[Row].Killer = FString::Printf(TEXT("K%d"), Row);
+		Big.Killfeed[Row].Victim = FString::Printf(TEXT("V%d"), Row);
+	}
+	BigPipeline.RunFrame(Big);
+	for (int32 Frame = 0; Frame < 5; ++Frame)
+	{
+		TestEqual(TEXT("an unchanged 200-row array marks nothing"), BigPipeline.RunFrame(Big).Num(), 0);
+	}
+
+	return true;
+}
+
+/**
+ * CASE-ONLY ELEMENT CHANGES, the array form of VaCuus.Model.Sampler.StringCase: the
+ * element comparator ships the display form and must compare it case-sensitively, both for
+ * a scalar FString element and for an FString leaf inside a struct row. The obvious
+ * per-element compare -- operator==, which is Stricmp (UnrealString.h.inl:906-915), and
+ * exactly what FStrProperty::Identical resolves to -- passes every other test in this file
+ * and fails precisely here: a stale label, forever, with no diagnostic.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusModelSamplerArrayStringCaseTest, "VaCuus.Model.Sampler.ArrayStringCase",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusModelSamplerArrayStringCaseTest::RunTest(const FString& Parameters)
+{
+	using namespace VaCuusModelSamplerTest;
+
+	FPipeline Pipeline(FVaCuusArrayTestModel::StaticStruct());
+
+	FVaCuusArrayTestModel Live;
+	Live.Labels = {TEXT("hp"), TEXT("mp")};
+	Live.Killfeed.SetNum(1);
+	Live.Killfeed[0].Victim = TEXT("bob");
+	Pipeline.RunFrame(Live);
+	Pipeline.RunFrame(Live);
+
+	// Case, and nothing else, in both element shapes.
+	Live.Labels[1] = TEXT("MP");
+	Live.Killfeed[0].Victim = TEXT("BOB");
+	const TArray<int32> Changed = Pipeline.RunFrame(Live);
+	TestTrue(TEXT("FString element: a case-only change is a change"),
+		Changed.Contains(IndexOf(Pipeline.Layout, TEXT("Labels"))));
+	TestTrue(TEXT("row FString leaf: a case-only change is a change"),
+		Changed.Contains(IndexOf(Pipeline.Layout, TEXT("Killfeed"))));
+
+	// Case-sensitive read-back, NEVER TestEqual: the framework's string TestEqual is
+	// Stricmp (AutomationTest.cpp:2161-2171) -- the same trap one layer up, and the M3a
+	// StringCase test found it the hard way.
+	TestTrue(TEXT("the new element casing reached the UI"),
+		Read<TArray<FString>>(Pipeline.Layout, Pipeline.UIShadow.GetData(), TEXT("Labels"))[1].Equals(TEXT("MP"), ESearchCase::CaseSensitive));
+	TestTrue(TEXT("and so did the row's"),
+		Read<TArray<FVaCuusTestKillfeedRow>>(Pipeline.Layout, Pipeline.UIShadow.GetData(), TEXT("Killfeed"))[0].Victim.Equals(TEXT("BOB"), ESearchCase::CaseSensitive));
+
+	TestEqual(TEXT("the case change settles"), Pipeline.RunFrame(Live).Num(), 0);
+
+	return true;
+}
+
+/**
+ * A NaN ELEMENT MUST SETTLE, the array form of the PerKind NaN case: `NaN != NaN` is true
+ * for a value compared with itself, so a value-comparing element differ reports the field
+ * changed on EVERY frame from then on -- one whole-array copy, one publish and one full
+ * data-for re-evaluation per frame for a value that is not moving. The element comparator
+ * compares bit patterns, exactly like the field-level FloatingPoint case, because it IS
+ * that case in value-pointer form.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusModelSamplerArrayNaNTest, "VaCuus.Model.Sampler.ArrayNaN",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusModelSamplerArrayNaNTest::RunTest(const FString& Parameters)
+{
+	using namespace VaCuusModelSamplerTest;
+
+	FPipeline Pipeline(FVaCuusArrayTestModel::StaticStruct());
+
+	FVaCuusArrayTestModel Live;
+	Live.Ratios = {1.0, 0.5};
+	Live.Killfeed.SetNum(1);
+	Pipeline.RunFrame(Live);
+	Pipeline.RunFrame(Live);
+
+	// NaN in both element shapes: a double element, and a float leaf inside a row.
+	Live.Ratios[1] = std::numeric_limits<double>::quiet_NaN();
+	Live.Killfeed[0].Impact.X = std::numeric_limits<float>::quiet_NaN();
+	const TArray<int32> Changed = Pipeline.RunFrame(Live);
+	TestTrue(TEXT("going NaN is itself a change (element)"), Changed.Contains(IndexOf(Pipeline.Layout, TEXT("Ratios"))));
+	TestTrue(TEXT("going NaN is itself a change (row leaf)"), Changed.Contains(IndexOf(Pipeline.Layout, TEXT("Killfeed"))));
+
+	// And then NOTHING, five frames in a row -- the assertion a value compare cannot pass.
+	for (int32 Frame = 0; Frame < 5; ++Frame)
+	{
+		TestEqual(TEXT("a NaN element does not republish every frame"), Pipeline.RunFrame(Live).Num(), 0);
+	}
+
+	return true;
+}
+
+/**
+ * SyncCopy SEMANTICS (spec 3.3): Resize to the source Num -- touching only the delta --
+ * then per-element assignment. Values and Num are asserted here; the allocation claims
+ * (zero container reallocations on a warm same-Num sync, element buffers reused) need the
+ * counting-allocator harness and land with the Task 6 measurements, where a malloc proxy
+ * can count what no value assertion can see.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusModelSyncCopyTest, "VaCuus.Model.SyncCopy",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusModelSyncCopyTest::RunTest(const FString& Parameters)
+{
+	const FVaCuusModelLayout Layout(FVaCuusArrayTestModel::StaticStruct());
+	const FVaCuusModelField* Labels = Layout.FindField(TEXT("Labels"));
+	const FVaCuusModelField* Killfeed = Layout.FindField(TEXT("Killfeed"));
+	if (!TestNotNull(TEXT("Labels resolved"), Labels) || !TestNotNull(TEXT("Killfeed resolved"), Killfeed))
+	{
+		return false;
+	}
+
+	auto CasedEqual = [](const TArray<FString>& Actual, std::initializer_list<const TCHAR*> Expected)
+	{
+		if (Actual.Num() != int32(Expected.size()))
+		{
+			return false;
+		}
+		int32 Index = 0;
+		for (const TCHAR* Value : Expected)
+		{
+			if (!Actual[Index++].Equals(Value, ESearchCase::CaseSensitive))
+			{
+				return false;
+			}
+		}
+		return true;
+	};
+
+	FVaCuusArrayTestModel Src;
+	FVaCuusArrayTestModel Dest;
+
+	// SHRINK: the destination ends as an exact copy -- surviving elements carry the SOURCE
+	// values, removed elements are gone, nothing of the old tail bleeds through.
+	Src.Labels = {TEXT("newA"), TEXT("newB")};
+	Dest.Labels = {TEXT("one"), TEXT("two"), TEXT("three"), TEXT("four")};
+	Labels->CopyValue(&Dest, &Src);
+	TestTrue(TEXT("a shrinking sync carries exactly the source"), CasedEqual(Dest.Labels, {TEXT("newA"), TEXT("newB")}));
+
+	// GROW from empty: every element constructed and assigned.
+	Dest.Labels.Empty();
+	Src.Labels = {TEXT("a"), TEXT("b"), TEXT("c")};
+	Labels->CopyValue(&Dest, &Src);
+	TestTrue(TEXT("a growing sync constructs the full source"), CasedEqual(Dest.Labels, {TEXT("a"), TEXT("b"), TEXT("c")}));
+
+	// SAME-Num warm sync: still an exact copy. (That this performs zero container
+	// reallocations is Task 6's counting-allocator assertion, not a value one.)
+	Src.Labels = {TEXT("x"), TEXT("y"), TEXT("z")};
+	Labels->CopyValue(&Dest, &Src);
+	TestTrue(TEXT("a same-Num sync carries exactly the source"), CasedEqual(Dest.Labels, {TEXT("x"), TEXT("y"), TEXT("z")}));
+
+	// STRUCT ROWS shrink the same way, nested members included.
+	Src.Killfeed.SetNum(1);
+	Src.Killfeed[0].Killer = TEXT("Ada");
+	Src.Killfeed[0].Impact.Y = 7.f;
+	Dest.Killfeed.SetNum(3);
+	Dest.Killfeed[0].Killer = TEXT("Old0");
+	Dest.Killfeed[1].Killer = TEXT("Old1");
+	Dest.Killfeed[2].Killer = TEXT("Old2");
+	Killfeed->CopyValue(&Dest, &Src);
+	if (TestEqual(TEXT("a row shrink ends at the source Num"), Dest.Killfeed.Num(), 1))
+	{
+		TestEqual(TEXT("with the source's strings"), Dest.Killfeed[0].Killer, FString(TEXT("Ada")));
+		TestEqual(TEXT("and the source's nested leaves"), Dest.Killfeed[0].Impact.Y, 7.f);
+	}
+
+	return true;
+}
+
 #endif	  // WITH_DEV_AUTOMATION_TESTS

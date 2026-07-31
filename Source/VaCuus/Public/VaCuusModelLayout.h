@@ -166,7 +166,14 @@ struct FVaCuusModelArrayDesc
 	 * address) into two instances of the containing type, in any pairing the pipeline
 	 * needs. The one array copy primitive -- every stage reaches it through
 	 * FVaCuusModelField::CopyValue, which is what keeps the pipeline's call sites
-	 * kind-agnostic.
+	 * kind-agnostic and the cost story below true at all of them.
+	 *
+	 * Resize to the source Num -- touching only the delta, surviving elements keep their
+	 * values -- then per-element assignment, or one Memcpy for POD inners. Deliberately
+	 * NOT the engine's own whole-array copy, which destroys every destination element
+	 * before rebuilding and so can never reuse an element's buffer; the .cpp carries the
+	 * full argument with the engine citations. Net: allocations only where content outgrew
+	 * capacity or Num grew (spec 3.3).
 	 */
 	VACUUS_API void SyncCopy(void* DestValuePtr, const void* SrcValuePtr) const;
 };

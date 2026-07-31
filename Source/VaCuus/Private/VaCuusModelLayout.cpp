@@ -24,13 +24,55 @@ FVaCuusModelArrayDesc::~FVaCuusModelArrayDesc() = default;
 
 void FVaCuusModelArrayDesc::SyncCopy(void* DestValuePtr, const void* SrcValuePtr) const
 {
-	// COMMIT-SCOPED BRIDGE: the engine's whole-array deep copy. CORRECT -- CopyValuesInternal
-	// empties the destination, resizes to the source Num and per-element-copies
-	// (PropertyArray.cpp:1260-1328) -- and structurally wasteful, because that emptying
-	// destroys every non-POD destination element first, so no element buffer is ever reused.
-	// The capacity-preserving Resize + per-element assignment the spec names SyncCopy
-	// (spec 3.3) lands in the next commit, together with the sampler tests that observe it.
-	ArrayProperty->CopySingleValue(DestValuePtr, SrcValuePtr);
+	// NOT ArrayProperty->CopySingleValue, WHOSE WASTE IS STRUCTURAL. The engine's whole-array
+	// copy is correct -- and it EMPTIES the destination first, destroying every non-POD
+	// element and freeing its heap, before resizing and rebuilding (PropertyArray.cpp:
+	// 1260-1328; EmptyAndAddValues at :1269 -> EmptyValues -> DestructItems, UnrealType.h:
+	// 4459-4471, :4595-4611). A same-size republish through it can therefore never reuse an
+	// element's buffer, and the container block itself reallocates on any Num change in
+	// either direction (Empty(Slack) reallocates whenever Slack != ArrayMax --
+	// ScriptArray.h:137-148).
+	//
+	// THIS FORM PAYS ONLY FOR THE DELTA. Resize adds or removes exactly the difference
+	// (UnrealType.h:4387-4403), preserving surviving elements' VALUES -- their addresses may
+	// still move on a realloc, which the no-stored-addresses invariant absorbs (spec 2(c)).
+	// Each element is then ASSIGNED in place: for an FString inner that is FString::operator=
+	// (TProperty::CopyValuesInternal, UnrealType.h:1626-1632), whose reallocation rule is
+	// grow-only -- ReallocForCopy reallocates iff the quantized reserve of the source exceeds
+	// the destination's capacity, else the buffer is reused outright (TArray::operator= at
+	// Array.h:1011-1019 -> ReallocForCopy at :710-751, `NewMax > PrevMax`). Net: allocations
+	// only where content outgrew capacity or Num grew, at every pipeline stage (spec 3.3).
+	FScriptArrayHelper DestHelper(ArrayProperty, DestValuePtr);
+	FScriptArrayHelper SrcHelper(ArrayProperty, SrcValuePtr);
+
+	const int32 Num = SrcHelper.Num();
+	DestHelper.Resize(Num);
+	if (Num == 0)
+	{
+		return;
+	}
+
+	// The same POD gate the engine's own copies apply (CopySingleValue, UnrealType.h:881-894;
+	// the array copy's memcpy branch, PropertyArray.cpp:1323-1326): a POD inner has no
+	// assignment semantics to respect, so the whole payload is one Memcpy. Num * ElementSize
+	// is exact because the stride IS the element size -- tail padding is baked in for struct
+	// inners (PropertyStruct.cpp:114) and GetRawPtr advances by exactly it (UnrealType.h:4332).
+	if (Inner->HasAnyPropertyFlags(CPF_IsPlainOldData))
+	{
+		FMemory::Memcpy(DestHelper.GetRawPtr(0), SrcHelper.GetRawPtr(0), static_cast<size_t>(Num) * Inner->GetElementSize());
+		return;
+	}
+
+	// Non-POD: per-element assignment into LIVE destination elements -- Resize left the
+	// survivors constructed and constructed the growth (AddValues = AddUninitializedValues +
+	// ConstructItems, UnrealType.h:4409-4414), so CopyCompleteValue assigns, never constructs
+	// over garbage. Complete, not Single: an inner always has ArrayDim 1 -- containers of
+	// C arrays cannot exist (UhtProperty.cs:2390-2393) -- so the two coincide, and Complete
+	// is what the engine's own element loop calls (PropertyArray.cpp:1317-1321).
+	for (int32 Index = 0; Index < Num; ++Index)
+	{
+		Inner->CopyCompleteValue(DestHelper.GetRawPtr(Index), SrcHelper.GetRawPtr(Index));
+	}
 }
 
 const TCHAR* LexToString(EVaCuusFieldKind Kind)

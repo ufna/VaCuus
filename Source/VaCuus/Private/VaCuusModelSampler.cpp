@@ -73,7 +73,11 @@ static bool SoftPathsDiffer(const FSoftObjectPath& A, const FSoftObjectPath& B)
 }
 
 /**
- * Has this field changed since the shadow was written?
+ * Has the value at this pointer pair changed, judged by kind -- THE per-kind comparator,
+ * shared by its two call sites (spec 3.3): the field dispatch reaches it through
+ * ContainerPtrToValuePtr, the array element loop through FScriptArrayHelper::GetRawPtr(i).
+ * One implementation is what keeps an element rule from drifting away from its field rule:
+ * divergence now requires editing shared code.
  *
  * ONE EXHAUSTIVE SWITCH, NO `default`: -Wswitch turns a new EVaCuusFieldKind into a compile
  * error here, which is the only mechanism that would stop a new kind from silently defaulting
@@ -83,12 +87,9 @@ static bool SoftPathsDiffer(const FSoftObjectPath& A, const FSoftObjectPath& B)
  * The rule for every branch: compare WHAT THE UI ACTUALLY SHIPS. Anything cheaper that is not
  * a function of the shipped value can be equal while the screen would differ.
  */
-static bool HasFieldChanged(const FVaCuusModelField& Field, const void* LiveBase, const void* ShadowBase)
+static bool HasValueChanged(EVaCuusFieldKind Kind, const FProperty* Property, const void* LiveValue, const void* ShadowValue)
 {
-	const void* LiveValue = ValuePtr(Field, LiveBase);
-	const void* ShadowValue = ValuePtr(Field, ShadowBase);
-
-	switch (Field.Kind)
+	switch (Kind)
 	{
 		case EVaCuusFieldKind::Bool:
 		{
@@ -103,19 +104,24 @@ static bool HasFieldChanged(const FVaCuusModelField& Field, const void* LiveBase
 			// for a value that did not move. GetPropertyValue is `!!(*ByteValue & FieldMask)`
 			// (UnrealType.h:2682-2687), with FieldMask 255 for a native bool and the isolated bit
 			// otherwise (PropertyBool.cpp:76-93).
-			const FBoolProperty* BoolProperty = CastFieldChecked<FBoolProperty>(Field.Property);
+			//
+			// At the ELEMENT call site this is always the native-bool path: a bitfield cannot
+			// exist inside a container -- UHT refuses bool static arrays outright and a TArray
+			// inner is a plain bool (UhtProperty.cs:2395-2398) -- so the same accessor is a
+			// plain byte read there, mask 255.
+			const FBoolProperty* BoolProperty = CastFieldChecked<FBoolProperty>(Property);
 			return BoolProperty->GetPropertyValue(LiveValue) != BoolProperty->GetPropertyValue(ShadowValue);
 		}
 
 		case EVaCuusFieldKind::SignedInt:
 		{
-			const FNumericProperty* Numeric = CastFieldChecked<FNumericProperty>(Field.Property);
+			const FNumericProperty* Numeric = CastFieldChecked<FNumericProperty>(Property);
 			return Numeric->GetSignedIntPropertyValue(LiveValue) != Numeric->GetSignedIntPropertyValue(ShadowValue);
 		}
 
 		case EVaCuusFieldKind::UnsignedInt:
 		{
-			const FNumericProperty* Numeric = CastFieldChecked<FNumericProperty>(Field.Property);
+			const FNumericProperty* Numeric = CastFieldChecked<FNumericProperty>(Property);
 			return Numeric->GetUnsignedIntPropertyValue(LiveValue) != Numeric->GetUnsignedIntPropertyValue(ShadowValue);
 		}
 
@@ -128,7 +134,7 @@ static bool HasFieldChanged(const FVaCuusModelField& Field, const void* LiveBase
 			// re-evaluation per frame for a value that is not moving, which is spec 9's idle row
 			// lost to a comparison rather than to a change. The bit pattern answers the question
 			// the differ is actually asking, "did the stored value change".
-			const FNumericProperty* Numeric = CastFieldChecked<FNumericProperty>(Field.Property);
+			const FNumericProperty* Numeric = CastFieldChecked<FNumericProperty>(Property);
 			const double Live = Numeric->GetFloatingPointPropertyValue(LiveValue);
 			const double Old = Numeric->GetFloatingPointPropertyValue(ShadowValue);
 			return FMemory::Memcmp(&Live, &Old, sizeof(double)) != 0;
@@ -144,7 +150,7 @@ static bool HasFieldChanged(const FVaCuusModelField& Field, const void* LiveBase
 			// equal -- a stale label forever, from the most natural line anyone would write here.
 			// Spelled with the argument rather than relying on the default so that the intent
 			// survives the next reader.
-			const FStrProperty* StrProperty = CastFieldChecked<FStrProperty>(Field.Property);
+			const FStrProperty* StrProperty = CastFieldChecked<FStrProperty>(Property);
 			return !StrProperty->GetPropertyValue(LiveValue).Equals(StrProperty->GetPropertyValue(ShadowValue), ESearchCase::CaseSensitive);
 		}
 
@@ -152,13 +158,13 @@ static bool HasFieldChanged(const FVaCuusModelField& Field, const void* LiveBase
 		{
 			// Same trap, same fix: FUtf8String is the same template (UnrealString.h.inl is
 			// included once per character type), so its operator== is Stricmp too.
-			const FUtf8StrProperty* StrProperty = CastFieldChecked<FUtf8StrProperty>(Field.Property);
+			const FUtf8StrProperty* StrProperty = CastFieldChecked<FUtf8StrProperty>(Property);
 			return !StrProperty->GetPropertyValue(LiveValue).Equals(StrProperty->GetPropertyValue(ShadowValue), ESearchCase::CaseSensitive);
 		}
 
 		case EVaCuusFieldKind::AnsiString:
 		{
-			const FAnsiStrProperty* StrProperty = CastFieldChecked<FAnsiStrProperty>(Field.Property);
+			const FAnsiStrProperty* StrProperty = CastFieldChecked<FAnsiStrProperty>(Property);
 			return !StrProperty->GetPropertyValue(LiveValue).Equals(StrProperty->GetPropertyValue(ShadowValue), ESearchCase::CaseSensitive);
 		}
 
@@ -177,7 +183,7 @@ static bool HasFieldChanged(const FVaCuusModelField& Field, const void* LiveBase
 			// default would have made, and the case genuinely cannot change because the name
 			// table did not keep it. An editor-and-PIE correctness fix with no runtime cost,
 			// which is the right trade for a milestone whose bugs are all invisible.
-			const FNameProperty* NameProperty = CastFieldChecked<FNameProperty>(Field.Property);
+			const FNameProperty* NameProperty = CastFieldChecked<FNameProperty>(Property);
 			return !NameProperty->GetPropertyValue(LiveValue).IsEqual(NameProperty->GetPropertyValue(ShadowValue), ENameCase::CaseSensitive);
 		}
 
@@ -195,35 +201,33 @@ static bool HasFieldChanged(const FVaCuusModelField& Field, const void* LiveBase
 			// StoreField below and has no TextId, so Rebuild() short-circuits
 			// (TextHistory.cpp:705-709, :940-943). On the LIVE side it may consult the
 			// localization manager, which is legal here and nowhere else -- see the header.
-			const FTextProperty* TextProperty = CastFieldChecked<FTextProperty>(Field.Property);
+			//
+			// FIELD CALL SITE ONLY: a Text ELEMENT never exists, because the desc build
+			// refuses FText anywhere in an element subtree (the projection below is per
+			// field, and a whole-array copy would bypass it).
+			const FTextProperty* TextProperty = CastFieldChecked<FTextProperty>(Property);
 			return !TextProperty->GetPropertyValue(LiveValue).ToString().Equals(
 				TextProperty->GetPropertyValue(ShadowValue).ToString(), ESearchCase::CaseSensitive);
 		}
 
 		case EVaCuusFieldKind::Enum:
-			return ReadEnumValue(Field.Property, LiveValue) != ReadEnumValue(Field.Property, ShadowValue);
+			return ReadEnumValue(Property, LiveValue) != ReadEnumValue(Property, ShadowValue);
 
 		case EVaCuusFieldKind::ObjectPath:
 		{
 			// SOFT ONLY -- the layout refuses FWeakObjectProperty, so there is no weak branch to
 			// write and no place a weak pointer could be resolved off the game thread.
-			const FSoftObjectProperty* SoftProperty = CastFieldChecked<FSoftObjectProperty>(Field.Property);
+			const FSoftObjectProperty* SoftProperty = CastFieldChecked<FSoftObjectProperty>(Property);
 			return SoftPathsDiffer(SoftProperty->GetPropertyValue(LiveValue).GetUniqueID(),
 				SoftProperty->GetPropertyValue(ShadowValue).GetUniqueID());
 		}
 
 		case EVaCuusFieldKind::Array:
-			// COMMIT-SCOPED BRIDGE, replaced by the per-kind element comparator that lands with
-			// SyncCopy (M3b Task 2). FArrayProperty::Identical has the right SHAPE -- Num()
-			// early-out, then per-element Inner->Identical, first difference wins
-			// (PropertyArray.cpp:89-116) -- but an FString element then compares
-			// case-INSENSITIVELY: FStrProperty declares no Identical override, so it gets
-			// TProperty_WithEqualityAndSerializer's operator== form (UnrealType.h:1760-1770),
-			// and FString's operator== is Stricmp. Task 2's tests pin the per-kind rules
-			// before the real comparator replaces this. (NaN, notably, is NOT among this
-			// bridge's bugs: FDoubleProperty::Identical is UE::PreciseFPEqual, which treats
-			// NaN as equal to NaN -- PropertyDouble.cpp:32-35, PreciseFP.cpp:20-28.)
-			return !Field.Property->Identical(LiveValue, ShadowValue);
+			// Unreachable by shape: HasFieldChanged dispatches an Array field to
+			// HasArrayChanged before this switch runs, and an ELEMENT is never an array --
+			// the desc build refuses nested containers.
+			checkNoEntry();
+			return false;
 	}
 
 	checkNoEntry();
@@ -231,29 +235,136 @@ static bool HasFieldChanged(const FVaCuusModelField& Field, const void* LiveBase
 }
 
 /**
+ * The array diff: ONE BIT, FIRST DIFFERENCE WINS. The bit is per-array, so finding one
+ * difference is finding them all -- and RmlUi could not consume anything finer anyway; its
+ * view map keys on top-level names alone, so DirtyVariable(root) is the entire expressible
+ * vocabulary (spec 2(b)). A Num() mismatch is a difference by itself.
+ *
+ * Helpers are constructed per call over the incoming VALUE pointers -- the ctor takes the
+ * value pointer, not the container (UnrealType.h:4285-4288) -- and every element address is
+ * GetRawPtr(i), call-time arithmetic stored nowhere (UnrealType.h:4324-4333, spec 2(c)).
+ */
+static bool HasArrayChanged(const FVaCuusModelArrayDesc& Desc, const void* LiveValue, const void* ShadowValue)
+{
+	FScriptArrayHelper LiveHelper(Desc.ArrayProperty, LiveValue);
+	FScriptArrayHelper ShadowHelper(Desc.ArrayProperty, ShadowValue);
+
+	const int32 Num = LiveHelper.Num();
+	if (Num != ShadowHelper.Num())
+	{
+		return true;
+	}
+
+	if (Desc.IsStructElement())
+	{
+		// Struct rows walk the element layout's flat leaves with the ELEMENT BASE standing in
+		// for the struct base: GetRawPtr(i) addresses an instance of exactly the type the
+		// element layout was built over, so ValuePtr composes the same two offsets it
+		// composes for a model root. Rows before leaves, so the scan can stop at the first
+		// changed row without touching the tail.
+		const TConstArrayView<FVaCuusModelField> ElementFields = Desc.ElementLayout->GetFields();
+		for (int32 Index = 0; Index < Num; ++Index)
+		{
+			const void* LiveElement = LiveHelper.GetRawPtr(Index);
+			const void* ShadowElement = ShadowHelper.GetRawPtr(Index);
+			for (const FVaCuusModelField& ElementField : ElementFields)
+			{
+				if (HasValueChanged(ElementField.Kind, ElementField.Property, ValuePtr(ElementField, LiveElement),
+						ValuePtr(ElementField, ShadowElement)))
+				{
+					return true;
+				}
+			}
+		}
+
+		return false;
+	}
+
+	// Scalar elements: the Inner IS the value property and GetRawPtr(i) IS its value
+	// pointer -- Offset_Internal is 0 and the stride is GetElementSize() (see the desc).
+	for (int32 Index = 0; Index < Num; ++Index)
+	{
+		if (HasValueChanged(Desc.ElementKind, Desc.Inner, LiveHelper.GetRawPtr(Index), ShadowHelper.GetRawPtr(Index)))
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
+/**
+ * Has this field changed since the shadow was written? Dispatch only: an Array field goes
+ * to the element-walking diff, every scalar kind to the shared value-pointer comparator --
+ * whose exhaustive switch is what stops a new kind from silently defaulting to "never
+ * changes".
+ */
+static bool HasFieldChanged(const FVaCuusModelField& Field, const void* LiveBase, const void* ShadowBase)
+{
+	const void* LiveValue = ValuePtr(Field, LiveBase);
+	const void* ShadowValue = ValuePtr(Field, ShadowBase);
+
+	if (Field.Kind == EVaCuusFieldKind::Array)
+	{
+		return HasArrayChanged(*Field.ArrayDesc, LiveValue, ShadowValue);
+	}
+
+	return HasValueChanged(Field.Kind, Field.Property, LiveValue, ShadowValue);
+}
+
+/**
  * Writes the live value into the shadow, in the form the rest of the pipeline carries.
  *
- * A straight copy for ten of the eleven kinds. FText is the exception, and the header carries
- * the whole argument: what is stored is the display string resolved HERE, on the game thread,
- * frozen into a culture-invariant FText, so that nothing downstream ever asks the localization
+ * A straight copy for most kinds. FText is the exception, and the header carries the whole
+ * argument: what is stored is the display string resolved HERE, on the game thread, frozen
+ * into a culture-invariant FText, so that nothing downstream ever asks the localization
  * manager anything.
+ *
+ * AN EXHAUSTIVE SWITCH NOW, NOT AN IF-CHAIN, and the change is the point (spec 3.3): the
+ * old `if (Text) ... else CopyValue` let a NEW kind fall through to the generic copy with
+ * no one choosing it -- exactly how an Array field would have silently taken the engine's
+ * destroy-and-rebuild whole-container copy. -Wswitch now forces every kind to pick its
+ * store form here, the same protection the other four kind switches already have.
  */
 static void StoreField(const FVaCuusModelField& Field, void* ShadowBase, const void* LiveBase)
 {
-	if (Field.Kind == EVaCuusFieldKind::Text)
+	switch (Field.Kind)
 	{
-		const FTextProperty* TextProperty = CastFieldChecked<FTextProperty>(Field.Property);
+		case EVaCuusFieldKind::Text:
+		{
+			const FTextProperty* TextProperty = CastFieldChecked<FTextProperty>(Field.Property);
 
-		// FString(...) rather than passing the const FString& straight through: the
-		// AsCultureInvariant overload set is (const TCHAR*, FStringView, FString&&, FText)
-		// (Text.cpp:1234-1272) and an explicit temporary picks the move overload with no
-		// ambiguity to argue about.
-		TextProperty->SetPropertyValue(
-			ValuePtr(Field, ShadowBase), FText::AsCultureInvariant(FString(TextProperty->GetPropertyValue(ValuePtr(Field, LiveBase)).ToString())));
-		return;
+			// FString(...) rather than passing the const FString& straight through: the
+			// AsCultureInvariant overload set is (const TCHAR*, FStringView, FString&&, FText)
+			// (Text.cpp:1234-1272) and an explicit temporary picks the move overload with no
+			// ambiguity to argue about.
+			TextProperty->SetPropertyValue(ValuePtr(Field, ShadowBase),
+				FText::AsCultureInvariant(FString(TextProperty->GetPropertyValue(ValuePtr(Field, LiveBase)).ToString())));
+			return;
+		}
+
+		case EVaCuusFieldKind::Array:
+			// CHOSEN, not fallen into: the funnel resolves to FVaCuusModelArrayDesc::SyncCopy
+			// -- Resize plus per-element assignment, never the engine's destroy-and-rebuild
+			// copy (spec 3.3; SyncCopy's own comment carries the citations).
+			Field.CopyValue(ShadowBase, LiveBase);
+			return;
+
+		case EVaCuusFieldKind::Bool:
+		case EVaCuusFieldKind::SignedInt:
+		case EVaCuusFieldKind::UnsignedInt:
+		case EVaCuusFieldKind::FloatingPoint:
+		case EVaCuusFieldKind::String:
+		case EVaCuusFieldKind::Utf8String:
+		case EVaCuusFieldKind::AnsiString:
+		case EVaCuusFieldKind::Name:
+		case EVaCuusFieldKind::Enum:
+		case EVaCuusFieldKind::ObjectPath:
+			Field.CopyValue(ShadowBase, LiveBase);
+			return;
 	}
 
-	Field.CopyValue(ShadowBase, LiveBase);
+	checkNoEntry();
 }
 }	 // namespace VaCuusModelSamplerPrivate
 
