@@ -219,9 +219,10 @@ callback resumes after this frame's timers, documented beside the API).
 - rAF: swap-out list (re-entrancy rule, Js.cpp:531-534); timestamp =
   `GetSystemInterface()->GetElapsedTime()` ms, sampled once at pump top — the clock RmlUi
   animations advance on (Clock.cpp:7-14, Element.cpp:2838-2849). `cancelAnimationFrame` exists.
-- Timers: due = deadline ≤ frame-start now; a 0 ms timer registered during the pump runs next
-  frame (closes the demo's documented livelock — hud-demo-patterns.md §4). Intervals re-arm from
-  fire time.
+- Timers: due = deadline strictly < frame-start now, with deadlines priced off the pump-fixed
+  now — so a 0 ms timer registered during the pump prices exactly AT the cutoff, is excluded,
+  and runs next frame (closes the demo's documented livelock — hud-demo-patterns.md §4).
+  Intervals re-arm from fire time.
 - **Job drain: bounded.** `JS_ExecutePendingJob` loops while >0 (quickjs.c:2173-2202) **up to a
   per-pump cap** (`vacuus.Js.MaxJobsPerPump`, default 10 000); at the cap the drain stops with
   one Error naming the view, remaining jobs run next frame. The self-requeuing microtask —

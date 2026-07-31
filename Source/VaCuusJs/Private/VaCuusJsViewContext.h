@@ -188,9 +188,29 @@ private:
 
 	void InstallGlobals();
 
+	/**
+	 * THE ONE DOOR TO THE CONTEXT OPAQUE -- every thunk reads `this` through
+	 * here, never through a bare JS_GetContextOpaque. Null is a REAL answer: the
+	 * destructor nulls the opaque before JS_FreeContext, and the JSContext
+	 * allocation can outlive that call -- a pending job's argv holds dup'd
+	 * values (JS_EnqueueJob, quickjs.c:2146-2154) whose function realms keep the
+	 * context refcount above zero past JS_FreeContext's decrement
+	 * (quickjs.c:2681-2682) -- so a removed view's pinned job can still call
+	 * setTimeout (or touch a stashed wrapper) against this very JSContext from a
+	 * surviving view's drain segment. Each caller answers null with its own
+	 * dead shape (undefined/null/false/empty), the dead-handle house rule; a
+	 * check(non-null) here would pass on the DANGLING pointer, not catch it.
+	 */
+	static FVaCuusJsViewContext* GetSelfOrNull(JSContext* InCtx)
+	{
+		return static_cast<FVaCuusJsViewContext*>(JS_GetContextOpaque(InCtx));
+	}
+
 	//~ The global-function thunks. `this` rides JS_GetContextOpaque
 	//~ (quickjs.h:524-525), set to the owning FVaCuusJsViewContext before any
-	//~ script can run. Signatures per JSCFunctionType (quickjs.h:1272-1286).
+	//~ script can run -- and read back ONLY through GetSelfOrNull (see its
+	//~ comment for why null is a live case, not a bug). Signatures per
+	//~ JSCFunctionType (quickjs.h:1272-1286).
 	static JSValue ConsoleThunk(JSContext* Ctx, JSValueConst This, int Argc, JSValueConst* Argv, int Magic);
 	static JSValue SetTimerThunk(JSContext* Ctx, JSValueConst This, int Argc, JSValueConst* Argv, int Magic);
 	static JSValue ClearTimerThunk(JSContext* Ctx, JSValueConst This, int Argc, JSValueConst* Argv);

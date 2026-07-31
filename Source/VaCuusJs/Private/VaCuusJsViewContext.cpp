@@ -121,6 +121,18 @@ FVaCuusJsViewContext::~FVaCuusJsViewContext()
 	Timers.Empty();
 	RafPending.Empty();
 
+	// NULL THE OPAQUE BEFORE THE FREE, because the free is not the end: a job
+	// this context enqueued before death still sits on the RUNTIME's list with
+	// dup'd argv (JS_EnqueueJob, quickjs.c:2146-2154), and those values' function
+	// realms hold the context refcount above zero past the decrement below
+	// (JS_FreeContext, quickjs.c:2681-2682) -- so the surviving allocation runs
+	// that job later, from a surviving view's drain segment, and every thunk it
+	// calls reads this opaque. Left pointing at `this`, that read is a dangling
+	// pointer a check(non-null) happily passes; nulled, GetSelfOrNull answers
+	// null and every thunk takes its graceful dead-context branch. The
+	// Pump.Lifecycle test pins the scenario (green side only -- the broken state
+	// is use-after-free, argued from the two cites above, not run).
+	JS_SetContextOpaque(Ctx, nullptr);
 	JS_FreeContext(Ctx);
 	Ctx = nullptr;
 }
@@ -405,8 +417,11 @@ JSValue FVaCuusJsViewContext::ConsoleThunk(
 JSValue FVaCuusJsViewContext::SetTimerThunk(
 	JSContext* Ctx, JSValueConst /*This*/, int Argc, JSValueConst* Argv, int Magic)
 {
-	FVaCuusJsViewContext* Self = static_cast<FVaCuusJsViewContext*>(JS_GetContextOpaque(Ctx));
-	check(Self != nullptr);
+	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	if (Self == nullptr)
+	{
+		return JS_UNDEFINED;	// dead context (a removed view's pinned job): no timer to mint
+	}
 	const bool bRepeat = Magic != 0;
 
 	if (Argc < 1 || !JS_IsFunction(Ctx, Argv[0]))
@@ -442,8 +457,11 @@ JSValue FVaCuusJsViewContext::SetTimerThunk(
 
 JSValue FVaCuusJsViewContext::ClearTimerThunk(JSContext* Ctx, JSValueConst /*This*/, int Argc, JSValueConst* Argv)
 {
-	FVaCuusJsViewContext* Self = static_cast<FVaCuusJsViewContext*>(JS_GetContextOpaque(Ctx));
-	check(Self != nullptr);
+	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	if (Self == nullptr)
+	{
+		return JS_UNDEFINED;	// dead context: a clear is already a no-op for unknown ids
+	}
 
 	if (Argc < 1)
 	{
@@ -471,8 +489,11 @@ JSValue FVaCuusJsViewContext::ClearTimerThunk(JSContext* Ctx, JSValueConst /*Thi
 
 JSValue FVaCuusJsViewContext::RequestRafThunk(JSContext* Ctx, JSValueConst /*This*/, int Argc, JSValueConst* Argv)
 {
-	FVaCuusJsViewContext* Self = static_cast<FVaCuusJsViewContext*>(JS_GetContextOpaque(Ctx));
-	check(Self != nullptr);
+	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	if (Self == nullptr)
+	{
+		return JS_UNDEFINED;	// dead context: no frame will ever come (the demo's rAF returned undefined too)
+	}
 
 	if (Argc < 1 || !JS_IsFunction(Ctx, Argv[0]))
 	{
@@ -491,8 +512,11 @@ JSValue FVaCuusJsViewContext::RequestRafThunk(JSContext* Ctx, JSValueConst /*Thi
 
 JSValue FVaCuusJsViewContext::CancelRafThunk(JSContext* Ctx, JSValueConst /*This*/, int Argc, JSValueConst* Argv)
 {
-	FVaCuusJsViewContext* Self = static_cast<FVaCuusJsViewContext*>(JS_GetContextOpaque(Ctx));
-	check(Self != nullptr);
+	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	if (Self == nullptr)
+	{
+		return JS_UNDEFINED;	// dead context: nothing pending to cancel
+	}
 
 	if (Argc < 1)
 	{

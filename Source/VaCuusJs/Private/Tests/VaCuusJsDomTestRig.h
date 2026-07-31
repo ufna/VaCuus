@@ -29,8 +29,10 @@
 #include "VaCuusViewStatus.h"
 
 #include "Containers/Queue.h"
+#include "HAL/CriticalSection.h"
 #include "HAL/IConsoleManager.h"
 #include "HAL/PlatformProcess.h"
+#include "Misc/ScopeLock.h"
 
 #include "quickjs.h"
 
@@ -375,22 +377,56 @@ struct FDomTestRig
 	 * Runs Fn on the UI thread (at the next PumpFrame's top) and returns once it
 	 * HAS run. Commands enqueued before this call drain earlier in the same
 	 * frame, so a closure always sees them applied.
+	 *
+	 * THE TIMEOUT MUST NOT LEAVE Fn ARMED: callers capture their own stack by
+	 * reference (&Out, &bBound -- every call site in these tests), and the
+	 * static RunQueue outlives the caller's frame, so a closure still queued
+	 * after a timeout would run against a DEAD stack at some later drain. The
+	 * abandon flag closes that: the wrapper runs Fn only under the shared
+	 * state's lock while not abandoned, and every timeout path marks abandoned
+	 * UNDER THE SAME LOCK before returning -- if the UI thread is mid-Fn right
+	 * then, the mark blocks until Fn completes, and the captured stack is still
+	 * alive for that whole wait because this very frame is what it captured.
+	 * Smallest safe shape: no call-site changes, one heap-shared flag per call.
 	 */
 	bool RunOnUI(TFunction<void()> Fn)
 	{
+		struct FRunState
+		{
+			FCriticalSection Mutex;
+			bool bAbandoned = false;
+		};
+		TSharedRef<FRunState, ESPMode::ThreadSafe> State = MakeShared<FRunState, ESPMode::ThreadSafe>();
+
 		const uint64 Target = FWrappedDomHost::ClosuresRun.load(std::memory_order_acquire) + 1;
-		FWrappedDomHost::RunQueue.Enqueue(MoveTemp(Fn));
+		FWrappedDomHost::RunQueue.Enqueue(
+			[State, Inner = MoveTemp(Fn)]()
+			{
+				FScopeLock Lock(&State->Mutex);
+				if (!State->bAbandoned)
+				{
+					Inner();
+				}
+			});
 		for (int32 Attempt = 0; Attempt < 10; ++Attempt)
 		{
 			if (!PumpRealFrames(*Thread, 1))
 			{
-				return false;
+				break;
 			}
 			if (FWrappedDomHost::ClosuresRun.load(std::memory_order_acquire) >= Target)
 			{
 				return true;
 			}
 		}
+
+		// Timed out (or a frame never completed): the closure may still be
+		// queued. Neuter it so a later drain skips the body instead of writing
+		// through the by-then-dead captures; the skipped wrapper still counts a
+		// ClosuresRun tick when it eventually drains, which is harmless -- every
+		// later Target is computed from the then-current counter.
+		FScopeLock Lock(&State->Mutex);
+		State->bAbandoned = true;
 		return false;
 	}
 

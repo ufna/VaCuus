@@ -365,8 +365,11 @@ JSValue FVaCuusJsViewContext::DocCreateElementThunk(JSContext* Ctx, JSValueConst
 {
 	using namespace VaCuusJsDomInternal;
 
-	FVaCuusJsViewContext* Self = static_cast<FVaCuusJsViewContext*>(JS_GetContextOpaque(Ctx));
-	check(Self != nullptr);
+	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	if (Self == nullptr)
+	{
+		return JS_NULL;	   // dead context (GetSelfOrNull's comment): same shape as a dead handle
+	}
 
 	if (Self->GetLiveElement(This) == nullptr || Argc < 1)
 	{
@@ -416,8 +419,11 @@ JSValue FVaCuusJsViewContext::DocGetElementByIdThunk(JSContext* Ctx, JSValueCons
 {
 	using namespace VaCuusJsDomInternal;
 
-	FVaCuusJsViewContext* Self = static_cast<FVaCuusJsViewContext*>(JS_GetContextOpaque(Ctx));
-	check(Self != nullptr);
+	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	if (Self == nullptr)
+	{
+		return JS_NULL;	   // dead context: same shape as a dead handle
+	}
 
 	Rml::Element* Doc = Self->GetLiveElement(This);
 	if (Doc == nullptr || Argc < 1)
@@ -439,8 +445,11 @@ JSValue FVaCuusJsViewContext::DocGetElementByIdThunk(JSContext* Ctx, JSValueCons
 
 JSValue FVaCuusJsViewContext::DocBodyGetterThunk(JSContext* Ctx, JSValueConst This)
 {
-	FVaCuusJsViewContext* Self = static_cast<FVaCuusJsViewContext*>(JS_GetContextOpaque(Ctx));
-	check(Self != nullptr);
+	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	if (Self == nullptr)
+	{
+		return JS_NULL;	   // dead context: same shape as a dead handle
+	}
 
 	Rml::Element* Doc = Self->GetLiveElement(This);
 	if (Doc == nullptr)
@@ -463,8 +472,11 @@ JSValue FVaCuusJsViewContext::InsertThunk(JSContext* Ctx, JSValueConst This, int
 {
 	using namespace VaCuusJsDomInternal;
 
-	FVaCuusJsViewContext* Self = static_cast<FVaCuusJsViewContext*>(JS_GetContextOpaque(Ctx));
-	check(Self != nullptr);
+	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	if (Self == nullptr)
+	{
+		return JS_NULL;	   // dead context: same shape as a dead handle
+	}
 
 	Rml::Element* Parent = Self->GetLiveElement(This);
 	if (Parent == nullptr || Argc < 1)
@@ -541,8 +553,11 @@ JSValue FVaCuusJsViewContext::InsertThunk(JSContext* Ctx, JSValueConst This, int
 
 JSValue FVaCuusJsViewContext::RemoveChildThunk(JSContext* Ctx, JSValueConst This, int Argc, JSValueConst* Argv)
 {
-	FVaCuusJsViewContext* Self = static_cast<FVaCuusJsViewContext*>(JS_GetContextOpaque(Ctx));
-	check(Self != nullptr);
+	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	if (Self == nullptr)
+	{
+		return JS_NULL;	   // dead context: same shape as a dead handle
+	}
 
 	Rml::Element* Parent = Self->GetLiveElement(This);
 	if (Parent == nullptr || Argc < 1)
@@ -573,8 +588,11 @@ JSValue FVaCuusJsViewContext::RemoveChildThunk(JSContext* Ctx, JSValueConst This
 
 JSValue FVaCuusJsViewContext::RemoveThunk(JSContext* Ctx, JSValueConst This, int /*Argc*/, JSValueConst* /*Argv*/)
 {
-	FVaCuusJsViewContext* Self = static_cast<FVaCuusJsViewContext*>(JS_GetContextOpaque(Ctx));
-	check(Self != nullptr);
+	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	if (Self == nullptr)
+	{
+		return JS_UNDEFINED;	// dead context: remove() is a silent no-op, like a second remove()
+	}
 
 	FVaCuusJsElementHandle* Handle = Self->GetHandle(This);
 	Rml::Element* Element = Handle != nullptr ? Handle->Observer.get() : nullptr;
@@ -610,8 +628,12 @@ JSValue FVaCuusJsViewContext::QueryThunk(JSContext* Ctx, JSValueConst This, int 
 {
 	using namespace VaCuusJsDomInternal;
 
-	FVaCuusJsViewContext* Self = static_cast<FVaCuusJsViewContext*>(JS_GetContextOpaque(Ctx));
-	check(Self != nullptr);
+	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	if (Self == nullptr)
+	{
+		// Dead context: the dead-handle shapes below, without touching Self.
+		return Magic == QuerySelectorAll ? JS_NewArray(Ctx) : JS_NULL;
+	}
 
 	Rml::Element* Element = Self->GetLiveElement(This);
 
@@ -676,8 +698,11 @@ JSValue FVaCuusJsViewContext::AttributeThunk(JSContext* Ctx, JSValueConst This, 
 {
 	using namespace VaCuusJsDomInternal;
 
-	FVaCuusJsViewContext* Self = static_cast<FVaCuusJsViewContext*>(JS_GetContextOpaque(Ctx));
-	check(Self != nullptr);
+	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	if (Self == nullptr)
+	{
+		return Magic == AttrGet ? JS_NULL : JS_UNDEFINED;	 // dead context: the dead-handle shapes
+	}
 
 	Rml::Element* Element = Self->GetLiveElement(This);
 	if (Element == nullptr || Argc < 1)
@@ -737,8 +762,11 @@ JSValue FVaCuusJsViewContext::StringGetterThunk(JSContext* Ctx, JSValueConst Thi
 {
 	using namespace VaCuusJsDomInternal;
 
-	FVaCuusJsViewContext* Self = static_cast<FVaCuusJsViewContext*>(JS_GetContextOpaque(Ctx));
-	check(Self != nullptr);
+	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	if (Self == nullptr)
+	{
+		return JS_NULL;	   // dead context: same shape as a dead handle
+	}
 
 	Rml::Element* Element = Self->GetLiveElement(This);
 	if (Element == nullptr)
@@ -769,8 +797,11 @@ JSValue FVaCuusJsViewContext::StringSetterThunk(JSContext* Ctx, JSValueConst Thi
 {
 	using namespace VaCuusJsDomInternal;
 
-	FVaCuusJsViewContext* Self = static_cast<FVaCuusJsViewContext*>(JS_GetContextOpaque(Ctx));
-	check(Self != nullptr);
+	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	if (Self == nullptr)
+	{
+		return JS_UNDEFINED;	// dead context: assignment silently no-ops, like a dead handle
+	}
 
 	Rml::Element* Element = Self->GetLiveElement(This);
 	if (Element == nullptr)
@@ -808,8 +839,11 @@ JSValue FVaCuusJsViewContext::StringSetterThunk(JSContext* Ctx, JSValueConst Thi
 
 JSValue FVaCuusJsViewContext::ParentNodeGetterThunk(JSContext* Ctx, JSValueConst This)
 {
-	FVaCuusJsViewContext* Self = static_cast<FVaCuusJsViewContext*>(JS_GetContextOpaque(Ctx));
-	check(Self != nullptr);
+	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	if (Self == nullptr)
+	{
+		return JS_NULL;	   // dead context: same shape as a dead handle
+	}
 
 	Rml::Element* Element = Self->GetLiveElement(This);
 	if (Element == nullptr)
@@ -825,8 +859,11 @@ JSValue FVaCuusJsViewContext::ParentNodeGetterThunk(JSContext* Ctx, JSValueConst
 
 JSValue FVaCuusJsViewContext::ChildrenGetterThunk(JSContext* Ctx, JSValueConst This)
 {
-	FVaCuusJsViewContext* Self = static_cast<FVaCuusJsViewContext*>(JS_GetContextOpaque(Ctx));
-	check(Self != nullptr);
+	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	if (Self == nullptr)
+	{
+		return JS_NewArray(Ctx);	// dead context: the dead-handle empty array
+	}
 
 	// A LIVE SNAPSHOT PER CALL, not DOM's live HTMLCollection: a fresh array
 	// reflecting the tree as of this access; later tree mutations do not update
@@ -906,8 +943,12 @@ JSValue FVaCuusJsViewContext::ClassListOpThunk(
 {
 	using namespace VaCuusJsDomInternal;
 
-	FVaCuusJsViewContext* Self = static_cast<FVaCuusJsViewContext*>(JS_GetContextOpaque(Ctx));
-	check(Self != nullptr);
+	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	if (Self == nullptr)
+	{
+		// Dead context: the dead-handle shapes below.
+		return (Magic == ClassToggle || Magic == ClassContains) ? JS_FALSE : JS_UNDEFINED;
+	}
 
 	Rml::Element* Element = Self->GetLiveElement(FuncData[0]);
 	if (Element == nullptr || Argc < 1)
@@ -959,8 +1000,11 @@ JSValue FVaCuusJsViewContext::StyleGetterThunk(JSContext* Ctx, JSValueConst This
 {
 	using namespace VaCuusJsDomInternal;
 
-	FVaCuusJsViewContext* Self = static_cast<FVaCuusJsViewContext*>(JS_GetContextOpaque(Ctx));
-	check(Self != nullptr);
+	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	if (Self == nullptr)
+	{
+		return JS_NULL;	   // dead context: the factory-failed shape
+	}
 
 	if (!JS_IsFunction(Ctx, Self->StyleFactory))
 	{
@@ -990,8 +1034,12 @@ JSValue FVaCuusJsViewContext::StyleOpThunk(
 {
 	using namespace VaCuusJsDomInternal;
 
-	FVaCuusJsViewContext* Self = static_cast<FVaCuusJsViewContext*>(JS_GetContextOpaque(Ctx));
-	check(Self != nullptr);
+	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	if (Self == nullptr)
+	{
+		// Dead context: the dead-handle shapes below.
+		return Magic == StyleGet ? JS_NULL : (Magic == StyleSet ? JS_FALSE : JS_UNDEFINED);
+	}
 
 	Rml::Element* Element = Self->GetLiveElement(FuncData[0]);
 	if (Element == nullptr || Argc < 1)

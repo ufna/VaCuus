@@ -197,7 +197,7 @@ void* FVaCuusJsRuntime::HookMalloc(void* Opaque, size_t Size)
 	// THE ACCOUNTING BASIS, once, for all four hooks: the counter moves by
 	// FMemory::GetAllocSize(Ptr) -- the allocator's own answer for the live block
 	// -- not by the requested byte count. GetAllocSize is UNDOCUMENTED
-	// (UnrealMemory.h:213 carries no contract; QuantizeSize at :217-223 promises
+	// (UnrealMemory.h:214 carries no contract; QuantizeSize at :218-224 promises
 	// only ">= Count", for a REQUEST, not a block), so this accounting leans on
 	// nothing it does not verify: (1) SYMMETRY -- whatever a live block reports at
 	// the add it reports again at the subtract, so the counter self-cancels

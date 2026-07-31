@@ -378,9 +378,11 @@ bool FVaCuusJsDomTwoViewIsolationTest::RunTest(const FString& Parameters)
 }
 
 /**
- * The wrapper cache does not grow monotonically (plan 4.3's hygiene row), via
- * the context's cache-size observable -- the invariant given an observable, per
- * the house rule. Both exits proven: the DESTROY path (an innerRML clear
+ * The wrapper cache does not grow monotonically (spec section 5's leak
+ * observable: wrapper-cache sizes are among the counters checked back to
+ * zero at teardown -- this test proves the two exits that keep them there),
+ * via the context's cache-size observable -- the invariant given an
+ * observable, per the house rule. Both exits proven: the DESTROY path (an innerRML clear
  * erases the dead children's entries synchronously, before any GC) and the
  * FINALIZER path (wrappers trapped in a reference cycle survive the refcount
  * and leave only when the cycle collector runs -- an explicit collection,

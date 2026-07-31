@@ -75,6 +75,40 @@ JSValue VariantToJs(JSContext* Ctx, const Rml::Variant& Value)
 }
 
 /**
+ * The third add/removeEventListener argument -> the capture flag. A DOM
+ * OPTIONS OBJECT is honored for its `capture` member ALONE -- read as a bool,
+ * so {capture:false} registers a bubble listener instead of a truthy object
+ * silently reading as capture=true; `once`/`passive`/`signal` are NOT
+ * supported (documented Tier 1 surface). A non-object argument keeps the
+ * boolean-truthiness reading. ONE helper for both thunks, because the
+ * registry key and RmlUi's entry identity carry this flag (Element.h:471-482)
+ * -- registration and removal must compute it identically or an exact-match
+ * removal can never find its entry. False = a throwing `capture` getter left
+ * ITS exception pending (the script's throw; propagate JS_EXCEPTION).
+ */
+bool ReadCaptureFlag(JSContext* Ctx, int Argc, JSValueConst* Argv, bool& bOutCapture)
+{
+	bOutCapture = false;
+	if (Argc < 3)
+	{
+		return true;
+	}
+	if (JS_IsObject(Argv[2]))
+	{
+		const JSValue CaptureValue = JS_GetPropertyStr(Ctx, Argv[2], "capture");
+		if (JS_IsException(CaptureValue))
+		{
+			return false;
+		}
+		bOutCapture = JS_ToBool(Ctx, CaptureValue) > 0;
+		JS_FreeValue(Ctx, CaptureValue);
+		return true;
+	}
+	bOutCapture = JS_ToBool(Ctx, Argv[2]) > 0;
+	return true;
+}
+
+/**
  * JS -> Variant for dispatchEvent's parameter object: string/number/bool only
  * (the documented conversion); false = skip this property. Numbers land as
  * DOUBLE Variants -- fine for custom payloads, and RmlUi's own readers convert.
@@ -257,8 +291,11 @@ JSValue FVaCuusJsViewContext::EventOpThunk(
 {
 	using namespace VaCuusJsEventInternal;
 
-	FVaCuusJsViewContext* Self = static_cast<FVaCuusJsViewContext*>(JS_GetContextOpaque(Ctx));
-	check(Self != nullptr);
+	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	if (Self == nullptr)
+	{
+		return JS_UNDEFINED;	// dead context (GetSelfOrNull's comment): the stop methods no-op
+	}
 
 	// Class-checked opaque (null on mismatch, quickjs.h:1045), then the
 	// stashed-event check: past its dispatch the handle's Event was nulled, and
@@ -501,7 +538,14 @@ void FVaCuusJsEventListener::ResolveAttribute(Rml::Element* Element, const Rml::
 	// so there is no context to compile against. First fire is the earliest
 	// moment the route exists. The snippet becomes a FUNCTION BODY with the
 	// DOM's implicit signature, function(event){...}, evaluated as a function
-	// expression -- creation only, no user code runs here.
+	// expression -- and that eval is a HOST->JS ENTRY, not "creation only": the
+	// snippet text can close the wrapper and run arbitrary statements at eval
+	// time (onclick="}); (function(){for(;;);})(); (function(event){"), so the
+	// guard below is what bounds compile-time execution. First fire arrives
+	// from the production dispatch path with no outer guard on the stack --
+	// unguarded, this eval is exactly the unarmed-watchdog entry spec 12.4
+	// rejected. Same shape as Eval() (VaCuusJsViewContext.cpp): the guard wraps
+	// the JS call only and closes before the exception is consumed.
 	JSContext* JsCtx = Context->GetContext();
 	const Rml::String& SourceUrl = Document->GetSourceURL();
 	const FString DiagnosticName = FString::Printf(TEXT("on%s attribute of '%s' in %s"),
@@ -510,7 +554,11 @@ void FVaCuusJsEventListener::ResolveAttribute(Rml::Element* Element, const Rml::
 	const Rml::String Wrapped = "(function(event){ " + AttributeSource + "\n})";
 	const FTCHARToUTF8 NameUtf8(*DiagnosticName);
 
-	JSValue Compiled = JS_Eval(JsCtx, Wrapped.c_str(), Wrapped.size(), NameUtf8.Get(), JS_EVAL_TYPE_GLOBAL);
+	JSValue Compiled;
+	{
+		FVaCuusJsEntryGuard Guard(Context->GetRuntime(), JsCtx, *DiagnosticName);
+		Compiled = JS_Eval(JsCtx, Wrapped.c_str(), Wrapped.size(), NameUtf8.Get(), JS_EVAL_TYPE_GLOBAL);
+	}
 	if (JS_IsException(Compiled) || !JS_IsFunction(JsCtx, Compiled))
 	{
 		if (JS_IsException(Compiled))
@@ -636,9 +684,13 @@ void FVaCuusJsEventListener::ProcessEvent(Rml::Event& Event)
 JSValue FVaCuusJsViewContext::AddEventListenerThunk(JSContext* Ctx, JSValueConst This, int Argc, JSValueConst* Argv)
 {
 	using namespace VaCuusJsDomInternal;
+	using namespace VaCuusJsEventInternal;
 
-	FVaCuusJsViewContext* Self = static_cast<FVaCuusJsViewContext*>(JS_GetContextOpaque(Ctx));
-	check(Self != nullptr);
+	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	if (Self == nullptr)
+	{
+		return JS_UNDEFINED;	// dead context: nothing to register on, the dead-handle no-op
+	}
 
 	Rml::Element* Element = Self->GetLiveElement(This);
 	if (Element == nullptr || Argc < 2)
@@ -658,10 +710,13 @@ JSValue FVaCuusJsViewContext::AddEventListenerThunk(JSContext* Ctx, JSValueConst
 		return JS_EXCEPTION;
 	}
 
-	// The REAL capture flag (Element.h:471-482 keeps capture and bubble as
-	// distinct phases). Truthiness of the third argument; DOM's options object
-	// is not parsed -- an object here reads as capture=true. Documented.
-	const bool bCapture = Argc >= 3 && JS_ToBool(Ctx, Argv[2]) > 0;
+	// The REAL capture flag: boolean truthiness, or an options object's
+	// `capture` member -- ReadCaptureFlag has the supported surface.
+	bool bCapture = false;
+	if (!ReadCaptureFlag(Ctx, Argc, Argv, bCapture))
+	{
+		return JS_EXCEPTION;
+	}
 
 	FVaCuusJsListenerKey Key;
 	Key.Element = Element;
@@ -690,9 +745,13 @@ JSValue FVaCuusJsViewContext::AddEventListenerThunk(JSContext* Ctx, JSValueConst
 JSValue FVaCuusJsViewContext::RemoveEventListenerThunk(JSContext* Ctx, JSValueConst This, int Argc, JSValueConst* Argv)
 {
 	using namespace VaCuusJsDomInternal;
+	using namespace VaCuusJsEventInternal;
 
-	FVaCuusJsViewContext* Self = static_cast<FVaCuusJsViewContext*>(JS_GetContextOpaque(Ctx));
-	check(Self != nullptr);
+	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	if (Self == nullptr)
+	{
+		return JS_UNDEFINED;	// dead context: nothing registered anywhere to remove
+	}
 
 	Rml::Element* Element = Self->GetLiveElement(This);
 	if (Element == nullptr || Argc < 2 || !JS_IsFunction(Ctx, Argv[1]))
@@ -705,7 +764,14 @@ JSValue FVaCuusJsViewContext::RemoveEventListenerThunk(JSContext* Ctx, JSValueCo
 	{
 		return JS_EXCEPTION;
 	}
-	const bool bCapture = Argc >= 3 && JS_ToBool(Ctx, Argv[2]) > 0;
+
+	// Same flag computation as registration (ReadCaptureFlag's comment), or the
+	// exact-match rule below would refuse to remove an options-object entry.
+	bool bCapture = false;
+	if (!ReadCaptureFlag(Ctx, Argc, Argv, bCapture))
+	{
+		return JS_EXCEPTION;
+	}
 
 	FVaCuusJsListenerKey Key;
 	Key.Element = Element;
@@ -735,8 +801,11 @@ JSValue FVaCuusJsViewContext::DispatchEventThunk(JSContext* Ctx, JSValueConst Th
 	using namespace VaCuusJsDomInternal;
 	using namespace VaCuusJsEventInternal;
 
-	FVaCuusJsViewContext* Self = static_cast<FVaCuusJsViewContext*>(JS_GetContextOpaque(Ctx));
-	check(Self != nullptr);
+	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	if (Self == nullptr)
+	{
+		return JS_FALSE;	// dead context: the same bool-shaped no-op as a dead handle
+	}
 
 	Rml::Element* Element = Self->GetLiveElement(This);
 	if (Element == nullptr || Argc < 1)

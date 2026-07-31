@@ -186,11 +186,15 @@ public:
 	 * THE on*-ROUTING LOOKUP (M4 Task 5): document -> bound view's context, or
 	 * null. Backed by a TMap<Rml::ElementDocument*, ViewId> written wherever a
 	 * document binds to a context -- today BindDocumentForTest, in M4 Task 6
-	 * OnDocumentReady (which needs this exact map again for its own routing) --
-	 * and purged on rebind, OnDocumentClosing, OnViewRemoved and Shutdown. The
-	 * key is a raw pointer probed by value only, so a dead document's stale
-	 * entry cannot be dereferenced; the purge points above remove it before any
-	 * NEW document could recycle the address on the same view.
+	 * OnDocumentReady (which needs this exact map again for its own routing).
+	 * Purge points LIVE today: rebind (BindDocumentForTest drops the view's old
+	 * entry first), OnViewRemoved, and Shutdown. OnDocumentClosing's handler
+	 * also purges, but NOTHING CALLS IT until Task 6 wires the seam -- so until
+	 * then a document closed WITHOUT its view being removed leaves a stale
+	 * entry, and only the by-value probe (raw pointer, never dereferenced)
+	 * keeps that honest: a recycled address would mis-route, not crash, and
+	 * today's only close paths (test rigs, view teardown) hit a live purge
+	 * point before any same-view replacement document can load.
 	 */
 	FVaCuusJsViewContext* FindViewContextForDocument(Rml::ElementDocument* Document) const;
 

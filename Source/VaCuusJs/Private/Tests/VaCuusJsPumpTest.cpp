@@ -498,11 +498,12 @@ bool FVaCuusJsPumpJobDrainLivelockTest::RunTest(const FString& Parameters)
 }
 
 /**
- * console.* lands in LogVaCuusJS at the mapped verbosity (log/info -> Log,
- * warn -> Warning, error -> Error), args space-joined via JS_ToCString, an
- * unstringifiable arg prints as a placeholder instead of surfacing its
- * exception -- and console.error is a LOG level, never a JS error: the
- * exception counter stays untouched.
+ * console.* lands in LogVaCuusJS at the mapped verbosity (log/info ->
+ * Display -- the accepted deviation ConsoleThunk documents: Log verbosity
+ * never reaches the automation matcher -- warn -> Warning, error -> Error),
+ * args space-joined via JS_ToCString, an unstringifiable arg prints as a
+ * placeholder instead of surfacing its exception -- and console.error is a
+ * LOG level, never a JS error: the exception counter stays untouched.
  */
 bool FVaCuusJsPumpConsoleTest::RunTest(const FString& Parameters)
 {
@@ -587,9 +588,32 @@ bool FVaCuusJsPumpLifecycleTest::RunTest(const FString& Parameters)
 
 	// Removal tears the context down with its held callbacks; the pump then
 	// iterates live contexts only, so nothing of view 5's ever fires again.
+	// The .then job below is THE DEAD-CONTEXT SCENARIO: enqueued on the
+	// RUNTIME's job list before the removal, it survives the context's death
+	// (JS_EnqueueJob dups its argv, quickjs.c:2146-2154, and those refs hold
+	// the JSContext allocation past JS_FreeContext's refcount decrement,
+	// quickjs.c:2681-2682) and runs from view 9's drain segment -- INSIDE the
+	// dead context. Every thunk it calls must take the dead-context branch:
+	// the destructor nulled the opaque, GetSelfOrNull answers null, and each
+	// call returns undefined instead of touching the deleted context object.
+	// RESTORE-THE-BUG, ARGUED NOT RUN: with the opaque-null line removed, this
+	// exact script is use-after-free -- the thunks read the STALE opaque and
+	// dereference the deleted FVaCuusJsViewContext, which the old
+	// check(Self != nullptr) passed (a dangling pointer is non-null). That red
+	// state is UB; no ASan in this build configuration, so it is established
+	// from the two quickjs cites above, and the green observables below plus
+	// the Shutdown live-byte checkf are the gate.
+	AddExpectedMessagePlain(TEXT("lc-dead-context undefined undefined undefined"), ELogVerbosity::Log,
+		EAutomationExpectedMessageFlags::Contains, 1);
 	Host.ExecuteScript(5,
 		TEXT("setTimeout(() => 1, 0); setInterval(() => 1, 0); requestAnimationFrame(() => 1);")
-		TEXT("Promise.resolve().then(() => 1);"),
+		TEXT("Promise.resolve().then(() => {")
+		TEXT("    const t = setTimeout(() => 1, 0);")	 // dead context: no timer minted, undefined back
+		TEXT("    const i = setInterval(() => 1, 0);")
+		TEXT("    const r = requestAnimationFrame(() => 1);")
+		TEXT("    clearTimeout(1); clearInterval(1); cancelAnimationFrame(1);")	   // dead clears: no-ops
+		TEXT("    console.log('lc-dead-context ' + [typeof t, typeof i, typeof r].join(' '));")
+		TEXT("});"),
 		TEXT("lc-pending"));
 	Host.OnViewRemoved(5);
 	TestNull(TEXT("the context died with the view"), Host.FindViewContext(5));
@@ -597,11 +621,15 @@ bool FVaCuusJsPumpLifecycleTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("the removed view's timers are gone, not pending"), Runtime->GetNumTimersFired(), uint64(0));
 	TestEqual(TEXT("its rAF too"), Runtime->GetNumRafCallbacksRun(), uint64(0));
 
-	// The one loose end: view 5's .then reaction was enqueued on the RUNTIME's
-	// job list before the removal, and job entries hold their own refs -- it
-	// executes (harmlessly) from a surviving view's drain segment. Pinned here
-	// so the behavior is a decision, not an accident.
+	// The one loose end, pinned as a decision: view 5's .then reaction still
+	// ran (from view 9's drain segment) -- and its dead-context registrations
+	// minted NOTHING (the expected lc-dead-context line above), so no timer of
+	// view 5's can fire on this pump or any later one, and nothing threw.
 	TestEqual(TEXT("the already-enqueued job of the removed view still ran"), Runtime->GetNumJobsExecuted(), uint64(1));
+	Host.PumpFrame(3.0);
+	TestEqual(TEXT("the job's dead-context registrations armed no timer"), Runtime->GetNumTimersFired(), uint64(0));
+	TestEqual(TEXT("and no rAF"), Runtime->GetNumRafCallbacksRun(), uint64(0));
+	TestEqual(TEXT("and the dead-context calls threw nothing"), Runtime->GetNumErrors(), uint64(0));
 
 	// Shutdown drops every context, then the runtime, whose destructor checks
 	// live bytes back to zero -- surviving this line IS the no-leak assertion

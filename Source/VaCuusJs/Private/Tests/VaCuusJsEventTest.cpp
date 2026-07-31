@@ -32,6 +32,8 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusJsEventDeathOrdersTest, "VaCuus.Js.Event
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusJsEventOnAttributeTest, "VaCuus.Js.Events.OnAttribute",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusJsEventOnAttributeInjectionTest, "VaCuus.Js.Events.OnAttributeInjection",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 /**
  * The listener surface against RmlUi's real dispatcher: capture-before-target-
@@ -112,6 +114,27 @@ bool FVaCuusJsEventDispatchTest::RunTest(const FString& Parameters)
 			"lone.dispatchEvent('click');"					  // still 2
 			"String(hits)"),
 		FString(TEXT("2")));
+
+	// B2: the DOM options OBJECT, the honest minimum (ReadCaptureFlag): a
+	// {capture:false} third argument registers a BUBBLE listener -- an object
+	// reads its .capture member as a bool, never object-truthiness-as-capture
+	// -- and add/remove compute the flag identically, so the options-object
+	// entry is removable with the same options (or the equivalent boolean).
+	// Only `capture` is supported; once/passive/signal are not. Under the old
+	// truthiness reading this logs "p1" (capture phase) and the true-removal
+	// strips it -- the discriminating output.
+	TestEqual(TEXT("options object: {capture:false} is a bubble listener, add/remove symmetric"),
+		Rig.Eval(ViewId,
+			"globalThis.oLog = [];"
+			"globalThis.fnO = function(ev){ oLog.push('p' + ev.eventPhase); };"
+			"wrap.addEventListener('vacuus_opt', fnO, {capture: false});"
+			"kid.dispatchEvent('vacuus_opt');"							  // bubble: p3, not p1
+			"wrap.removeEventListener('vacuus_opt', fnO, true);"		  // wrong phase: removes nothing
+			"kid.dispatchEvent('vacuus_opt');"							  // p3 again
+			"wrap.removeEventListener('vacuus_opt', fnO, {capture: false});"  // symmetric: removes
+			"kid.dispatchEvent('vacuus_opt');"							  // nothing
+			"oLog.join('|')"),
+		FString(TEXT("p3|p3")));
 
 	// C: the stop family. mousedown/mouseup/dblclick are interruptible+bubbles
 	// in the built-in table (EventSpecification.cpp:13/22/24), so each stop has
@@ -574,6 +597,100 @@ bool FVaCuusJsEventOnAttributeTest::RunTest(const FString& Parameters)
 	// The bound view's context never saw the unbound snippet run.
 	TestEqual(TEXT("the unbound snippet never executed anywhere"),
 		Rig.Eval(ViewId, "String(globalThis.neverRuns)"), FString(TEXT("undefined")));
+
+	return true;
+}
+
+/**
+ * The on*-compile eval is a GUARDED host->JS entry (the spec 12.4 shape): the
+ * snippet text executes at COMPILE time -- the attribute below closes
+ * ResolveAttribute's implicit wrapper, runs an infinite loop as a bare
+ * statement, and reopens a function so the whole eval still parses. First
+ * fire arrives through the C++ dispatch path with NO outer guard on the
+ * stack, exactly how production input arrives.
+ *
+ * THE RED STATE IS A HANG, SO IT IS NOT RUN: without the entry guard around
+ * ResolveAttribute's JS_Eval, WatchdogDeadlineSeconds stays 0, InterruptThunk
+ * returns 0 unconditionally (VaCuusJsRuntime.cpp), and the UI thread spins in
+ * for(;;) forever -- the v1 rejection replayed. The discriminating green
+ * observables: the watchdog TRIPS (counted), exactly ONE Error names
+ * attribute/element/document, the second fire stays silent
+ * (bResolveAttempted), and the next frame answers like any other.
+ */
+bool FVaCuusJsEventOnAttributeInjectionTest::RunTest(const FString& Parameters)
+{
+	using namespace VaCuusJsDomTest;
+
+	// A short deadline keeps the deliberate spin cheap; same knob as the
+	// production cvar (250 ms in development), nothing else changed.
+	FVaCuusJsScriptHost::FParams Params;
+	Params.RuntimeParams.WatchdogMs = 50;
+
+	FDomTestRig Rig;
+	const FDomTestRig::EBoot Boot = Rig.Boot(*this, Params);
+	if (Boot != FDomTestRig::EBoot::Ok)
+	{
+		return Boot == FDomTestRig::EBoot::Skip;
+	}
+
+	// The injection, verbatim from the review finding. Wrapped by
+	// ResolveAttribute it evaluates as three statements --
+	// (function(event){ }); (function(){for(;;);})(); (function(event){ })
+	// -- and the middle IIFE runs AT EVAL TIME.
+	static const TCHAR* GDocument = TEXT(R"(<rml>
+<head><style>body { display: block; } div { display: block; }</style></head>
+<body><div id="inj" onclick="}); (function(){for(;;);})(); (function(event){"/></body>
+</rml>)");
+
+	FDomProbeHost* Probe = nullptr;
+	const uint32 ViewId = Rig.AddViewWithDocument(Probe, TEXT("vacuus_jsevt_inject"), GDocument);
+
+	bool bBound = false;
+	Rig.RunOnUI([&bBound, Probe, ViewId]()
+		{
+			Rml::ElementDocument* Document = Probe->GetDocument();
+			bBound = Document != nullptr;
+			FWrappedDomHost::Inner->BindDocumentForTest(ViewId, Document);
+		});
+	if (!TestTrue(TEXT("the document loaded and bound"), bBound))
+	{
+		return false;
+	}
+
+	// The guard's own deadline line, then the named error the sink logs once
+	// the trip has been made catchable again -- each exactly once.
+	AddExpectedMessagePlain(
+		TEXT("JS watchdog: 'onclick attribute of 'div#inj' in vacuus://js_dom_test.rml' ran past its 50 ms deadline"),
+		ELogVerbosity::Error, EAutomationExpectedMessageFlags::Contains, 1);
+	AddExpectedMessagePlain(
+		TEXT("JS exception in 'onclick attribute of 'div#inj' in vacuus://js_dom_test.rml': InternalError: interrupted"),
+		ELogVerbosity::Error, EAutomationExpectedMessageFlags::Contains, 1);
+
+	// First fire from the C++ dispatch path -- no JS on the stack, guard depth
+	// 0, the production-input shape. The second dispatch must stay silent.
+	bool bDispatched = false;
+	Rig.RunOnUI([&bDispatched, Probe]()
+		{
+			Rml::ElementDocument* Document = Probe->GetDocument();
+			if (Document != nullptr)
+			{
+				if (Rml::Element* Element = Document->GetElementById("inj"))
+				{
+					Element->DispatchEvent("click", Rml::Dictionary());
+					Element->DispatchEvent("click", Rml::Dictionary());
+					bDispatched = true;
+				}
+			}
+		});
+	TestTrue(TEXT("the UI thread survived the injection dispatch"), bDispatched);
+
+	TestEqual(TEXT("the watchdog tripped exactly once"),
+		FWrappedDomHost::Inner->GetRuntime()->GetNumWatchdogTrips(), uint64(1));
+	TestEqual(TEXT("one named Error, and the second fire stayed silent"),
+		FWrappedDomHost::Inner->GetRuntime()->GetNumErrors(), uint64(1));
+
+	// Next frame normal: the view still evaluates and its listeners live on.
+	TestEqual(TEXT("next frame normal"), Rig.Eval(ViewId, "1 + 1"), FString(TEXT("2")));
 
 	return true;
 }
