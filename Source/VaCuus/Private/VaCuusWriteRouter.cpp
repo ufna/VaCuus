@@ -8,6 +8,7 @@
 #include "VaCuusUIThread.h"
 #include "VaCuusView.h"
 
+#include "Algo/AllOf.h"
 #include "Containers/SpscQueue.h"
 #include "UObject/Class.h"
 #include "UObject/EnumProperty.h"
@@ -625,7 +626,7 @@ bool FVaCuusWriteRouter::ReadModelValue(uint32 ViewId, FName ModelName, const FS
 	// "1.5" to element 1 -- a silent wrong read where the contract promises a named miss.
 	// Negative indices fall through to the same Warning instead of the out-of-bounds one.
 	const bool bDigitsOnly = !IndexText.IsEmpty() &&
-		!IndexText.FindByPredicate([](TCHAR C) { return !FChar::IsDigit(C); });
+		Algo::AllOf(IndexText, [](TCHAR C) { return FChar::IsDigit(C); });
 	if (!bDigitsOnly)
 	{
 		WarnReadMissOnce(ViewId, ModelName, Path, TEXT("the index is not a non-negative integer"));
