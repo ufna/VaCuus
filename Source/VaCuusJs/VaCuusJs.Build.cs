@@ -53,6 +53,10 @@ public class VaCuusJs : ModuleRules
 		// If any JS_ symbol appears, the vendored quickjs.h lost patch #1
 		// (VENDORED_TAG.txt has the diff and the re-vendoring procedure).
 
-		PrivateDependencyModuleNames.AddRange(new[] { "Core" });
+		// VaCuus for the seam this module implements (IVaCuusScriptHost, declared in
+		// core) and the stats/perf-log surface (VACUUS_API). STRICTLY one-way: core
+		// must never depend back on this module -- the seam is what keeps quickjs
+		// unreachable from everywhere else.
+		PrivateDependencyModuleNames.AddRange(new[] { "Core", "VaCuus" });
 	}
 }

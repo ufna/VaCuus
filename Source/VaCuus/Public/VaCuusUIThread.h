@@ -4,6 +4,8 @@
 
 #include "CoreMinimal.h"
 
+#include "VaCuusScriptHost.h"
+
 #include "HAL/Event.h"
 #include "HAL/PlatformTLS.h"
 #include "HAL/Runnable.h"
@@ -67,8 +69,13 @@ public:
 	 * than looked up: FVaCuusEngine::Get() goes through FModuleManager, which in 5.8
 	 * refuses to hand a module out to a non-game thread (and hard-asserts while that
 	 * module is being unloaded -- exactly when Exit() runs).
+	 *
+	 * InScriptHostFactory (M4) is COPIED IN at construction for the same
+	 * FModuleManager reason: Init() runs on the worker and cannot ask the module for
+	 * it. Null (the default, and every configuration without VaCuusJs) means no
+	 * script host and no JS phases in the frame.
 	 */
-	explicit FVaCuusUIThread(FVaCuusEngine& InEngine);
+	explicit FVaCuusUIThread(FVaCuusEngine& InEngine, FVaCuusScriptHostFactory InScriptHostFactory = nullptr);
 
 	/** Stops the worker and joins it before any member is destroyed. */
 	virtual ~FVaCuusUIThread() override;
@@ -244,6 +251,17 @@ public:
 	/** Blocks until GetFrameCount() >= Target. Returns false on timeout. Test helper. */
 	bool WaitForFrameCount(uint64 Target, double TimeoutSeconds);
 
+	/**
+	 * True while this thread owns a live script host (M4). Safe from any thread.
+	 *
+	 * The seam's only cross-thread observable, and it exists because its absence
+	 * would be untestable: "no factory registered means the frame loop skips the JS
+	 * phases" is a claim about a host the game thread cannot see -- without this,
+	 * asserting the JS-off configuration would come down to grepping the log for
+	 * silence.
+	 */
+	bool HasScriptHost() const;
+
 	/** True when the calling thread is the VaCuus UI thread. Backs the check() wrappers. */
 	static bool IsInUIThread();
 
@@ -304,6 +322,20 @@ private:
 
 	/** The RmlUi library wrapper this thread boots in Init() and tears down in Exit(). */
 	FVaCuusEngine& Engine;
+
+	/** Snapshot taken at construction (see the constructor comment); consumed by Init(). */
+	FVaCuusScriptHostFactory ScriptHostFactory;
+
+	/**
+	 * The process's script host (M4), or null in every JS-less configuration: no
+	 * factory registered, vacuus.Js.Enable 0 at boot, or the factory declined.
+	 * Created in Init() after RmlUi is up, destroyed at the top of Exit() before
+	 * the document hosts -- only the UI thread touches it.
+	 */
+	TUniquePtr<IVaCuusScriptHost> ScriptHost;
+
+	/** Backs HasScriptHost(); set in Init(), cleared in Exit(). */
+	std::atomic<bool> bScriptHostLive{false};
 
 	/** Owned; deleted (which stops and joins) first of all in the destructor. */
 	FRunnableThread* Thread = nullptr;

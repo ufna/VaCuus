@@ -40,11 +40,21 @@ DECLARE_STATS_GROUP(TEXT("VaCuus"), STATGROUP_VaCuus, STATCAT_Advanced);
 // above and Context::Update(). Adding its scope AFTER the apply exists would leave its
 // cost folded into whichever neighbour happened to grow, which is exactly the
 // unattributable result this task exists to prevent.
+//
+// THE TWO JS SCOPES (M4 Task 2), declared before the phases had anything to measure --
+// the same playbook as DataApply above, for the same reason: the pump and the GC point
+// land between existing scopes, and adding their samplers after the phases exist would
+// leave whatever they cost folded into a neighbour. JsPump is the script host's
+// per-frame pump (rAF/timers/job drain from Task 3 on), between DataApply and the
+// record loop; JsGC is the controlled collection point at the end of RunFrame(), after
+// publish -- so a pause never delays the frame's own output (spec 3.6).
 DECLARE_CYCLE_STAT_EXTERN(TEXT("VaCuus DrainCommands (UI)"), STAT_VaCuusDrainCommands, STATGROUP_VaCuus, VACUUS_API);
 DECLARE_CYCLE_STAT_EXTERN(TEXT("VaCuus DrainInput (UI)"), STAT_VaCuusDrainInput, STATGROUP_VaCuus, VACUUS_API);
 DECLARE_CYCLE_STAT_EXTERN(TEXT("VaCuus DataApply (UI)"), STAT_VaCuusDataApply, STATGROUP_VaCuus, VACUUS_API);
+DECLARE_CYCLE_STAT_EXTERN(TEXT("VaCuus JsPump (UI)"), STAT_VaCuusJsPump, STATGROUP_VaCuus, VACUUS_API);
 DECLARE_CYCLE_STAT_EXTERN(TEXT("VaCuus Update (UI)"), STAT_VaCuusUpdate, STATGROUP_VaCuus, VACUUS_API);
 DECLARE_CYCLE_STAT_EXTERN(TEXT("VaCuus Record (UI)"), STAT_VaCuusRecord, STATGROUP_VaCuus, VACUUS_API);
+DECLARE_CYCLE_STAT_EXTERN(TEXT("VaCuus JsGC (UI)"), STAT_VaCuusJsGC, STATGROUP_VaCuus, VACUUS_API);
 DECLARE_CYCLE_STAT_EXTERN(TEXT("VaCuus Replay (RT)"), STAT_VaCuusReplay, STATGROUP_VaCuus, VACUUS_API);
 DECLARE_CYCLE_STAT_EXTERN(TEXT("VaCuus Composite (RT)"), STAT_VaCuusComposite, STATGROUP_VaCuus, VACUUS_API);
 
@@ -83,12 +93,17 @@ public:
 	 */
 	enum EScope : int32
 	{
-		// The UI thread's own frame, in FVaCuusUIThread::RunFrame() order.
+		// The UI thread's own frame, in FVaCuusUIThread::RunFrame() order. JsPump and
+		// JsGC (M4) sit exactly where RunFrame() runs them: the pump between DataApply
+		// and the record loop (whose cost reads as Update+Record), the GC point after
+		// the record loop -- last thing in the UI frame, after every view published.
 		DrainCommands = 0,
 		DrainInput,
 		DataApply,
+		JsPump,
 		Update,
 		Record,
+		JsGC,
 
 		// The render thread.
 		Replay,
@@ -147,6 +162,20 @@ public:
 	 * game-thread HUD ticks and is a different rate entirely.
 	 */
 	static void AddUIFrame(bool bPublished);
+
+	/**
+	 * Record one JS collection: its pause and the heap figure sampled at it. No-op
+	 * while disabled. UI thread (or whichever thread legally owns the JS runtime).
+	 *
+	 * ITS OWN COUNTER FOR THE SAME REASON AS AddUIFrame: the JsGC scope above samples
+	 * every frame's trigger CHECK, almost all of which decline, so its percentiles say
+	 * nothing about how often the collector actually ran or what a collection costs.
+	 * The window line prints GCs-per-window and the last at-collection heap bytes --
+	 * heap is sampled ONLY at collections because JS_ComputeMemoryUsage walks the whole
+	 * heap (spec 3.6), so a per-frame heap figure would cost a collection-sized walk
+	 * every frame to print.
+	 */
+	static void AddJsGC(double PauseMs, uint64 HeapBytes);
 
 	/**
 	 * Called once per game-thread HUD frame; handles enable/disable transitions

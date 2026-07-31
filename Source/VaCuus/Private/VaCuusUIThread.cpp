@@ -12,12 +12,18 @@
 #include "VaCuusTextInput.h"
 #include "VaCuusUIQueues.h"
 
+#include "HAL/IConsoleManager.h"
 #include "HAL/PlatformProcess.h"
 #include "HAL/PlatformTime.h"
 #include "HAL/RunnableThread.h"
 
 #include <RmlUi/Core/Context.h>
 #include <RmlUi/Core/Element.h>
+
+// Rml::GetSystemInterface + the complete SystemInterface, the pump's clock source
+// (see the JsPump phase in RunFrame); Core.h only forward-declares the class.
+#include <RmlUi/Core/Core.h>
+#include <RmlUi/Core/SystemInterface.h>
 
 // Rml::Factory::ClearStyleSheetCache/ClearTemplateCache, the live-reload path's
 // cache drop (see DrainCommands).
@@ -40,14 +46,39 @@ namespace
 std::atomic<uint32> GVaCuusUIThreadId{0};
 
 /**
- * Stack size for the UI thread, chosen rather than inherited: RmlUi's layout and
- * style resolution recurse with the document tree and QuickJS lands on this
- * thread in M4, so the platform default is not obviously enough -- while the
- * default 8 MB per thread is far more than a UI tree needs. Unix clamps any
- * non-zero request up to at least 128 KB (UnixPlatformRunnableThread.cpp), so
- * this value survives as given.
+ * Stack size for the UI thread, chosen rather than inherited: the platform default
+ * 8 MB per thread is far more than a UI tree needs, while RmlUi's layout and style
+ * resolution recurse with the document tree. 512 KB carried M1-M3; M4 raises it to
+ * 2 MB because quickjs now lands on this thread and its interpreter recurses on
+ * the NATIVE stack -- the engine's own overflow guard is a stack-POINTER check
+ * against an anchor captured at runtime creation (js_check_stack_overflow,
+ * quickjs.c:1952-1957), so its 256 KB budget (JS_SetMaxStackSize, set in
+ * FVaCuusJsRuntime) must fit inside this thread's real stack UNDER whatever RmlUi
+ * frames sit below the script entry point, with headroom for the C++ the deepest
+ * JS frame then calls back into. 2 MB = the 256 KB JS budget + the old 512 KB
+ * proven UI budget, then doubled-and-rounded for the two stacked together (spec
+ * 3.3; the stack-headroom test drives deep JS recursion into RangeError, never the
+ * guard page). Unix clamps any non-zero request up to at least 128 KB
+ * (UnixPlatformRunnableThread.cpp), so this value survives as given.
  */
-constexpr uint32 GVaCuusUIThreadStackSize = 512 * 1024;
+constexpr uint32 GVaCuusUIThreadStackSize = 2 * 1024 * 1024;
+
+/**
+ * The M4 kill switch: 0 = the UI thread boots WITHOUT a script host even when a
+ * factory is registered, so no JS phase ever runs and quickjs is never created.
+ * Read ONCE, at thread boot (Init()), which is the moment the host would be
+ * created -- the cheap-any-thread read is the vacuus.IdleGate pattern
+ * (VaCuusRecordingRenderInterface.cpp:47-52), but unlike the gate a later flip is
+ * a documented no-op until the next thread boot: the host either exists for the
+ * thread's whole life or never does, because half-created JS state has no safe
+ * mid-flight teardown point.
+ */
+static TAutoConsoleVariable<int32> CVarVaCuusJsEnable(
+	TEXT("vacuus.Js.Enable"),
+	1,
+	TEXT("1 (default) = the UI thread creates the registered script host at boot, enabling JavaScript.\n")
+		TEXT("0 = boot without one; no JS runs and quickjs is never initialized. Read once at UI thread boot -- ")
+		TEXT("flipping it later does nothing until the thread is restarted."));
 
 /**
  * Makes the calling thread *be* the UI thread for the duration of the scope.
@@ -282,8 +313,9 @@ void DispatchInputEvent(Rml::Context& Context, const FVaCuusInputEvent& Event)
 }
 }	 // namespace
 
-FVaCuusUIThread::FVaCuusUIThread(FVaCuusEngine& InEngine)
+FVaCuusUIThread::FVaCuusUIThread(FVaCuusEngine& InEngine, FVaCuusScriptHostFactory InScriptHostFactory)
 	: Engine(InEngine)
+	, ScriptHostFactory(MoveTemp(InScriptHostFactory))
 	, Queues(MakeUnique<FVaCuusUIQueues>())
 {
 }
@@ -419,6 +451,18 @@ void FVaCuusUIThread::RunFrameInline()
 	}
 
 	FVaCuusInlineUIThreadScope InlineScope;
+
+	// (inline stack anchor: M4) Every inline frame runs at a DIFFERENT depth of the
+	// game thread's stack, and quickjs checks overflow against an anchor, not a size
+	// (spec 2(c)) -- so the host must re-anchor before ANY JS this frame runs. At the
+	// top of the frame rather than in PumpFrame(), because DrainCommands executes
+	// document scripts and ExecuteScript (from Task 6 on) before the pump ever runs;
+	// see IVaCuusScriptHost::OnInlineFrameEntry for the full argument.
+	if (ScriptHost.IsValid())
+	{
+		ScriptHost->OnInlineFrameEntry();
+	}
+
 	RunFrame();
 	FrameCount.fetch_add(1, std::memory_order_release);
 }
@@ -698,6 +742,11 @@ bool FVaCuusUIThread::IsInUIThread()
 	return UIThreadId != 0 && FPlatformTLS::GetCurrentThreadId() == UIThreadId;
 }
 
+bool FVaCuusUIThread::HasScriptHost() const
+{
+	return bScriptHostLive.load(std::memory_order_acquire);
+}
+
 bool FVaCuusUIThread::Init()
 {
 	// Runs on the worker thread (or, in inline mode, on the game thread inside the
@@ -754,6 +803,23 @@ bool FVaCuusUIThread::Init()
 	ThreadId.store(CurrentThreadId, std::memory_order_release);
 	GVaCuusUIThreadId.store(CurrentThreadId, std::memory_order_release);
 
+	// (script host: M4) AFTER the RmlUi boot -- a host may reach Rml services from its
+	// first call -- and AFTER the id publication, so IsInUIThread() already answers true
+	// for anything the factory constructs. vacuus.Js.Enable is read ONCE, here, at the
+	// only moment a host can come to exist for this thread (see the cvar's comment for
+	// why later flips are no-ops). Cannot fail: a factory that returns null simply means
+	// no host, same as no factory, and there is nothing to unwind if Init() had failed
+	// above -- the host is created strictly after the last failure point.
+	if (ScriptHostFactory && CVarVaCuusJsEnable.GetValueOnAnyThread() != 0)
+	{
+		ScriptHost = ScriptHostFactory();
+	}
+	bScriptHostLive.store(ScriptHost.IsValid(), std::memory_order_release);
+	if (ScriptHost.IsValid())
+	{
+		UE_LOG(LogVaCuus, Log, TEXT("UI thread created its script host; JS phases are live"));
+	}
+
 	// Set last, and before returning: Start() reads it as soon as Create() returns.
 	bInitSucceeded.store(true, std::memory_order_release);
 	return true;
@@ -800,7 +866,27 @@ void FVaCuusUIThread::Exit()
 			NumDropped);
 	}
 
-	// 1. Every view lets go of its documents and its context (and releases its
+	// 1a. The script host dies FIRST, before any document host: its Shutdown() frees
+	// JS refs and runs quickjs finalizers that touch RmlUi objects, which needs every
+	// context, element tree and instancer still alive (spec 5) -- and quickjs itself
+	// must be gone before Rml::Shutdown() in step 2. On the graceful path the in-band
+	// Shutdown command already closed every document while the frame loop lived, so
+	// unload JS had its chance there (wired in M4 Task 6).
+	//
+	// (hard-stop split: M4 Task 6) On a hard stop -- Stop() with no in-band command --
+	// the documents are still OPEN here and die inside step 1b's fused
+	// close-and-RemoveContext, AFTER the script host is gone, so their unload JS never
+	// runs. Task 6's document work splits step 1b into a CloseDocument() loop first,
+	// then this Shutdown(), then the host Shutdown() loop, making the ordering true on
+	// every path.
+	if (ScriptHost.IsValid())
+	{
+		ScriptHost->Shutdown();
+		ScriptHost.Reset();
+		bScriptHostLive.store(false, std::memory_order_release);
+	}
+
+	// 1b. Every view lets go of its documents and its context (and releases its
 	// render-side resources), still on this thread.
 	for (TPair<uint32, TUniquePtr<IVaCuusDocumentHost>>& Pair : Hosts)
 	{
@@ -878,6 +964,26 @@ void FVaCuusUIThread::RunFrame()
 		ApplyModelUpdates();
 	}
 
+	// (js pump: M4; Task 3 fills the internals -- rAF, timers, the bounded job drain)
+	//
+	// The DataApply placement argument again, one phase later: after the drains, so a
+	// script loaded or enqueued by this frame's commands is pumped into this frame; and
+	// before the record loop's Context::Update(), so what the callbacks wrote to the DOM
+	// is laid out and drawn by THIS frame, not discovered a frame late. UNGATED on
+	// HasView() for the reason the data apply is (see the record-loop comment below):
+	// HasView() is a recordability test, and timers for a sizeless-but-alive view --
+	// every UMG view before its first Slate tick -- must keep firing.
+	//
+	// The timestamp is Rml::GetSystemInterface()->GetElapsedTime(), sampled ONCE here:
+	// it is the clock RmlUi advances its own animations on (Clock::GetElapsedTime,
+	// Clock.cpp:7-14, consumed in Element::AdvanceAnimations, Element.cpp:2838-2849), so
+	// a rAF callback and a CSS animation in the same frame see the same now (spec 3.5).
+	if (ScriptHost.IsValid())
+	{
+		VACUUS_PERF_SCOPE(JsPump);
+		ScriptHost->PumpFrame(Rml::GetSystemInterface()->GetElapsedTime());
+	}
+
 	// One recorded frame per view, each publishing its own command buffer straight to
 	// the render thread and its own interactive-region snapshot straight to the game
 	// thread's view handle -- no game-thread hop in either direction.
@@ -902,6 +1008,17 @@ void FVaCuusUIThread::RunFrame()
 		{
 			Pair.Value->RecordAndPublishFrame();
 		}
+	}
+
+	// (js gc: M4) The controlled collection point, LAST in the frame: every view has
+	// recorded and published, so a pause here delays only the next wakeup, never this
+	// frame's output (spec 3.6). The host declines almost every call -- it collects on
+	// allocation growth or an OOM fallback -- which is why the scope wraps the check
+	// too: the per-frame cost of deciding "no" is part of the phase's budget.
+	if (ScriptHost.IsValid())
+	{
+		VACUUS_PERF_SCOPE(JsGC);
+		ScriptHost->CollectGarbage(TEXT("frame"));
 	}
 }
 
@@ -1137,6 +1254,13 @@ void FVaCuusUIThread::AddView(FVaCuusUICommand& Command)
 	Hosts.Add(Command.ViewId, MoveTemp(Host));
 	NumViews.store(Hosts.Num(), std::memory_order_release);
 
+	// After the host is booted and registered: a script host that reacted by touching
+	// the view would find it in every map a frame can reach it through.
+	if (ScriptHost.IsValid())
+	{
+		ScriptHost->OnViewAdded(Command.ViewId);
+	}
+
 	UE_LOG(LogVaCuus, Log, TEXT("View %u registered on the UI thread (%d view(s) now)"),
 		Command.ViewId, Hosts.Num());
 }
@@ -1153,6 +1277,17 @@ void FVaCuusUIThread::RemoveView(uint32 ViewId)
 	}
 
 	NumViews.store(Hosts.Num(), std::memory_order_release);
+
+	// BEFORE the host's Shutdown(), which is what destroys the Rml context and its
+	// element tree: the script host frees this view's JS state -- wrappers, listeners,
+	// eventually the context (Task 3 on) -- against a still-live tree, the only order
+	// in which RmlUi's own deferred detach can then reclaim what JS let go (spec 2(g)).
+	// The same shape as the Models drop below, for the mirrored reason: that one must
+	// come AFTER Shutdown() because the context reads the shadows on its way down.
+	if (ScriptHost.IsValid())
+	{
+		ScriptHost->OnViewRemoved(ViewId);
+	}
 
 	// Drops the context and the render-side resources, but not the host: RmlUi
 	// still holds a RenderManager keyed on its render interface until
