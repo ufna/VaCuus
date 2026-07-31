@@ -50,6 +50,19 @@ struct FVaCuusModelUpdate
  * the steady state, and built so that a value can never arrive older than the bit that
  * announces it.
  *
+ * "ALLOCATION-FREE" IS SCOPED (spec 3.4). For SCALAR fields it holds as written: bit sets,
+ * slots and their shadow buffers are allocated up front and a publish only assigns through
+ * them. An ARRAY field's publish is per-element ASSIGNMENT into the slot's existing elements
+ * (FVaCuusModelArrayDesc::SyncCopy, reached through the same CopyValue call as every other
+ * kind), which allocates only where content outgrew capacity or Num grew: an FString
+ * element's assignment reallocates iff the quantized reserve of the source length exceeds
+ * the destination's capacity, else the buffer is reused outright (ReallocForCopy,
+ * Array.h:710-751 -- `NewMax > PrevMax` on both branches), and the container block grows the
+ * same way under Resize, with the SHRINK caveat SyncCopy's comment carries
+ * (VaCuusModelLayout.cpp:45-52: a large trim may move the block). So a same-shape republish
+ * is assignment-shaped, not allocation-shaped -- a claim spec 9 checks with a counting
+ * allocator rather than takes from this comment.
+ *
  *
  * WHY THE OBVIOUS DESIGN IS WRONG (spec 3.5, and the blocking finding of the design review).
  *
@@ -98,7 +111,9 @@ struct FVaCuusModelUpdate
  * COST OF REPUBLISHING. In the steady state the echo arrives within a UI frame or two and
  * Unacked is empty or tiny. When the UI thread stalls, this republishes the same handful of
  * fields per frame instead of accumulating a backlog -- bounded by the number of distinct
- * changed fields, never by how long the stall lasted.
+ * changed fields, never by how long the stall lasted. For an Array field "a field" is
+ * O(elements): every republish rewrites the whole array into the slot (SyncCopy, per
+ * element), so a stalled UI costs element assignments per outstanding array per game frame.
  *
  *
  * WHAT IS DELIBERATELY ABSENT.

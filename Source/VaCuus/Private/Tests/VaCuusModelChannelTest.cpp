@@ -64,6 +64,22 @@ static auto Read(const FVaCuusModelLayout& Layout, const void* Base, const TCHAR
 }
 
 /**
+ * A native reference to a field's value inside a shadow instance -- how the array tests
+ * write and read whole TArrays. Legal because the fixture is a native USTRUCT, so the shadow
+ * really is an instance of it and the property's value pointer really is a TArray<T>; the
+ * sampler tests take the same shortcut (VaCuusModelSamplerTest.cpp, Read<TArray<int32>>).
+ * The REFERENCE stays valid across publishes -- the shadow buffer is malloc'd once and never
+ * moves; only the array's element allocation does, which is spec 2(c)'s point.
+ */
+template <typename T>
+static T& ValueRef(const FVaCuusModelLayout& Layout, void* Base, const TCHAR* WireName)
+{
+	const FVaCuusModelField* Field = Layout.FindField(WireName);
+	check(Field != nullptr);
+	return *Field->Property->ContainerPtrToValuePtr<T>(Field->ContainerPtr(Base));
+}
+
+/**
  * The UI side: exactly what Task 6's apply loop will be, minus DirtyVariable.
  *
  * DRIVEN BY THE BITS, never by the struct -- a slot's non-dirty fields hold whatever an
@@ -312,6 +328,181 @@ bool FVaCuusModelChannelEchoTest::RunTest(const FString& Parameters)
 	Producer.Channel.ConsumeUpdate([&Layout, &UIShadow](const FVaCuusModelUpdate& Update) { ApplyInto(Layout, Update, UIShadow); });
 	TestEqual(TEXT("and the newer value arrives"), Read<FFloatProperty>(Layout, UIShadow.GetData(), TEXT("Ratio")), 2.f);
 	TestEqual(TEXT("nothing is outstanding once it is confirmed"), Producer.Channel.NumOutstandingFields(), 0);
+
+	return true;
+}
+
+/**
+ * INVARIANT I2 WITH AN ARRAY FIELD (M3b): the recycled slot's stale value is now a whole
+ * ARRAY -- every element and the Num() regress together, and nothing about applying a stale
+ * array looks wrong from inside the copy: a shrink is legal, an element assignment is legal,
+ * the bit was true.
+ *
+ * Same shape as NoRegression above -- publish twice without consuming, consume, then change
+ * an unrelated field -- and the same lever breaks it: a Publish() that ORs its bits into the
+ * recycled slot and copies only what changed this frame announces bit(Numbers) with the
+ * FIRST publish's elements, so the UI walks Num() back from 2 to 3 while resurrecting values
+ * it already superseded. What is under test is the protocol that prevents it: PublishSet =
+ * Pending | Unacked assigned (never OR'd) into the slot, and EVERY bit's value rewritten at
+ * every publish (VaCuusModelChannel.cpp, Publish()) -- for an Array field that rewrite is a
+ * whole-element SyncCopy, reached through the same CopyValue funnel as every other stage.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusModelChannelArrayNoRegressionTest, "VaCuus.Model.Channel.ArrayNoRegression",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusModelChannelArrayNoRegressionTest::RunTest(const FString& Parameters)
+{
+	using namespace VaCuusModelChannelTest;
+
+	const FVaCuusModelLayout Layout(FVaCuusArrayTestModel::StaticStruct());
+	if (!TestTrue(TEXT("the layout resolved its struct"), Layout.IsValid()))
+	{
+		return false;
+	}
+
+	const int32 ScalarIndex = IndexOf(Layout, TEXT("Scalar"));
+	const int32 NumbersIndex = IndexOf(Layout, TEXT("Numbers"));
+	const int32 LabelsIndex = IndexOf(Layout, TEXT("Labels"));
+	if (!TestTrue(TEXT("the fixture has Scalar, Numbers and Labels"),
+			ScalarIndex != INDEX_NONE && NumbersIndex != INDEX_NONE && LabelsIndex != INDEX_NONE))
+	{
+		return false;
+	}
+
+	FProducer Producer(Layout);
+	FVaCuusModelShadow UIShadow(Layout.GetStruct());
+
+	TArray<int32>& ShadowNumbers = ValueRef<TArray<int32>>(Layout, Producer.Shadow.GetData(), TEXT("Numbers"));
+	TArray<FString>& ShadowLabels = ValueRef<TArray<FString>>(Layout, Producer.Shadow.GetData(), TEXT("Labels"));
+
+	// Drain the forced full-bit first publish (I1) so what follows is about I2 alone.
+	ShadowNumbers = {1};
+	TestTrue(TEXT("the first publish goes out"), Producer.Channel.Publish(Producer.Shadow));
+	Producer.Channel.ConsumeUpdate([&Layout, &UIShadow](const FVaCuusModelUpdate& Update) { ApplyInto(Layout, Update, UIShadow); });
+
+	// (1) Both arrays move, published, NOT consumed. This slot -- three elements, "first" --
+	// is the one the third publish gets back, still carrying these bits and these elements.
+	ShadowNumbers = {10, 20, 30};
+	ShadowLabels = {TEXT("first")};
+	Producer.Channel.MarkFieldDirty(NumbersIndex);
+	Producer.Channel.MarkFieldDirty(LabelsIndex);
+	TestTrue(TEXT("publish the first contents"), Producer.Channel.Publish(Producer.Shadow));
+
+	// (2) Both move again -- different elements AND a different Num -- published into the
+	// OTHER slot, then consumed.
+	ShadowNumbers = {40, 50};
+	ShadowLabels = {TEXT("second"), TEXT("SECOND")};
+	Producer.Channel.MarkFieldDirty(NumbersIndex);
+	Producer.Channel.MarkFieldDirty(LabelsIndex);
+	TestTrue(TEXT("publish the second contents"), Producer.Channel.Publish(Producer.Shadow));
+
+	TestTrue(TEXT("the consumer takes an update"),
+		Producer.Channel.ConsumeUpdate([&Layout, &UIShadow](const FVaCuusModelUpdate& Update) { ApplyInto(Layout, Update, UIShadow); }));
+	TestTrue(TEXT("latest-wins: the UI sees the second elements"),
+		ValueRef<TArray<int32>>(Layout, UIShadow.GetData(), TEXT("Numbers")) == TArray<int32>({40, 50}));
+
+	// (3) An UNRELATED field changes; the arrays are untouched, so nothing in a
+	// write-what-changed producer would overwrite the stale elements in the recycled slot.
+	Write<FIntProperty>(Layout, Producer.Shadow.GetData(), TEXT("Scalar"), 7);
+	Producer.Channel.MarkFieldDirty(ScalarIndex);
+	TestTrue(TEXT("publish the Scalar change"), Producer.Channel.Publish(Producer.Shadow));
+
+	TestTrue(TEXT("the consumer takes the Scalar update"),
+		Producer.Channel.ConsumeUpdate([&Layout, &UIShadow](const FVaCuusModelUpdate& Update) { ApplyInto(Layout, Update, UIShadow); }));
+	TestEqual(TEXT("Scalar arrived"), Read<FIntProperty>(Layout, UIShadow.GetData(), TEXT("Scalar")), 7);
+
+	// THE ASSERTIONS. No element may regress to the first publish's values, and the Num may
+	// not walk back up to the first publish's.
+	TestTrue(TEXT("no element regresses: Numbers is still {40, 50}"),
+		ValueRef<TArray<int32>>(Layout, UIShadow.GetData(), TEXT("Numbers")) == TArray<int32>({40, 50}));
+
+	// Per element and case-sensitively: TArray<FString>::operator== compares elements through
+	// FString's operator==, which is Stricmp (UnrealString.h.inl:906-915), and a regression to
+	// an equal-ignoring-case value must not pass.
+	const TArray<FString>& UILabels = ValueRef<TArray<FString>>(Layout, UIShadow.GetData(), TEXT("Labels"));
+	TestTrue(TEXT("no element regresses: Labels is still {second, SECOND}, case and all"),
+		UILabels.Num() == 2 && UILabels[0].Equals(TEXT("second"), ESearchCase::CaseSensitive)
+			&& UILabels[1].Equals(TEXT("SECOND"), ESearchCase::CaseSensitive));
+
+	return true;
+}
+
+/**
+ * SLOT SELF-SUFFICIENCY WITH A MIXED SCALAR+ARRAY OUTSTANDING SET (M3b): dirty an array and
+ * a scalar in DIFFERENT frames, publish every frame, consume nothing until the end, then
+ * consume ONCE. The one slot read must announce BOTH fields and carry both CURRENT values --
+ * the array's from its latest change, not from the frame its bit was first set.
+ *
+ * This is the "every published slot is self-sufficient" invariant with an array among the
+ * outstanding fields: every publish while the bit is outstanding re-runs the array's whole-
+ * element SyncCopy into the slot, which is exactly the O(elements)-per-republish cost the
+ * channel header's stall paragraph now scopes.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusModelChannelArrayMixedSelfSufficiencyTest,
+	"VaCuus.Model.Channel.ArrayMixedSelfSufficiency", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusModelChannelArrayMixedSelfSufficiencyTest::RunTest(const FString& Parameters)
+{
+	using namespace VaCuusModelChannelTest;
+
+	const FVaCuusModelLayout Layout(FVaCuusArrayTestModel::StaticStruct());
+	const int32 ScalarIndex = IndexOf(Layout, TEXT("Scalar"));
+	const int32 NumbersIndex = IndexOf(Layout, TEXT("Numbers"));
+	if (!TestTrue(TEXT("the fixture has Scalar and Numbers"), ScalarIndex != INDEX_NONE && NumbersIndex != INDEX_NONE))
+	{
+		return false;
+	}
+
+	FProducer Producer(Layout);
+	FVaCuusModelShadow UIShadow(Layout.GetStruct());
+
+	TArray<int32>& ShadowNumbers = ValueRef<TArray<int32>>(Layout, Producer.Shadow.GetData(), TEXT("Numbers"));
+
+	// Drain the forced full-bit first publish (I1).
+	Producer.Channel.Publish(Producer.Shadow);
+	Producer.Channel.ConsumeUpdate([&Layout, &UIShadow](const FVaCuusModelUpdate& Update) { ApplyInto(Layout, Update, UIShadow); });
+
+	// Frame 1: only the ARRAY moves. Published, not consumed.
+	ShadowNumbers = {1, 2};
+	Producer.Channel.MarkFieldDirty(NumbersIndex);
+	TestTrue(TEXT("frame 1 publishes"), Producer.Channel.Publish(Producer.Shadow));
+
+	// Frame 2: only the SCALAR moves. The array is NOT re-marked -- it is unacked, and the
+	// publish must still rewrite its whole current contents into this frame's slot.
+	Write<FIntProperty>(Layout, Producer.Shadow.GetData(), TEXT("Scalar"), 5);
+	Producer.Channel.MarkFieldDirty(ScalarIndex);
+	TestTrue(TEXT("frame 2 publishes"), Producer.Channel.Publish(Producer.Shadow));
+
+	// Frame 3: the array moves AGAIN. Frame 1's published elements are now superseded while
+	// the bit is still outstanding -- the exact state a stale-slot design ships stale from.
+	ShadowNumbers = {7, 8, 9};
+	Producer.Channel.MarkFieldDirty(NumbersIndex);
+	TestTrue(TEXT("frame 3 publishes"), Producer.Channel.Publish(Producer.Shadow));
+
+	TestEqual(TEXT("both fields are outstanding"), Producer.Channel.NumOutstandingFields(), 2);
+
+	// ONE consume, of the newest slot only -- the two earlier publishes are skipped, which is
+	// latest-wins working as designed and why the slot has to be self-sufficient.
+	bool bScalarBit = false;
+	bool bNumbersBit = false;
+	TestTrue(TEXT("the consumer takes one update"),
+		Producer.Channel.ConsumeUpdate(
+			[&Layout, &UIShadow, &bScalarBit, &bNumbersBit, ScalarIndex, NumbersIndex](const FVaCuusModelUpdate& Update)
+			{
+				bScalarBit = Update.DirtyFields[ScalarIndex];
+				bNumbersBit = Update.DirtyFields[NumbersIndex];
+				ApplyInto(Layout, Update, UIShadow);
+			}));
+
+	TestTrue(TEXT("the one slot announces the scalar dirtied two publishes ago"), bScalarBit);
+	TestTrue(TEXT("and the array"), bNumbersBit);
+	TestEqual(TEXT("the scalar arrived with its current value"), Read<FIntProperty>(Layout, UIShadow.GetData(), TEXT("Scalar")), 5);
+	TestTrue(TEXT("the array arrived with frame 3's elements, not frame 1's"),
+		ValueRef<TArray<int32>>(Layout, UIShadow.GetData(), TEXT("Numbers")) == TArray<int32>({7, 8, 9}));
+
+	// The echo settles everything: nothing outstanding, and the next publish declines.
+	TestEqual(TEXT("nothing is outstanding after the echo"), Producer.Channel.NumOutstandingFields(), 0);
+	TestFalse(TEXT("so the next publish declines"), Producer.Channel.Publish(Producer.Shadow));
 
 	return true;
 }

@@ -66,6 +66,19 @@ static FString ReadString(const FVaCuusModelLayout& Layout, const FVaCuusModelSh
 		? Property->GetPropertyValue_InContainer(Field->ContainerPtr(Shadow.GetData()))
 		: FString();
 }
+
+/**
+ * One field's NATIVE value -- how the array section reads whole TArrays out of the UI
+ * shadow. Legal because the fixture is a native USTRUCT, so the shadow really is an instance
+ * of it; the same shortcut the sampler and channel tests take.
+ */
+template <typename T>
+static const T& ReadValue(const FVaCuusModelLayout& Layout, const FVaCuusModelShadow& Shadow, const TCHAR* WireName)
+{
+	const FVaCuusModelField* Field = Layout.FindField(WireName);
+	check(Field != nullptr && Shadow.IsValid());
+	return *Field->Property->ContainerPtrToValuePtr<T>(Field->ContainerPtr(Shadow.GetData()));
+}
 }	 // namespace VaCuusModelApplyTest
 
 /**
@@ -227,11 +240,88 @@ bool FVaCuusModelApplyTest::RunTest(const FString& Parameters)
 	// The values are still there afterwards, so "nothing happened" is not "the model went away".
 	TestEqual(TEXT("and the document still shows the last value"), Sized->Latest.Title, FString(TEXT("Beta")));
 
+	// ---- 5. An ARRAY field takes the same road (M3b): bits -> SyncCopy -> DirtyVariable. ----
+
+	// TASK 4's ADAPTER (FVaCuusArrayDefinition) DELETES THIS EXPECTATION BLOCK. Until it
+	// lands, definition pass 1 skips Array fields and pass 2 logs one named Error per
+	// array-backed top-level name -- the deliberate loud placeholder
+	// (VaCuusDataVariable.cpp:420-427 and :470-476). The apply neither needs nor waits for
+	// the adapter: the dirty protocol and the UI shadow sit upstream of RmlUi's definitions,
+	// and DirtyVariable on a name with no variable behind it is a compiled-out assert plus a
+	// set insert nothing consumes (DataModel.cpp:325-331).
+	for (const TCHAR* ArrayName : {TEXT("Numbers"), TEXT("Labels"), TEXT("Ratios"), TEXT("Killfeed"), TEXT("Panel")})
+	{
+		AddExpectedMessagePlain(FString::Printf(TEXT("top-level name '%s' has no field behind it"), ArrayName),
+			ELogVerbosity::Error, EAutomationExpectedMessageFlags::Contains, 1);
+	}
+
+	const UScriptStruct* ArrayType = FVaCuusArrayTestModel::StaticStruct();
+	const TSharedRef<FVaCuusBoundModel> ArrayModel = MakeShared<FVaCuusBoundModel>(FName(TEXT("feed")), ArrayType);
+	if (!TestTrue(TEXT("the array model built"), ArrayModel->IsValid()))
+	{
+		return false;
+	}
+
+	const TSharedRef<FVaCuusViewStatus> ArrayStatus = MakeShared<FVaCuusViewStatus>();
+	TUniquePtr<FProbeHost> OwnedArray = MakeUnique<FProbeHost>(TEXT("vacuus_apply_array_view"));
+	const uint32 ArrayViewId = UIThread->AllocateViewId();
+
+	// Sizeless, like the section 2 view and for the same reason: what is under test HERE is
+	// that a published array reaches the UI shadow through the real apply loop, which no
+	// document is needed to observe. The DOM half -- data-for over these values -- is Task 5.
+	UIThread->EnqueueAddView(ArrayViewId, MoveTemp(OwnedArray), FIntPoint::ZeroValue, ArrayStatus);
+	UIThread->EnqueueBindModel(ArrayViewId, ArrayModel);
+
+	FVaCuusArrayTestModel ArrayLive;
+	ArrayLive.Numbers = {10, 20, 30};
+	ArrayLive.Killfeed.SetNum(1);
+	ArrayLive.Killfeed[0].Killer = TEXT("Ada");
+
+	ArrayModel->Sample(ArrayType, &ArrayLive);
+	TestTrue(TEXT("the array model published"), ArrayModel->PublishPending());
+
+	if (!TestTrue(TEXT("frames ran"), RunFrames(*UIThread, 3)))
+	{
+		return false;
+	}
+
+	const int32 NumArrayFields = ArrayModel->GetLayout().GetFields().Num();
+	TestEqual(TEXT("one update applied to the array model"), int32(ArrayModel->GetNumUpdatesApplied()), 1);
+	TestEqual(TEXT("carrying every field (I1 again)"), int32(ArrayModel->GetNumFieldsApplied()), NumArrayFields);
+	TestTrue(TEXT("the array landed whole in the UI shadow"),
+		ReadValue<TArray<int32>>(ArrayModel->GetLayout(), ArrayModel->GetUIShadow(), TEXT("Numbers")) == TArray<int32>({10, 20, 30}));
+	TestEqual(TEXT("...struct rows included"),
+		ReadValue<TArray<FVaCuusTestKillfeedRow>>(ArrayModel->GetLayout(), ArrayModel->GetUIShadow(), TEXT("Killfeed"))[0].Killer,
+		FString(TEXT("Ada")));
+
+	// ONE element moves -> the array's ONE bit -> ONE field applied. The copy the applier
+	// runs for that bit is the CopyValue funnel, i.e. SyncCopy for an Array field, and
+	// NumFieldsApplied is incremented in the same loop iteration as the DirtyVariable call
+	// (VaCuusBoundModel.cpp, ApplyUpdate's bit loop) -- so a delta of exactly 1 IS
+	// "DirtyVariable ran once, with the array's top-level name", which is everything the
+	// pre-adapter pipeline can promise below the DOM.
+	ArrayLive.Numbers[0] = 11;
+	TestEqual(TEXT("exactly one field changed"), ArrayModel->Sample(ArrayType, &ArrayLive), 1);
+	TestTrue(TEXT("and it published"), ArrayModel->PublishPending());
+
+	if (!TestTrue(TEXT("frames ran"), RunFrames(*UIThread, 3)))
+	{
+		return false;
+	}
+
+	TestEqual(TEXT("a second update applied"), int32(ArrayModel->GetNumUpdatesApplied()), 2);
+	TestEqual(TEXT("one more field, exactly: one bit, one SyncCopy, one DirtyVariable"),
+		int32(ArrayModel->GetNumFieldsApplied()), NumArrayFields + 1);
+	TestTrue(TEXT("the whole current array is in the UI shadow"),
+		ReadValue<TArray<int32>>(ArrayModel->GetLayout(), ArrayModel->GetUIShadow(), TEXT("Numbers")) == TArray<int32>({11, 20, 30}));
+	TestEqual(TEXT("and its channel drained"), ArrayModel->NumOutstandingFields(), 0);
+
 	UIThread->EnqueueRemoveView(SizedViewId);
 	UIThread->EnqueueRemoveView(SizelessViewId);
+	UIThread->EnqueueRemoveView(ArrayViewId);
 	RunFrames(*UIThread, 1);
 
-	TestEqual(TEXT("removing the views dropped both models"), UIThread->GetNumBoundModels(), 0);
+	TestEqual(TEXT("removing the views dropped every model"), UIThread->GetNumBoundModels(), 0);
 
 	return true;
 }
