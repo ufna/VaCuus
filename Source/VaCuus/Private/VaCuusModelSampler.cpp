@@ -211,6 +211,19 @@ static bool HasFieldChanged(const FVaCuusModelField& Field, const void* LiveBase
 			return SoftPathsDiffer(SoftProperty->GetPropertyValue(LiveValue).GetUniqueID(),
 				SoftProperty->GetPropertyValue(ShadowValue).GetUniqueID());
 		}
+
+		case EVaCuusFieldKind::Array:
+			// COMMIT-SCOPED BRIDGE, replaced by the per-kind element comparator that lands with
+			// SyncCopy (M3b Task 2). FArrayProperty::Identical has the right SHAPE -- Num()
+			// early-out, then per-element Inner->Identical, first difference wins
+			// (PropertyArray.cpp:89-116) -- but an FString element then compares
+			// case-INSENSITIVELY: FStrProperty declares no Identical override, so it gets
+			// TProperty_WithEqualityAndSerializer's operator== form (UnrealType.h:1760-1770),
+			// and FString's operator== is Stricmp. Task 2's tests pin the per-kind rules
+			// before the real comparator replaces this. (NaN, notably, is NOT among this
+			// bridge's bugs: FDoubleProperty::Identical is UE::PreciseFPEqual, which treats
+			// NaN as equal to NaN -- PropertyDouble.cpp:32-35, PreciseFP.cpp:20-28.)
+			return !Field.Property->Identical(LiveValue, ShadowValue);
 	}
 
 	checkNoEntry();

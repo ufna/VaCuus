@@ -135,6 +135,13 @@ bool FVaCuusScalarDefinition::Get(void* InValuePtr, Rml::Variant& OutVariant)
 
 		case EVaCuusFieldKind::ObjectPath:
 			return GetObjectPath(InValuePtr, OutVariant);
+
+		case EVaCuusFieldKind::Array:
+			// Unreachable by shape: an Array field never becomes a scalar definition -- the
+			// definitions constructor skips the kind until FVaCuusArrayDefinition arrives
+			// (M3b adapter task).
+			checkNoEntry();
+			return false;
 	}
 
 	checkNoEntry();
@@ -410,6 +417,15 @@ FVaCuusModelDefinitions::FVaCuusModelDefinitions(const FVaCuusModelLayout& Layou
 
 	for (const FVaCuusModelField& Field : Layout.GetFields())
 	{
+		// ARRAYS ARE NOT BOUND TO RmlUi YET: FVaCuusArrayDefinition is the M3b adapter task.
+		// Until it lands, a document that references a skipped field gets RmlUi's own
+		// missing-variable warning -- and a TOP-LEVEL array additionally gets pass 2's named
+		// "no field behind it" Error below, which is the loud placeholder, not a bug.
+		if (Field.Kind == EVaCuusFieldKind::Array)
+		{
+			continue;
+		}
+
 		int32 LastDot = INDEX_NONE;
 		Field.WireName.FindLastChar(TEXT('.'), LastDot);
 
@@ -451,9 +467,11 @@ FVaCuusModelDefinitions::FVaCuusModelDefinitions(const FVaCuusModelLayout& Layou
 			continue;
 		}
 
-		// Unreachable through FVaCuusModelLayout, which rolls back a top-level name whose
-		// nested struct contributed nothing. Logged rather than checked because the two are
-		// built independently and a silent absence is this milestone's signature failure.
+		// Unreachable through FVaCuusModelLayout for scalar and struct names, which roll back
+		// a top-level name whose nested struct contributed nothing -- but REACHED by design
+		// for a top-level Array field while pass 1 skips the kind (see above). Logged rather
+		// than checked because the two are built independently and a silent absence is this
+		// milestone's signature failure.
 		UE_LOG(LogVaCuus, Error, TEXT("VaCuus model '%s': top-level name '%s' has no field behind it and will not be bound"),
 			*ModelName, *Name);
 	}

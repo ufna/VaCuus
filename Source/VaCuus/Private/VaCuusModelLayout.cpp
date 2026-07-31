@@ -14,6 +14,25 @@
 #include "UObject/UnrealType.h"
 #include "UObject/Utf8StrProperty.h"
 
+// Out of line only because TUniquePtr<FVaCuusModelLayout> needs the complete type to destroy
+// and the header declares the desc before the layout. All defaulted; the TUniquePtr member is
+// what deletes copying, for the layout as well as for the desc.
+FVaCuusModelArrayDesc::FVaCuusModelArrayDesc() = default;
+FVaCuusModelArrayDesc::FVaCuusModelArrayDesc(FVaCuusModelArrayDesc&&) = default;
+FVaCuusModelArrayDesc& FVaCuusModelArrayDesc::operator=(FVaCuusModelArrayDesc&&) = default;
+FVaCuusModelArrayDesc::~FVaCuusModelArrayDesc() = default;
+
+void FVaCuusModelArrayDesc::SyncCopy(void* DestValuePtr, const void* SrcValuePtr) const
+{
+	// COMMIT-SCOPED BRIDGE: the engine's whole-array deep copy. CORRECT -- CopyValuesInternal
+	// empties the destination, resizes to the source Num and per-element-copies
+	// (PropertyArray.cpp:1260-1328) -- and structurally wasteful, because that emptying
+	// destroys every non-POD destination element first, so no element buffer is ever reused.
+	// The capacity-preserving Resize + per-element assignment the spec names SyncCopy
+	// (spec 3.3) lands in the next commit, together with the sampler tests that observe it.
+	ArrayProperty->CopySingleValue(DestValuePtr, SrcValuePtr);
+}
+
 const TCHAR* LexToString(EVaCuusFieldKind Kind)
 {
 	// No default case, on purpose: -Wswitch turns a new enumerator into a compile error
@@ -42,6 +61,8 @@ const TCHAR* LexToString(EVaCuusFieldKind Kind)
 			return TEXT("Enum");
 		case EVaCuusFieldKind::ObjectPath:
 			return TEXT("ObjectPath");
+		case EVaCuusFieldKind::Array:
+			return TEXT("Array");
 	}
 
 	checkNoEntry();
@@ -50,12 +71,30 @@ const TCHAR* LexToString(EVaCuusFieldKind Kind)
 
 void FVaCuusModelField::CopyValue(void* DestStructBase, const void* SourceStructBase) const
 {
+	void* DestValue = Property->ContainerPtrToValuePtr<void>(ContainerPtr(DestStructBase));
+	const void* SourceValue = Property->ContainerPtrToValuePtr<void>(ContainerPtr(SourceStructBase));
+
+	// THE FUNNEL: an Array field copies through its desc, so every pipeline stage that calls
+	// CopyValue per dirty bit takes the array primitive with no new call site and no layout in
+	// hand. ArrayDesc is non-null for every Array field by construction -- the layout
+	// constructor fixes it up before any field is visible.
+	if (Kind == EVaCuusFieldKind::Array)
+	{
+		ArrayDesc->SyncCopy(DestValue, SourceValue);
+		return;
+	}
+
 	// See the header for why CopySingleValue and not a memcpy. Both pointers go through
 	// ContainerPtrToValuePtr so that a bitfield's value pointer is its storage integer, which
 	// is what FBoolProperty's accessors and its masked copy both expect.
-	Property->CopySingleValue(Property->ContainerPtrToValuePtr<void>(ContainerPtr(DestStructBase)),
-		Property->ContainerPtrToValuePtr<void>(ContainerPtr(SourceStructBase)));
+	Property->CopySingleValue(DestValue, SourceValue);
 }
+
+namespace VaCuusModelLayoutPrivate
+{
+static FString DescribeScalarValue(EVaCuusFieldKind Kind, const FProperty* Property, const void* ValuePtr);
+static FString DescribeArrayValue(const FVaCuusModelArrayDesc& Desc, const void* ValuePtr);
+}	 // namespace VaCuusModelLayoutPrivate
 
 FString FVaCuusModelField::DescribeValue(const void* StructBase) const
 {
@@ -66,6 +105,19 @@ FString FVaCuusModelField::DescribeValue(const void* StructBase) const
 	// shared storage integer, not the bit.
 	const void* ValuePtr = Property->ContainerPtrToValuePtr<void>(ContainerPtr(StructBase));
 
+	// An array prints through its desc; every scalar kind goes through the VALUE-POINTER form
+	// below -- which is also what a scalar array's elements print through. One accessor set,
+	// two call sites, so a field and an element cannot drift apart.
+	if (Kind == EVaCuusFieldKind::Array)
+	{
+		return VaCuusModelLayoutPrivate::DescribeArrayValue(*ArrayDesc, ValuePtr);
+	}
+
+	return VaCuusModelLayoutPrivate::DescribeScalarValue(Kind, Property, ValuePtr);
+}
+
+FString VaCuusModelLayoutPrivate::DescribeScalarValue(EVaCuusFieldKind Kind, const FProperty* Property, const void* ValuePtr)
+{
 	// NO `default`: -Wswitch makes a new EVaCuusFieldKind a compile error here. Same shape as
 	// FVaCuusScalarDefinition::Get(), the sampler's HasFieldChanged() and LexToString().
 	switch (Kind)
@@ -142,10 +194,74 @@ FString FVaCuusModelField::DescribeValue(const void* StructBase) const
 			// ToString() is GetUniqueID().ToString() (SoftObjectPtr.h:96-105) -- no resolution, no
 			// GUObjectArray read, so this is as safe on the UI thread as it is here.
 			return CastFieldChecked<FSoftObjectProperty>(Property)->GetPropertyValue(ValuePtr).ToString();
+
+		case EVaCuusFieldKind::Array:
+			// Unreachable by shape: DescribeValue dispatches an Array field before this runs,
+			// and an ELEMENT is never an array -- the desc build refuses nested containers.
+			checkNoEntry();
+			return FString();
 	}
 
 	checkNoEntry();
 	return FString();
+}
+
+FString VaCuusModelLayoutPrivate::DescribeArrayValue(const FVaCuusModelArrayDesc& Desc, const void* ValuePtr)
+{
+	// The helper takes the VALUE pointer, not the container (UnrealType.h:4285-4288), and it has
+	// no const access path at all: constness is laundered at construction, with the engine's own
+	// "we are casting away the const here" comment on the private ctor (UnrealType.h:4549-4557).
+	// Read-only by discipline, like every other reader of two shadows.
+	FScriptArrayHelper Helper(Desc.ArrayProperty, ValuePtr);
+	const int32 Num = Helper.Num();
+
+	// First 8 and an elision marker (spec 6): the dump exists to show the model's scalar fields
+	// next to its arrays, and 200 printed rows would bury them.
+	constexpr int32 MaxShown = 8;
+	const int32 Shown = FMath::Min(Num, MaxShown);
+
+	FString Result = FString::Printf(TEXT("%d elements ["), Num);
+	for (int32 Index = 0; Index < Shown; ++Index)
+	{
+		if (Index > 0)
+		{
+			Result += TEXT(", ");
+		}
+
+		// Computed per element per use, stored nowhere -- GetRawPtr is call-time arithmetic
+		// (UnrealType.h:4324-4333) and the invariant is spec 2(c)'s.
+		const void* ElementPtr = Helper.GetRawPtr(Index);
+
+		if (Desc.IsStructElement())
+		{
+			// The element base stands in for the struct base: an element layout's fields carry
+			// offsets relative to the element type, and GetRawPtr(i) addresses an instance of
+			// exactly that type.
+			Result += TEXT("{");
+			const TConstArrayView<FVaCuusModelField> ElementFields = Desc.ElementLayout->GetFields();
+			for (int32 FieldIndex = 0; FieldIndex < ElementFields.Num(); ++FieldIndex)
+			{
+				if (FieldIndex > 0)
+				{
+					Result += TEXT(" ");
+				}
+				Result += ElementFields[FieldIndex].WireName + TEXT("=") + ElementFields[FieldIndex].DescribeValue(ElementPtr);
+			}
+			Result += TEXT("}");
+		}
+		else
+		{
+			Result += DescribeScalarValue(Desc.ElementKind, Desc.Inner, ElementPtr);
+		}
+	}
+
+	if (Num > Shown)
+	{
+		Result += FString::Printf(TEXT(", ... %d more"), Num - Shown);
+	}
+
+	Result += TEXT("]");
+	return Result;
 }
 
 namespace VaCuusModelLayoutPrivate
@@ -288,12 +404,13 @@ static bool ClassifyProperty(const FProperty* Property, EVaCuusFieldKind& OutKin
 
 	// ---- Refusals, each with the reason rather than a generic "unsupported". ----
 
-	if (CastField<FArrayProperty>(Property) != nullptr)
-	{
-		OutReason = TEXT("TArray binding is M3b: a flat entry keyed on a byte offset cannot address an array element, "
-						 "whose address is FScriptArrayHelper::GetRawPtr(i) and is only valid for the current Num()");
-		return false;
-	}
+	// NO FArrayProperty BRANCH, AND NONE IS REACHABLE. BuildLevel intercepts arrays before
+	// classification (like nested structs), because building the element description needs
+	// layout state a pure classifier cannot hold. An array cannot arrive as an ELEMENT type
+	// either: UHT refuses containers of containers outright (UhtArrayProperty.cs:257-260),
+	// so classifying an array's Inner through this function never meets one. A hand-built
+	// FArrayProperty that somehow did would fall to the generic tail -- refused, with a log
+	// line.
 	if (CastField<FMapProperty>(Property) != nullptr)
 	{
 		OutReason = TEXT("TMap has no RmlUi map view, and FMapProperty::Identical is O(n^2) via IsPermutation");
@@ -411,6 +528,21 @@ FVaCuusModelLayout::FVaCuusModelLayout(const UScriptStruct* InStruct)
 
 	BuildLevel(InStruct, FString(), /*BaseOffset=*/0, /*TopLevelNameIndex=*/INDEX_NONE, /*Depth=*/0);
 
+	// ARRAY-DESC FIX-UP, AFTER THE BUILD AND NEVER DURING IT. BuildLevel appends to ArrayDescs
+	// while it appends to Fields, so mid-build the table can still reallocate and only the
+	// INDEX is stable. From here on the layout is immutable -- nothing appends after the
+	// constructor returns -- so the pointer written now cannot dangle; moving the layout moves
+	// the table's allocation ownership, not its elements' addresses. The pointer exists so
+	// CopyValue reaches SyncCopy without callers carrying the layout (the funnel; see the
+	// header).
+	for (FVaCuusModelField& Field : Fields)
+	{
+		if (Field.ArrayDescIndex != INDEX_NONE)
+		{
+			Field.ArrayDesc = &ArrayDescs[Field.ArrayDescIndex];
+		}
+	}
+
 	if (Fields.IsEmpty())
 	{
 		UE_LOG(LogVaCuus, Warning,
@@ -496,11 +628,19 @@ void FVaCuusModelLayout::BuildLevel(
 		// A fixed-size C array (UPROPERTY() float Foo[4]) is ONE FProperty with ArrayDim 4.
 		// Binding element 0 and dropping the rest would be a silent partial bind, which is
 		// worse than not binding it.
+		//
+		// IT STAYS REFUSED NOW THAT TArray BINDS -- the revisit M3a promised, decided against
+		// (spec 3.2). A fixed array cannot be Blueprint-exposed at all (UhtScriptStruct.cs:
+		// 1147-1149, UhtClass.cs:2203-2205), so its whole audience is C++ code for which a
+		// TArray is strictly more idiomatic; and support would fork the copy contract, because
+		// CopySingleValue copies exactly one element from an element address while the whole
+		// property needs CopyCompleteValue's ArrayDim loop (UnrealType.h:881-894, :915-928) --
+		// a second copy shape for one rare shape of data.
 		if (Property->ArrayDim > 1)
 		{
 			UE_LOG(LogVaCuus, Warning,
 				TEXT("VaCuus model '%s': property '%s%s' (%s) cannot be bound -- a fixed-size array (ArrayDim %d) is one "
-					 "property with many values, and indexed binding is M3b"),
+					 "property with many values and cannot be Blueprint-exposed; use a TArray, which binds"),
 				*ModelName, *Prefix, *Property->GetAuthoredName(), *Property->GetCPPType(), Property->ArrayDim);
 			continue;
 		}
@@ -541,6 +681,122 @@ void FVaCuusModelLayout::BuildLevel(
 				TEXT("VaCuus model '%s': property '%s' cannot be bound under the name '%s' -- that name is already taken by "
 					 "another property"),
 				*ModelName, *Property->GetName(), *WireName);
+			continue;
+		}
+
+		// ARRAYS ARE INTERCEPTED HERE, NOT CLASSIFIED, for the same reason nested structs
+		// are: the element description needs layout state -- a desc table entry, possibly a
+		// whole element layout -- that the pure classifier cannot build. The array itself is
+		// a LEAF: one entry, one dirty bit, addressed by ContainerOffset like any other leaf,
+		// with an FVaCuusModelArrayDesc on the side because element count is per-instance
+		// while leaf count is fixed at build time (spec 3.1).
+		if (const FArrayProperty* ArrayProperty = CastField<FArrayProperty>(Property))
+		{
+			FVaCuusModelArrayDesc Desc;
+			Desc.ArrayProperty = ArrayProperty;
+			Desc.Inner = ArrayProperty->Inner;
+
+			if (const FStructProperty* InnerStruct = CastField<FStructProperty>(Desc.Inner))
+			{
+				if (InnerStruct->Struct == nullptr)
+				{
+					UE_LOG(LogVaCuus, Warning, TEXT("VaCuus model '%s': array property '%s' has no element type; skipped"),
+						*ModelName, *WireName);
+					continue;
+				}
+
+				// A PLAIN LAYOUT, DELIBERATELY (spec 3.1): the element type gets the same
+				// flattening, classifier, name rules and pinning a model root gets, because the
+				// definition registry keys on the raw UScriptStruct* and a type used both as a
+				// root and as a row type cannot carry two policies. The consequences are owned:
+				// element TOP-LEVEL member names obey the full root rule -- a row member named
+				// `Size` is refused with the root Error, and the fix is a rename -- while what
+				// a shared layout cannot refuse, the scan below refuses on the ARRAY FIELD.
+				Desc.ElementLayout = MakeUnique<FVaCuusModelLayout>(InnerStruct->Struct);
+
+				// THE DESC-BUILD SCAN, over the element layout's FLAT leaf list -- flattening
+				// has already surfaced every member of every nested struct, so one linear pass
+				// sees the whole element subtree. Two kinds refuse the whole array field:
+				//
+				//  - Text, ANYWHERE in the subtree: M3a's Text contract -- shadow and compare
+				//    the display string -- is a per-field projection at StoreField
+				//    (VaCuusModelSampler.cpp) that a whole-container copy bypasses, and an
+				//    unprojected FText in the UI shadow would resolve localization on the UI
+				//    thread, the exact race the sampler pins to the game thread.
+				//  - Array, i.e. a nested container: dirtiness is one bit per TOP-LEVEL array,
+				//    so an inner array's cost would multiply invisibly under a single bit.
+				//
+				// One Warning, first offender: finding one is enough to refuse, and one line
+				// naming the array, the member and the reason is what a designer can act on.
+				const FVaCuusModelField* Offender = nullptr;
+				const TCHAR* OffenceReason = nullptr;
+				for (const FVaCuusModelField& Leaf : Desc.ElementLayout->GetFields())
+				{
+					if (Leaf.Kind == EVaCuusFieldKind::Text)
+					{
+						Offender = &Leaf;
+						OffenceReason = TEXT("an FText, whose display-string projection is per field and would be bypassed by a "
+											 "whole-array copy; project it to an FString on the game side");
+						break;
+					}
+					if (Leaf.Kind == EVaCuusFieldKind::Array)
+					{
+						Offender = &Leaf;
+						OffenceReason = TEXT("itself a container, and dirtiness is one bit per top-level array, so an inner "
+											 "array's cost would be invisible under it");
+						break;
+					}
+				}
+				if (Offender != nullptr)
+				{
+					UE_LOG(LogVaCuus, Warning,
+						TEXT("VaCuus model '%s': array property '%s' (%s) cannot be bound -- element member '%s' is %s"),
+						*ModelName, *WireName, *Property->GetCPPType(), *Offender->WireName, OffenceReason);
+					continue;
+				}
+			}
+			else
+			{
+				// Scalar elements share the field classifier -- the per-kind rules are the same
+				// rules, value-pointer form -- so a refused element kind carries the same reason
+				// a refused field of that kind would.
+				EVaCuusFieldKind ElementKind = EVaCuusFieldKind::Bool;
+				const TCHAR* ElementReason = nullptr;
+				if (!ClassifyProperty(Desc.Inner, ElementKind, ElementReason))
+				{
+					UE_LOG(LogVaCuus, Warning,
+						TEXT("VaCuus model '%s': array property '%s' (%s) cannot be bound -- its element type cannot be: %s"),
+						*ModelName, *WireName, *Property->GetCPPType(), ElementReason);
+					continue;
+				}
+
+				// Text ELEMENTS are refused even though Text FIELDS bind: the classifier's
+				// answer is right for a field, where StoreField projects the display string per
+				// leaf; an element has no leaf of its own to project through (spec 3.2).
+				if (ElementKind == EVaCuusFieldKind::Text)
+				{
+					UE_LOG(LogVaCuus, Warning,
+						TEXT("VaCuus model '%s': array property '%s' (%s) cannot be bound -- FText elements would bypass the "
+							 "per-field display-string projection and resolve localization on the UI thread; project to FString "
+							 "on the game side"),
+						*ModelName, *WireName, *Property->GetCPPType());
+					continue;
+				}
+
+				Desc.ElementKind = ElementKind;
+			}
+
+			FVaCuusModelField& Field = Fields.AddDefaulted_GetRef();
+			Field.Property = Property;
+			Field.WireName = WireName;
+			Field.TopLevelNameIndex = bTopLevel ? TopLevelNames.Add(WireName) : TopLevelNameIndex;
+			Field.ContainerOffset = BaseOffset;
+			Field.Kind = EVaCuusFieldKind::Array;
+
+			// The INDEX now, the pointer later: the table can still reallocate while this
+			// level and its siblings keep appending, so the constructor fixes ArrayDesc up
+			// only after BuildLevel has returned for good.
+			Field.ArrayDescIndex = ArrayDescs.Add(MoveTemp(Desc));
 			continue;
 		}
 

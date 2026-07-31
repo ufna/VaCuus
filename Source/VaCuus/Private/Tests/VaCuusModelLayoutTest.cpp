@@ -197,10 +197,14 @@ bool FVaCuusModelLayoutFieldsTest::RunTest(const FString& Parameters)
 }
 
 /**
- * THE REFUSALS. Every kind M3a does not carry is skipped with a diagnostic naming the
- * property and the reason -- never silently. The failure this guards against is a
- * designer writing {{Numbers}} and getting an inert document with nothing anywhere
+ * THE REFUSALS. Every kind the model does not carry is skipped with a diagnostic naming
+ * the property and the reason -- never silently. The failure this guards against is a
+ * designer writing {{Lookup}} and getting an inert document with nothing anywhere
  * saying why, which is the milestone's signature failure mode.
+ *
+ * TArray left this fixture in M3b: arrays bind now, and their own coverage -- acceptance
+ * and the array-specific refusals -- lives in VaCuus.Model.LayoutArrays and
+ * VaCuus.Model.LayoutArrayRefusals below.
  */
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusModelLayoutRefusalsTest, "VaCuus.Model.LayoutRefusals",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -211,7 +215,7 @@ bool FVaCuusModelLayoutRefusalsTest::RunTest(const FString& Parameters)
 	// (AutomationTest.cpp:1376 ANDs in HasMetExpectedMessages), so each line below is the
 	// assertion that this refusal was diagnosed -- exactly once, at Warning, naming the
 	// property. Without them "skipped it" and "skipped it silently" are the same result.
-	for (const TCHAR* Refused : {TEXT("Numbers"), TEXT("Lookup"), TEXT("Names"), TEXT("Owner"), TEXT("Watcher"), TEXT("Fixed")})
+	for (const TCHAR* Refused : {TEXT("Lookup"), TEXT("Names"), TEXT("Owner"), TEXT("Watcher"), TEXT("Fixed")})
 	{
 		AddExpectedMessagePlain(FString::Printf(TEXT("property '%s'"), Refused), ELogVerbosity::Warning,
 			EAutomationExpectedMessageFlags::Contains, 1);
@@ -228,7 +232,6 @@ bool FVaCuusModelLayoutRefusalsTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("and it is the right one"), Layout.GetFields()[0].WireName, FString(TEXT("Kept")));
 	}
 
-	TestNull(TEXT("TArray is not bound (M3b)"), Layout.FindField(TEXT("Numbers")));
 	TestNull(TEXT("TMap is not bound"), Layout.FindField(TEXT("Lookup")));
 	TestNull(TEXT("TSet is not bound"), Layout.FindField(TEXT("Names")));
 	TestNull(TEXT("a hard object reference is not bound"), Layout.FindField(TEXT("Owner")));
@@ -642,6 +645,239 @@ bool FVaCuusModelShadowTest::RunTest(const FString& Parameters)
 		FVaCuusModelShadow Empty(nullptr);
 		TestFalse(TEXT("a null type yields an empty shadow"), Empty.IsValid());
 		TestNull(TEXT("with no buffer"), Empty.GetData());
+	}
+
+	return true;
+}
+
+/**
+ * ARRAYS (M3b). An array is a LEAF WITH A SIDE TABLE -- one entry, one dirty bit, one
+ * FVaCuusModelArrayDesc -- because leaf count is fixed at build time while element count
+ * is per-instance, so flattening cannot apply (spec 3.1). Legal at top level and nested
+ * inside a flattened struct; struct elements get a PLAIN FVaCuusModelLayout over the
+ * element type, with the same flattening and kinds a model root would get.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusModelLayoutArraysTest, "VaCuus.Model.LayoutArrays",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusModelLayoutArraysTest::RunTest(const FString& Parameters)
+{
+	using namespace VaCuusModelLayoutTest;
+
+	const FVaCuusModelLayout Layout(FVaCuusArrayTestModel::StaticStruct());
+	if (!TestTrue(TEXT("the layout resolved its struct"), Layout.IsValid()))
+	{
+		return false;
+	}
+
+	// Declaration order, arrays as leaves: Panel contributes its one array leaf under the
+	// dotted path and no entry of its own, exactly like any other nested struct member.
+	const FFieldExpectation Expected[] = {
+		{TEXT("Scalar"), TEXT("Scalar"), EVaCuusFieldKind::SignedInt},
+		{TEXT("Numbers"), TEXT("Numbers"), EVaCuusFieldKind::Array},
+		{TEXT("Labels"), TEXT("Labels"), EVaCuusFieldKind::Array},
+		{TEXT("Ratios"), TEXT("Ratios"), EVaCuusFieldKind::Array},
+		{TEXT("Killfeed"), TEXT("Killfeed"), EVaCuusFieldKind::Array},
+		{TEXT("Panel.Items"), TEXT("Panel"), EVaCuusFieldKind::Array},
+	};
+
+	const TConstArrayView<FVaCuusModelField> Fields = Layout.GetFields();
+	if (!TestEqual(TEXT("one entry per field, arrays as leaves"), Fields.Num(), int32(UE_ARRAY_COUNT(Expected))))
+	{
+		for (const FVaCuusModelField& Field : Fields)
+		{
+			AddInfo(FString::Printf(TEXT("  got %s (%s)"), *Field.WireName, LexToString(Field.Kind)));
+		}
+		return false;
+	}
+
+	const TConstArrayView<FString> TopLevelNames = Layout.GetTopLevelNames();
+	for (int32 Index = 0; Index < Fields.Num(); ++Index)
+	{
+		const FVaCuusModelField& Field = Fields[Index];
+		const FFieldExpectation& Want = Expected[Index];
+
+		TestEqual(FString::Printf(TEXT("entry %d wire name"), Index), Field.WireName, FString(Want.WireName));
+		TestEqual(FString::Printf(TEXT("%s kind"), Want.WireName), FString(LexToString(Field.Kind)), FString(LexToString(Want.Kind)));
+		if (TestTrue(FString::Printf(TEXT("%s has a top-level name index"), Want.WireName),
+				TopLevelNames.IsValidIndex(Field.TopLevelNameIndex)))
+		{
+			TestEqual(FString::Printf(TEXT("%s dirties the right top-level name"), Want.WireName),
+				TopLevelNames[Field.TopLevelNameIndex], FString(Want.TopLevelName));
+		}
+	}
+
+	const FVaCuusModelField* Scalar = Layout.FindField(TEXT("Scalar"));
+	const FVaCuusModelField* Numbers = Layout.FindField(TEXT("Numbers"));
+	const FVaCuusModelField* Labels = Layout.FindField(TEXT("Labels"));
+	const FVaCuusModelField* Killfeed = Layout.FindField(TEXT("Killfeed"));
+	const FVaCuusModelField* PanelItems = Layout.FindField(TEXT("Panel.Items"));
+	if (!TestNotNull(TEXT("Scalar resolved"), Scalar) || !TestNotNull(TEXT("Numbers resolved"), Numbers)
+		|| !TestNotNull(TEXT("Labels resolved"), Labels) || !TestNotNull(TEXT("Killfeed resolved"), Killfeed)
+		|| !TestNotNull(TEXT("Panel.Items resolved"), PanelItems))
+	{
+		return false;
+	}
+
+	// THE DESC. A non-array field has none; an array field has exactly one, fixed up to a
+	// stable address after the build, carrying the Inner every element read goes through.
+	TestNull(TEXT("a scalar field has no desc"), Scalar->ArrayDesc);
+	TestEqual(TEXT("and no desc index"), Scalar->ArrayDescIndex, int32(INDEX_NONE));
+
+	if (TestNotNull(TEXT("Numbers has a desc"), Numbers->ArrayDesc))
+	{
+		TestTrue(TEXT("whose array property is the field's own"),
+			static_cast<const FProperty*>(Numbers->ArrayDesc->ArrayProperty) == Numbers->Property);
+		TestNotNull(TEXT("and whose Inner is resolved"), Numbers->ArrayDesc->Inner);
+		TestFalse(TEXT("an int32 element is not a struct"), Numbers->ArrayDesc->IsStructElement());
+		TestEqual(TEXT("it is a signed integer"), FString(LexToString(Numbers->ArrayDesc->ElementKind)),
+			FString(LexToString(EVaCuusFieldKind::SignedInt)));
+	}
+	if (TestNotNull(TEXT("Labels has a desc"), Labels->ArrayDesc))
+	{
+		TestEqual(TEXT("with String elements"), FString(LexToString(Labels->ArrayDesc->ElementKind)),
+			FString(LexToString(EVaCuusFieldKind::String)));
+	}
+
+	// THE ELEMENT LAYOUT IS PLAIN (spec 3.1): same flattening, same kinds, same top-level
+	// names as a model root -- the nested struct inside the row contributes dotted leaves.
+	if (TestNotNull(TEXT("Killfeed has a desc"), Killfeed->ArrayDesc)
+		&& TestTrue(TEXT("with struct elements"), Killfeed->ArrayDesc->IsStructElement()))
+	{
+		const FVaCuusModelLayout& Rows = *Killfeed->ArrayDesc->ElementLayout;
+		TestTrue(TEXT("the element layout resolved the row type"), Rows.GetStruct() == FVaCuusTestKillfeedRow::StaticStruct());
+
+		const FFieldExpectation RowExpected[] = {
+			{TEXT("Killer"), TEXT("Killer"), EVaCuusFieldKind::String},
+			{TEXT("Victim"), TEXT("Victim"), EVaCuusFieldKind::String},
+			{TEXT("bHeadshot"), TEXT("bHeadshot"), EVaCuusFieldKind::Bool},
+			{TEXT("Impact.X"), TEXT("Impact"), EVaCuusFieldKind::FloatingPoint},
+			{TEXT("Impact.Y"), TEXT("Impact"), EVaCuusFieldKind::FloatingPoint},
+		};
+		if (TestEqual(TEXT("the row flattens like a root"), Rows.GetFields().Num(), int32(UE_ARRAY_COUNT(RowExpected))))
+		{
+			for (int32 Index = 0; Index < Rows.GetFields().Num(); ++Index)
+			{
+				TestEqual(FString::Printf(TEXT("row entry %d wire name"), Index), Rows.GetFields()[Index].WireName,
+					FString(RowExpected[Index].WireName));
+				TestEqual(FString::Printf(TEXT("row entry %d kind"), Index), FString(LexToString(Rows.GetFields()[Index].Kind)),
+					FString(LexToString(RowExpected[Index].Kind)));
+			}
+		}
+	}
+
+	// NESTED PLACEMENT: the array leaf composes ContainerOffset like any other nested leaf.
+	TestTrue(TEXT("Panel.Items has a container offset"), PanelItems->ContainerOffset > 0);
+	TestNotNull(TEXT("and a desc"), PanelItems->ArrayDesc);
+
+	// THE COPY FUNNEL. CopyValue must route an array field through the desc -- deep copy,
+	// shrink included -- with nothing but the field in hand; that is what lets every
+	// pipeline stage stay kind-agnostic.
+	FVaCuusArrayTestModel Source;
+	Source.Numbers = {1, 2, 3};
+	Source.Labels = {TEXT("alpha"), TEXT("beta")};
+	Source.Killfeed.AddDefaulted_GetRef().Killer = TEXT("Ada");
+	Source.Killfeed[0].Impact.Y = 7.f;
+	Source.Panel.Items = {42};
+
+	TestTrue(TEXT("an array field reads back through the layout"),
+		ReadThroughLayout<TArray<int32>>(*Numbers, &Source) == TArray<int32>({1, 2, 3}));
+
+	FVaCuusArrayTestModel Dest;
+	Dest.Numbers = {9, 9, 9, 9};	// Longer than the source: the copy must shrink, not merge.
+	Numbers->CopyValue(&Dest, &Source);
+	Labels->CopyValue(&Dest, &Source);
+	Killfeed->CopyValue(&Dest, &Source);
+	PanelItems->CopyValue(&Dest, &Source);
+
+	TestTrue(TEXT("a shrinking copy arrives whole"), Dest.Numbers == TArray<int32>({1, 2, 3}));
+	TestTrue(TEXT("string elements deep-copy"),
+		Dest.Labels.Num() == 2 && Dest.Labels[0].Equals(TEXT("alpha"), ESearchCase::CaseSensitive)
+			&& Dest.Labels[1].Equals(TEXT("beta"), ESearchCase::CaseSensitive));
+	if (TestEqual(TEXT("struct rows arrive"), Dest.Killfeed.Num(), 1))
+	{
+		TestEqual(TEXT("with their strings"), Dest.Killfeed[0].Killer, FString(TEXT("Ada")));
+		TestEqual(TEXT("and their nested leaves"), Dest.Killfeed[0].Impact.Y, 7.f);
+	}
+	TestTrue(TEXT("the nested array arrives"), Dest.Panel.Items == TArray<int32>({42}));
+
+	// THE DUMP FORM: Num() + first 8 + an elision marker (spec 6).
+	FVaCuusArrayTestModel Dump;
+	TestEqual(TEXT("an empty array describes as empty"), Numbers->DescribeValue(&Dump), FString(TEXT("0 elements []")));
+	for (int32 Value = 0; Value < 10; ++Value)
+	{
+		Dump.Numbers.Add(Value);
+	}
+	TestEqual(TEXT("ten ints describe as the first eight plus an elision"), Numbers->DescribeValue(&Dump),
+		FString(TEXT("10 elements [0, 1, 2, 3, 4, 5, 6, 7, ... 2 more]")));
+	Dump.Killfeed.AddDefaulted_GetRef().Victim = TEXT("Bob");
+	TestTrue(TEXT("a struct row prints its leaves"), Killfeed->DescribeValue(&Dump).Contains(TEXT("Victim=Bob")));
+
+	return true;
+}
+
+/**
+ * ARRAY REFUSALS (spec 3.1/3.2). What the shared element layout cannot refuse, the desc
+ * build refuses ON THE ARRAY FIELD -- one Warning naming the array property, the offending
+ * member and the reason -- and the element layout itself applies the FULL root rules, so a
+ * row member named `Size` gets the root Error. Nothing is silent, and every refusal takes
+ * only its own field.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusModelLayoutArrayRefusalsTest, "VaCuus.Model.LayoutArrayRefusals",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusModelLayoutArrayRefusalsTest::RunTest(const FString& Parameters)
+{
+	// Registered, not merely tolerated: an unmatched expectation fails the test, so each
+	// line IS the assertion that the refusal was diagnosed, once, naming what it names.
+	// ONE pattern per message -- the framework consumes a log line at its first matching
+	// expectation, so a second pattern aimed at the same line would count zero.
+	AddExpectedMessagePlain(TEXT("array property 'Texts'"), ELogVerbosity::Warning, EAutomationExpectedMessageFlags::Contains, 1);
+	AddExpectedMessagePlain(TEXT("array property 'TextRows' (TArray) cannot be bound -- element member 'Label'"),
+		ELogVerbosity::Warning, EAutomationExpectedMessageFlags::Contains, 1);
+	AddExpectedMessagePlain(TEXT("array property 'NestedRows' (TArray) cannot be bound -- element member 'Inner'"),
+		ELogVerbosity::Warning, EAutomationExpectedMessageFlags::Contains, 1);
+
+	// The row member named `Size`: the element layout is a plain layout, so the ROOT rule
+	// and the root Error apply (spec 3.1's stated price; the workaround is a rename).
+	AddExpectedMessagePlain(
+		TEXT("cannot be bound under the name 'Size'"), ELogVerbosity::Error, EAutomationExpectedMessageFlags::Contains, 1);
+
+	// The map member inside a row: the shared classifier refuses the MEMBER, as on a root.
+	AddExpectedMessagePlain(TEXT("property 'Lookup'"), ELogVerbosity::Warning, EAutomationExpectedMessageFlags::Contains, 1);
+
+	const FVaCuusModelLayout Layout(FVaCuusArrayRefusalModel::StaticStruct());
+	TestTrue(TEXT("the layout resolved its struct"), Layout.IsValid());
+
+	// Refused whole: Text elements, Text anywhere in the element subtree, and a container
+	// anywhere in the element subtree.
+	TestNull(TEXT("TArray<FText> is refused"), Layout.FindField(TEXT("Texts")));
+	TestNull(TEXT("a row with an FText member is refused whole"), Layout.FindField(TEXT("TextRows")));
+	TestNull(TEXT("a row with a TArray member is refused whole"), Layout.FindField(TEXT("NestedRows")));
+
+	// Survivors: the scalar control and the two arrays whose offending MEMBERS -- not the
+	// arrays themselves -- were refused.
+	TestNotNull(TEXT("the scalar control survives"), Layout.FindField(TEXT("Kept")));
+	TestEqual(TEXT("exactly the three survivors bind"), Layout.GetFields().Num(), 3);
+
+	const FVaCuusModelField* ReservedRows = Layout.FindField(TEXT("ReservedRows"));
+	if (TestNotNull(TEXT("a row member named Size does not refuse its array"), ReservedRows)
+		&& TestNotNull(TEXT("its desc exists"), ReservedRows->ArrayDesc)
+		&& TestTrue(TEXT("with a struct element layout"), ReservedRows->ArrayDesc->IsStructElement()))
+	{
+		TestNull(TEXT("the reserved member is refused inside the element layout"),
+			ReservedRows->ArrayDesc->ElementLayout->FindField(TEXT("Size")));
+		TestNotNull(TEXT("and its sibling binds"), ReservedRows->ArrayDesc->ElementLayout->FindField(TEXT("Kept")));
+	}
+
+	const FVaCuusModelField* MapRows = Layout.FindField(TEXT("MapRows"));
+	if (TestNotNull(TEXT("a TMap member does not refuse its array"), MapRows)
+		&& TestNotNull(TEXT("its desc exists"), MapRows->ArrayDesc)
+		&& TestTrue(TEXT("with a struct element layout"), MapRows->ArrayDesc->IsStructElement()))
+	{
+		TestNull(TEXT("the map member is dropped by the shared classifier"),
+			MapRows->ArrayDesc->ElementLayout->FindField(TEXT("Lookup")));
+		TestNotNull(TEXT("and its sibling binds"), MapRows->ArrayDesc->ElementLayout->FindField(TEXT("Kept")));
 	}
 
 	return true;

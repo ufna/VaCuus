@@ -19,7 +19,7 @@
  * UNCONDITIONALLY COMPILED, not wrapped in WITH_DEV_AUTOMATION_TESTS: UHT parses this
  * header without the preprocessor's answer, so a guarded USTRUCT emits reflection code
  * that then fails to compile in the configurations where the guard is off. They are
- * eight small structs.
+ * small structs.
  */
 
 /** One value of each shape a native enum can take, for the Enum field kind. */
@@ -127,10 +127,6 @@ struct FVaCuusLayoutTestRefusedModel
 	/** Bound, so a test can prove the refusals below did not take the good field with them. */
 	UPROPERTY(EditAnywhere, Category = "Test")
 	int32 Kept = 0;
-
-	/** M3b, not a gap. */
-	UPROPERTY(EditAnywhere, Category = "Test")
-	TArray<int32> Numbers;
 
 	/** No RmlUi map view, and FMapProperty::Identical is O(n^2). */
 	UPROPERTY(EditAnywhere, Category = "Test")
@@ -554,4 +550,159 @@ struct FVaCuusSamplerCostModel
 		, bBit3(0)
 	{
 	}
+};
+
+/**
+ * One row of the M3b killfeed shape (spec 1): strings, a bool and a nested struct, so a
+ * struct element exercises flattening INSIDE the element layout.
+ *
+ * bHeadshot is a native bool and could not be anything else: a bitfield cannot exist
+ * inside a container, and UHT refuses bool static arrays outright (UhtProperty.cs:
+ * 2395-2398) -- which is why an element compare never needs the mask-aware read (spec 2(e)).
+ */
+USTRUCT()
+struct FVaCuusTestKillfeedRow
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	FString Killer;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	FString Victim;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	bool bHeadshot = false;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	FVaCuusTestPoint Impact;
+};
+
+/**
+ * An array INSIDE a nested struct (the Panel.Items shape, spec 3.1): the array leaf is
+ * legal anywhere a leaf is, and must compose ContainerOffset like any other nested leaf.
+ */
+USTRUCT()
+struct FVaCuusTestArrayPanel
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	TArray<int32> Items;
+};
+
+/**
+ * The supported array shapes, one field per element category (spec 3.2), plus a scalar
+ * control so exactly-one-bit assertions can catch a neighbour marked by mistake.
+ */
+USTRUCT()
+struct FVaCuusArrayTestModel
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	int32 Scalar = 0;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	TArray<int32> Numbers;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	TArray<FString> Labels;
+
+	/** double, not float: the NaN element case asserts on the exact stored bit pattern. */
+	UPROPERTY(EditAnywhere, Category = "Test")
+	TArray<double> Ratios;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	TArray<FVaCuusTestKillfeedRow> Killfeed;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	FVaCuusTestArrayPanel Panel;
+};
+
+/** A row with an FText member: the WHOLE array field is refused at desc build (spec 3.1). */
+USTRUCT()
+struct FVaCuusTestTextRow
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	FText Label;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	FString Kept;
+};
+
+/** A row with a TArray member: a nested container anywhere in the element subtree refuses the whole array field. */
+USTRUCT()
+struct FVaCuusTestNestedArrayRow
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	TArray<int32> Inner;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	FString Kept;
+};
+
+/**
+ * A row whose member is named `Size`, reserved at ROOT level. Element top-level member
+ * names obey the FULL root rule because element layouts are plain shared layouts (spec
+ * 3.1's stated price): the member is refused with the root Error, the row's other member
+ * binds, and the array field itself survives.
+ */
+USTRUCT()
+struct FVaCuusTestReservedNameRow
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	int32 Size = 0;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	FString Kept;
+};
+
+/**
+ * A row with a TMap member: the shared classifier drops the MEMBER, exactly as it would on
+ * a model root, and the array binds without it -- unlike a nested TArray, which refuses the
+ * whole field (spec 3.2: an inner array's cost would hide under the one dirty bit; a map
+ * was never bindable to begin with).
+ */
+USTRUCT()
+struct FVaCuusTestMapRow
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	TMap<FName, int32> Lookup;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	FString Kept;
+};
+
+/** The array-specific refusal cases, plus a survivor to prove each refusal takes only its own field. */
+USTRUCT()
+struct FVaCuusArrayRefusalModel
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	int32 Kept = 0;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	TArray<FText> Texts;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	TArray<FVaCuusTestTextRow> TextRows;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	TArray<FVaCuusTestNestedArrayRow> NestedRows;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	TArray<FVaCuusTestReservedNameRow> ReservedRows;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	TArray<FVaCuusTestMapRow> MapRows;
 };
