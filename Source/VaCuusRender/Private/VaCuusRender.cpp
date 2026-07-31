@@ -502,9 +502,13 @@ static void PumpDemoModel()
 		GState->LastKillfeedBeat = KillBeat;
 		const int32 Serial = GState->KillfeedSerial++;
 
-		// Deterministic from the serial, so any two runs of the same length show the same feed
-		// -- which is what lets a headless screenshot be checked against an expectation instead
-		// of merely glanced at. Pool sizes 5, 7 and 4 are pairwise coprime, so the
+		// Deterministic from the serial, so two HITCH-FREE runs of the same length show the
+		// same feed -- which is what lets a headless screenshot be checked against an
+		// expectation instead of merely glanced at. A >1.5 s hitch narrows that guarantee:
+		// this pump appends at most one row while LastKillfeedBeat jumps to the hitched
+		// beat, so the skipped beat's row never exists -- the row COUNT then differs from a
+		// hitch-free run, though the content stays serial-sequential (rows still come from
+		// consecutive serials). Pool sizes 5, 7 and 4 are pairwise coprime, so the
 		// (Killer, Victim, Weapon) triple does not repeat for 140 rows.
 		static const TCHAR* Killers[] = {TEXT("RAPTOR"), TEXT("VIPER"), TEXT("GHOST"), TEXT("NOMAD"), TEXT("HAVOC")};
 		static const TCHAR* Weapons[] = {TEXT("railgun"), TEXT("SMG"), TEXT("DMR"), TEXT("knife")};

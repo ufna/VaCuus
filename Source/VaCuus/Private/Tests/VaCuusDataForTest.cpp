@@ -48,8 +48,9 @@ static const FName GModelName(TEXT("feed"));
 
 /**
  * Everything one recorded frame showed, written on the UI thread inside
- * RecordAndPublishFrame and read on the test thread only after WaitForFrameCount's
- * release/acquire hand-off -- the FProbeHost rule, verbatim.
+ * RecordAndPublishFrame and read on the test thread only at indices below the settled
+ * count (SettledFrames below). WaitForFrameCount's release/acquire hand-off is NOT
+ * sufficient on its own -- see SettledFrames for the straggler frame it lets through.
  */
 struct FFrameRecord
 {
@@ -85,9 +86,12 @@ public:
 
 		// RESERVED ONCE, NEVER REALLOCATED: the test thread reads earlier records while the
 		// UI thread may still append one more (a coalesced trigger can grant a frame after
-		// WaitForFrameCount returns), and a growth realloc under that read is the one failure
-		// mode the plain-member hand-off cannot absorb. 1024 covers the largest window here
-		// (idle: ~310 frames) three times over.
+		// WaitForFrameCount returns), and Reserve is what keeps those EARLIER-record reads
+		// valid -- a growth realloc would move the buffer out from under them. Reserve does
+		// NOT make the newest record readable: AddDefaulted_GetRef bumps ArrayNum before the
+		// record is constructed, so only the settled-count clamp (SettledFrames) may name
+		// it. Both halves are needed. 1024 covers the largest window here (idle: ~310
+		// frames) three times over.
 		FrameLog.Reserve(1024);
 
 		return Context != nullptr;
@@ -294,6 +298,27 @@ static bool RunFrames(FVaCuusUIThread& UIThread, int32 NumFrames)
 	return true;
 }
 
+/**
+ * How many FrameLog records the test thread may read. Every test-thread index into
+ * FrameLog must stay below this, and never trust FrameLog.Num() or Last().
+ *
+ * WHY WaitForFrameCount IS NOT ENOUGH: every Enqueue* ends in Trigger()
+ * (VaCuusUIThread.cpp:640), the wake event is a binary AutoReset latch
+ * (VaCuusUIThread.h:347), and FrameCount increments only AFTER RunFrame returns
+ * (VaCuusUIThread.cpp:774-775). A trigger that lands mid-frame therefore leaves the event
+ * set, and the worker runs ONE MORE frame concurrent with test-thread code that already saw
+ * its awaited count -- a frame whose AddDefaulted_GetRef bumps ArrayNum BEFORE the record's
+ * FStrings and TArrays are constructed, so FrameLog.Num()/Last() can name a record that is
+ * mid-construction. FramesRecorded cannot: RecordAndPublishFrame increments it with release
+ * ordering AFTER the record is completely filled, exactly once per append, and the acquire
+ * here pairs with that release. Read through the test's own TSharedRef (the same object the
+ * host publishes on), not through the host, whose Status member is written on the UI thread.
+ */
+static int32 SettledFrames(const FVaCuusViewStatus& Status)
+{
+	return int32(Status.FramesRecorded.load(std::memory_order_acquire));
+}
+
 /** What the document must render for Row: bool crosses as "1"/"0" (TypeConverter.inl:340-347). */
 static FString RowText(const FVaCuusCostKillfeedRow& Row)
 {
@@ -301,15 +326,17 @@ static FString RowText(const FVaCuusCostKillfeedRow& Row)
 }
 
 /**
- * THE frame whose DataApply consumed a publish: the one index in [FirstFrame, Num) where
- * the cumulative fields-applied counter moved off Before. INDEX_NONE for none OR more than
- * one, so a hit doubles as "exactly one apply happened in this step".
+ * THE frame whose DataApply consumed a publish: the one index in [FirstFrame, EndFrame)
+ * where the cumulative fields-applied counter moved off Before. INDEX_NONE for none OR more
+ * than one, so a hit doubles as "exactly one apply happened in this step". EndFrame must be
+ * a SettledFrames() load, never Log.Num() -- the bound is what keeps the scan off a record
+ * a straggler frame is still constructing.
  */
-static int32 FindSingleApplyFrame(const TArray<FFrameRecord>& Log, int32 FirstFrame, uint64 Before)
+static int32 FindSingleApplyFrame(const TArray<FFrameRecord>& Log, int32 FirstFrame, int32 EndFrame, uint64 Before)
 {
 	int32 Found = INDEX_NONE;
 	uint64 Prev = Before;
-	for (int32 Index = FirstFrame; Index < Log.Num(); ++Index)
+	for (int32 Index = FirstFrame; Index < EndFrame; ++Index)
 	{
 		if (Log[Index].FieldsApplied != Prev)
 		{
@@ -423,8 +450,8 @@ bool FVaCuusDataForRowsTest::RunTest(const FString& Parameters)
 	// One publish, pumped through, located: where the fields-applied counter moved.
 	const auto PublishAndFindApply = [&](const TCHAR* What) -> int32
 	{
-		const int32 StepStart = Host->FrameLog.Num();
-		const uint64 Before = StepStart > 0 ? Host->FrameLog.Last().FieldsApplied : 0;
+		const int32 StepStart = SettledFrames(*Status);
+		const uint64 Before = StepStart > 0 ? Host->FrameLog[StepStart - 1].FieldsApplied : 0;
 
 		if (!TestTrue(FString::Printf(TEXT("%s: published"), What), Model->PublishPending()))
 		{
@@ -435,7 +462,7 @@ bool FVaCuusDataForRowsTest::RunTest(const FString& Parameters)
 			return INDEX_NONE;
 		}
 
-		return FindSingleApplyFrame(Host->FrameLog, StepStart, Before);
+		return FindSingleApplyFrame(Host->FrameLog, StepStart, SettledFrames(*Status), Before);
 	};
 
 	// ---- 1. Three rows, published before the first UI frame. ----
@@ -481,7 +508,7 @@ bool FVaCuusDataForRowsTest::RunTest(const FString& Parameters)
 
 	// ---- 4. One changed element: that row's text changes, every other row byte-identical. ----
 
-	const TArray<FString> RowsBefore = Host->FrameLog.Last().Rows;
+	const TArray<FString> RowsBefore = Host->FrameLog[SettledFrames(*Status) - 1].Rows;
 
 	Live.Killfeed[2].Victim = TEXT("Nemesis");
 	TestEqual(TEXT("one element marks exactly the array's one bit"), Model->Sample(Type, &Live), 1);
@@ -590,7 +617,8 @@ bool FVaCuusDataForReloadTest::RunTest(const FString& Parameters)
 
 	const auto LastRowsEqual = [&](const TCHAR* What, const FVaCuusCostFeedModel& Live) -> bool
 	{
-		const FFrameRecord& Last = Host->FrameLog.Last();
+		// The newest SETTLED record, never Last(): a straggler frame may be appending.
+		const FFrameRecord& Last = Host->FrameLog[SettledFrames(*Status) - 1];
 		if (!TestEqual(FString::Printf(TEXT("%s: row count"), What), Last.Rows.Num(), Live.Killfeed.Num()))
 		{
 			return false;
@@ -753,7 +781,7 @@ bool FVaCuusDataForIdleTest::RunTest(const FString& Parameters)
 	}
 
 	{
-		const int32 ApplyFrame = FindSingleApplyFrame(Host->FrameLog, 0, 0);
+		const int32 ApplyFrame = FindSingleApplyFrame(Host->FrameLog, 0, SettledFrames(*Status), 0);
 		if (!TestTrue(TEXT("exactly one apply built the table"), ApplyFrame != INDEX_NONE))
 		{
 			return false;
@@ -791,9 +819,9 @@ bool FVaCuusDataForIdleTest::RunTest(const FString& Parameters)
 		}
 		++SettleFrames;
 
-		const int32 Num = Host->FrameLog.Num();
-		const FFrameRecord& Now = Host->FrameLog[Num - 1];
-		const FFrameRecord& Prev = Host->FrameLog[Num - 2];
+		const int32 Settled = SettledFrames(*Status);
+		const FFrameRecord& Now = Host->FrameLog[Settled - 1];
+		const FFrameRecord& Prev = Host->FrameLog[Settled - 2];
 		const bool bStable = Now.FieldsApplied == Prev.FieldsApplied && Now.ScalarGets == Prev.ScalarGets
 			&& Now.ArraySizes == Prev.ArraySizes && Now.ArrayChilds == Prev.ArrayChilds;
 		StableFrames = bStable ? StableFrames + 1 : 0;
@@ -809,7 +837,7 @@ bool FVaCuusDataForIdleTest::RunTest(const FString& Parameters)
 	//
 	// The differ runs every frame, exactly as a game would drive it; it just finds nothing.
 
-	const FFrameRecord WindowStart = Host->FrameLog.Last();
+	const FFrameRecord WindowStart = Host->FrameLog[SettledFrames(*Status) - 1];
 	const uint64 PublishesBefore = Model->GetNumPublishes();
 
 	for (int32 Frame = 0; Frame < 100; ++Frame)
@@ -822,7 +850,7 @@ bool FVaCuusDataForIdleTest::RunTest(const FString& Parameters)
 		}
 	}
 
-	const FFrameRecord WindowEnd = Host->FrameLog.Last();
+	const FFrameRecord WindowEnd = Host->FrameLog[SettledFrames(*Status) - 1];
 
 	TestEqual(TEXT("layer 1: published NOT ONCE across the window"), int32(Model->GetNumPublishes() - PublishesBefore), 0);
 	TestEqual(TEXT("layer 2: applied NOT ONE field"), int32(WindowEnd.FieldsApplied - WindowStart.FieldsApplied), 0);
@@ -841,14 +869,14 @@ bool FVaCuusDataForIdleTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("the control change marks the field"), Model->Sample(Type, &Live), 1);
 
 	{
-		const int32 StepStart = Host->FrameLog.Num();
+		const int32 StepStart = SettledFrames(*Status);
 		TestTrue(TEXT("and publishes"), Model->PublishPending());
 		if (!TestTrue(TEXT("control frames ran"), RunFrames(*UIThread, 3)))
 		{
 			return false;
 		}
 
-		const int32 ApplyFrame = FindSingleApplyFrame(Host->FrameLog, StepStart, WindowEnd.FieldsApplied);
+		const int32 ApplyFrame = FindSingleApplyFrame(Host->FrameLog, StepStart, SettledFrames(*Status), WindowEnd.FieldsApplied);
 		if (!TestTrue(TEXT("exactly one control apply"), ApplyFrame != INDEX_NONE))
 		{
 			return false;

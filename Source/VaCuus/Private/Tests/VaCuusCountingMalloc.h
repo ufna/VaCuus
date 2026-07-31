@@ -4,6 +4,8 @@
 
 #include "CoreMinimal.h"
 
+#include "VaCuusDefines.h"
+
 #include "HAL/MemoryBase.h"
 #include "HAL/PlatformAtomics.h"
 
@@ -56,6 +58,17 @@ class FVaCuusCountingMallocProxy final : public FMalloc
 public:
 	/** The chained-over allocator. Set by Install() before the proxy becomes reachable. */
 	FMalloc* Inner = nullptr;
+
+	/**
+	 * Latched by End() when its restoring CAS fails: a foreign proxy chained over this one
+	 * mid-window, so this proxy is still INSIDE the live chain (interloper -> this -> old
+	 * inner). A later Begin() would read GMalloc -- now the interloper -- into Inner and
+	 * close a cycle, this -> interloper -> this, that recurses forever on the first
+	 * allocation. Begin() refuses while this is set: the failure is loud (one Error log and
+	 * skipped windows), never a hang. Touched only by Begin()/End(), i.e. the measuring
+	 * thread.
+	 */
+	bool bDisabled = false;
 
 	//~ Relaxed is enough: windows are read on the installing thread after the restoring
 	//~ CAS (a full barrier), and the min-of-windows protocol absorbs a straggler count
@@ -113,7 +126,10 @@ public:
 		Inner->Free(Ptr);
 	}
 
-	//~ Pure forwarding from here down -- the FMallocPoisonProxy checklist, nothing added.
+	//~ Pure forwarding from here down -- the FMallocPoisonProxy checklist PLUS the two
+	//~ cached-memory-size getters that proxy skips (neither GetImmediatelyFreeableCachedMemorySize
+	//~ nor GetTotalFreeCachedMemorySize appears anywhere in MallocPoisonProxy.h:24-186), so this
+	//~ list is more complete than its named source, not a copy of it.
 
 	virtual SIZE_T QuantizeSize(SIZE_T Count, uint32 Alignment) override { return Inner->QuantizeSize(Count, Alignment); }
 	virtual bool GetAllocationSize(void* Original, SIZE_T& SizeOut) override { return Inner->GetAllocationSize(Original, SizeOut); }
@@ -163,10 +179,20 @@ inline FVaCuusCountingMallocProxy& GetProxy()
 	return Proxy;
 }
 
-/** @return true when the proxy is installed and counting; false means GMalloc moved under the CAS. */
+/** @return true when the proxy is installed and counting; false means the window could not open. */
 inline bool Begin()
 {
 	FVaCuusCountingMallocProxy& Proxy = GetProxy();
+
+	// Refuse after a failed End() (see bDisabled: Inner would be re-based onto an allocator
+	// that still chains to this proxy -- an infinite-recursion cycle), and refuse while the
+	// proxy is already the head of the chain, where the self-referential Inner would be the
+	// same cycle with no interloper needed.
+	if (Proxy.bDisabled || UE::Private::GMalloc == &Proxy)
+	{
+		return false;
+	}
+
 	FMalloc* Live = UE::Private::GMalloc;
 	Proxy.Inner = Live;
 	Proxy.ResetCounts();
@@ -184,9 +210,18 @@ inline FCounts End()
 
 	// Restore by CAS for the same reason: succeed only if the window's proxy is still the
 	// head of the chain. A failure here means someone chained over us mid-window; leaving
-	// the pointer alone is then the only safe move, and the caller's counts are void.
-	FPlatformAtomics::InterlockedCompareExchangePointer(
-		reinterpret_cast<void**>(&UE::Private::GMalloc), Proxy.Inner, &Proxy);
+	// the pointer alone is then the only safe move, the caller's counts are void -- and no
+	// window may ever open again, because the proxy is still inside the interloper's chain
+	// (see bDisabled for the cycle a re-Begin() would close). The log fires at most once by
+	// construction: the latch makes every later Begin() refuse, so no later End() runs.
+	if (FPlatformAtomics::InterlockedCompareExchangePointer(
+			reinterpret_cast<void**>(&UE::Private::GMalloc), Proxy.Inner, &Proxy) != &Proxy)
+	{
+		Proxy.bDisabled = true;
+		UE_LOG(LogVaCuus, Error,
+			TEXT("VaCuusAllocWindow: a foreign allocator proxy chained over the counting proxy mid-window; "
+				 "this window's counts are void and counting windows are disabled for the rest of the process"));
+	}
 
 	FCounts Counts;
 	Counts.Mallocs = Proxy.NumMallocs.load(std::memory_order_relaxed);

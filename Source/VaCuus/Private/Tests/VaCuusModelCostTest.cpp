@@ -604,8 +604,9 @@ static const TCHAR* GKillfeedDocument = TEXT(R"(<rml>
 /**
  * One recorded UI frame: both spec-9 brackets, the apply counter that locates a publish's
  * frame, and the DOM observations the guards need. Written on the UI thread inside
- * RecordAndPublishFrame, read on the test thread only after WaitForFrameCount's
- * release/acquire hand-off -- the FProbeHost rule, verbatim.
+ * RecordAndPublishFrame, read on the test thread only at indices below the settled count
+ * (SettledFrames below) -- WaitForFrameCount's release/acquire hand-off alone can leave one
+ * unconsumed straggler frame appending; see SettledFrames.
  */
 struct FArrayFrameRecord
 {
@@ -654,8 +655,11 @@ public:
 
 		// RESERVED ONCE, NEVER REALLOCATED, for the FDataForProbeHost reason: the test
 		// thread reads settled records while a coalesced trigger may still append one more,
-		// and a growth realloc under that read is the one failure the plain-member hand-off
-		// cannot absorb. The longest run here is ~210 frames.
+		// and Reserve is what keeps those EARLIER-record reads valid -- a growth realloc
+		// would move the buffer out from under them. Reserve does NOT make the newest record
+		// readable: AddDefaulted_GetRef bumps ArrayNum before the record is constructed, so
+		// only the settled-count clamp (SettledFrames) may name it. Both halves are needed.
+		// The longest run here is ~210 frames.
 		FrameLog.Reserve(1024);
 
 		// Before any document, as `data-model` requires (Element.cpp:2202-2219).
@@ -827,16 +831,36 @@ private:
 };
 
 /**
- * THE frame whose apply consumed a publish: the one index in [FirstFrame, Num) where the
- * cumulative fields-applied counter moved off Before; INDEX_NONE for none or several. The
- * VaCuusDataForTest helper, duplicated because test translation units share only the
- * fixture header -- drift is caught by both call sites asserting the same protocol.
+ * How many FrameLog records the test thread may read; every test-thread index must stay
+ * below it, and FrameLog.Num()/Last() are never trusted. WaitForFrameCount alone is not
+ * enough: every Enqueue* ends in Trigger() (VaCuusUIThread.cpp:640), the wake event is a
+ * binary AutoReset latch (VaCuusUIThread.h:347), and FrameCount increments only AFTER
+ * RunFrame returns (VaCuusUIThread.cpp:774-775) -- so a trigger landing mid-frame leaves
+ * the event set and the worker runs one more frame concurrent with test-thread code, whose
+ * AddDefaulted_GetRef bumps ArrayNum before the record's FStrings are constructed.
+ * FramesRecorded is incremented with release AFTER the record is completely filled, exactly
+ * once per append; the acquire here pairs with that release. Read through the test's own
+ * TSharedRef (the same object the host publishes on), not through the host, whose Status
+ * member is written on the UI thread. The VaCuusDataForTest helper, duplicated because test
+ * translation units share only the fixture header.
  */
-static int32 FindSingleApplyFrame(const TArray<FArrayFrameRecord>& Log, int32 FirstFrame, uint64 Before)
+static int32 SettledFrames(const FVaCuusViewStatus& Status)
+{
+	return int32(Status.FramesRecorded.load(std::memory_order_acquire));
+}
+
+/**
+ * THE frame whose apply consumed a publish: the one index in [FirstFrame, EndFrame) where
+ * the cumulative fields-applied counter moved off Before; INDEX_NONE for none or several.
+ * EndFrame must be a SettledFrames() load, never Log.Num(). The VaCuusDataForTest helper,
+ * duplicated because test translation units share only the fixture header -- drift is
+ * caught by both call sites asserting the same protocol.
+ */
+static int32 FindSingleApplyFrame(const TArray<FArrayFrameRecord>& Log, int32 FirstFrame, int32 EndFrame, uint64 Before)
 {
 	int32 Found = INDEX_NONE;
 	uint64 Prev = Before;
-	for (int32 Index = FirstFrame; Index < Log.Num(); ++Index)
+	for (int32 Index = FirstFrame; Index < EndFrame; ++Index)
 	{
 		if (Log[Index].FieldsApplied != Prev)
 		{
@@ -931,11 +955,17 @@ bool FVaCuusModelArrayUICostTest::RunTest(const FString& Parameters)
 	const uint32 ToggleViewId = UIThread->AllocateViewId();
 	const uint32 ChangingViewId = UIThread->AllocateViewId();
 
-	UIThread->EnqueueAddView(StillViewId, MoveTemp(OwnedStill), FIntPoint(400, 800), MakeShared<FVaCuusViewStatus>());
+	// Named, not inline: each status carries its host's FramesRecorded, which is what
+	// SettledFrames clamps that host's FrameLog reads by.
+	const TSharedRef<FVaCuusViewStatus> StillStatus = MakeShared<FVaCuusViewStatus>();
+	const TSharedRef<FVaCuusViewStatus> ToggleStatus = MakeShared<FVaCuusViewStatus>();
+	const TSharedRef<FVaCuusViewStatus> ChangingStatus = MakeShared<FVaCuusViewStatus>();
+
+	UIThread->EnqueueAddView(StillViewId, MoveTemp(OwnedStill), FIntPoint(400, 800), StillStatus);
 	UIThread->EnqueueLoadDocumentFromMemory(StillViewId, GKillfeedDocument, /*LoadSerial=*/1);
-	UIThread->EnqueueAddView(ToggleViewId, MoveTemp(OwnedToggle), FIntPoint(400, 800), MakeShared<FVaCuusViewStatus>());
+	UIThread->EnqueueAddView(ToggleViewId, MoveTemp(OwnedToggle), FIntPoint(400, 800), ToggleStatus);
 	UIThread->EnqueueLoadDocumentFromMemory(ToggleViewId, GKillfeedDocument, /*LoadSerial=*/1);
-	UIThread->EnqueueAddView(ChangingViewId, MoveTemp(OwnedChanging), FIntPoint(400, 800), MakeShared<FVaCuusViewStatus>());
+	UIThread->EnqueueAddView(ChangingViewId, MoveTemp(OwnedChanging), FIntPoint(400, 800), ChangingStatus);
 	UIThread->EnqueueLoadDocumentFromMemory(ChangingViewId, GKillfeedDocument, /*LoadSerial=*/1);
 
 	FVaCuusCostFeedModel StillLive;
@@ -979,9 +1009,9 @@ bool FVaCuusModelArrayUICostTest::RunTest(const FString& Parameters)
 		return false;
 	}
 
-	const int32 StillWarmupFrames = Still->FrameLog.Num();
-	const int32 ToggleWarmupFrames = Toggle->FrameLog.Num();
-	const int32 ChangingWarmupFrames = Changing->FrameLog.Num();
+	const int32 StillWarmupFrames = SettledFrames(*StillStatus);
+	const int32 ToggleWarmupFrames = SettledFrames(*ToggleStatus);
+	const int32 ChangingWarmupFrames = SettledFrames(*ChangingStatus);
 	const uint64 ToggleFieldsAppliedAfterWarmup = ToggleModel->GetNumFieldsApplied();
 	const uint64 ChangingFieldsAppliedAfterWarmup = ChangingModel->GetNumFieldsApplied();
 
@@ -1004,10 +1034,10 @@ bool FVaCuusModelArrayUICostTest::RunTest(const FString& Parameters)
 
 	// ---- The guards: which row moved, and no other. ----
 
-	auto CountProbeChanges = [](const FArrayCostHost& Host, int32 FirstFrame, bool bNeighbor)
+	auto CountProbeChanges = [](const FArrayCostHost& Host, int32 FirstFrame, int32 EndFrame, bool bNeighbor)
 	{
 		int32 Changes = 0;
-		for (int32 Index = FirstFrame; Index < Host.FrameLog.Num(); ++Index)
+		for (int32 Index = FirstFrame; Index < EndFrame; ++Index)
 		{
 			const FString& Now = bNeighbor ? Host.FrameLog[Index].NeighborText : Host.FrameLog[Index].ProbeText;
 			const FString& Prev = bNeighbor ? Host.FrameLog[Index - 1].NeighborText : Host.FrameLog[Index - 1].ProbeText;
@@ -1016,14 +1046,21 @@ bool FVaCuusModelArrayUICostTest::RunTest(const FString& Parameters)
 		return Changes;
 	};
 
-	TestEqual(TEXT("STILL never wrote the DOM across the window"), CountProbeChanges(*Still, StillWarmupFrames, false), 0);
+	const int32 StillSettled = SettledFrames(*StillStatus);
+	const int32 ToggleSettled = SettledFrames(*ToggleStatus);
+	const int32 ChangingSettled = SettledFrames(*ChangingStatus);
+
+	TestEqual(
+		TEXT("STILL never wrote the DOM across the window"), CountProbeChanges(*Still, StillWarmupFrames, StillSettled, false), 0);
 	TestTrue(TEXT("TOGGLE's probe row moved on essentially every frame"),
-		CountProbeChanges(*Toggle, ToggleWarmupFrames, false) >= NumMeasuredFrames - 2);
+		CountProbeChanges(*Toggle, ToggleWarmupFrames, ToggleSettled, false) >= NumMeasuredFrames - 2);
 	TestTrue(TEXT("CHANGING's probe row moved on essentially every frame"),
-		CountProbeChanges(*Changing, ChangingWarmupFrames, false) >= NumMeasuredFrames - 2);
-	TestEqual(TEXT("TOGGLE's untouched neighbour row never moved"), CountProbeChanges(*Toggle, ToggleWarmupFrames, true), 0);
-	TestEqual(TEXT("CHANGING's untouched neighbour row never moved"), CountProbeChanges(*Changing, ChangingWarmupFrames, true), 0);
-	TestEqual(TEXT("all 200 rows stayed on screen"), Changing->FrameLog.Last().NumRows, 200);
+		CountProbeChanges(*Changing, ChangingWarmupFrames, ChangingSettled, false) >= NumMeasuredFrames - 2);
+	TestEqual(TEXT("TOGGLE's untouched neighbour row never moved"),
+		CountProbeChanges(*Toggle, ToggleWarmupFrames, ToggleSettled, true), 0);
+	TestEqual(TEXT("CHANGING's untouched neighbour row never moved"),
+		CountProbeChanges(*Changing, ChangingWarmupFrames, ChangingSettled, true), 0);
+	TestEqual(TEXT("all 200 rows stayed on screen"), Changing->FrameLog[ChangingSettled - 1].NumRows, 200);
 
 	// The apply numbers below are per FRAME; this is what says each measured frame carried
 	// exactly the one whole-array field -- and, with it, that frames and iterations stayed
@@ -1148,7 +1185,8 @@ bool FVaCuusModelArrayGrowShrinkTest::RunTest(const FString& Parameters)
 		FArrayCostHost* Host = OwnedHost.Get();
 
 		const uint32 ViewId = UIThread->AllocateViewId();
-		UIThread->EnqueueAddView(ViewId, MoveTemp(OwnedHost), FIntPoint(400, 800), MakeShared<FVaCuusViewStatus>());
+		const TSharedRef<FVaCuusViewStatus> Status = MakeShared<FVaCuusViewStatus>();
+		UIThread->EnqueueAddView(ViewId, MoveTemp(OwnedHost), FIntPoint(400, 800), Status);
 		UIThread->EnqueueLoadDocumentFromMemory(ViewId, GKillfeedDocument, /*LoadSerial=*/1);
 
 		// ---- Empty first: the document exists, bound, with zero rows. ----
@@ -1168,7 +1206,7 @@ bool FVaCuusModelArrayGrowShrinkTest::RunTest(const FString& Parameters)
 			return false;
 		}
 		{
-			const int32 InitialApply = FindSingleApplyFrame(Host->FrameLog, 0, 0);
+			const int32 InitialApply = FindSingleApplyFrame(Host->FrameLog, 0, SettledFrames(*Status), 0);
 			if (!TestTrue(TEXT("exactly one initial apply"), InitialApply != INDEX_NONE))
 			{
 				return false;
@@ -1178,8 +1216,8 @@ bool FVaCuusModelArrayGrowShrinkTest::RunTest(const FString& Parameters)
 
 		// ---- GROW 0 -> 200, one publish, one frame. ----
 
-		int32 StepStart = Host->FrameLog.Num();
-		uint64 Before = Host->FrameLog.Last().FieldsApplied;
+		int32 StepStart = SettledFrames(*Status);
+		uint64 Before = Host->FrameLog[StepStart - 1].FieldsApplied;
 
 		Fill(Live, 200);
 		TestEqual(TEXT("growth marks the one bit"), Model->Sample(Type, &Live), 1);
@@ -1190,7 +1228,7 @@ bool FVaCuusModelArrayGrowShrinkTest::RunTest(const FString& Parameters)
 		}
 
 		{
-			const int32 GrowFrame = FindSingleApplyFrame(Host->FrameLog, StepStart, Before);
+			const int32 GrowFrame = FindSingleApplyFrame(Host->FrameLog, StepStart, SettledFrames(*Status), Before);
 			if (!TestTrue(TEXT("exactly one growth apply, in a recorded frame"), GrowFrame != INDEX_NONE))
 			{
 				return false;
@@ -1212,8 +1250,8 @@ bool FVaCuusModelArrayGrowShrinkTest::RunTest(const FString& Parameters)
 
 		// ---- SHRINK 200 -> 0, one publish, one frame. ----
 
-		StepStart = Host->FrameLog.Num();
-		Before = Host->FrameLog.Last().FieldsApplied;
+		StepStart = SettledFrames(*Status);
+		Before = Host->FrameLog[StepStart - 1].FieldsApplied;
 
 		Live.Killfeed.Empty();
 		TestEqual(TEXT("the clear marks the one bit"), Model->Sample(Type, &Live), 1);
@@ -1224,7 +1262,7 @@ bool FVaCuusModelArrayGrowShrinkTest::RunTest(const FString& Parameters)
 		}
 
 		{
-			const int32 ShrinkFrame = FindSingleApplyFrame(Host->FrameLog, StepStart, Before);
+			const int32 ShrinkFrame = FindSingleApplyFrame(Host->FrameLog, StepStart, SettledFrames(*Status), Before);
 			if (!TestTrue(TEXT("exactly one shrink apply, in a recorded frame"), ShrinkFrame != INDEX_NONE))
 			{
 				return false;
