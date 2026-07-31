@@ -525,9 +525,11 @@ Rml::DataVariable FVaCuusArrayDefinition::Child(void* InValuePtr, const Rml::Dat
 		{
 			bNamedMissLogged = true;
 			UE_LOG(LogVaCuus, Warning,
-				TEXT("VaCuus model: '%s' is an array and has no child '%s' -- only an index and the literal name 'size' resolve "
+				TEXT("VaCuus model: '%s' is an array and has no child '%s'%s -- only an index and the literal name 'size' resolve "
 					 "against it. Reported once per array"),
-				*DiagnosticPath, UTF8_TO_TCHAR(Address.name.c_str()));
+				*DiagnosticPath, UTF8_TO_TCHAR(Address.name.c_str()),
+				Address.name.empty() ? TEXT(" (an EMPTY child name: ParseAddress cannot emit one, so this entry was hand-built)")
+									 : TEXT(""));
 		}
 
 		return Rml::DataVariable();

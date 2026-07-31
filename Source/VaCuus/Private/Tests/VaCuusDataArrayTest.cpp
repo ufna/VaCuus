@@ -321,6 +321,8 @@ public:
 	int32 RefusedSetsBefore = 0;
 	int32 RefusedSetsAfter = 0;
 	bool bShadowBytesIdentical = false;
+	bool bKillerElementIntact = false;
+	bool bNumberElementIntact = false;
 
 private:
 	void RunPhase(int32 Phase)
@@ -635,12 +637,25 @@ bool FVaCuusArrayBindingTest::RunTest(const FString& Parameters)
 		TArray<uint8> Before;
 		Before.Append(static_cast<const uint8*>(Host.GetShadowData()), Host.GetShadowSize());
 
+		// THE TWO WRITE TARGETS, READ NATIVELY BEFORE THE CLICKS -- because the Memcmp below
+		// cannot see them. Both refused assignments aim at HEAP memory: 'kill.Killer' resolves
+		// through the alias to GetRawPtr(0) inside Killfeed's element allocation, 'n = 3' into
+		// Numbers' -- while the compared span holds only each TArray's inline header. A Set()
+		// that wrote the element and then returned false would leave that compare green.
+		const FString KillerBefore = Host.Model().Killfeed[0].Killer;
+		const int32 NumberBefore = Host.Model().Numbers[0];
+
 		Host.ClickRow("killrows", 0);	  // kill.Killer = 'hacked' -> the row leaf's scalar Set
 		Host.ClickRow("numrows", 0);	  // n = 3 -> the scalar element definition's Set
 		Host.UpdateContext();
 
 		Host.RefusedSetsAfter = VaCuusData::GetNumRefusedSets();
 		Host.bShadowBytesIdentical = FMemory::Memcmp(Before.GetData(), Host.GetShadowData(), Host.GetShadowSize()) == 0;
+
+		// Case-SENSITIVE, because FString::operator== folds case (ESearchCase::IgnoreCase) and
+		// a corruption that only changed case would slip through it.
+		Host.bKillerElementIntact = Host.Model().Killfeed[0].Killer.Equals(KillerBefore, ESearchCase::CaseSensitive);
+		Host.bNumberElementIntact = Host.Model().Numbers[0] == NumberBefore;
 	};
 
 	const uint32 ViewId = UIThread->AllocateViewId();
@@ -750,7 +765,12 @@ bool FVaCuusArrayBindingTest::RunTest(const FString& Parameters)
 	const FCaptured& AfterClicks = Host->Captures[2];
 
 	TestEqual(TEXT("both assignments reached Set() and were refused"), Host->RefusedSetsAfter, Host->RefusedSetsBefore + 2);
-	TestTrue(TEXT("and the shadow is byte-identical"), Host->bShadowBytesIdentical);
+	// The byte-compare's scope is the shadow's INLINE span only -- scalar fields and the
+	// TArray headers; the element values the clicks aimed at live in heap blocks it never
+	// touches, and the two element reads below are the assertions that guard those.
+	TestTrue(TEXT("and the shadow's inline span is byte-identical"), Host->bShadowBytesIdentical);
+	TestTrue(TEXT("the refused struct-row write left the element's value in place"), Host->bKillerElementIntact);
+	TestTrue(TEXT("and the refused scalar-element write too"), Host->bNumberElementIntact);
 	TestEqual(TEXT("the struct row's DOM did not move"), AfterClicks.K0, FString(TEXT("K0")));
 	TestTrue(TEXT("nor did the scalar rows"), AfterClicks.Rows == Grown.Rows);
 
