@@ -3,12 +3,14 @@
 #include "VaCuusJsScriptHost.h"
 
 #include "VaCuusJs.h"
+#include "VaCuusJsEventListener.h"
 #include "VaCuusJsRuntime.h"
 #include "VaCuusJsViewContext.h"
 
 #include "HAL/IConsoleManager.h"
 
 #include <RmlUi/Core/Core.h>
+#include <RmlUi/Core/Factory.h>
 
 static TAutoConsoleVariable<int32> CVarVaCuusJsMaxJobsPerPump(
 	TEXT("vacuus.Js.MaxJobsPerPump"),
@@ -29,6 +31,17 @@ void FVaCuusJsRmlPlugin::OnElementDestroy(Rml::Element* Element)
 	Host.OnRmlElementDestroy(Element);
 }
 
+Rml::EventListener* FVaCuusJsEventListenerInstancer::InstanceEventListener(
+	const Rml::String& Value, Rml::Element* /*Element*/)
+{
+	// The element is deliberately unused: at instancing time it may not even
+	// have an owner document yet (attributes are applied during element
+	// construction, mid-parse), and the listener re-derives the route at first
+	// fire from the event's own current element -- see the class comment in
+	// VaCuusJsScriptHost.h for why resolution must be lazy.
+	return FVaCuusJsEventListener::CreateForAttribute(Host, Value);
+}
+
 FVaCuusJsScriptHost::FVaCuusJsScriptHost(const FParams& InParams)
 	: Params(InParams)
 	, MaxJobsPerPump(
@@ -40,6 +53,16 @@ FVaCuusJsScriptHost::FVaCuusJsScriptHost(const FParams& InParams)
 	// legality notes (pre-Initialise registration, the un-mutexed registry).
 	RmlPlugin = MakeUnique<FVaCuusJsRmlPlugin>(*this);
 	Rml::RegisterPlugin(RmlPlugin.Get());
+
+	// The on*-attribute instancer, same timing argument: attributes are
+	// instanced the moment a document parses (Element.cpp:1724-1749), which can
+	// precede any script or context -- the hook must be listening from the
+	// host's first breath. The Factory slot is a plain static pointer
+	// (Factory.cpp:145), legal to set before Rml::Initialise and cleared by
+	// Factory::Shutdown itself (Factory.cpp:274), so ours must re-register per
+	// host, which ctor-to-Shutdown does.
+	ListenerInstancer = MakeUnique<FVaCuusJsEventListenerInstancer>(*this);
+	Rml::Factory::RegisterEventListenerInstancer(ListenerInstancer.Get());
 }
 
 FVaCuusJsScriptHost::~FVaCuusJsScriptHost()
@@ -83,6 +106,16 @@ void FVaCuusJsScriptHost::OnViewRemoved(uint32 ViewId)
 	TUniquePtr<FVaCuusJsViewContext> Dying;
 	ViewContexts.RemoveAndCopyValue(ViewId, Dying);
 	Dying.Reset();
+
+	// The on*-routing map must not keep steering this view's documents at a
+	// context that no longer exists (or, worse, at a recycled ViewId later).
+	for (auto It = DocumentViews.CreateIterator(); It; ++It)
+	{
+		if (It.Value() == ViewId)
+		{
+			It.RemoveCurrent();
+		}
+	}
 }
 
 void FVaCuusJsScriptHost::OnDocumentReady(uint32 /*ViewId*/, Rml::ElementDocument* /*Document*/)
@@ -90,9 +123,18 @@ void FVaCuusJsScriptHost::OnDocumentReady(uint32 /*ViewId*/, Rml::ElementDocumen
 	// (documents: M4 Task 6) The host-ordered recycle-and-run point (spec 2(f)).
 }
 
-void FVaCuusJsScriptHost::OnDocumentClosing(uint32 /*ViewId*/)
+void FVaCuusJsScriptHost::OnDocumentClosing(uint32 ViewId)
 {
-	// (documents: M4 Task 6) Unload JS dispatch, at Close() time.
+	// (documents: M4 Task 6) Unload JS dispatch, at Close() time. The map
+	// hygiene lands now (Task 5): the closing view's document leaves the
+	// on*-routing map BEFORE its address can be recycled by a replacement.
+	for (auto It = DocumentViews.CreateIterator(); It; ++It)
+	{
+		if (It.Value() == ViewId)
+		{
+			It.RemoveCurrent();
+		}
+	}
 }
 
 void FVaCuusJsScriptHost::PumpFrame(double NowSeconds)
@@ -302,6 +344,21 @@ void FVaCuusJsScriptHost::BindDocumentForTest(uint32 ViewId, Rml::ElementDocumen
 	if (FVaCuusJsViewContext* View = EnsureViewContext(ViewId))
 	{
 		View->BindDocument(Document);
+
+		// The bind is also what writes the on*-routing map (spec 3.9): re-binds
+		// first drop the view's old entry, a null bind only drops. Task 6's
+		// OnDocumentReady will do exactly this from the production path.
+		for (auto It = DocumentViews.CreateIterator(); It; ++It)
+		{
+			if (It.Value() == ViewId)
+			{
+				It.RemoveCurrent();
+			}
+		}
+		if (Document != nullptr)
+		{
+			DocumentViews.Add(Document, ViewId);
+		}
 	}
 }
 
@@ -315,6 +372,27 @@ void FVaCuusJsScriptHost::OnInlineFrameEntry()
 
 void FVaCuusJsScriptHost::Shutdown()
 {
+	// The instancer slot is cleared before anything dies: no new attribute
+	// listener may be instanced against a host mid-teardown. A plain static
+	// pointer write (Factory.cpp:145, :547-550), legal whatever RmlUi's state.
+	if (ListenerInstancer.IsValid())
+	{
+		Rml::Factory::RegisterEventListenerInstancer(nullptr);
+		ListenerInstancer.Reset();
+	}
+
+	// Unresolved attribute listeners hold nothing but a pointer back to THIS
+	// host; neuter it away so the shells that survive into RmlUi's tree
+	// teardown (their OnDetach self-deletes them there) cannot dangle into a
+	// destroyed host. Resolved ones are not here -- they moved into their
+	// context's set and die with it below.
+	for (FVaCuusJsEventListener* Listener : UnresolvedAttributeListeners)
+	{
+		Listener->NeuterFromHost();
+	}
+	UnresolvedAttributeListeners.Empty();
+	DocumentViews.Empty();
+
 	// The plugin leaves the bus FIRST: teardown destroys elements (owned
 	// detached subtrees dying with their wrappers), and those destructions need
 	// no cache probes -- each dying context neuters its own cache before its
@@ -351,4 +429,20 @@ FVaCuusJsViewContext* FVaCuusJsScriptHost::FindViewContext(uint32 ViewId) const
 {
 	const TUniquePtr<FVaCuusJsViewContext>* Entry = ViewContexts.Find(ViewId);
 	return Entry != nullptr ? Entry->Get() : nullptr;
+}
+
+FVaCuusJsViewContext* FVaCuusJsScriptHost::FindViewContextForDocument(Rml::ElementDocument* Document) const
+{
+	const uint32* ViewId = DocumentViews.Find(Document);
+	return ViewId != nullptr ? FindViewContext(*ViewId) : nullptr;
+}
+
+void FVaCuusJsScriptHost::AddUnresolvedAttributeListener(FVaCuusJsEventListener* Listener)
+{
+	UnresolvedAttributeListeners.Add(Listener);
+}
+
+void FVaCuusJsScriptHost::RemoveUnresolvedAttributeListener(FVaCuusJsEventListener* Listener)
+{
+	UnresolvedAttributeListeners.Remove(Listener);
 }

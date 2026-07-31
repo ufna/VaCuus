@@ -104,6 +104,12 @@ public:
 	JSClassID GetElementClassId() const { return ElementClassId; }
 	JSClassID GetDocumentClassId() const { return DocumentClassId; }
 
+	//~ The event-object class (M4 Task 5): same split, own opaque shape
+	//~ (FVaCuusJsEventHandle) and own finalizer -- an event wrapper holds no
+	//~ ElementPtr and no cache entry, so sharing the DOM finalizer would be a
+	//~ type confusion waiting for a payload.
+	JSClassID GetEventClassId() const { return EventClassId; }
+
 	/**
 	 * Live bytes currently held from FMemory by this runtime, in the allocator's
 	 * OWN accounting basis: the sum of FMemory::GetAllocSize over live blocks,
@@ -127,6 +133,22 @@ public:
 	void NoteTimerFired() { NumTimersFired.fetch_add(1, std::memory_order_relaxed); }
 	void NoteRafCallbackRun() { NumRafCallbacksRun.fetch_add(1, std::memory_order_relaxed); }
 	void NoteJobExecuted() { NumJobsExecuted.fetch_add(1, std::memory_order_relaxed); }
+
+	/**
+	 * THE THREE-DEATH-ORDERS OBSERVABLE (M4 Task 5, spec 2(g)): the number of
+	 * listener-held JS function refs currently alive, a GAUGE, not a fired-count.
+	 * +1 when a listener dups its callback (addEventListener, or an on* snippet
+	 * compiling at first fire), -1 at the release -- which happens on exactly one
+	 * of the three paths: OnDetach after direct element destruction
+	 * (Element.cpp:99 -> :112), OnDetach after a document unload's tree-wide
+	 * detach sweep (Context.cpp:1565-1567), or the context destructor's neuter
+	 * walk when the context dies first. Zero after any teardown is the invariant
+	 * the death-order test asserts; a nonzero reading names the leaking path.
+	 * An invariant with no observable cannot be tested -- this is the observable.
+	 */
+	int64 GetNumListenerRefs() const { return NumListenerRefs.load(std::memory_order_relaxed); }
+	void NoteListenerRefAcquired() { NumListenerRefs.fetch_add(1, std::memory_order_relaxed); }
+	void NoteListenerRefReleased() { NumListenerRefs.fetch_sub(1, std::memory_order_relaxed); }
 
 	/** Wall-clock ms of the most recent collection; 0 until one has run. Owning thread. */
 	double GetLastCollectionPauseMs() const { return LastCollectionPauseMs; }
@@ -200,9 +222,13 @@ private:
 	//~ Construct registers them.
 	JSClassID ElementClassId = 0;
 	JSClassID DocumentClassId = 0;
+	JSClassID EventClassId = 0;
 
 	/** See GetLiveBytes(). Atomic: written by the owning thread's hooks, read anywhere. */
 	std::atomic<int64> LiveBytes{0};
+
+	/** See GetNumListenerRefs(). Atomic for the same cross-thread-reader reason as the fired-counters. */
+	std::atomic<int64> NumListenerRefs{0};
 
 	std::atomic<uint64> NumTimersFired{0};
 	std::atomic<uint64> NumRafCallbacksRun{0};

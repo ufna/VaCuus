@@ -63,6 +63,11 @@ public class VaCuusJs : ModuleRules
 		// and VaCuus keeps its RmlUi dependency Private, so the headers do not
 		// arrive transitively. Private here too, same as VaCuus and VaCuusRender:
 		// nothing under a Public/ header may name an Rml type by include.
-		PrivateDependencyModuleNames.AddRange(new[] { "Core", "VaCuus", "VaCuusRml" });
+		//
+		// InputCore from M4 Task 5 on, tests only: the event tests synthesize
+		// gamepad/keyboard presses through the production input path, and
+		// FVaCuusInputEvent's factories take FKeys (EKeys:: symbols live in
+		// InputCore, which VaCuus itself links Publicly for the same reason).
+		PrivateDependencyModuleNames.AddRange(new[] { "Core", "InputCore", "VaCuus", "VaCuusRml" });
 	}
 }

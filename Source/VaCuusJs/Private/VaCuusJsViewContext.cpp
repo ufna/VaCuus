@@ -4,6 +4,7 @@
 
 #include "VaCuusJs.h"
 #include "VaCuusJsDomHandle.h"
+#include "VaCuusJsEventListener.h"
 
 namespace VaCuusJsViewContextInternal
 {
@@ -59,7 +60,33 @@ FVaCuusJsViewContext::~FVaCuusJsViewContext()
 	// frame finishes BEFORE PumpFrame (VaCuusUIThread.cpp RunFrame's phase order).
 	check(RafRunning.IsEmpty());
 
-	// NEUTER THE CACHE FIRST. JS_FreeContext below finalizes every surviving
+	// THE NEUTER WALK -- death order (3), the half the demo never had (spec
+	// 2(g)). This context is dying while its listeners' elements may still be
+	// attached to a live tree; RmlUi's OnDetach for them arrives LATER (the old
+	// tree's deferred teardown one frame after a recycle, Context.cpp:1557-1567,
+	// or RemoveContext inside the document host's Shutdown -- which RemoveView
+	// runs strictly AFTER this destructor, VaCuusUIThread.cpp RemoveView).
+	// So: free every listener's JS ref NOW, against the still-live JSContext,
+	// and mark the shells neutered -- the C++ objects stay allocated, owning
+	// nothing, and the later OnDetach reclaims them without touching this dead
+	// context (or the runtime, which on the shutdown path is dead by then too).
+	// The containers are emptied wholesale; NeuterFromContext does not
+	// unregister. RESTORE-THE-BUG: releasing refs in OnDetach only -- skipping
+	// this walk's frees -- leaks exactly the still-attached listeners' function
+	// refs, visible as a nonzero GetNumListenerRefs() after the recycle and as
+	// the runtime destructor's live-byte checkf at teardown.
+	for (TPair<FVaCuusJsListenerKey, FVaCuusJsEventListener*>& Pair : ListenerRegistry)
+	{
+		Pair.Value->NeuterFromContext();
+	}
+	ListenerRegistry.Empty();
+	for (FVaCuusJsEventListener* Listener : AttributeListeners)
+	{
+		Listener->NeuterFromContext();
+	}
+	AttributeListeners.Empty();
+
+	// NEUTER THE CACHE, ALSO BEFORE JS_FreeContext. It finalizes every surviving
 	// wrapper, and each finalizer would otherwise reach back through its
 	// OwnerContext into a map that is mid-destruction. Clearing the handshake
 	// flag (and the pointer, for good measure) turns those finalizers into pure

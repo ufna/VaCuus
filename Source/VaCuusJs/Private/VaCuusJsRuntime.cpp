@@ -134,11 +134,14 @@ void FVaCuusJsRuntime::Construct(const FParams& InParams)
 	{
 		static const JSClassDef GElementClassDef = {"VaCuusElement", &VaCuusJsDomFinalizer, nullptr, nullptr, nullptr};
 		static const JSClassDef GDocumentClassDef = {"VaCuusDocument", &VaCuusJsDomFinalizer, nullptr, nullptr, nullptr};
+		static const JSClassDef GEventClassDef = {"VaCuusEvent", &VaCuusJsEventFinalizer, nullptr, nullptr, nullptr};
 		JS_NewClassID(Runtime, &ElementClassId);
 		JS_NewClassID(Runtime, &DocumentClassId);
+		JS_NewClassID(Runtime, &EventClassId);
 		const int ElementResult = JS_NewClass(Runtime, ElementClassId, &GElementClassDef);
 		const int DocumentResult = JS_NewClass(Runtime, DocumentClassId, &GDocumentClassDef);
-		checkf(ElementResult == 0 && DocumentResult == 0,
+		const int EventResult = JS_NewClass(Runtime, EventClassId, &GEventClassDef);
+		checkf(ElementResult == 0 && DocumentResult == 0 && EventResult == 0,
 			TEXT("JS_NewClass failed -- FMemory does not fail small allocations, so this is a vendoring problem"));
 	}
 

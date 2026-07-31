@@ -315,6 +315,9 @@ void FVaCuusJsViewContext::InstallDomPrototypes()
 		JS_CGETSET_DEF("children", FVaCuusJsViewContext::ChildrenGetterThunk, nullptr),
 		JS_CGETSET_DEF("classList", FVaCuusJsViewContext::ClassListGetterThunk, nullptr),
 		JS_CGETSET_DEF("style", FVaCuusJsViewContext::StyleGetterThunk, nullptr),
+		JS_CFUNC_DEF("addEventListener", 2, FVaCuusJsViewContext::AddEventListenerThunk),
+		JS_CFUNC_DEF("removeEventListener", 2, FVaCuusJsViewContext::RemoveEventListenerThunk),
+		JS_CFUNC_DEF("dispatchEvent", 1, FVaCuusJsViewContext::DispatchEventThunk),
 	};
 
 	static const JSCFunctionListEntry GDocumentProtoEntries[] = {
@@ -337,6 +340,9 @@ void FVaCuusJsViewContext::InstallDomPrototypes()
 	JS_SetPrototype(Ctx, DocumentProto, ElementProto);
 	JS_SetClassProto(Ctx, Runtime.GetElementClassId(), ElementProto);
 	JS_SetClassProto(Ctx, Runtime.GetDocumentClassId(), DocumentProto);
+
+	// The event class's prototype (M4 Task 5) rides the same per-context rule.
+	InstallEventPrototype();
 
 	// The style factory (GStyleFactorySource's comment). A member, not a global:
 	// unclobberable from script.

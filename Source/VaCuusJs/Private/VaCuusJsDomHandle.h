@@ -98,3 +98,27 @@ struct FVaCuusJsElementHandle
  * (spec 2(g)) -- and deletes the handle.
  */
 void VaCuusJsDomFinalizer(JSRuntime* Rt, JSValueConst Value);
+
+namespace Rml
+{
+class Event;
+}
+
+/**
+ * The class-id opaque behind an event-object wrapper (M4 Task 5, spec 3.9).
+ * Unlike the element handle there is no observer machinery: an Rml::Event is a
+ * stack-scoped visitor -- EventDispatcher::DispatchEvent instances it, runs the
+ * listener chain, and releases it before returning (EventDispatcher.cpp:141-189)
+ * -- so the raw pointer is valid EXACTLY while a ProcessEvent frame that
+ * received it is on the stack. The listener that built the wrapper NULLS this
+ * pointer before its ProcessEvent returns; a script that stashed the event
+ * object keeps a working `type`/`target` (plain data properties) while the stop
+ * methods read the null and no-op -- the dead-handle rule, applied to events.
+ */
+struct FVaCuusJsEventHandle
+{
+	Rml::Event* Event = nullptr;
+};
+
+/** The event wrapper's finalizer: deletes the handle, touches no RmlUi state. Defined in VaCuusJsEvents.cpp. */
+void VaCuusJsEventFinalizer(JSRuntime* Rt, JSValueConst Value);

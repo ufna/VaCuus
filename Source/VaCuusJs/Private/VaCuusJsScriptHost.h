@@ -10,12 +10,15 @@
 #include "Containers/SortedMap.h"
 #include "Templates/UniquePtr.h"
 
+#include <RmlUi/Core/EventListenerInstancer.h>
 #include <RmlUi/Core/Plugin.h>
 
 namespace Rml
 {
 class Element;
+class ElementDocument;
 }
+class FVaCuusJsEventListener;
 class FVaCuusJsScriptHost;
 class FVaCuusJsViewContext;
 
@@ -47,6 +50,37 @@ public:
 
 	virtual int GetEventClasses() override { return EVT_ELEMENT; }
 	virtual void OnElementDestroy(Rml::Element* Element) override;
+
+private:
+	FVaCuusJsScriptHost& Host;
+};
+
+/**
+ * The on*-attribute hook (M4 Task 5, spec 3.9): RmlUi's Factory holds exactly
+ * one process-global EventListenerInstancer (Factory.cpp:145), consulted every
+ * time an element sees an `on*`/`on*capture` attribute (OnAttributeChange,
+ * Element.cpp:1724-1749, through Factory::InstanceEventListener,
+ * Factory.cpp:552-559). Registered by the host at creation
+ * (RegisterEventListenerInstancer, Factory.cpp:547-550), cleared in Shutdown().
+ *
+ * The instancer cannot know which VIEW an attribute belongs to -- for parsed
+ * markup it fires mid-document-load, before any bind -- so it returns a LAZY
+ * listener that resolves element -> owner document -> the host's document->view
+ * map at first fire (FVaCuusJsEventListener's class comment has the full
+ * protocol). The RmlUi lifetime contract is the listener's to honor: "kept
+ * alive until the call to OnDetach, and then cleaned up by the user"
+ * (EventListenerInstancer.h:25-27) -- the self-deleting OnDetach is exactly
+ * that cleanup.
+ */
+class FVaCuusJsEventListenerInstancer final : public Rml::EventListenerInstancer
+{
+public:
+	explicit FVaCuusJsEventListenerInstancer(FVaCuusJsScriptHost& InHost)
+		: Host(InHost)
+	{
+	}
+
+	virtual Rml::EventListener* InstanceEventListener(const Rml::String& Value, Rml::Element* Element) override;
 
 private:
 	FVaCuusJsScriptHost& Host;
@@ -148,6 +182,25 @@ public:
 	FVaCuusJsRuntime* GetRuntime() const { return Runtime.Get(); }
 	FVaCuusJsViewContext* FindViewContext(uint32 ViewId) const;
 
+	/**
+	 * THE on*-ROUTING LOOKUP (M4 Task 5): document -> bound view's context, or
+	 * null. Backed by a TMap<Rml::ElementDocument*, ViewId> written wherever a
+	 * document binds to a context -- today BindDocumentForTest, in M4 Task 6
+	 * OnDocumentReady (which needs this exact map again for its own routing) --
+	 * and purged on rebind, OnDocumentClosing, OnViewRemoved and Shutdown. The
+	 * key is a raw pointer probed by value only, so a dead document's stale
+	 * entry cannot be dereferenced; the purge points above remove it before any
+	 * NEW document could recycle the address on the same view.
+	 */
+	FVaCuusJsViewContext* FindViewContextForDocument(Rml::ElementDocument* Document) const;
+
+	//~ The unresolved on*-attribute listeners' bookkeeping (the instancer and
+	//~ FVaCuusJsEventListener maintain it; Shutdown() neuters the leftovers so
+	//~ a never-fired onclick shell cannot outlive the host it would resolve
+	//~ through).
+	void AddUnresolvedAttributeListener(FVaCuusJsEventListener* Listener);
+	void RemoveUnresolvedAttributeListener(FVaCuusJsEventListener* Listener);
+
 private:
 	/** Creates the runtime on first need (spec 2(e)); no-op once it exists. */
 	void EnsureRuntime();
@@ -201,4 +254,19 @@ private:
 
 	/** The OnElementDestroy ear (see FVaCuusJsRmlPlugin); registered ctor-to-Shutdown. */
 	TUniquePtr<FVaCuusJsRmlPlugin> RmlPlugin;
+
+	/** The on*-attribute hook (see FVaCuusJsEventListenerInstancer); registered ctor-to-Shutdown. */
+	TUniquePtr<FVaCuusJsEventListenerInstancer> ListenerInstancer;
+
+	/** See FindViewContextForDocument. */
+	TMap<Rml::ElementDocument*, uint32> DocumentViews;
+
+	/**
+	 * Attribute listeners instanced but not yet resolved to a view (never
+	 * fired, or fired on an unbound document). They hold NO JS state -- only a
+	 * pointer back to this host -- so view/context teardown ignores them; the
+	 * two exits are resolution (moves them into a context's set) and OnDetach
+	 * (self-delete), with Shutdown() neutering whatever remains.
+	 */
+	TSet<FVaCuusJsEventListener*> UnresolvedAttributeListeners;
 };

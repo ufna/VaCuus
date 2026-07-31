@@ -4,12 +4,17 @@
 
 #include "CoreMinimal.h"
 
+// For FVaCuusJsListenerKey: a TMap member needs its key COMPLETE at class
+// definition (the key's hash/traits instantiate with the map). No cycle: the
+// listener header only forward-declares this context.
+#include "VaCuusJsEventListener.h"
 #include "VaCuusJsRuntime.h"
 
 namespace Rml
 {
 class Element;
 class ElementDocument;
+class Event;
 }
 struct FVaCuusJsElementHandle;
 
@@ -63,6 +68,9 @@ public:
 	bool IsValid() const { return Ctx != nullptr; }
 	JSContext* GetContext() const { return Ctx; }
 	uint32 GetViewId() const { return ViewId; }
+
+	/** For the listener machinery (entry guards, counters, error sink); module-private like everything here. */
+	FVaCuusJsRuntime& GetRuntime() const { return Runtime; }
 
 	/**
 	 * Evaluates Source as a classic global script against this context,
@@ -124,6 +132,29 @@ public:
 	 * so a test can assert it returns to a recorded baseline.
 	 */
 	int32 GetWrapperCacheSize() const { return WrapperCache.Num(); }
+
+	//~ ---- Events (M4 Task 5; implementation in VaCuusJsEvents.cpp) ----
+
+	/**
+	 * The event object, fresh per listener invocation (spec 3.9 -- cheap, no
+	 * identity requirement): an event-class instance whose opaque holds the raw
+	 * Rml::Event* for the stop methods, plus plain data properties -- type,
+	 * target/currentTarget (through the identity cache, so `ev.target ===
+	 * getElementById(...)` is free), eventPhase, `params`, and the DOM-ish
+	 * parameter aliases. The CALLER owns invalidation: null the handle's Event
+	 * pointer before the Rml::Event leaves scope (ProcessEvent does both).
+	 */
+	JSValue BuildEventObject(Rml::Event& Event);
+
+	//~ The listener registry's containers are private; the listener class and
+	//~ the thunks maintain them through this narrow surface.
+	void RegisterListener(const FVaCuusJsListenerKey& Key, FVaCuusJsEventListener* Listener);
+	void UnregisterListener(const FVaCuusJsListenerKey& Key);
+	void AdoptAttributeListener(FVaCuusJsEventListener* Listener);
+	void DropAttributeListener(FVaCuusJsEventListener* Listener);
+
+	/** TEST OBSERVABILITY: live registrations owned by this context (both kinds), an exact gauge like the cache size. */
+	int32 GetLiveListenerCount() const { return ListenerRegistry.Num() + AttributeListeners.Num(); }
 
 private:
 	/**
@@ -211,6 +242,19 @@ private:
 	static JSValue StyleOpThunk(
 		JSContext* Ctx, JSValueConst This, int Argc, JSValueConst* Argv, int Magic, JSValueConst* FuncData);
 
+	//~ ---- Event internals (VaCuusJsEvents.cpp) ----
+
+	/** The event-class prototype (stop methods); called by InstallDomPrototypes. */
+	void InstallEventPrototype();
+
+	//~ Element prototype: the listener surface.
+	static JSValue AddEventListenerThunk(JSContext* Ctx, JSValueConst This, int Argc, JSValueConst* Argv);
+	static JSValue RemoveEventListenerThunk(JSContext* Ctx, JSValueConst This, int Argc, JSValueConst* Argv);
+	static JSValue DispatchEventThunk(JSContext* Ctx, JSValueConst This, int Argc, JSValueConst* Argv);
+
+	//~ Event prototype (stopPropagation / stopImmediatePropagation / preventDefault).
+	static JSValue EventOpThunk(JSContext* Ctx, JSValueConst This, int Argc, JSValueConst* Argv, int Magic);
+
 	FVaCuusJsRuntime& Runtime;
 	JSContext* Ctx = nullptr;
 	const uint32 ViewId;
@@ -234,6 +278,27 @@ private:
 	 * in the destructor before JS_FreeContext.
 	 */
 	JSValue StyleFactory = JS_UNDEFINED;
+
+	/**
+	 * THE LISTENER REGISTRY (spec 2(g)): every live addEventListener
+	 * registration, keyed for removeEventListener's exact-match semantics
+	 * (FVaCuusJsListenerKey). Values are raw pointers, NOT owned here in the
+	 * unique-ptr sense -- the listener self-deletes in OnDetach on the two
+	 * RmlUi-driven death orders and leaves the map on its way out; the ONE path
+	 * where this map outlives its entries' JS state is the destructor's neuter
+	 * walk (order (3)), which frees each entry's ref, marks the shell, and
+	 * empties the map, leaving the allocation for RmlUi's later detach.
+	 */
+	TMap<FVaCuusJsListenerKey, FVaCuusJsEventListener*> ListenerRegistry;
+
+	/**
+	 * on*-attribute listeners that RESOLVED into this context (compiled their
+	 * snippet here, hold a ref into this heap). Joined at first fire, not at
+	 * instancing -- before resolution they sit in the host's unresolved set,
+	 * because no view is known yet (FVaCuusJsEventListener's class comment).
+	 * Same neuter treatment as the registry, minus the key.
+	 */
+	TSet<FVaCuusJsEventListener*> AttributeListeners;
 
 	/**
 	 * The deadline base: the CURRENT pump's now while a pump runs (set first
