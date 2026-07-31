@@ -790,6 +790,73 @@ struct FVaCuusArrayRefusalModel
 	TArray<FVaCuusLayoutTestEmptyInner> BarrenRows;
 };
 
+/**
+ * SPEC 9'S MEASURED SHAPE, ONE ROW: 4 fields, 3 FString + 1 bool -- "the killfeed shape".
+ * The fixture behind VaCuus.Model.DataFor* (Task 5's end-to-end and the triple-idle window)
+ * and REUSED by Task 6's cost harnesses, so spec 9's numbers are taken over exactly the
+ * fixture the idle gate was proven exact on.
+ */
+USTRUCT()
+struct FVaCuusCostKillfeedRow
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	FString Killer;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	FString Victim;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	FString Weapon;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	bool bHeadshot = false;
+};
+
+/**
+ * ONE array field and nothing beside it: what the 200-row measurements bind and diff. A
+ * scalar control field would put a second compare inside every timed window for a neighbour
+ * the killfeed rows do not have; the exactly-one-bit assertions that need a control already
+ * have one in FVaCuusArrayTestModel.
+ */
+USTRUCT()
+struct FVaCuusCostFeedModel
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	TArray<FVaCuusCostKillfeedRow> Killfeed;
+};
+
+/**
+ * Deterministic row content, so every test (and Task 6's harnesses) can recompute an
+ * expected row from its index alone -- which is what makes the front-trim's SHIFTED
+ * expectation writable without recording anything. `inline` at namespace scope so the
+ * header needs no .cpp, like VaCuusShadowProbe above.
+ */
+namespace VaCuusKillfeedFixture
+{
+inline FVaCuusCostKillfeedRow MakeRow(int32 Index)
+{
+	FVaCuusCostKillfeedRow Row;
+	Row.Killer = FString::Printf(TEXT("Killer%03d"), Index);
+	Row.Victim = FString::Printf(TEXT("Victim%03d"), Index);
+	Row.Weapon = FString::Printf(TEXT("Weapon%03d"), Index);
+	Row.bHeadshot = (Index % 2) == 1;
+	return Row;
+}
+
+inline void Fill(FVaCuusCostFeedModel& Model, int32 NumRows)
+{
+	Model.Killfeed.Reset(NumRows);
+	for (int32 Index = 0; Index < NumRows; ++Index)
+	{
+		Model.Killfeed.Add(MakeRow(Index));
+	}
+}
+}	 // namespace VaCuusKillfeedFixture
+
 /*
  * THERE IS NO NATIVE CONTAINER-CYCLE FIXTURE, AND THAT IS UHT'S DOING, NOT A GAP. The
  * direct shape (TArray<FSelf> inside FSelf) is refused outright
