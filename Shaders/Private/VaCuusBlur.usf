@@ -11,7 +11,9 @@
  * GL3 RenderBlur (RmlUi_Renderer_GL3.cpp:1351-1423): same separable direction+texel-offset
  * scheme, but with the engine's paired-weight packing, which halves the sample loop by
  * leaning on bilinear filtering. Weights are CPU-computed per pass
- * (VaCuusSlateElement.cpp), normalized there.
+ * (VaCuusSlateElement.cpp), UNNORMALIZED like the engine's own Slate blur -- see
+ * FillBlurWeights: at a 3-sigma kernel the tail loss is under half a percent, and
+ * AddSlatePostProcessOldGaussianBlur packs raw weights the same way.
  *
  * Gamma: DELIBERATELY none anywhere in this file. The blur samples display-encoded LDR
  * pixels and writes display-encoded LDR pixels — the same texture family in and out —

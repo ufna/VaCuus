@@ -20,6 +20,11 @@ namespace VaCuusBuiltinShaders
  * (the .usf's own constants); builtin entries start at 3. Adding a builtin = one row
  * here + one mode branch in the .usf.
  */
+// TMap<FString,...> keys hash and compare CASE-INSENSITIVELY, so shader(GLASS-PANEL)
+// resolves too. Accepted: RCSS decorator values are author-controlled strings, and the
+// permissive match cannot alias two distinct builtins (the registry owns its namespace).
+// Documented so nobody reads exact-match semantics into it -- this project has been
+// bitten by assumed case rules before (see the fname-cooked memory).
 static const TMap<FString, int32>& GetRegistry()
 {
 	static const TMap<FString, int32> Registry = {

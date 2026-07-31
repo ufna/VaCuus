@@ -67,7 +67,8 @@ public:
  * (FSlatePostProcessBlurPS, SlateRHIRenderer/Private/SlatePostProcessor.cpp:636-653):
  * paired weight/offset packing so bilinear filtering halves the tap count, direction and
  * texel size in one vector, bilinear-safe UV bounds. MAX_BLUR_SAMPLES matches the .usf
- * array — a 125-tap kernel ceiling, which at half-res covers view-space sigma ~40px.
+ * array — a 125-tap kernel ceiling: ~41.7 sigma in HALF-RES texels, i.e. ~80px of
+ * view-space sigma at 1:1 scale (the earlier ~40px figure counted the texels once).
  */
 class FVaCuusBlurPS : public FGlobalShader
 {

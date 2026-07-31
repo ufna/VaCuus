@@ -219,7 +219,7 @@ static int32 FillBlurWeights(FVaCuusBlurPS::FParameters* Parameters, float Sigma
 
 	// The engine's own kernel rule (SBackgroundBlur::ComputeEffectiveKernelSize,
 	// SBackgroundBlur.cpp:172-188): 3x the strength, made odd. Clamped to what the
-	// uniform array carries — at half-res that ceiling is ~40px of view-space sigma,
+	// uniform array carries — ~41.7 sigma in half-res texels = ~80px of view-space sigma,
 	// far past anything a HUD panel asks for.
 	int32 KernelSize = FMath::RoundToInt(Strength * 3.0f);
 	KernelSize = FMath::Clamp(KernelSize | 1, 3, 2 * FVaCuusBlurPS::MaxBlurSamples - 1);
