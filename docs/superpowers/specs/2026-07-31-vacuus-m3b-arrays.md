@@ -416,21 +416,23 @@ this chaining, UnrealMemory.cpp:385-412). The count is process-wide, so the wind
 quiesced frame and the assertion is a small bound, not a literal zero of the whole process. Named
 here because without it two rows below are unmeasurable.
 
-| | Target | Prediction from source, to be replaced by numbers |
+| | Target | **Measured 2026-07-31** (7950X3D, Development editor, commit 2895ae5) |
 |---|---|---|
-| GT diff, idle, 200 rows | ≤0.02 ms | 800 value-ptr compares, no allocation |
-| GT one-element change: store + publish (two `SyncCopy`s) | ≤0.10 ms | ~600 `FString` assignments ×2, buffer-reusing |
-| UI apply (third `SyncCopy`) + `DirtyVariable` | ≤0.10 ms | same shape as publish |
-| Re-evaluation + DOM for one changed row | ≤0.50 ms | ~800 expression evals at M3a's measured 0.226 µs ≈ 0.18 ms, + one row's DOM writes; **the number that decides whether one-bit granularity survives** |
-| Warm same-`Num` republish, unchanged strings | **0 container reallocations; ~0 element allocations** | §3.3's `SyncCopy` argument, confirmed or refuted by the counting allocator. **[unverified]** until measured |
-| Grow 0→200 in one frame | measure, no target | 200 × `SetInnerRML` row parses — a load spike by design. Protocol: `SetMeasuring` around exactly the one growth frame, repeated across fresh contexts for a distribution |
-| Shrink 200→0 in one frame | measure, no target | quadratic by RmlUi's own flag; documented as "don't clear per frame". Same one-frame protocol |
-| Idle, 200 rows bound | **0 published, 0 applied, 0 evaluated** | correctness gate, exact counters (§3.5) |
+| GT diff, idle, 200 rows | ≤0.02 ms | **0.00501 ms**/frame (2000 iters) — 4× under |
+| GT one-element change: store + publish (two `SyncCopy`s) | ≤0.10 ms | **0.01021 ms**/frame (row 100, same-length string) — 10× under. All-200-changed is *cheaper*, 0.00720 ms: first-difference-wins stops that diff at row 0, while the row-100 change scans 100 clean rows first; the two `SyncCopy`s dominate both |
+| UI apply (third `SyncCopy`) + `DirtyVariable` | ≤0.10 ms | **0.00428 ms**/frame — 23× under (still-context control: 0.00007 ms) |
+| Re-evaluation + DOM for one changed row | ≤0.50 ms | **0.42257 ms**/frame (CHANGING−STILL; a second run gave 0.45456) — **PASS but tight, 85–91% of target: the row to watch on other machines.** It is ~100% re-evaluation: a bool-toggle row (one 1-char DOM write) measures 0.42419, indistinguishable from the string change |
+| Warm same-`Num` republish, unchanged strings | **0 container reallocations; ~0 element allocations** | **Exactly 0 mallocs + 0 reallocs in all 16 windows** (8 direct `SyncCopy`, 8 channel republish); container block and all 600 element string buffers at identical addresses across 8 warm copies. Restore-the-bug: routing the funnel through the engine's `CopySingleValue` produced **600 reallocs in every window** — the counting observable is what distinguishes the copies |
+| Grow 0→200 in one frame | measure, no target | Update **1.714 / 1.867 / 1.975 ms** min/med/max over 5 fresh contexts (apply itself 0.039 ms median) — the 200 × `SetInnerRML` load spike, by design |
+| Shrink 200→0 in one frame | measure, no target | Update **0.202 / 0.209 / 0.456 ms** (apply 0.004 ms median) — the quadratic cleanup is not biting at N=200 |
+| Idle, 200 rows bound | **0 published, 0 applied, 0 evaluated** | **PASS, exact**: the counter layer in `VaCuus.Model.DataForIdle`; the cost run's still-context adds 1 publish *ever* (the born-dirty first frame), then 0/0/0 over 200 frames |
 
-**The bit-granularity decision is taken here, not in advance:** if the changed-row cost at 200 rows
-fits the table, one bit per array ships and per-element refinement stays parked on `VaCuus-akj.18`
-with numbers attached. If it does not, that bead opens — but §2(b) bounds what it could ever buy:
-RmlUi re-evaluates per root name regardless; only copy cost is on the table.
+**The bit-granularity decision, taken on these numbers: one bit per top-level array ships.**
+The changed-row cost is 0.423 ms of which the three copies contribute ~0.014 ms — the rest is
+RmlUi re-evaluation, which §2(b) proved no VaCuus granularity can reduce. Per-element dirty
+ranges (`VaCuus-akj.18`) could shrink only the 0.014, and stay parked with these numbers attached.
+The tight row is re-evaluation at 85–91% of its 0.50 ms tripwire — a document-side scaling
+property (bindings × rows), not a copy-pipeline one.
 
 ## 10. Risks
 
