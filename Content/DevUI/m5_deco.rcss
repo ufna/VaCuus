@@ -1,0 +1,72 @@
+/* VaCuus M5 decorator demo. Six identical panels; five carry a decorator, the sixth is
+   a plain background-color control so a screenshot can be read against something the
+   pre-M5 path already drew correctly. body.plain (m5_deco_plain.rml) switches every
+   decorator off for the PerfLog A/B — decorator: none is the parser's explicit empty
+   (PropertyParserDecorator.cpp:44).
+
+   RmlUi ships NO user-agent stylesheet ('display' defaults to "inline"), so every tag
+   that needs a box is told here. */
+div { display: block; }
+
+body
+{
+	display: block;
+	width: 100%;
+	height: 100%;
+	font-family: LatoLatin;
+	font-size: 16px;
+	color: #EAF6FB;
+}
+
+#m5-title
+{
+	position: absolute;
+	left: 48px;
+	top: 36px;
+	font-size: 26px;
+	color: #7FE3FF;
+}
+
+/* Laid out for the 1920x1080 headless run; absolute so nothing depends on flow.
+   Text sits on the decorator (decoration paints under content), naming what the fill
+   behind it must look like — the screenshot is the assertion. */
+.panel
+{
+	position: absolute;
+	width: 480px;
+	height: 300px;
+	padding: 16px 20px;
+	border: 1px #9FD8EA60;
+}
+
+#g-linear  { left: 120px; top: 160px; decorator: linear-gradient(90deg, #E8402A, #2A50E8); }
+#g-stripes { left: 720px; top: 160px; decorator: repeating-linear-gradient(45deg, #FFC820 0px, #FFC820 24px, #101010 24px, #101010 48px); }
+#g-radial  { left: 1320px; top: 160px; decorator: radial-gradient(circle, #FFFFFF, #0A2050); }
+#g-conic   { left: 120px; top: 560px; decorator: conic-gradient(from 0deg, #FF0000, #FFFF00, #00FF00, #00FFFF, #0000FF, #FF00FF, #FF0000); }
+#g-glass   { left: 720px; top: 560px; decorator: shader(glass-panel); }
+#g-control { left: 1320px; top: 560px; background-color: #28303A; }
+
+/* The plain twin: decorators off, a flat fill in their place. body.plain #id outranks
+   #id, so these six lines are the entire A/B difference. */
+body.plain #g-linear,
+body.plain #g-stripes,
+body.plain #g-radial,
+body.plain #g-conic,
+body.plain #g-glass
+{
+	decorator: none;
+	background-color: #28303A;
+}
+
+.panel-title
+{
+	font-size: 15px;
+	color: #FFFFFF;
+	margin-bottom: 8px;
+}
+
+.note
+{
+	color: #D7EDF5;
+	margin-bottom: 4px;
+}

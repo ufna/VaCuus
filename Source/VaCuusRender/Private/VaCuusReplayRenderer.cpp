@@ -126,6 +126,10 @@ void FVaCuusReplayRenderer::RetireBufferResources(const FVaCuusCommandBuffer& Bu
 	{
 		Textures.Remove(Handle);
 	}
+	for (const FVaCuusShaderHandle Handle : Buffer.ReleasedShaders)
+	{
+		Shaders.Remove(Handle);
+	}
 
 	LastConsumedGeneration = Buffer.Generation;
 }
@@ -135,6 +139,7 @@ void FVaCuusReplayRenderer::ReleaseResources()
 	check(IsInRenderingThread());
 	Geometry.Empty();
 	Textures.Empty();
+	Shaders.Empty();
 	OutputRT.SafeRelease();
 
 	// Reset the guard: after teardown this replayer can only be paired with a fresh
@@ -216,6 +221,15 @@ void FVaCuusReplayRenderer::UploadNewResources(FRHICommandList& RHICmdList, cons
 
 		Textures.Add(Pair.Key, MoveTemp(Texture));
 	}
+
+	// Shaders: the "upload" is the map insert — see the member's declaration. Add on an
+	// existing key is the swap, same argument as NewTextures' re-Add (cannot actually
+	// happen for shaders — handles are never recycled and a desc is immutable once
+	// compiled — but the map does not need to care).
+	for (const TPair<FVaCuusShaderHandle, FVaCuusShaderDesc>& Pair : Buffer.NewShaders)
+	{
+		Shaders.Add(Pair.Key, Pair.Value);
+	}
 }
 
 void FVaCuusReplayRenderer::ReplayCommands(FRHICommandList& RHICmdList, const FVaCuusCommandBuffer& Buffer)
@@ -227,6 +241,7 @@ void FVaCuusReplayRenderer::ReplayCommands(FRHICommandList& RHICmdList, const FV
 	FGlobalShaderMap* ShaderMap = GetGlobalShaderMap(GMaxRHIFeatureLevel);
 	TShaderMapRef<FVaCuusUIVS> VertexShader(ShaderMap);
 	TShaderMapRef<FVaCuusUIPS> PixelShader(ShaderMap);
+	TShaderMapRef<FVaCuusGradientPS> GradientShader(ShaderMap);
 
 	RHICmdList.Transition(FRHITransitionInfo(OutputRT, ERHIAccess::SRVMask, ERHIAccess::RTV));
 
@@ -245,9 +260,34 @@ void FVaCuusReplayRenderer::ReplayCommands(FRHICommandList& RHICmdList, const FV
 		GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<false, CF_Always>::GetRHI();
 		GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GVaCuusVertexDeclaration.VertexDeclarationRHI;
 		GraphicsPSOInit.BoundShaderState.VertexShaderRHI = VertexShader.GetVertexShader();
-		GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
 		GraphicsPSOInit.PrimitiveType = PT_TriangleList;
-		SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
+
+		// THE MID-PASS PSO SWITCH (M5 spec §2(e)) — DrawShader is the first command that
+		// changes pipelines inside this pass, and only the PIXEL SHADER differs: blend,
+		// rasterizer, depth-stencil, vertex declaration and VS are shared, so a switch is
+		// one PSO-cache hit, not a new state vector. Bound LAZILY on demand: a geometry-only
+		// buffer (every pre-M5 document) binds the UI pipeline once and never switches, and
+		// N consecutive DrawShaders cost one switch, not N. Scissor and viewport survive the
+		// switch — they are command-list state, not PSO state (the glass draw's own pattern:
+		// set once, draw through PSO binds, VaCuusSlateElement.cpp:522-536).
+		enum class EBoundPS : uint8
+		{
+			None,
+			UI,
+			Gradient
+		};
+		EBoundPS BoundPS = EBoundPS::None;
+		const auto BindPipeline = [&RHICmdList, &GraphicsPSOInit, &BoundPS, &PixelShader, &GradientShader](EBoundPS Wanted)
+		{
+			if (BoundPS == Wanted)
+			{
+				return;
+			}
+			BoundPS = Wanted;
+			GraphicsPSOInit.BoundShaderState.PixelShaderRHI =
+				(Wanted == EBoundPS::Gradient) ? GradientShader.GetPixelShader() : PixelShader.GetPixelShader();
+			SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
+		};
 
 		// SetTransform state, already in UE row-vector convention (the recorder
 		// memcpy's Rml's column-major matrix, which lands as the transpose).
@@ -268,6 +308,8 @@ void FVaCuusReplayRenderer::ReplayCommands(FRHICommandList& RHICmdList, const FV
 					{
 						break; // Empty/degenerate geometry: nothing to draw.
 					}
+
+					BindPipeline(EBoundPS::UI);
 
 					// Row-vector composition, left to right = application order:
 					// translate (pixels) -> Rml transform -> pixel-to-clip ortho.
@@ -315,6 +357,125 @@ void FVaCuusReplayRenderer::ReplayCommands(FRHICommandList& RHICmdList, const FV
 						FRHIBatchedShaderParameters& BatchedParameters = RHICmdList.GetScratchShaderParameters();
 						SetShaderParameters(BatchedParameters, PixelShader, Parameters);
 						RHICmdList.SetBatchedShaderParameters(PixelShader.GetPixelShader(), BatchedParameters);
+					}
+
+					RHICmdList.SetStreamSource(0, Geo->VB, 0);
+					RHICmdList.DrawIndexedPrimitive(Geo->IB,
+						/*BaseVertexIndex=*/0, /*FirstInstance=*/0, uint32(Geo->NumVertices),
+						/*StartIndex=*/0, uint32(Geo->NumIndices / 3), /*NumInstances=*/1);
+					++NumDrawCalls;
+					break;
+				}
+
+				case EVaCuusCommandType::DrawShader:
+				{
+					// M5 decorators stage 1 (spec §2(e)): the recorded RenderShader — fill
+					// Command.Geometry with the compiled gradient/builtin in Command.Shader.
+					// Command.Texture is recorded but unused: no RmlUi shader decorator
+					// passes one (geometry.Render(offset, {}, shader),
+					// DecoratorShader.cpp:61-65 and the gradient equivalents), and the
+					// gradient PS samples nothing.
+					const FVaCuusShaderDesc* Desc = Shaders.Find(Command.Shader);
+					if (!ensureMsgf(Desc, TEXT("DrawShader references unknown shader handle %llu"), Command.Shader))
+					{
+						break;
+					}
+					const FGeometry* Geo = Geometry.Find(Command.Geometry);
+					if (!ensureMsgf(Geo, TEXT("DrawShader references unknown geometry handle %llu"), Command.Geometry))
+					{
+						break;
+					}
+					if (Geo->NumIndices < 3)
+					{
+						break;
+					}
+
+					// The dictionary -> uniform conversion is the reference backend's
+					// (RmlUi_Renderer_GL3.cpp:1646-1674): P/V per kind, stops as resolved.
+					// The three Max/IsNearlyZero guards are ours — the reference divides by
+					// whatever arrives, and a degenerate paint box would put NaN in the RT.
+					// Memzero, not member-by-member: a shader parameter struct's default
+					// constructor is EMPTY (INTERNAL_SHADER_PARAMETER_STRUCT_BEGIN's `{}`
+					// suffix, ShaderParameterMacros.h:1330-1334, :1412), and the stop arrays
+					// beyond NumStops would otherwise upload stack garbage as uniforms.
+					FVaCuusGradientPS::FParameters PSParameters;
+					FMemory::Memzero(PSParameters);
+					PSParameters.bRepeating = Desc->bRepeating;
+					PSParameters.BuiltinDimensions = FVector2f(FMath::Max(Desc->Dimensions.X, 1.0f), FMath::Max(Desc->Dimensions.Y, 1.0f));
+
+					switch (Desc->Kind)
+					{
+						case EVaCuusShaderKind::LinearGradient:
+							PSParameters.GradientMode = 0;
+							PSParameters.GradientP = Desc->P0;
+							PSParameters.GradientV = Desc->P1 - Desc->P0;
+							if (PSParameters.GradientV.IsNearlyZero())
+							{
+								// Zero-length gradient line: dot(V,V) divides in the PS.
+								// Any direction paints the whole box with an edge stop.
+								PSParameters.GradientV = FVector2f(1.0f, 0.0f);
+							}
+							break;
+
+						case EVaCuusShaderKind::RadialGradient:
+							PSParameters.GradientMode = 1;
+							PSParameters.GradientP = Desc->Center;
+							// The reference's 2d curvature, 1/radius per axis.
+							PSParameters.GradientV = FVector2f(
+								1.0f / FMath::Max(Desc->Radius.X, 0.01f), 1.0f / FMath::Max(Desc->Radius.Y, 0.01f));
+							break;
+
+						case EVaCuusShaderKind::ConicGradient:
+							PSParameters.GradientMode = 2;
+							PSParameters.GradientP = Desc->Center;
+							PSParameters.GradientV = FVector2f(FMath::Cos(Desc->Angle), FMath::Sin(Desc->Angle));
+							break;
+
+						case EVaCuusShaderKind::Builtin:
+						{
+							// Known-valid by the recorder's registry check; INDEX_NONE here
+							// would mean the registry changed between record and replay,
+							// which a static map cannot do. Clamped to the glass-panel mode
+							// under the ensure so even that impossibility draws something
+							// deterministic rather than reading mode garbage.
+							const int32 Mode = VaCuusBuiltinShaders::FindMode(Desc->BuiltinKey);
+							ensureMsgf(Mode != INDEX_NONE, TEXT("DrawShader carries unregistered builtin '%s'"), *Desc->BuiltinKey);
+							PSParameters.GradientMode = uint32(FMath::Max(Mode, 3));
+							break;
+						}
+					}
+
+					const int32 NumStops = FMath::Min(Desc->Stops.Num(), VaCuusMaxGradientStops);
+					PSParameters.NumStops = NumStops;
+					for (int32 StopIndex = 0; StopIndex < NumStops; ++StopIndex)
+					{
+						PSParameters.StopColors[StopIndex] = Desc->Stops[StopIndex].Color;
+						// Four positions per register — the PS reads [i>>2][i&3].
+						PSParameters.StopPositions[StopIndex / 4][StopIndex % 4] = Desc->Stops[StopIndex].Position;
+					}
+
+					BindPipeline(EBoundPS::Gradient);
+
+					// Same VS, same matrix math as DrawGeometry above.
+					FMatrix44f Translate = FMatrix44f::Identity;
+					Translate.M[3][0] = Command.Translation.X;
+					Translate.M[3][1] = Command.Translation.Y;
+
+					FVaCuusUIShaderParameters VSParameters;
+					VSParameters.Projection = Translate * CurrentTransform * Projection;
+					VSParameters.UITexture = GWhiteTexture->TextureRHI;
+					VSParameters.UISampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+					VSParameters.bUseTexture = 0;
+
+					{
+						FRHIBatchedShaderParameters& BatchedParameters = RHICmdList.GetScratchShaderParameters();
+						SetShaderParameters(BatchedParameters, VertexShader, VSParameters);
+						RHICmdList.SetBatchedShaderParameters(VertexShader.GetVertexShader(), BatchedParameters);
+					}
+					{
+						FRHIBatchedShaderParameters& BatchedParameters = RHICmdList.GetScratchShaderParameters();
+						SetShaderParameters(BatchedParameters, GradientShader, PSParameters);
+						RHICmdList.SetBatchedShaderParameters(GradientShader.GetPixelShader(), BatchedParameters);
 					}
 
 					RHICmdList.SetStreamSource(0, Geo->VB, 0);

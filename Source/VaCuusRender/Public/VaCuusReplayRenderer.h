@@ -120,6 +120,16 @@ private:
 
 	TMap<FVaCuusGeometryHandle, FGeometry> Geometry;
 	TMap<FVaCuusTextureHandle, FTextureRHIRef> Textures;
+
+	/**
+	 * Compiled shaders, beside Geometry/Textures with the same upload/retire lifecycle —
+	 * but the "upload" creates no RHI object: a compiled gradient IS its parameters
+	 * (FVaCuusShaderDesc), read at every DrawShader bind. The map entry is still a real
+	 * resource with the deferred-release discipline, because a desc retired early would
+	 * strand a later command's Shader handle exactly like a dropped texture.
+	 */
+	TMap<FVaCuusShaderHandle, FVaCuusShaderDesc> Shaders;
+
 	FTextureRHIRef OutputRT;
 
 	/** Newest buffer generation consumed so far (drawn via Replay or resource-only via ConsumeResources). */

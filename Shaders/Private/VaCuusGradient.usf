@@ -1,0 +1,148 @@
+// Copyright 2026 Vladimir Alyamkin. All Rights Reserved.
+
+#include "/Engine/Public/Platform.ush"
+
+/**
+ * The M5 decorator fill (spec §2(e)): gradients + the builtin set, paired with
+ * VaCuusUI.usf's MainVS. Interpolants match MainPS: premultiplied vertex color and the
+ * recorded tex_coord — LOCAL PIXELS of the paint box for the three gradient modes
+ * (DecoratorGradient.cpp:268-270, :437-439, :634-636), normalized 0..1 for builtins
+ * (DecoratorShader.cpp:45-47).
+ *
+ * The gradient math is RmlUi's own reference shader, transliterated
+ * (Backends/RmlUi_Renderer_GL3.cpp:96-153) so the dictionaries mean here exactly what
+ * they mean there; deviations are marked and are guards, not semantics.
+ */
+
+// Mode values are pinned by VaCuusBuiltinShaders::GetRegistry() (builtins) and the
+// replayer's DrawShader case (gradients) — VaCuusUIShaders.cpp.
+#define VACUUS_MODE_LINEAR 0
+#define VACUUS_MODE_RADIAL 1
+#define VACUUS_MODE_CONIC 2
+#define VACUUS_MODE_GLASS_PANEL 3
+
+// == VaCuusMaxGradientStops (VaCuusCommandBuffer.h) == the reference backend's
+// MAX_NUM_STOPS (RmlUi_Renderer_GL3.cpp:40); the static_assert next to
+// FVaCuusGradientPS pins the C++ side.
+#define VACUUS_MAX_NUM_STOPS 16
+
+// Local: this file includes only Platform.ush (like VaCuusUI.usf); the engine's PI
+// lives in /Engine/Private/Common.ush:133, which is far more baggage than a constant.
+#define VACUUS_PI 3.14159265f
+
+uint GradientMode;
+uint bRepeating;
+float2 GradientP; // linear: p0,           radial: center,              conic: center
+float2 GradientV; // linear: p1 - p0,      radial: 1/radius (curvature) conic: (cos a, sin a)
+float2 BuiltinDimensions; // builtins: paint-box size in px (UV is normalized)
+int NumStops;
+float4 StopColors[VACUUS_MAX_NUM_STOPS]; // premultiplied RGBA
+float4 StopPositions[VACUUS_MAX_NUM_STOPS / 4]; // four stops per register, [i>>2][i&3]
+
+float GetStopPosition(int Index)
+{
+	return StopPositions[Index >> 2][Index & 3];
+}
+
+/**
+ * The reference's mix_stop_colors (RmlUi_Renderer_GL3.cpp:116-122): a smoothstep chain
+ * over the (non-decreasing) stop positions, mixing in premultiplied space — which is the
+ * correct space for it, the stops arrive premultiplied. The max() is a guard the
+ * reference lacks: ResolveColorStops only guarantees non-DEcreasing positions
+ * (nudge_stop uses Max, DecoratorGradient.cpp:59-63), and HLSL smoothstep with equal
+ * edges divides by zero where GLSL leaves it undefined. Epsilon-separated edges turn a
+ * coincident pair into the hard color break it means.
+ */
+float4 MixStopColors(float T)
+{
+	float4 Color = StopColors[0];
+	for (int Index = 1; Index < NumStops; ++Index)
+	{
+		const float Edge0 = GetStopPosition(Index - 1);
+		const float Edge1 = max(GetStopPosition(Index), Edge0 + 1e-6f);
+		Color = lerp(Color, StopColors[Index], smoothstep(Edge0, Edge1, T));
+	}
+	return Color;
+}
+
+/**
+ * The one shipped builtin: `decorator: shader(glass-panel)` — a subtle translucent
+ * panel fill (cool vertical wash) with a bright border rim and an inward halo. Composed
+ * in premultiplied space; the demo document and the M5 demo are its visual test.
+ */
+float4 GlassPanel(float2 UV)
+{
+	// Distance to the nearest panel edge, in pixels — Dimensions is what makes a
+	// 2px rim 2px on any panel size.
+	const float2 EdgePx2 = min(UV, 1.0f - UV) * BuiltinDimensions;
+	const float EdgePx = min(EdgePx2.x, EdgePx2.y);
+
+	const float3 CoolWhite = float3(0.75f, 0.85f, 1.0f);
+
+	// Fill: light wash at the top into dark translucent glass at the bottom.
+	const float FillAlpha = lerp(0.10f, 0.32f, UV.y);
+	const float3 FillColor = lerp(CoolWhite * 0.35f, float3(0.05f, 0.09f, 0.16f), UV.y);
+	const float4 FillPremul = float4(FillColor * FillAlpha, FillAlpha);
+
+	// Rim (~2px) plus a soft quadratic halo (~8px), clamped: their sum is coverage.
+	const float Rim = saturate(1.0f - EdgePx / 2.0f);
+	const float Halo = saturate(1.0f - EdgePx / 8.0f);
+	const float GlowAlpha = min(Rim * 0.85f + Halo * Halo * 0.25f, 1.0f);
+	const float4 GlowPremul = float4(CoolWhite * GlowAlpha, GlowAlpha);
+
+	// Glow over fill, premultiplied over.
+	return GlowPremul + FillPremul * (1.0f - GlowPremul.a);
+}
+
+void MainGradientPS(
+	in float4 Color : TEXCOORD1,
+	in float2 UV : TEXCOORD0,
+	out float4 OutColor : SV_Target0)
+{
+	float4 Fill = float4(0.0f, 0.0f, 0.0f, 0.0f);
+
+	if (GradientMode == VACUUS_MODE_GLASS_PANEL)
+	{
+		Fill = GlassPanel(UV);
+	}
+	else if (NumStops > 0)
+	{
+		// The reference's t per mode (RmlUi_Renderer_GL3.cpp:126-144).
+		float T = 0.0f;
+		if (GradientMode == VACUUS_MODE_LINEAR)
+		{
+			const float2 V = UV - GradientP;
+			T = dot(GradientV, V) / dot(GradientV, GradientV);
+		}
+		else if (GradientMode == VACUUS_MODE_RADIAL)
+		{
+			T = length(GradientV * (UV - GradientP));
+		}
+		else // VACUUS_MODE_CONIC
+		{
+			// The reference's mat2(v.x, -v.y, v.y, v.x) * V, written out: a rotation by
+			// -angle, then the angle read off 0.5 + atan(-x, y)/2pi (:139-143).
+			const float2 V = UV - GradientP;
+			const float2 Rotated = float2(GradientV.x * V.x + GradientV.y * V.y, -GradientV.y * V.x + GradientV.x * V.y);
+			T = 0.5f + atan2(-Rotated.x, Rotated.y) / (2.0f * VACUUS_PI);
+		}
+
+		if (bRepeating != 0)
+		{
+			// The reference wraps with GLSL mod (:146-151), which follows the DIVISOR's
+			// sign; HLSL's fmod truncates toward zero, which would mirror every repeat
+			// before the first stop. Spelled out via floor to keep GLSL semantics, with a
+			// degenerate-span guard the reference lacks.
+			const float T0 = GetStopPosition(0);
+			const float Span = max(GetStopPosition(NumStops - 1) - T0, 1e-6f);
+			const float X = T - T0;
+			T = T0 + (X - Span * floor(X / Span));
+		}
+
+		Fill = MixStopColors(T);
+	}
+
+	// Premultiplied * premultiplied, exactly like MainPS: the vertex color carries the
+	// element's opacity (DecoratorGradient.cpp:265-266 — ColourbPremultiplied(a, a)).
+	OutColor = Color * Fill;
+}

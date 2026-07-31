@@ -25,6 +25,18 @@ using FVaCuusTextureHandle = uint64;
 using FVaCuusFilterHandle = uint64;
 
 /**
+ * Shader handles are the filter pattern again: strictly increasing, never recycled,
+ * round-tripped through Rml::CompiledShaderHandle (uintptr_t) unchanged. Cross-frame
+ * resources — RmlUi holds a compiled shader until ReleaseShader
+ * (RenderInterface.h:131-140), and re-parameterising a gradient has no mutate call:
+ * the decorator releases and compiles a fresh handle (DecoratorShader.cpp:27-53 via
+ * ElementEffects::ReloadEffectsData, ElementEffects.cpp:133-148). That is what makes
+ * the idle-gate story below complete: a changed gradient is ALWAYS new-handle
+ * resource traffic AND a changed Shader field in its draw command.
+ */
+using FVaCuusShaderHandle = uint64;
+
+/**
  * Layer handles are NOT the geometry pattern, and the difference is load-bearing.
  * RmlUi's layer stack is strictly per-frame: asserted empty at every frame start
  * (RmlUi Source/Core/RenderManager.cpp:51) and there is no release call — PopLayer
@@ -63,7 +75,15 @@ enum class EVaCuusCommandType : uint8
 	PopLayer,
 	CompositeLayers,
 	EnableClipMask,
-	RenderToClipMask
+	RenderToClipMask,
+
+	/**
+	 * M5 decorators stage 1 (spec §2(e)): draw Geometry filled by the compiled shader in
+	 * Shader instead of by Texture/vertex colour alone — RmlUi's RenderShader
+	 * (RenderInterface.h:137), how `decorator: linear/radial/conic-gradient` and
+	 * `decorator: shader(<builtin>)` reach the replayer.
+	 */
+	DrawShader
 };
 
 /** One recorded RmlUi render call. Fields beyond Type are per-command payload. */
@@ -91,6 +111,9 @@ struct FVaCuusCommand
 
 	/** CompositeLayers: the destination layer; 0 = the base layer (the per-view RT). */
 	FVaCuusLayerHandle DestLayer = 0;
+
+	/** DrawShader: the compiled shader (NewShaders desc) the geometry is filled with. */
+	FVaCuusShaderHandle Shader = 0;
 
 	/**
 	 * CompositeLayers: this command's filter list, THE VARIABLE-LENGTH RECORD, stored as a
@@ -122,7 +145,7 @@ struct FVaCuusCommand
  *
  * WHY sizeof AND offsetof ARE NOT ENOUGH, measured rather than reasoned about: declaring a
  * uint8, uint16 or uint32 between FVaCuusCommand's Type and Geometry puts it in the seven
- * bytes of padding at offsets 1..7. It shifts NOTHING -- sizeof stays 112 and every other
+ * bytes of padding at offsets 1..7. It shifts NOTHING -- sizeof stays 160 and every other
  * member keeps its offset -- so a layout tripwire built only from sizeof and offsetof
  * compiles it silently, however many offsets it pins. The field then never reaches
  * FVaCuusCommandHashImage, the hash cannot see it change, and the gate reports "unchanged"
@@ -161,9 +184,9 @@ struct FAny
 template <typename TAggregate, typename... TInitialisers>
 constexpr bool bTakesInitialisers = requires { TAggregate{TInitialisers{}...}; };
 
-constexpr bool bCommandHasExactlyThirteenMembers =
-	bTakesInitialisers<FVaCuusCommand, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny> &&
-	!bTakesInitialisers<FVaCuusCommand, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny>;
+constexpr bool bCommandHasExactlyFourteenMembers =
+	bTakesInitialisers<FVaCuusCommand, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny> &&
+	!bTakesInitialisers<FVaCuusCommand, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny>;
 } // namespace VaCuusLayout
 
 /**
@@ -226,6 +249,98 @@ struct FVaCuusFilterData
 };
 
 /**
+ * Which of the four CompileShader names a desc records (M5 spec §2(e)). RmlUi 6 sends
+ * exactly four: "linear-gradient" (DecoratorGradient.cpp:252-259), "radial-gradient"
+ * (:422-428), "conic-gradient" (:619-625) and "shader" (DecoratorShader.cpp:35). The
+ * recorder refuses any other name — and any "shader" whose value is not a registered
+ * builtin — with handle 0, which suppresses exactly ONE decorator on ONE element
+ * (Decorator.h:42-44; the per-entry guard in ElementEffects.cpp:196-200), so there is
+ * no Unknown kind here: an unknown key never mints a desc at all.
+ */
+enum class EVaCuusShaderKind : uint8
+{
+	LinearGradient,
+	RadialGradient,
+	ConicGradient,
+
+	/** decorator: shader(<key>): a VaCuus builtin pixel shader; BuiltinKey names it. */
+	Builtin
+};
+
+/**
+ * One RESOLVED gradient color stop. RmlUi resolves every stop before CompileShader:
+ * positions arrive normalized to Unit::NUMBER along the gradient line — lengths,
+ * percentages and angles are all converted and auto positions distributed by
+ * ResolveColorStops (DecoratorGradient.cpp:27-122, asserted all-NUMBER at :119) — and
+ * colors arrive as ColourbPremultiplied (DecorationTypes.h:8-11). Recorded as floats so
+ * the replayer can hand the array to the gradient PS without a per-draw conversion.
+ */
+struct FVaCuusColorStop
+{
+	/** Premultiplied RGBA in 0..1 (ColourbPremultiplied byte / 255). */
+	FVector4f Color = FVector4f(0.0f, 0.0f, 0.0f, 0.0f);
+
+	/** Position along the gradient line, ~0..1, strictly non-decreasing across the list. */
+	float Position = 0.0f;
+};
+
+/**
+ * The most stops one compiled gradient carries — the gradient PS's uniform-array size.
+ * 16 matches RmlUi's own reference backends (MAX_NUM_STOPS,
+ * Backends/RmlUi_Renderer_GL3.cpp:40), whose CompileShader truncates the same way
+ * (Math::Min at :1635): RmlUi core does NOT cap the list (ResolveColorStops keeps every
+ * stop), so the recorder truncates to the first 16 — the reference behavior — and,
+ * unlike the reference, says so once in the log.
+ */
+inline constexpr int32 VaCuusMaxGradientStops = 16;
+
+/**
+ * Payload of one compiled shader: the CompileShader dictionary, recorded verbatim
+ * (material-decorators.md §1's table, every field opened at its DecoratorGradient.cpp /
+ * DecoratorShader.cpp site). Which fields are meaningful depends on Kind; the rest keep
+ * their defaults, exactly like FVaCuusCommand's per-type payload fields.
+ *
+ * COORDINATE SPACE, the one fact the replayer must not guess: the three gradient
+ * decorators build meshes whose tex_coord is the vertex position minus the paint-box
+ * offset — LOCAL PIXELS (DecoratorGradient.cpp:268-270, :437-439, :634-636) — and
+ * P0/P1/Center/Radius are in that same space. The "shader" decorator instead normalizes
+ * tex_coord to 0..1 over Dimensions (DecoratorShader.cpp:45-47), which is why Builtin
+ * carries Dimensions: a builtin PS that wants pixel units multiplies them back.
+ */
+struct FVaCuusShaderDesc
+{
+	EVaCuusShaderKind Kind = EVaCuusShaderKind::LinearGradient;
+
+	/** LinearGradient: gradient line start/end, local px ("p0"/"p1"). */
+	FVector2f P0 = FVector2f::ZeroVector;
+	FVector2f P1 = FVector2f::ZeroVector;
+
+	/** RadialGradient + ConicGradient: gradient center, local px ("center"). */
+	FVector2f Center = FVector2f::ZeroVector;
+
+	/** RadialGradient: per-axis ellipse radius, px ("radius"). */
+	FVector2f Radius = FVector2f::ZeroVector;
+
+	/** ConicGradient: start angle, radians ("angle"). */
+	float Angle = 0.0f;
+
+	/** LinearGradient: gradient line length, px ("length"). Stop resolution used it; the PS derives its own from P0/P1. */
+	float Length = 0.0f;
+
+	/** Gradients: repeating-* variant ("repeating"). */
+	uint8 bRepeating = 0;
+
+	/** Gradients: the resolved stop list ("color_stop_list"), truncated to VaCuusMaxGradientStops. */
+	TArray<FVaCuusColorStop> Stops;
+
+	/** Builtin: the shader(<key>) registry key ("value"), known-valid — unknown keys never mint a desc. */
+	FString BuiltinKey;
+
+	/** Builtin: paint-box size in px ("dimensions") — the tex_coord normalization factor. */
+	FVector2f Dimensions = FVector2f::ZeroVector;
+};
+
+/**
  * One recorded UI frame: the command list plus the resource delta since the
  * previous buffer. Produced on the game thread by FVaCuusRecordingRenderInterface,
  * consumed by the render-thread replayer.
@@ -273,10 +388,21 @@ struct FVaCuusCommandBuffer
 	 */
 	TMap<FVaCuusFilterHandle, FVaCuusFilterData> NewFilters;
 
+	/**
+	 * Shaders first seen this frame, keyed by handle — the map this header's own warning
+	 * below spent two milestones predicting. Resource traffic exactly like NewFilters: a
+	 * gradient parameter change releases the old shader and compiles a new handle (no
+	 * mutate API exists — see FVaCuusShaderHandle), so an animated gradient is
+	 * double-covered at the idle gate: new handle in its DrawShader command (hash) AND an
+	 * entry here (traffic).
+	 */
+	TMap<FVaCuusShaderHandle, FVaCuusShaderDesc> NewShaders;
+
 	/** Handles to release AFTER this buffer retires (commands above may still use them). */
 	TArray<FVaCuusGeometryHandle> ReleasedGeometry;
 	TArray<FVaCuusTextureHandle> ReleasedTextures;
 	TArray<FVaCuusFilterHandle> ReleasedFilters;
+	TArray<FVaCuusShaderHandle> ReleasedShaders;
 
 	/**
 	 * The concatenated filter lists of every CompositeLayers command in this buffer, in
@@ -291,22 +417,22 @@ struct FVaCuusCommandBuffer
 	 * Does this buffer carry resource traffic the replayer must see even when the drawing
 	 * did not change? The idle gate's wake condition, and the reason it lives HERE.
 	 *
-	 * ADD A RESOURCE ARRAY ABOVE AND YOU MUST ADD IT TO THIS PREDICATE. The six arrays
+	 * ADD A RESOURCE ARRAY ABOVE AND YOU MUST ADD IT TO THIS PREDICATE. The eight arrays
 	 * are the only channel by which created and released resources reach the replayer, and
 	 * they are cleared with the buffer; a buffer the gate withholds is dropped. So an array
 	 * this predicate does not name is a resource that silently never arrives -- or a release
 	 * nobody consumes -- on any frame where the commands happened not to change.
 	 *
-	 * NOT A HYPOTHETICAL GAP — the M5 filter pair below is this predicate's own warning
-	 * come true, on schedule. The recorder now implements 16 of Rml::RenderInterface's 21
-	 * virtuals; the 5 it still leaves at their defaults include CompileShader/RenderShader/
-	 * ReleaseShader (ThirdParty/RmlUi/Include/RmlUi/Core/RenderInterface.h:131-140, how
-	 * RmlUi 6 draws `decorator: linear-gradient`) and SaveLayerAsTexture/
-	 * SaveLayerAsMaskImage (:112-116, element `filter:` output and mask-image). Each of
-	 * those arrives with its own handle map on this buffer, and a document with an
-	 * animated gradient whose NewShaders map went unnamed here would publish frame one
-	 * and then freeze. CompositeFilters is deliberately NOT here: it is frame content
-	 * (see its declaration), covered by the hash.
+	 * NOT A HYPOTHETICAL GAP — this predicate has now been caught up TWICE, each time by
+	 * its own earlier warning: the M5 filter pair, and then the M5 shader pair whose
+	 * absence the previous revision of this comment predicted by name ("a document with an
+	 * animated gradient whose NewShaders map went unnamed here would publish frame one and
+	 * then freeze"). The recorder now implements 19 of Rml::RenderInterface's 21 virtuals;
+	 * the 2 still at their defaults are SaveLayerAsTexture/SaveLayerAsMaskImage
+	 * (ThirdParty/RmlUi/Include/RmlUi/Core/RenderInterface.h:112-116, element `filter:`
+	 * output and mask-image). Each arrives with its own handle map on this buffer and joins
+	 * this predicate the day it lands. CompositeFilters is deliberately NOT here: it is
+	 * frame content (see its declaration), covered by the hash.
 	 *
 	 * The compile-time half of that promise is the member-count assert in the definition
 	 * below: a new member on this struct fails the build until someone decides whether it
@@ -317,14 +443,14 @@ struct FVaCuusCommandBuffer
 
 namespace VaCuusLayout
 {
-constexpr bool bBufferHasExactlyTenMembers =
-	bTakesInitialisers<FVaCuusCommandBuffer, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny> &&
-	!bTakesInitialisers<FVaCuusCommandBuffer, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny>;
+constexpr bool bBufferHasExactlyTwelveMembers =
+	bTakesInitialisers<FVaCuusCommandBuffer, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny> &&
+	!bTakesInitialisers<FVaCuusCommandBuffer, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny>;
 } // namespace VaCuusLayout
 
 inline bool FVaCuusCommandBuffer::HasResourceTraffic() const
 {
-	// THE COMPLETENESS TRIPWIRE for the six arrays this predicate names. Unlike the frame
+	// THE COMPLETENESS TRIPWIRE for the eight arrays this predicate names. Unlike the frame
 	// hash's, this one has nothing else to fall back on: a resource array is not read as
 	// bytes, so no sizeof or offsetof clause would notice it, and no existing test exercises
 	// a resource type that does not exist yet. The member count is the whole guard.
@@ -335,16 +461,18 @@ inline bool FVaCuusCommandBuffer::HasResourceTraffic() const
 	//
 	// Verified by restoring the bug rather than argued: adding a resource map to the
 	// struct without naming it below fails this assert at compile time, with this message —
-	// re-verified when the M5 filter pair landed (the count was bumped 7 -> 10 in the same
-	// change that extended the return, exactly the ceremony this assert exists to force).
-	static_assert(VaCuusLayout::bBufferHasExactlyTenMembers,
+	// re-verified when the M5 filter pair landed (7 -> 10) and again when the M5 shader
+	// pair landed (10 -> 12), the count bumped in the same change that extended the return
+	// each time — exactly the ceremony this assert exists to force.
+	static_assert(VaCuusLayout::bBufferHasExactlyTwelveMembers,
 		"FVaCuusCommandBuffer gained or lost a member. If it is a resource array (a new handle map or "
 		"release list), add it to HasResourceTraffic() or the idle gate will withhold frames that carry "
 		"it. If it is frame content the replayer draws from, add it to VaCuusHashFrameContent() too. "
 		"Then update this count");
 
-	return NewGeometry.Num() > 0 || NewTextures.Num() > 0 || NewFilters.Num() > 0 ||
-		ReleasedGeometry.Num() > 0 || ReleasedTextures.Num() > 0 || ReleasedFilters.Num() > 0;
+	return NewGeometry.Num() > 0 || NewTextures.Num() > 0 || NewFilters.Num() > 0 || NewShaders.Num() > 0 ||
+		ReleasedGeometry.Num() > 0 || ReleasedTextures.Num() > 0 || ReleasedFilters.Num() > 0 ||
+		ReleasedShaders.Num() > 0;
 }
 
 /**
@@ -352,8 +480,8 @@ inline bool FVaCuusCommandBuffer::HasResourceTraffic() const
  * below as raw bytes.
  *
  * WHY IT EXISTS -- FVaCuusCommand ITSELF MUST NEVER BE HASHED AS BYTES. Its first
- * member is a uint8 enum and its last is an FMatrix44f, which is alignas(16)
- * (Math/Matrix.h:42, and the M array again at :49), so the struct is 112 bytes with
+ * member is a uint8 enum and it carries an FMatrix44f, which is alignas(16)
+ * (Math/Matrix.h:42, and the M array again at :49), so the struct is 160 bytes with
  * SEVEN bytes of padding sitting between Type and Geometry. No constructor writes
  * padding, so those bytes hold whatever the allocator left behind: hashing the object
  * would give a different hash for two identical frames, and a different one on every
@@ -375,6 +503,7 @@ struct FVaCuusCommandHashImage
 	float Transform[16] = {};
 	uint64 SourceLayer = 0;
 	uint64 DestLayer = 0;
+	uint64 Shader = 0;
 
 	// FilterOffset and FilterCount are both hashed even though only the count is content
 	// in its own right (the offset is bookkeeping into CompositeFilters, deterministic
@@ -394,7 +523,7 @@ struct FVaCuusCommandHashImage
 };
 
 static_assert(sizeof(FVaCuusCommandHashImage) ==
-		8 * sizeof(uint64) + 2 * sizeof(float) + 6 * sizeof(int32) + 16 * sizeof(float),
+		9 * sizeof(uint64) + 2 * sizeof(float) + 6 * sizeof(int32) + 16 * sizeof(float),
 	"FVaCuusCommandHashImage must have no padding: VaCuusHashFrameContent hashes it as raw bytes");
 
 /**
@@ -412,9 +541,9 @@ static_assert(sizeof(FVaCuusCommandHashImage) ==
  * WHAT IS OUT, and why none of it can cause a false "unchanged":
  *  - Generation: identifies the buffer, not its content. Hashing it would make every
  *    frame differ from every other and the gate would never fire.
- *  - NewGeometry / NewTextures / NewFilters / ReleasedGeometry / ReleasedTextures /
- *    ReleasedFilters: resource traffic the replayer must see even when the drawing did
- *    not change. The gate tests them for emptiness DIRECTLY
+ *  - NewGeometry / NewTextures / NewFilters / NewShaders / ReleasedGeometry /
+ *    ReleasedTextures / ReleasedFilters / ReleasedShaders: resource traffic the replayer
+ *    must see even when the drawing did not change. The gate tests them for emptiness DIRECTLY
  *    (FVaCuusCommandBuffer::HasResourceTraffic) instead of hashing their payloads --
  *    cheaper (no megabyte texture walked per frame) and safer, since "any traffic at
  *    all forces a publish" cannot be fooled by a hash collision.
@@ -484,6 +613,13 @@ static_assert(sizeof(FVaCuusCommandHashImage) ==
  * costs nothing and removes the need to reason about which field matters to which
  * type. Floats are hashed BITWISE, so +0.0 and -0.0 read as a change; that direction
  * is the safe one (a redundant publish, never a missed one).
+ *
+ * THE SHADER FIELD IS THE HASH'S OWN LEG FOR DECORATORS, not redundancy with the
+ * traffic leg: two shaders compiled in an EARLIER buffer and swapped between draws
+ * later (a restyle toggling between two live decorators) is a frame with zero resource
+ * traffic whose only difference is the Shader handle in a DrawShader command. Drop
+ * Image.Shader below and that frame hashes "unchanged" and is withheld — the
+ * restore-the-bug for exactly that is VaCuus.Render.Decorator.ShaderHash.
  */
 inline uint64 VaCuusHashFrameContent(const FVaCuusCommandBuffer& Buffer)
 {
@@ -495,23 +631,24 @@ inline uint64 VaCuusHashFrameContent(const FVaCuusCommandBuffer& Buffer)
 	// above; that hole was verified by building with such a field present, not argued.
 	//
 	// The offsets catch a REORDER, which leaves both the total size and the member count
-	// alone: swap Texture and Translation and sizeof is still 112 with six members, but the
-	// nine hand-written scalar copies below would be reading the wrong fields.
+	// alone: swap Texture and Translation and sizeof is still 160 with the same member
+	// count, but the hand-written scalar copies below would be reading the wrong fields.
 	//
 	// Either way the failure being prevented is the same one, and it is the worst kind this
 	// feature can have: a field that never reaches FVaCuusCommandHashImage cannot make the
 	// hash differ, so a frame that changed reads as "unchanged" and is withheld -- a UI
 	// frozen on stale pixels, with nothing logged anywhere.
-	static_assert(VaCuusLayout::bCommandHasExactlyThirteenMembers,
+	static_assert(VaCuusLayout::bCommandHasExactlyFourteenMembers,
 		"FVaCuusCommand gained or lost a field. Every field that reaches the replayer must be copied into "
 		"FVaCuusCommandHashImage below, or an unhashed field silently stops triggering a publish");
-	static_assert(sizeof(FVaCuusCommand) == 144 && offsetof(FVaCuusCommand, Type) == 0 &&
+	static_assert(sizeof(FVaCuusCommand) == 160 && offsetof(FVaCuusCommand, Type) == 0 &&
 			offsetof(FVaCuusCommand, Geometry) == 8 && offsetof(FVaCuusCommand, Texture) == 16 &&
 			offsetof(FVaCuusCommand, Translation) == 24 && offsetof(FVaCuusCommand, Scissor) == 32 &&
 			offsetof(FVaCuusCommand, Transform) == 48 && offsetof(FVaCuusCommand, SourceLayer) == 112 &&
-			offsetof(FVaCuusCommand, DestLayer) == 120 && offsetof(FVaCuusCommand, FilterOffset) == 128 &&
-			offsetof(FVaCuusCommand, FilterCount) == 132 && offsetof(FVaCuusCommand, Blend) == 136 &&
-			offsetof(FVaCuusCommand, ClipMaskOp) == 137 && offsetof(FVaCuusCommand, bClipMaskEnable) == 138,
+			offsetof(FVaCuusCommand, DestLayer) == 120 && offsetof(FVaCuusCommand, Shader) == 128 &&
+			offsetof(FVaCuusCommand, FilterOffset) == 136 && offsetof(FVaCuusCommand, FilterCount) == 140 &&
+			offsetof(FVaCuusCommand, Blend) == 144 && offsetof(FVaCuusCommand, ClipMaskOp) == 145 &&
+			offsetof(FVaCuusCommand, bClipMaskEnable) == 146,
 		"FVaCuusCommand's layout changed. Every field that reaches the replayer must be copied into "
 		"FVaCuusCommandHashImage below, or an unhashed field silently stops triggering a publish");
 
@@ -557,6 +694,7 @@ inline uint64 VaCuusHashFrameContent(const FVaCuusCommandBuffer& Buffer)
 		FMemory::Memcpy(Image.Transform, Command.Transform.M, sizeof(Image.Transform));
 		Image.SourceLayer = Command.SourceLayer;
 		Image.DestLayer = Command.DestLayer;
+		Image.Shader = Command.Shader;
 		Image.FilterOffset = Command.FilterOffset;
 		Image.FilterCount = Command.FilterCount;
 		Image.Blend = uint64(Command.Blend);

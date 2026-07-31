@@ -40,6 +40,8 @@ static const TCHAR* GM2DemoVfsPath = TEXT("m2_demo.rml");
 static const TCHAR* GM3DemoVfsPath = TEXT("m3_demo.rml");
 static const TCHAR* GM4DemoVfsPath = TEXT("m4_demo.rml");
 static const TCHAR* GM5GlassVfsPath = TEXT("m5_glass.rml");
+static const TCHAR* GM5DecoVfsPath = TEXT("m5_deco.rml");
+static const TCHAR* GM5DecoPlainVfsPath = TEXT("m5_deco_plain.rml");
 
 /**
  * The name m3_demo.rml's `data-model` attribute writes, and the name `vacuus.DumpModel hud`
@@ -1811,6 +1813,15 @@ static void FreezeM4DemoModel(const TArray<FString>& Args)
 			}
 		});
 }
+
+static FAutoConsoleCommand GM5DecoCommand(
+	TEXT("vacuus.M5Deco"),
+	TEXT("Toggle the M5 decorator demo (DevUI/m5_deco.rml): linear/repeating-linear/radial/conic gradient decorators, ")
+	TEXT("the shader(glass-panel) builtin and a plain control panel. 'vacuus.M5Deco plain' loads the decorator-free ")
+	TEXT("twin (m5_deco_plain.rml) — the PerfLog A/B control for the spec's gradient budget row. ")
+	TEXT("Shares every vacuus.M1HUD.* sub-command."),
+	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+		{ Toggle(Args.Num() > 0 && Args[0] == TEXT("plain") ? GM5DecoPlainVfsPath : GM5DecoVfsPath); }));
 
 static FAutoConsoleCommand GM5GlassCommand(
 	TEXT("vacuus.M5Glass"),

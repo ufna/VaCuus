@@ -7,6 +7,8 @@
 #include "RenderResource.h"
 #include "ShaderParameterStruct.h"
 
+#include "VaCuusCommandBuffer.h" // VaCuusMaxGradientStops pins FVaCuusGradientPS's arrays
+
 /**
  * Parameters for the VaCuus UI shader pair, shared between VS and PS: each
  * stage binds only what survives in its parameter map (VS: Projection;
@@ -106,6 +108,64 @@ public:
 		RENDER_TARGET_BINDING_SLOTS()
 	END_SHADER_PARAMETER_STRUCT()
 };
+
+/**
+ * The M5 decorator PS (spec §2(e)): fills recorded RmlUi geometry with a gradient or a
+ * builtin effect — the replayer's DrawShader case, its first mid-pass PSO switch. One
+ * shader with a Mode branch rather than permutations: every mode shares the parameter
+ * block and the draw path, the branch is uniform (zero divergence within a draw), and
+ * one PSO per mode would cost three more pipelines for no measured win at UI draw
+ * counts. Paired with FVaCuusUIVS — the geometry is ordinary recorded Rml geometry
+ * (position/color/UV), only the fill computation differs from FVaCuusUIPS.
+ *
+ * Gradient math and packing follow RmlUi's own reference backend so the semantics
+ * cannot drift from what the dictionaries mean (RmlUi_Renderer_GL3.cpp:96-153 — the
+ * shader — and :1625-1688 — the dictionary-to-uniform conversion):
+ *   linear: P = p0, V = p1 - p0;  radial: P = center, V = 1/radius (2d curvature);
+ *   conic:  P = center, V = (cos angle, sin angle).
+ * Stop positions ride four-per-float4 (StopPositions[i>>2][i&3]) so the fixed-size
+ * uniform block stays 4 vectors instead of 16 padded scalars.
+ */
+class FVaCuusGradientPS : public FGlobalShader
+{
+public:
+	DECLARE_GLOBAL_SHADER(FVaCuusGradientPS);
+	SHADER_USE_PARAMETER_STRUCT(FVaCuusGradientPS, FGlobalShader);
+
+	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+		SHADER_PARAMETER(uint32, GradientMode)
+		SHADER_PARAMETER(uint32, bRepeating)
+		SHADER_PARAMETER(FVector2f, GradientP)
+		SHADER_PARAMETER(FVector2f, GradientV)
+		SHADER_PARAMETER(FVector2f, BuiltinDimensions)
+		SHADER_PARAMETER(int32, NumStops)
+		SHADER_PARAMETER_ARRAY(FVector4f, StopColors, [16])
+		SHADER_PARAMETER_ARRAY(FVector4f, StopPositions, [4])
+	END_SHADER_PARAMETER_STRUCT()
+};
+
+// The parameter arrays above are sized by the shared stop cap; a drifted copy here would
+// truncate silently at the bind. (VaCuusMaxGradientStops lives in VaCuusCommandBuffer.h.)
+static_assert(VaCuusMaxGradientStops == 16,
+	"FVaCuusGradientPS's StopColors[16]/StopPositions[4] arrays and VaCuusGradient.usf's MAX_NUM_STOPS "
+	"are sized for VaCuusMaxGradientStops == 16 — change all three together");
+
+/**
+ * The builtin registry behind `decorator: shader(<key>)` — a static name -> PS-mode map
+ * (M5 spec §3.3: the gated UVaCuusStyleSet asset tier is Task 5's business; stage 1
+ * ships exactly this). The recorder consults it to refuse unknown keys at CompileShader
+ * (handle 0 — suppresses that one decorator on that one element, Decorator.h:42-44 +
+ * ElementEffects.cpp:196-200); the replayer consults it to pick the PS mode. One map so
+ * the two cannot disagree about what exists.
+ */
+namespace VaCuusBuiltinShaders
+{
+/** PS mode for a registered key, or INDEX_NONE. Modes 0-2 are the gradients; builtins start at 3. */
+int32 FindMode(const FString& Key);
+
+/** Comma-separated known keys, for the recorder's refusal log. */
+const FString& KnownKeysForLog();
+} // namespace VaCuusBuiltinShaders
 
 /**
  * Vertex declaration matching FVaCuusVertex (bit-identical to Rml::Vertex,

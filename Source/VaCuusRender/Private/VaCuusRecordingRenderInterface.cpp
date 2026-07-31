@@ -3,6 +3,7 @@
 #include "VaCuusRecordingRenderInterface.h"
 
 #include "VaCuusDefines.h"
+#include "VaCuusUIShaders.h" // VaCuusBuiltinShaders: the shader(<key>) registry CompileShader validates against
 
 #include "HAL/IConsoleManager.h"
 #include "HAL/PlatformTLS.h"
@@ -12,7 +13,8 @@
 #include "ProfilingDebugging/CpuProfilerTrace.h"
 
 #include <RmlUi/Core/Core.h>
-#include <RmlUi/Core/Dictionary.h> // Rml::Get over the CompileFilter parameter dictionary
+#include <RmlUi/Core/DecorationTypes.h> // Rml::ColorStop, for the gradient dictionaries
+#include <RmlUi/Core/Dictionary.h>	   // Rml::Get over the CompileFilter/CompileShader parameter dictionaries
 #include <RmlUi/Core/FileInterface.h>
 
 #include <cstddef>
@@ -34,6 +36,7 @@ static_assert(sizeof(Rml::CompiledGeometryHandle) == sizeof(FVaCuusGeometryHandl
 static_assert(sizeof(Rml::TextureHandle) == sizeof(FVaCuusTextureHandle), "Rml texture handle must be 64-bit");
 static_assert(sizeof(Rml::CompiledFilterHandle) == sizeof(FVaCuusFilterHandle), "Rml filter handle must be 64-bit");
 static_assert(sizeof(Rml::LayerHandle) == sizeof(FVaCuusLayerHandle), "Rml layer handle must be 64-bit");
+static_assert(sizeof(Rml::CompiledShaderHandle) == sizeof(FVaCuusShaderHandle), "Rml shader handle must be 64-bit");
 
 // The two mirrored enums are recorded by static_cast, so their numeric values must track
 // RmlUi's (RenderInterface.h:10-18). Pinned value by value: a reordered or extended Rml
@@ -133,15 +136,17 @@ FVaCuusRecordingRenderInterface::~FVaCuusRecordingRenderInterface()
 	// path would otherwise trip on every shutdown.
 	//
 	// The SECOND site that used to name all the delta arrays inline; it asks the buffer
-	// now, for the same reason the gate does. The message below still itemises the six --
-	// a seventh array would make it read "0 of everything" here, which is a cosmetic gap and
+	// now, for the same reason the gate does. The message below still itemises the eight --
+	// a ninth array would make it read "0 of everything" here, which is a cosmetic gap and
 	// not a lost resource, and FVaCuusCommandBuffer::HasResourceTraffic is one grep away.
 	if (Pending && Pending->HasResourceTraffic())
 	{
 		UE_LOG(LogVaCuus, Log,
-			TEXT("Recorder destroyed with unpublished resource traffic (new: %d geometry, %d textures, %d filters; released: %d geometry, %d textures, %d filters) — dropped"),
-			Pending->NewGeometry.Num(), Pending->NewTextures.Num(), Pending->NewFilters.Num(),
-			Pending->ReleasedGeometry.Num(), Pending->ReleasedTextures.Num(), Pending->ReleasedFilters.Num());
+			TEXT("Recorder destroyed with unpublished resource traffic (new: %d geometry, %d textures, %d filters, %d shaders; ")
+			TEXT("released: %d geometry, %d textures, %d filters, %d shaders) — dropped"),
+			Pending->NewGeometry.Num(), Pending->NewTextures.Num(), Pending->NewFilters.Num(), Pending->NewShaders.Num(),
+			Pending->ReleasedGeometry.Num(), Pending->ReleasedTextures.Num(), Pending->ReleasedFilters.Num(),
+			Pending->ReleasedShaders.Num());
 	}
 }
 
@@ -816,6 +821,176 @@ void FVaCuusRecordingRenderInterface::ReleaseFilter(Rml::CompiledFilterHandle Fi
 	// Document->Close() outside any Begin/End pair. Same-frame compile+release keeps both
 	// entries, exactly like geometry.
 	GetPending().ReleasedFilters.Add(FVaCuusFilterHandle(Filter));
+}
+
+Rml::CompiledShaderHandle FVaCuusRecordingRenderInterface::CompileShader(const Rml::String& Name, const Rml::Dictionary& Parameters)
+{
+	CheckOwnerThread();
+
+	// One refusal shape for both an unregistered builtin key and an unrecognized
+	// CompileShader name, DECIDED against the mint-an-inert-handle alternative on what the
+	// zero actually does, opened rather than assumed: RenderManager::CompileShader wraps a
+	// zero into nothing (RenderManager.cpp:285-294), the decorator's GenerateElementData
+	// returns INVALID_DECORATORDATAHANDLE (DecoratorShader.cpp:36-37), and that suppresses
+	// rendering of exactly ONE decorator on exactly ONE element — RenderEffects guards each
+	// entry separately (ElementEffects.cpp:196-200) and only the failed entry's data is
+	// null (:138-142). The rest of the comma-list, the element and the document all render;
+	// the claim that a zero "kills the whole declaration" is true only at PARSE time for an
+	// unknown decorator TYPE (PropertyParserDecorator.cpp:101-106), which a registered
+	// "shader" with a bad VALUE never reaches. So the zero return IS the per-decorator
+	// refusal, identical in shape to the blur-only filter policy above — and unlike a
+	// minted-but-inert handle it records no desc, no draw and no resource traffic for a key
+	// that can never draw. RmlUi's own per-element warning ("Could not generate decorator
+	// element data", ElementEffects.cpp:150-151) names the element; the latched line below
+	// names the key and what would have worked.
+	const auto RefuseKey = [this](const TCHAR* What, const FString& Key) -> Rml::CompiledShaderHandle
+	{
+		bool bAlreadyRefused = false;
+		RefusedShaderKeys.Add(Key, &bAlreadyRefused);
+		if (!bAlreadyRefused)
+		{
+			UE_LOG(LogVaCuus, Warning,
+				TEXT("CompileShader: %s '%s' is not registered — known builtin keys: %s. The decorator is dropped per element"),
+				What, *Key, *VaCuusBuiltinShaders::KnownKeysForLog());
+		}
+		return Rml::CompiledShaderHandle(0);
+	};
+
+	FVaCuusShaderDesc Desc;
+
+	// The stop list, resolved by RmlUi before the call (all positions Unit::NUMBER,
+	// DecoratorGradient.cpp:119) and truncated to the reference backends' cap — see
+	// VaCuusMaxGradientStops for why 16 and why truncation is the reference behavior.
+	const auto RecordStops = [this, &Desc, &Parameters]()
+	{
+		const auto It = Parameters.find("color_stop_list");
+		if (!ensureMsgf(It != Parameters.end() && It->second.GetType() == Rml::Variant::COLORSTOPLIST,
+				TEXT("Gradient dictionary without a color_stop_list — DecoratorGradient always sends one")))
+		{
+			return;
+		}
+		const Rml::ColorStopList& Stops = It->second.GetReference<Rml::ColorStopList>();
+
+		const int32 NumStops = FMath::Min(int32(Stops.size()), VaCuusMaxGradientStops);
+		if (int32(Stops.size()) > NumStops && !bLoggedStopOverflow)
+		{
+			bLoggedStopOverflow = true;
+			UE_LOG(LogVaCuus, Warning,
+				TEXT("CompileShader: a gradient carries %d color stops; only the first %d are kept (the RmlUi reference ")
+				TEXT("backends' cap, RmlUi_Renderer_GL3.cpp:40,1635)"),
+				int32(Stops.size()), VaCuusMaxGradientStops);
+		}
+
+		Desc.Stops.Reserve(NumStops);
+		for (int32 Index = 0; Index < NumStops; ++Index)
+		{
+			const Rml::ColorStop& Stop = Stops[Index];
+			FVaCuusColorStop& Out = Desc.Stops.AddDefaulted_GetRef();
+			Out.Color = FVector4f(float(Stop.color.red), float(Stop.color.green), float(Stop.color.blue), float(Stop.color.alpha)) / 255.0f;
+			ensureMsgf(Stop.position.unit == Rml::Unit::NUMBER,
+				TEXT("Color stop arrived unresolved (unit %d) — ResolveColorStops guarantees NUMBER"), int32(Stop.position.unit));
+			Out.Position = Stop.position.number;
+		}
+	};
+
+	// The four names RmlUi 6 sends, each dictionary opened at its compile site
+	// (material-decorators.md §1's table): everything is recorded verbatim.
+	if (Name == "linear-gradient")
+	{
+		// DecoratorGradient.cpp:252-259.
+		Desc.Kind = EVaCuusShaderKind::LinearGradient;
+		const Rml::Vector2f P0 = Rml::Get(Parameters, "p0", Rml::Vector2f(0.f));
+		const Rml::Vector2f P1 = Rml::Get(Parameters, "p1", Rml::Vector2f(0.f));
+		Desc.P0 = FVector2f(P0.x, P0.y);
+		Desc.P1 = FVector2f(P1.x, P1.y);
+		Desc.Length = Rml::Get(Parameters, "length", 0.f);
+		Desc.bRepeating = Rml::Get(Parameters, "repeating", false) ? 1 : 0;
+		RecordStops();
+	}
+	else if (Name == "radial-gradient")
+	{
+		// DecoratorGradient.cpp:422-428.
+		Desc.Kind = EVaCuusShaderKind::RadialGradient;
+		const Rml::Vector2f Center = Rml::Get(Parameters, "center", Rml::Vector2f(0.f));
+		const Rml::Vector2f Radius = Rml::Get(Parameters, "radius", Rml::Vector2f(0.f));
+		Desc.Center = FVector2f(Center.x, Center.y);
+		Desc.Radius = FVector2f(Radius.x, Radius.y);
+		Desc.bRepeating = Rml::Get(Parameters, "repeating", false) ? 1 : 0;
+		RecordStops();
+	}
+	else if (Name == "conic-gradient")
+	{
+		// DecoratorGradient.cpp:619-625.
+		Desc.Kind = EVaCuusShaderKind::ConicGradient;
+		Desc.Angle = Rml::Get(Parameters, "angle", 0.f);
+		const Rml::Vector2f Center = Rml::Get(Parameters, "center", Rml::Vector2f(0.f));
+		Desc.Center = FVector2f(Center.x, Center.y);
+		Desc.bRepeating = Rml::Get(Parameters, "repeating", false) ? 1 : 0;
+		RecordStops();
+	}
+	else if (Name == "shader")
+	{
+		// DecoratorShader.cpp:35: the whole shorthand value arrives verbatim as one string.
+		const Rml::String Value = Rml::Get(Parameters, "value", Rml::String());
+		FString Key = UTF8_TO_TCHAR(Value.c_str());
+		if (VaCuusBuiltinShaders::FindMode(Key) == INDEX_NONE)
+		{
+			return RefuseKey(TEXT("shader builtin key"), Key);
+		}
+
+		Desc.Kind = EVaCuusShaderKind::Builtin;
+		Desc.BuiltinKey = MoveTemp(Key);
+		const Rml::Vector2f Dimensions = Rml::Get(Parameters, "dimensions", Rml::Vector2f(0.f));
+		Desc.Dimensions = FVector2f(Dimensions.x, Dimensions.y);
+	}
+	else
+	{
+		// Unreachable from vendored RmlUi 6 (the four names above are the compile sites'
+		// complete set), so this is a version-bump tripwire, refused like an unknown key.
+		return RefuseKey(TEXT("shader name"), FString(UTF8_TO_TCHAR(Name.c_str())));
+	}
+
+	const FVaCuusShaderHandle Handle = NextShaderHandle++;
+	ensureMsgf(Handle != 0, TEXT("Shader handle counter wrapped to the invalid sentinel"));
+
+	GetPending().NewShaders.Add(Handle, MoveTemp(Desc));
+
+	return Rml::CompiledShaderHandle(Handle);
+}
+
+void FVaCuusRecordingRenderInterface::RenderShader(Rml::CompiledShaderHandle Shader, Rml::CompiledGeometryHandle Geometry,
+	Rml::Vector2f Translation, Rml::TextureHandle Texture)
+{
+	CheckOwnerThread();
+	if (!ensureMsgf(bInFrame, TEXT("RenderShader() outside BeginFrame/EndFrameAndPublish; call dropped")))
+	{
+		return;
+	}
+
+	// A zero shader handle cannot arrive: Geometry::Render dispatches here only when a
+	// live CompiledShader is attached (RenderManager::Render, RenderManager.cpp:234-237)
+	// and RenderManager::CompileShader never wraps a zero (:285-294) — a refused compile
+	// reaches the replayer as an ABSENT draw, not a zero one. Texture is part of the
+	// virtual's signature (RenderInterface.h:137) and recorded like RenderGeometry's; the
+	// decorators above never pass one, so 0 is the routine value.
+	FVaCuusCommand& Command = GetPending().Commands.AddDefaulted_GetRef();
+	Command.Type = EVaCuusCommandType::DrawShader;
+	Command.Geometry = FVaCuusGeometryHandle(Geometry);
+	Command.Shader = FVaCuusShaderHandle(Shader);
+	Command.Texture = FVaCuusTextureHandle(Texture);
+	Command.Translation = FVector2f(Translation.x, Translation.y);
+}
+
+void FVaCuusRecordingRenderInterface::ReleaseShader(Rml::CompiledShaderHandle Shader)
+{
+	CheckOwnerThread();
+
+	// Resource call, legal out of frame: compiled shaders die with their decorator's
+	// element data (ShaderElementData pools a CompiledShader whose destructor rides
+	// RenderManager::ReleaseResource -> ReleaseShader, DecoratorShader.cpp:49-58,
+	// RenderManager.cpp:364-368), and decorator data is released at document teardown.
+	// Same-frame compile+release keeps both entries, exactly like geometry.
+	GetPending().ReleasedShaders.Add(FVaCuusShaderHandle(Shader));
 }
 
 Rml::LayerHandle FVaCuusRecordingRenderInterface::PushLayer()

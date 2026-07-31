@@ -127,6 +127,16 @@ public:
 	virtual void PopLayer() override;
 	virtual void EnableClipMask(bool bEnable) override;
 	virtual void RenderToClipMask(Rml::ClipMaskOperation Operation, Rml::CompiledGeometryHandle Geometry, Rml::Vector2f Translation) override;
+
+	// The M5 shader trio (spec §2(e)): the vocabulary `decorator: linear/radial/conic-
+	// gradient` and `decorator: shader(<builtin>)` arrive in (DecoratorGradient.cpp:252-259,
+	// :422-428, :619-625; DecoratorShader.cpp:35). Shaders are resources (legal out of frame
+	// — document teardown releases them via RenderManager::ReleaseResource,
+	// RenderManager.cpp:364-368); RenderShader is draw state (in-frame only).
+	virtual Rml::CompiledShaderHandle CompileShader(const Rml::String& Name, const Rml::Dictionary& Parameters) override;
+	virtual void RenderShader(Rml::CompiledShaderHandle Shader, Rml::CompiledGeometryHandle Geometry, Rml::Vector2f Translation,
+		Rml::TextureHandle Texture) override;
+	virtual void ReleaseShader(Rml::CompiledShaderHandle Shader) override;
 	//~ End Rml::RenderInterface
 
 	/**
@@ -230,6 +240,7 @@ private:
 	uint64 NextGeometryHandle = 1;
 	uint64 NextTextureHandle = 1;
 	uint64 NextFilterHandle = 1;
+	uint64 NextShaderHandle = 1;
 
 	/**
 	 * PER FRAME, unlike every counter above: reset to 1 by BeginFrame(). Layer handles
@@ -253,6 +264,25 @@ private:
 	 * each time and carries the element address; this latch carries the why.
 	 */
 	TSet<FString> RefusedFilterTypes;
+
+	/**
+	 * Shader names/builtin keys already refused with a log line — the filter latch's
+	 * discipline for the same reason (a hover restyle re-runs CompileShader per element).
+	 * One set for both unknown builtin keys and unknown CompileShader names: either way
+	 * the entry is "the string RmlUi sent that this recorder returned 0 for", and RmlUi's
+	 * own per-element warning ("Could not generate decorator element data",
+	 * ElementEffects.cpp:150-151) carries the element; this latch carries the why and the
+	 * known keys.
+	 */
+	TSet<FString> RefusedShaderKeys;
+
+	/**
+	 * Latched once per recorder: a gradient whose stop list exceeded
+	 * VaCuusMaxGradientStops was truncated to the reference-backend cap. The truncation
+	 * itself is RmlUi's own backends' behavior (RmlUi_Renderer_GL3.cpp:1635) — the latch
+	 * exists because they do it silently and we do not.
+	 */
+	bool bLoggedStopOverflow = false;
 
 	/**
 	 * VaCuusHashFrameContent() of the last buffer this recorder PUBLISHED, and the
