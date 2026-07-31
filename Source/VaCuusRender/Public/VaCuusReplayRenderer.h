@@ -10,6 +10,16 @@
 
 class FRHICommandList;
 
+namespace VaCuusReplay
+{
+/**
+ * Pixel-space -> clip-space ortho in UE row-vector convention (v' = v * M); defined with
+ * the replayer, shared with the M5 glass draw so the two paths cannot disagree about
+ * orientation. See the definition for the conventions.
+ */
+VACUUSRENDER_API FMatrix44f MakePixelToClipMatrix(FIntPoint ViewSize);
+} // namespace VaCuusReplay
+
 /**
  * Render-thread consumer of FVaCuusCommandBuffer: owns the RHI mirror of the
  * recorder's resources (vertex/index buffers, textures) and a persistent

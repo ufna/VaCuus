@@ -39,6 +39,7 @@ static const TCHAR* GM1HudVfsPath = TEXT("m1_hud.rml");
 static const TCHAR* GM2DemoVfsPath = TEXT("m2_demo.rml");
 static const TCHAR* GM3DemoVfsPath = TEXT("m3_demo.rml");
 static const TCHAR* GM4DemoVfsPath = TEXT("m4_demo.rml");
+static const TCHAR* GM5GlassVfsPath = TEXT("m5_glass.rml");
 
 /**
  * The name m3_demo.rml's `data-model` attribute writes, and the name `vacuus.DumpModel hud`
@@ -247,6 +248,20 @@ struct FState
 	 * loop, one write per click. Strong-pointed because nothing else roots the adapter.
 	 */
 	TStrongObjectPtr<UVaCuusDemoWriteListener> M4WriteListener;
+
+	//~ ------------------------------------------------------- M5 glass demo (plan Task 3)
+
+	/**
+	 * OnBeginFrame subscription that slowly yaws the player camera while the M5 glass demo
+	 * is up. THE POINT IS THE IDLE-FREEZE OBSERVATION (Exp-GLASS-IDLE-FREEZE): the glass
+	 * document is deliberately STATIC — publishes go to ~zero after the settle — while the
+	 * scene under it keeps moving, so two screenshots a few seconds apart show a CHANGED
+	 * blurred backdrop under an idle HUD, which is exactly what composite-time glass buys
+	 * and replay-baked glass cannot do.
+	 */
+	FDelegateHandle CameraPanHandle;
+	double CameraPanStartSeconds = 0.0;
+	float CameraPanBaseYaw = 0.0f;
 };
 
 static TUniquePtr<FState> GState;
@@ -266,6 +281,14 @@ static void TearDown()
 	{
 		FCoreDelegates::OnBeginFrame.Remove(State->ModelDriverHandle);
 		State->ModelDriverHandle.Reset();
+	}
+
+	// The M5 camera pan is the same per-frame subscription shape as the model driver and
+	// leaves with it, for the same reason.
+	if (State->CameraPanHandle.IsValid())
+	{
+		FCoreDelegates::OnBeginFrame.Remove(State->CameraPanHandle);
+		State->CameraPanHandle.Reset();
 	}
 
 	// The M4 write ear goes with the driver it fed: unbind before the view is retired so a
@@ -580,6 +603,35 @@ static void PumpDemoModel()
 }
 
 /**
+ * One frame of the M5 glass demo's camera pan: a slow wall-clock yaw so the scene keeps
+ * moving under a HUD that publishes nothing. See FState::CameraPanHandle for why the
+ * motion is the demo's whole point. Wall clock, not frame count, so a screenshot at t+N
+ * seconds photographs the same heading whatever the frame rate.
+ */
+static void PumpCameraPan()
+{
+	if (!GState || !GState->CameraPanHandle.IsValid())
+	{
+		return;
+	}
+
+	APlayerController* PlayerController =
+		GState->InputWorld.IsValid() ? GState->InputWorld->GetFirstPlayerController() : nullptr;
+	if (!PlayerController)
+	{
+		return;
+	}
+
+	const double Elapsed = FPlatformTime::Seconds() - GState->CameraPanStartSeconds;
+
+	// 12 deg/s: slow enough that a 10-frame AutoShot is not motion-smeared, fast enough
+	// that two beats a few seconds apart photograph visibly different backdrops.
+	FRotator Rotation = PlayerController->GetControlRotation();
+	Rotation.Yaw = GState->CameraPanBaseYaw + float(Elapsed) * 12.0f;
+	PlayerController->SetControlRotation(Rotation);
+}
+
+/**
  * Binds the demo model to a freshly created view and starts the pump.
  *
  * CALLED BEFORE THE VIEW'S FIRST LoadDocument, WHICH IS THE WHOLE CONTRACT. RmlUi reads
@@ -765,6 +817,19 @@ static void Toggle(const TCHAR* DocumentVfsPath)
 	{
 		GState->bM4Demo = FCString::Strcmp(GDocumentVfsPath, GM4DemoVfsPath) == 0;
 		StartModelDriver(View);
+	}
+
+	// The M5 glass demo pans the camera instead of driving a model: the DOCUMENT stays
+	// static (publishes ~zero after the settle) while the SCENE moves — the exact split
+	// composite-time glass exists for. See PumpCameraPan.
+	if (FCString::Strcmp(GDocumentVfsPath, GM5GlassVfsPath) == 0)
+	{
+		GState->CameraPanStartSeconds = FPlatformTime::Seconds();
+		if (APlayerController* PlayerController = World ? World->GetFirstPlayerController() : nullptr)
+		{
+			GState->CameraPanBaseYaw = float(PlayerController->GetControlRotation().Yaw);
+		}
+		GState->CameraPanHandle = FCoreDelegates::OnBeginFrame.AddStatic(&PumpCameraPan);
 	}
 
 	// Asynchronous by design: the document is loaded by the UI thread on its first
@@ -1746,6 +1811,33 @@ static void FreezeM4DemoModel(const TArray<FString>& Args)
 			}
 		});
 }
+
+static FAutoConsoleCommand GM5GlassCommand(
+	TEXT("vacuus.M5Glass"),
+	TEXT("Toggle the M5 glass demo (DevUI/m5_glass.rml): a static document with a rounded and a square ")
+	TEXT("backdrop-filter:blur(16px) panel plus a blur-free control panel, over a slowly panning camera — the ")
+	TEXT("document idles while the blurred scene behind the panels keeps moving (composite-time glass, spec §2(a)). ")
+	TEXT("Shares every vacuus.M1HUD.* sub-command."),
+	FConsoleCommandDelegate::CreateLambda([] { Toggle(GM5GlassVfsPath); }));
+
+/** Second screenshot beat for headless glass runs: AutoShot covers the first, this schedules the rest. */
+static void M5GlassShot(const TArray<FString>& Args)
+{
+	const float DelaySeconds = Args.Num() > 0 ? FCString::Atof(*Args[0]) : 0.0f;
+	ScheduleAfter(DelaySeconds,
+		[]
+		{
+			UE_LOG(LogVaCuus, Log, TEXT("vacuus.M5Glass.Shot: requesting a UI screenshot"));
+			FScreenshotRequest::RequestScreenshot(/*bInShowUI=*/true);
+		});
+}
+
+static FAutoConsoleCommand GM5GlassShotCommand(
+	TEXT("vacuus.M5Glass.Shot"),
+	TEXT("Take a UI-inclusive screenshot after [delaySeconds]. The second beat of the idle-freeze observation: ")
+	TEXT("with the camera panning and the document idle, two beats photograph different backdrops through the ")
+	TEXT("same glass."),
+	FConsoleCommandWithArgsDelegate::CreateStatic(&M5GlassShot));
 
 static FAutoConsoleCommand GM4FreezeCommand(
 	TEXT("vacuus.M4Demo.Freeze"),

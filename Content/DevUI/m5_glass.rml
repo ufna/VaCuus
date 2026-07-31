@@ -1,0 +1,38 @@
+<rml>
+<head>
+	<title>VaCuus M5 Glass Demo</title>
+	<link type="text/rcss" href="m5_glass.rcss"/>
+</head>
+
+<!-- DELIBERATELY STATIC: no data-model, no script. After the two settle publishes the
+     idle gate withholds every frame, and the blurred scene visible through the panels is
+     being re-made per ENGINE frame by the composite-time pipeline while this document
+     publishes nothing — that split is the demo's entire claim (spec §2(a),
+     Exp-GLASS-IDLE-FREEZE). vacuus.M5Glass pans the camera so the claim photographs. -->
+<body>
+	<div id="m5-title">VaCuus M5 // GLASS</div>
+
+	<!-- Rounded: border-radius routes the clip through RenderToClipMask geometry, so this
+	     panel exercises the distiller's geometry-mask branch. -->
+	<div id="glass-round">
+		<div class="panel-title">BACKDROP BLUR 16px &#183; ROUNDED</div>
+		<div class="note">clip-mask geometry path</div>
+		<div class="note">the scene behind this panel is blurred live</div>
+	</div>
+
+	<!-- Square: no radius, scissor-only clipping — the generated-quad branch. -->
+	<div id="glass-square">
+		<div class="panel-title">BACKDROP BLUR 16px &#183; SQUARE</div>
+		<div class="note">scissor-clipped quad path</div>
+		<div class="note">same blur, hard corners</div>
+	</div>
+
+	<!-- Control: identical fill and border, NO backdrop-filter — the scene behind it must
+	     stay sharp, which is what makes a screenshot an assertion instead of a mood. -->
+	<div id="control">
+		<div class="panel-title">CONTROL &#183; NO BACKDROP</div>
+		<div class="note">same fill, no blur</div>
+		<div class="note">compare the scene through each panel</div>
+	</div>
+</body>
+</rml>

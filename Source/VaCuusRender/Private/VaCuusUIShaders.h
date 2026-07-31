@@ -59,6 +59,55 @@ public:
 };
 
 /**
+ * One direction of the M5 glass blur (spec §2(c)): separable gaussian at half-res,
+ * paired with FScreenPassVS via AddDrawScreenPass exactly like the composite above.
+ * The parameter scheme is the engine's own Slate blur verbatim
+ * (FSlatePostProcessBlurPS, SlateRHIRenderer/Private/SlatePostProcessor.cpp:636-653):
+ * paired weight/offset packing so bilinear filtering halves the tap count, direction and
+ * texel size in one vector, bilinear-safe UV bounds. MAX_BLUR_SAMPLES matches the .usf
+ * array — a 125-tap kernel ceiling, which at half-res covers view-space sigma ~40px.
+ */
+class FVaCuusBlurPS : public FGlobalShader
+{
+public:
+	static constexpr int32 MaxBlurSamples = 63;
+
+	DECLARE_GLOBAL_SHADER(FVaCuusBlurPS);
+	SHADER_USE_PARAMETER_STRUCT(FVaCuusBlurPS, FGlobalShader);
+
+	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, BlurTexture)
+		SHADER_PARAMETER_SAMPLER(SamplerState, BlurSampler)
+		SHADER_PARAMETER_ARRAY(FVector4f, WeightAndOffsets, [MaxBlurSamples])
+		SHADER_PARAMETER(int32, SampleCount)
+		SHADER_PARAMETER(FVector4f, BufferSizeAndDirection)
+		SHADER_PARAMETER(FVector4f, UVBounds)
+		RENDER_TARGET_BINDING_SLOTS()
+	END_SHADER_PARAMETER_STRUCT()
+};
+
+/**
+ * The glass draw (spec §2(a)): renders the clip-mask geometry (or a generated quad)
+ * through FVaCuusUIVS's Projection into the Slate elements texture, sampling the blurred
+ * half-res RT at the output pixel's position. Bound with SrcAlpha/InvSrcAlpha so the
+ * mask's vertex alpha lerps blurred-over-sharp at the edge.
+ */
+class FVaCuusGlassPS : public FGlobalShader
+{
+public:
+	DECLARE_GLOBAL_SHADER(FVaCuusGlassPS);
+	SHADER_USE_PARAMETER_STRUCT(FVaCuusGlassPS, FGlobalShader);
+
+	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, GlassTexture)
+		SHADER_PARAMETER_SAMPLER(SamplerState, GlassSampler)
+		SHADER_PARAMETER(FVector4f, GlassUVTransform)
+		SHADER_PARAMETER(FVector4f, GlassUVBounds)
+		RENDER_TARGET_BINDING_SLOTS()
+	END_SHADER_PARAMETER_STRUCT()
+};
+
+/**
  * Vertex declaration matching FVaCuusVertex (bit-identical to Rml::Vertex,
  * 20 bytes): Position float2 @0, Color 4 bytes @8, UV float2 @12.
  *

@@ -56,6 +56,7 @@ DECLARE_CYCLE_STAT_EXTERN(TEXT("VaCuus Update (UI)"), STAT_VaCuusUpdate, STATGRO
 DECLARE_CYCLE_STAT_EXTERN(TEXT("VaCuus Record (UI)"), STAT_VaCuusRecord, STATGROUP_VaCuus, VACUUS_API);
 DECLARE_CYCLE_STAT_EXTERN(TEXT("VaCuus JsGC (UI)"), STAT_VaCuusJsGC, STATGROUP_VaCuus, VACUUS_API);
 DECLARE_CYCLE_STAT_EXTERN(TEXT("VaCuus Replay (RT)"), STAT_VaCuusReplay, STATGROUP_VaCuus, VACUUS_API);
+DECLARE_CYCLE_STAT_EXTERN(TEXT("VaCuus Glass (RT)"), STAT_VaCuusGlass, STATGROUP_VaCuus, VACUUS_API);
 DECLARE_CYCLE_STAT_EXTERN(TEXT("VaCuus Composite (RT)"), STAT_VaCuusComposite, STATGROUP_VaCuus, VACUUS_API);
 
 // (GT) == the game thread, i.e. the spec's own budget line. Three scopes rather than one
@@ -105,8 +106,13 @@ public:
 		Record,
 		JsGC,
 
-		// The render thread.
+		// The render thread, in Draw_RenderThread order: replay (publish-gated), then the
+		// M5 glass passes (EVERY engine frame while a glass list is live — engine-frame
+		// work by design, spec §2(a); its per-window sample count against published=N is
+		// what makes Exp-GLASS-IDLE-FREEZE's live half observable in a PerfLog line),
+		// then the UI composite.
 		Replay,
+		Glass,
 		Composite,
 
 		/**
