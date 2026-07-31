@@ -625,6 +625,69 @@ struct FVaCuusArrayTestModel
 	FVaCuusTestArrayPanel Panel;
 };
 
+/**
+ * A row whose NESTED struct member is named `Size` -- the one spelling of an element-level
+ * "size" the shipped name rules can express, and the fixture behind the adapter's
+ * size-collision tests (VaCuus.Model.ArrayBinding).
+ *
+ * WHY THE NESTING IS LOAD-BEARING AND NOT DECORATION. Spec 3.6 promises "an element member
+ * named `size` is reachable -- Arr[0].size routes the name to the element struct's Child,
+ * not the array's". The ROUTING half is true and tested (the element struct's own
+ * member-miss Warning fires for Arr[0].size, so the array's special case never saw the
+ * name). But under the shared-layout rule an element TOP-LEVEL member named Size cannot
+ * exist -- element top-level names obey the full root rule, and `size` is RmlUi-reserved
+ * (spec 3.1, VaCuusWireName::ValidateTopLevel) -- so nothing is reachable AT Arr[0].size.
+ * The reachable spelling is one level down, Arr[0].Panel.Size, because ValidateNested
+ * applies no reserved-word rule (VaCuusModelLayout.h's two-rules comment). The adapter
+ * test narrows spec 3.6's sentence to exactly that.
+ */
+USTRUCT()
+struct FVaCuusTestSizeNameRow
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	FString Kept;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	FVaCuusLayoutTestNestedReservedInner Panel;
+};
+
+/**
+ * The RmlUi adapter tests' model (VaCuus.Model.ArrayBinding / .ArrayStateless). A separate
+ * type rather than more fields on FVaCuusArrayTestModel, on purpose: the sampler and
+ * channel suites treat that model's exact field mix as their contract, and the adapter
+ * needs shapes they do not -- the nested-`Size` row above, and TWO scalar arrays so the
+ * statelessness test can give its second view rows over one array while it deliberately
+ * never calls Size() on the other (the cached-Num restore-the-bug needs a view whose own
+ * update cannot refresh the poison). Killfeed reuses FVaCuusTestKillfeedRow so the
+ * registry-sharing assertion -- two models, one row type, one definition set -- has a
+ * second model to share with.
+ */
+USTRUCT()
+struct FVaCuusArrayBindModel
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	int32 Scalar = 7;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	TArray<int32> Numbers;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	TArray<FString> Labels;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	TArray<FVaCuusTestKillfeedRow> Killfeed;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	TArray<FVaCuusTestSizeNameRow> SizeRows;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	FVaCuusTestArrayPanel Panel;
+};
+
 /** A row with an FText member: the WHOLE array field is refused at desc build (spec 3.1). */
 USTRUCT()
 struct FVaCuusTestTextRow

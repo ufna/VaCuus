@@ -242,19 +242,13 @@ bool FVaCuusModelApplyTest::RunTest(const FString& Parameters)
 
 	// ---- 5. An ARRAY field takes the same road (M3b): bits -> SyncCopy -> DirtyVariable. ----
 
-	// TASK 4's ADAPTER (FVaCuusArrayDefinition) DELETES THIS EXPECTATION BLOCK. Until it
-	// lands, definition pass 1 skips Array fields and pass 2 logs one named Error per
-	// array-backed top-level name -- the deliberate loud placeholder
-	// (VaCuusDataVariable.cpp:420-427 and :470-476). The apply neither needs nor waits for
-	// the adapter: the dirty protocol and the UI shadow sit upstream of RmlUi's definitions,
-	// and DirtyVariable on a name with no variable behind it is a compiled-out assert plus a
-	// set insert nothing consumes (DataModel.cpp:325-331).
-	for (const TCHAR* ArrayName : {TEXT("Numbers"), TEXT("Labels"), TEXT("Ratios"), TEXT("Killfeed"), TEXT("Panel")})
-	{
-		AddExpectedMessagePlain(FString::Printf(TEXT("top-level name '%s' has no field behind it"), ArrayName),
-			ELogVerbosity::Error, EAutomationExpectedMessageFlags::Contains, 1);
-	}
-
+	// Every one of this model's top-level names binds a real variable now -- pass 1's array
+	// branch builds an FVaCuusArrayDefinition per array leaf -- so the pre-adapter "no field
+	// behind it" Errors this section once expected are gone, and each DirtyVariable below
+	// lands on a live binding. What section 5 asserts is still the road BELOW the DOM:
+	// publish, apply, UI shadow, on a sizeless view where no document exists to resolve
+	// anything. The DOM half -- data-for over real rows through a real context -- is
+	// VaCuus.Model.ArrayBinding, and the pipeline-fed form is Task 5's end-to-end.
 	const UScriptStruct* ArrayType = FVaCuusArrayTestModel::StaticStruct();
 	const TSharedRef<FVaCuusBoundModel> ArrayModel = MakeShared<FVaCuusBoundModel>(FName(TEXT("feed")), ArrayType);
 	if (!TestTrue(TEXT("the array model built"), ArrayModel->IsValid()))

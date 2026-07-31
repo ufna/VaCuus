@@ -44,7 +44,7 @@ class DataModelConstructor;
  * counter is the one process-wide global on the binding path and nothing here touches it.
  *
  *
- * THE THREE DEFINITION CLASSES, AND HOW A DOTTED ADDRESS RESOLVES.
+ * THE FOUR DEFINITION CLASSES, AND HOW A DOTTED ADDRESS RESOLVES.
  *
  * A model is bound one TOP-LEVEL NAME at a time, each as a separate DataVariable, because
  * that is the only granularity DirtyVariable accepts (DataModel.cpp:325-331). Every one of
@@ -57,12 +57,22 @@ class DataModelConstructor;
  *                          Child("X") -> {FVaCuusPropertyDefinition, ShadowBase + offsetof(Origin)}
  *                          Get        -> ContainerPtrToValuePtr(that) -> scalar Get
  *
+ *   {{Rows[2].Killer}} -> variables["Rows"] = {FVaCuusPropertyDefinition, ShadowBase}
+ *                          Child({2})      -> {row type's root struct def, GetRawPtr(2)}
+ *                                             computed by FVaCuusArrayDefinition per call
+ *                          Child("Killer") -> the ROW type's own property definition
+ *                          Get             -> ContainerPtrToValuePtr(GetRawPtr(2)) -> scalar Get
+ *
  * THE INVARIANT THAT MAKES THAT WORK, AND IT IS THE ONE TO PROTECT: an
- * FVaCuusStructDefinition is ALWAYS handed the MODEL BASE, never a shifted pointer, and a
- * leaf's offset is applied exactly once, at the moment Child() hands out the property
- * definition. It is expressible because FVaCuusModelField::ContainerOffset is absolute
- * from the model base, and it is enforced by shape: AddLeaf() is the only member function
- * that takes an offset at all, and AddNested() has no parameter to get it wrong with.
+ * FVaCuusStructDefinition is ALWAYS handed THE BASE OF THE DEFINITION SET'S OWN TYPE,
+ * never a shifted pointer, and a leaf's offset is applied exactly once, at the moment
+ * Child() hands out the property definition. For a model that base is the shadow buffer;
+ * for a row type serving as an array element it is FScriptArrayHelper::GetRawPtr(i), which
+ * IS an instance base of exactly that type (spec 2(d)) -- the same invariant with one more
+ * producer, not a second invariant. It is expressible because
+ * FVaCuusModelField::ContainerOffset is absolute from its own type's base, and it is
+ * enforced by shape: AddLeaf() is the only member function that takes an offset at all,
+ * and AddNested() has no parameter to get it wrong with.
  *
  * Both idioms are RmlUi's own -- StructDefinition::Child hands the parent's ptr down
  * unchanged (DataVariable.cpp:76-95) while ArrayDefinition::Child computes a new one
@@ -111,6 +121,14 @@ public:
 	 */
 	virtual bool Set(void* InValuePtr, const Rml::Variant& Variant) override;
 
+	/**
+	 * `data-for` over a leaf. RmlUi's base Size() already answers this correctly -- warn,
+	 * return 0, iterate no rows (DataVariable.cpp:40-44, reached with no Type() check from
+	 * DataViewFor::Update, DataViewDefault.cpp:498-503) -- but its warning names nothing.
+	 * Same contract, named: one latched Warning carrying DiagnosticPath, then 0 (spec 3.5).
+	 */
+	virtual int Size(void* InValuePtr) override;
+
 private:
 	/** Split out only because each needs two shapes of property and a diagnostic of its own. */
 	bool GetEnumName(const void* InValuePtr, Rml::Variant& OutVariant);
@@ -125,6 +143,7 @@ private:
 	/** Log-throttle only. UI-thread state, like everything else on this path. */
 	bool bRefusalLogged = false;
 	bool bUnreadableLogged = false;
+	bool bSizeMissLogged = false;
 };
 
 /**
@@ -164,14 +183,21 @@ class FVaCuusStructDefinition final : public Rml::VariableDefinition
 public:
 	explicit FVaCuusStructDefinition(FString InDiagnosticPath);
 
-	/** A leaf. ContainerOffset is absolute FROM THE MODEL BASE (FVaCuusModelField::ContainerOffset). */
-	void AddLeaf(const FString& Segment, FVaCuusPropertyDefinition* Definition, int32 ContainerOffsetFromModelBase);
+	/**
+	 * A leaf. ContainerOffset is absolute from the base of the definition set's own type
+	 * (FVaCuusModelField::ContainerOffset) -- the model shadow's base, or an element's
+	 * GetRawPtr(i), whichever kind of instance this set describes.
+	 */
+	void AddLeaf(const FString& Segment, FVaCuusPropertyDefinition* Definition, int32 ContainerOffsetFromTypeBase);
 
-	/** A nested struct. It is handed the model base unchanged, so there is no offset to pass. */
+	/** A nested struct. It is handed the type's base unchanged, so there is no offset to pass. */
 	void AddNested(const FString& Segment, FVaCuusStructDefinition* Definition);
 
-	/** InModelBase is the shadow buffer's base -- see the file comment's invariant. */
-	virtual Rml::DataVariable Child(void* InModelBase, const Rml::DataAddressEntry& Address) override;
+	/** InBase is the base of this definition set's own type -- see the file comment's invariant. */
+	virtual Rml::DataVariable Child(void* InBase, const Rml::DataAddressEntry& Address) override;
+
+	/** `data-for` over a struct: the scalar definition's contract, struct-flavoured latch. */
+	virtual int Size(void* InBase) override;
 
 	virtual Rml::StringList ReflectMemberNames() override;
 
@@ -187,8 +213,8 @@ private:
 		/** Owned by FVaCuusModelDefinitions, which outlives every model bound from it. */
 		Rml::VariableDefinition* Definition = nullptr;
 
-		/** Zero for a nested struct: it receives the model base unchanged. */
-		int32 ContainerOffsetFromModelBase = 0;
+		/** Zero for a nested struct: it receives the type's base unchanged. */
+		int32 ContainerOffsetFromTypeBase = 0;
 
 		/** Only nested members are re-enterable by FindNested. */
 		bool bNested = false;
@@ -216,6 +242,60 @@ private:
 	 */
 	bool bIndexedMissLogged = false;
 	bool bMemberMissLogged = false;
+	bool bSizeMissLogged = false;
+};
+
+/**
+ * One TArray field: `data-for` rows, `{{Arr.size}}` and indexed access, every answer
+ * computed from the INCOMING value pointer at call time.
+ *
+ * STATELESS IS LOAD-BEARING, NOT STYLE. This class holds the FArrayProperty*, a borrowed
+ * element definition and a diagnostic name -- never an element pointer and never a cached
+ * Num(). The registry shares one definition set per model TYPE (see
+ * FVaCuusDefinitionRegistry below), so two views over two instances arrive HERE with two
+ * different void*s, interleaved however their contexts update; and RmlUi re-walks
+ * root -> Child(...) from the bind-time pointer on every evaluation, storing nothing
+ * (DataModel::GetVariable, DataModel.cpp:275-302), so a value cached across calls would be
+ * another instance's value. Spec 2(c)/4: no stage stores an element address --
+ * FScriptArrayHelper is constructed per call over the value pointer, and a GetRawPtr()
+ * result lives for exactly one expression. VaCuus.Model.ArrayStateless is the test that
+ * fails if either property breaks.
+ *
+ * Get and Set stay the base-class failures (DataVariable.cpp:30-39): a value read on the
+ * array itself is a document bug RmlUi already reports, and a write into an ELEMENT
+ * arrives at the element definition's Set, which refuses (I3 -- the scalar definition's
+ * comment carries the argument).
+ */
+class FVaCuusArrayDefinition final : public Rml::VariableDefinition
+{
+public:
+	FVaCuusArrayDefinition(const FArrayProperty* InArrayProperty, Rml::VariableDefinition* InElementDefinition, FString InDiagnosticPath);
+
+	/** InValuePtr addresses the TArray itself -- BasePointerDefinition has already offset it. */
+	virtual int Size(void* InValuePtr) override;
+
+	/**
+	 * Named "size" -> the element count as a literal; a legal index -> the element;
+	 * everything else -> an empty variable and a latched, NAMED Warning.
+	 */
+	virtual Rml::DataVariable Child(void* InValuePtr, const Rml::DataAddressEntry& Address) override;
+
+private:
+	const FArrayProperty* ArrayProperty = nullptr;
+
+	/**
+	 * Borrowed: a scalar-element definition is owned by the SAME definitions set as this
+	 * class; a struct-element one by the ELEMENT type's own set, which the registry never
+	 * releases while the UI thread is up -- same lifetime rule as every definition here.
+	 */
+	Rml::VariableDefinition* ElementDefinition = nullptr;
+
+	/** "FHudModel.Killfeed" -- so both Child() diagnostics can name the field. */
+	FString DiagnosticPath;
+
+	/** Latches, one per branch, same shape and reason as the struct definition's pair. */
+	bool bNamedMissLogged = false;
+	bool bOutOfBoundsLogged = false;
 };
 
 /**
@@ -246,6 +326,14 @@ public:
 	/** Exact match on a top-level name; null when absent. */
 	Rml::VariableDefinition* FindTopLevel(const FString& Name) const;
 
+	/**
+	 * The WHOLE type as one struct definition, resolving its top-level names against the
+	 * base of an instance -- what an array-of-struct field borrows as its element
+	 * definition, so that {{Rows[i].Field}} walks the row type's own definitions from
+	 * GetRawPtr(i). Never null for a built set; empty of members for an empty model.
+	 */
+	Rml::VariableDefinition* GetRootStruct() const { return RootStruct; }
+
 private:
 	friend class FVaCuusDefinitionRegistry;
 
@@ -268,11 +356,15 @@ private:
 	TArray<TUniquePtr<FVaCuusScalarDefinition>> ScalarDefinitions;
 	TArray<TUniquePtr<FVaCuusPropertyDefinition>> PropertyDefinitions;
 	TArray<TUniquePtr<FVaCuusStructDefinition>> StructDefinitions;
+	TArray<TUniquePtr<FVaCuusArrayDefinition>> ArrayDefinitions;
 
 	/** Prefix ("Origin." , "A.B.") -> the struct definition for that level. Build-time only. */
 	TMap<FString, FVaCuusStructDefinition*> StructsByPrefix;
 
 	TArray<FTopLevelVariable> TopLevelVariables;
+
+	/** Owned through StructDefinitions; built by the constructor's pass 3 (see GetRootStruct). */
+	FVaCuusStructDefinition* RootStruct = nullptr;
 };
 
 /**
@@ -352,4 +444,17 @@ int32 BindModelVariables(Rml::DataModelConstructor& Constructor, const FVaCuusMo
  * thread is concurrently diffing.
  */
 int32 GetNumRefusedSets();
+
+/**
+ * Evaluation counters (spec 3.5): every evaluation of a bound leaf terminates in
+ * FVaCuusScalarDefinition::Get, and every array-path evaluation passes the array
+ * definition's Size or Child. They exist because the idle gate's third layer -- an
+ * unchanged model must EVALUATE nothing, not merely publish and apply nothing -- is an
+ * invariant with no other observable: RmlUi's DataViews::Update runs unconditionally
+ * every frame and exposes no counter of its own, so "0 evaluations" is assertable only as
+ * an exact delta of these. Same UI-thread-only, plain-static shape as GetNumRefusedSets.
+ */
+int32 GetNumScalarGets();
+int32 GetNumArraySizes();
+int32 GetNumArrayChilds();
 }	 // namespace VaCuusData
