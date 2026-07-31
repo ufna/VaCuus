@@ -1,17 +1,20 @@
 # VaCuus M4 — JS Tier 1: QuickJS core surface
 
-**Status:** design v1, for adversarial review before planning.
+**Status:** design v2, ready for planning. v1 was reviewed adversarially by three independent
+passes (source fidelity, design attack, completeness) and came back **NEEDS REWORK** with twelve
+distinct blocking findings; §12 records the class of each, because — as with M3 and M3b — the
+reasons are the most useful part.
 
-**Scope:** quickjs-ng vendored at a recorded tag; a `VaCuusJs` runtime module behind a core-declared
-script-host seam; the DOM facade over `Rml::Element`; timers/rAF/microtasks/console; ES modules via
-the VFS; `<script>` and `ExecuteScript`; the error overlay; the two-way write router M3 §4/I3
-promised to this milestone; and the demo-HUD logic ported from the C++ sim to JS with parity and
-budgets including GC pauses (architecture spec §7, §14/M4).
+**Scope:** quickjs-ng vendored at a recorded tag; a `VaCuusJs` runtime module behind a
+core-declared script-host seam; the DOM facade over `Rml::Element`; timers/rAF/console (microtasks
+ship in the engine core); ES modules via the VFS; `<script>` and `ExecuteScript`; the error
+overlay; the two-way write router M3 §4/I3 promised to this milestone; a model **read** surface
+discharging M3 §12.1; and the demo-HUD logic ported from the C++ sim to JS plus a churn workload
+sized to make the GC numbers mean something (§9).
 
 **Ground truth:** `docs/research/m4-api-notes/{hud-demo-patterns,quickjs-ng-0151,plugin-integration,
-rmlui-scripting}.md` (2026-07-31, written against the code on this disk), plus the architecture
-spec and the M3 notes. Claims not supported by read source are **[unverified]** and carry the
-experiment that settles them.
+rmlui-scripting}.md` (2026-07-31; hud-demo citations `Js.cpp/Js.h` = `src/VacuusJs.cpp/.h`), the
+architecture spec, the M3 notes. **[unverified]** claims carry their experiment.
 
 ---
 
@@ -21,17 +24,20 @@ experiment that settles them.
 <head><script src="hud_logic.js"/></head>
 ```
 ```js
-// hud_logic.js — runs on the UI thread, against this view's document
+// hud_logic.js — UI thread, this view's document; deterministic like the C++ driver it replaces
 const feed = document.getElementById('killfeed');
-vacuus.onModelEvent = null; // gameplay flows in through data binding, unchanged
+let serial = 0;
 setInterval(() => {
   const row = document.createElement('div');
   row.classList.add('kill');
-  row.innerRML = `<span>${pick(names)}</span> » <span>${pick(names)}</span>`;
-  feed.appendChild(row);
+  row.innerRML = `<span>${KILLERS[serial % 5]}</span> » <span>BOGEY-0${serial % 7}</span>`;
+  feed.appendChild(row); serial++;
   if (feed.children.length > 6) feed.children[0].remove();
 }, 1500);
-requestAnimationFrame(function tick(tMs) { /* bars, damage numbers */ requestAnimationFrame(tick); });
+requestAnimationFrame(function tick(tMs) {
+  bar.style.width = vacuus.model('hud').get('Health') + '%';   // read surface, §3.11
+  requestAnimationFrame(tick);
+});
 ```
 
 The C++ demo driver's logic, expressed in JS, against the same document — with the game thread
@@ -41,85 +47,93 @@ still only enqueuing input and data.
 
 ## 2. The findings that decide the architecture
 
-**(a) The library is four C files and nothing else.** quickjs-ng v0.15.1's core target compiles
-exactly `quickjs.c, libregexp.c, libunicode.c, dtoa.c` (CMakeLists.txt:266-271, :301); `cutils` is
-header-only (152 static-inline functions, no .c); the bytecode headers are checked in
-(builtin-*.h:1); `quickjs-libc` is a separate, default-OFF target (CMakeLists.txt:251, :335-339) —
-**and the core has no setTimeout and no console** (both live in libc, quickjs-libc.c:4443-4444,
-:4613). Excluding libc is not a restriction we impose; it is the library's own embedder shape, and
-it means every global in §5 is ours to implement — which the spec always assumed. C11
-(CMakeLists.txt:9-11); UBT compiles `.c` natively with `ModuleRules.CStandard`
-(UEBuildModuleCPP.cs:3072, ClangToolChain.cs:594-599), and the engine's own vendored-C precedent is
-SQLiteCore's relay `.c` (SQLiteEmbedded.c:17-24). Recorded pin: **tag `v0.15.1` =
-`fd0a0210b7be00957751871e7e01b8291268fc29`**; `QJS_VERSION_*` at quickjs.h:1410-1413.
+**(a) The library is four C files — and its export macro fights UE's hidden visibility on the
+platforms we ship.** quickjs-ng v0.15.1's core target compiles exactly
+`quickjs.c, libregexp.c, libunicode.c, dtoa.c` (CMakeLists.txt:266-271, :301); `cutils` is
+header-only; the bytecode headers are checked in (builtin-*.h:1); `quickjs-libc` is a separate
+target not folded into the core unless `QJS_BUILD_LIBC` (default OFF, CMakeLists.txt:249-251,
+:334-339) — and the core has no setTimeout and no console (quickjs-libc.c:4443-4444, :4613), so
+timers/rAF/console are ours to implement. **`queueMicrotask` is NOT ours**: it is a core global
+(`js_global_queueMicrotask`, quickjs.c:40200, installed at :55939) — the facade must not shadow
+it; our host jobs ride `JS_EnqueueJob` beside it. **The `JS_EXTERN` correction:** on any
+GCC/Clang build the non-Win32 branch defines it **unconditionally** as
+`__attribute__((visibility("default")))` (quickjs.h:47-49, :70-73) — the shared-lib macros gate
+only the Win32 branch — so unpatched, every `JS_*` symbol escapes `VaCuusJs.so` on Linux/macOS
+modular builds, where a second quickjs anywhere in the process gets interposed to one copy.
+**Vendored patch #1** (recorded in `VENDORED_TAG.txt`): neutralize the GNU-like branch to
+`/* nothing */` — a command-line `-DJS_EXTERN=` cannot beat the header's unconditional define.
+Smoke assertion: `nm -D` on the built module exports no `JS_` symbols. C11 under UBT
+(`ModuleRules.CStandard`, UEBuildModuleCPP.cs:3072, ClangToolChain.cs:594-599); SQLiteCore's relay
+`.c` is the engine precedent (SQLiteEmbedded.c:17-24). Pin: **tag `v0.15.1` =
+`fd0a0210b7be00957751871e7e01b8291268fc29`** (`QJS_VERSION_*`, quickjs.h:1410-1413).
 
-**(b) The frame-controlled GC design holds — with one sharp caveat.** The only implicit GC trigger
-in the engine is object allocation (`js_trigger_gc`'s sole call site is `JS_NewObjectFromShape`,
-quickjs.c:5748), and `JS_SetGCThreshold(rt, -1)` disables it ("use -1 to disable automatic GC",
-quickjs.c:2110). That leaves `JS_RunGC` at our frame point as the only collector — exactly the
-architecture spec's design. The caveat: allocation failure at the memory cap does **not** collect
-and retry — `js_malloc_rt` returns NULL immediately (quickjs.c:1645-1647) and the context throws
-InternalError "out of memory" (quickjs.c:8130-8135). So the pump owns an on-OOM fallback: when an
-eval/callback returns the OOM error, run one `JS_RunGC` and log; the *next* allocation gets the
-freed space. **[unverified]** end-to-end — experiment E5 (m4-api-notes/quickjs-ng-0151.md).
+**(b) The frame-controlled GC design holds — with one sharp caveat.** The only implicit GC
+trigger is object allocation (`js_trigger_gc`'s sole call site, quickjs.c:5748) and
+`JS_SetGCThreshold(rt, -1)` disables it (quickjs.c:2110). The caveat: allocation failure at the
+memory cap does **not** collect and retry — `js_malloc_rt` returns NULL immediately
+(quickjs.c:1645-1647) → InternalError (quickjs.c:8130-8135); the pump owns an on-OOM
+`JS_RunGC`-and-log fallback. **[unverified]** end-to-end — E5. The trigger heuristic's data
+source is **our own malloc hooks**: an atomic live-byte counter maintained in the
+FMemory-forwarding `JSMallocFunctions` (§3.3) — `JS_ComputeMemoryUsage` walks the heap and is
+sampled at collections only, so it cannot drive a per-frame threshold.
 
-**(c) Thread legality is a stack anchor, not an identity check.** quickjs core has zero
-thread-identity code (grep verified); the single thread-sensitive datum is `stack_top`, captured at
-`JS_NewRuntime2` (quickjs.c:2019) and consulted by the native-stack overflow check
-(quickjs.c:1952-1957). "Created on thread A, used on thread B" is legal with `JS_UpdateStackTop`
-on B (quickjs.h:501-503) — which is precisely the inline/commandlet mode's shape. And the UI
-thread's stack is a **written-down M4 constraint**: 512 KB chosen with the comment "QuickJS lands
-on this thread in M4, so the platform default is not obviously enough"
-(VaCuusUIThread.cpp:42-50). §4 raises it and budgets the JS stack under it.
+**(c) Thread legality is a stack anchor, not an identity check.** No thread-identity code in the
+core (grep verified); the one thread-sensitive datum is `stack_top`, captured at creation
+(quickjs.c:2019) and consulted by the native-stack check (quickjs.c:1952-1957);
+`JS_UpdateStackTop` on handoff makes cross-thread use legal (quickjs.h:501-503). The UI thread's
+512 KB stack is a written-down M4 constraint (VaCuusUIThread.cpp:42-50); §4 raises it. Note the
+inline-mode caveat: `IsInUIThread()` is true on the game thread at all times there
+(bead `VaCuus-akj.6.40`), so the thread asserts are vacuous exactly where `JS_UpdateStackTop`
+matters — the handoff calls are load-bearing, the asserts are not, and the E2 experiment covers
+the handoff, not the assert.
 
-**(d) The seam does not exist yet, but its template does.** `IVaCuusScriptHost` appears nowhere in
-code (grep; the name lives only in the architecture spec). The in-tree template is
-`IVaCuusDocumentHost` — core declares the contract, the dependent module implements it, and the
-comment calls the seam deliberate (VaCuusDocumentHost.h:22-27) — plus the one true
-register-before-boot API, `FVaCuusEngine::SetRenderInterface`, refused after `Initialize()`
-(VaCuusEngine.cpp:230-242). M4 declares `IVaCuusScriptHost` in core, implements it in `VaCuusJs`,
-and the frame loop skips the pump when no host is registered — the spec's JS-off configuration
-for free (architecture spec §3:79-82).
+**(d) The seam does not exist yet, but its template does.** `IVaCuusScriptHost` appears nowhere
+in code; the template is `IVaCuusDocumentHost` (core declares, dependent module implements,
+"the seam is deliberate" — VaCuusDocumentHost.h:22-27) plus the register-before-boot shape of
+`FVaCuusEngine::SetRenderInterface` (VaCuusEngine.cpp:230-242). No host registered → every call
+site skips — the JS-off configuration for free.
 
 **(e) One runtime per process, one `JSContext` per view — a deliberate amendment to the
-architecture spec's "per subsystem".** The UI thread has no per-subsystem structure at all: hosts
-and models are keyed by process-unique `ViewId` (VaCuusUIThread.h:315, :341), commands carry only
-`ViewId` (VaCuusUIQueues.h:116), and multi-PIE is "N subsystems, 1 thread, N views"
-(VaCuusUIThread.h:26-33). A per-subsystem runtime would need new command plumbing and a subsystem
-teardown protocol that today does not exist (plugin-integration.md §2), and Tier 1 has nothing that
-needs subsystem-level sharing: a script binds a *view's* document. So: **one `JSRuntime` per
-process** (created lazily on the UI thread at the first script-bearing view, destroyed in the
-Exit split of §7; the 16 MB cap is per-runtime and therefore process-wide — stricter than the
-spec's wording, not weaker), and **one `JSContext` per view** — created on demand, destroyed with
-the view, and **torn down and rebuilt on document replace**, which gives live reload
-browser-refresh semantics: scripts re-run against the new document; timers, listeners and module
-instances die with the old context. The M3 rule "the model survives reload, do nothing" is
-untouched — models are not JS state.
+architecture spec's "per subsystem".** The UI thread is keyed on process-unique `ViewId`
+everywhere (VaCuusUIThread.h:315, :341; VaCuusUIQueues.h:116); a per-subsystem runtime would need
+command plumbing and teardown protocol that exist nowhere, for isolation Tier 1 does not need
+(a script binds a *view's* document). One `JSRuntime` per process (lazy, UI thread; 16 MB cap
+process-wide — stricter than the spec's wording), one `JSContext` per view, recycled on document
+replace (§3.4) and destroyed with the view.
 
-**(f) RmlUi's script surface is head-only `<script>`, a virtual pair, and a plugin bus.** There is
-no script node handler; `XMLNodeHandlerHead` collects inline text and `src` into
-`DocumentHeader::scripts` and `ProcessHeader` calls the **virtual**
-`ElementDocument::LoadInlineScript/LoadExternalScript` — mid-parse, before `<body>` exists and
-before the document joins the context (XMLNodeHandlerHead.cpp:84-91, :126-129, :98-110;
-ElementDocument.cpp:217-228, base impls empty :461-463). A `<script>` in `<body>` reaches nothing.
-So: a facade `ElementDocument` subclass (via a document instancer) **captures** scripts at
-`LoadInlineScript` time and **defers execution** to `Plugin::OnDocumentLoad` — which fires after
-instancing+append and before the document's `load` event (Context.cpp:299-300) — in document
-order, externals resolved through the VFS. The head-only limitation is documented, not fought.
+**(f) The document-replace order is load-and-fire-first — the host, not the plugin bus, must
+drive script execution.** On every replace, `Context::LoadDocument` fires
+`PluginRegistry::NotifyDocumentLoad(new)` **inside itself** (Context.cpp:299), while the old
+document is still current; `AdoptDocument` closes the old one only after `LoadDocument` returns
+(VaCuusRmlDocumentHost.cpp:159-194), and the old tree's deferred teardown lands at the **next**
+`Context::Update` (Context.cpp:1557-1567). So executing scripts from `Plugin::OnDocumentLoad`
+would run the new document's scripts **into the old context**, which the recycle then frees —
+JS silently dead after every live reload. **Decision: scripts are captured at
+`LoadInlineScript` time (the virtual pair, ElementDocument.cpp:217-228) and executed by the
+host** — `IVaCuusScriptHost::OnDocumentReady`, invoked from `AdoptDocument` *after* the old
+document's close and *after* `Show()`: old context recycled there (old unload JS having run in
+it at close time), fresh context built, captured scripts run in document order. Two documented
+consequences: RmlUi's own `load` DOM event fired inside `LoadDocument`, **before** scripts run —
+a script cannot observe it (scripts *are* the ready signal, like `defer`); and scripts run
+against a shown document.
 
-**(g) The facade's lifetime story is already sound in RmlUi.** `Element` derives
-`EnableObserverPtr` (Element.h:47); a dead handle reads null but `operator->` does not check
-(ObserverPtr.h:77-86) — the facade tests every access, the demo's "dead handles return null, never
-throw" philosophy (hud-demo Js.cpp:1-3). Detached elements hold no dangling document/context
-pointer (Element.cpp:1492, :2124-2143) — create-then-append is sound. Listener detach fires in
-**two different orders** by death path: destroy→detach on direct destruction (Element.cpp:99,
-:112), detach-then-destroy on document unload (Context.cpp:1565-1567) — the JS ref release must
-tolerate both (rmlui-scripting.md §3, experiment E2). `Element::Clone` bypasses
-`OnElementCreate` (Element.cpp:214-225), so the identity cache populates **lazily on wrap**, keyed
-on the raw `Element*`, erased in `OnElementDestroy` (during which ObserverPtrs still read alive —
-key on the pointer, not on observer death). And every ObserverPtr operation mutates an un-mutexed
-process-global pool (ObserverPtr.cpp:6-24): **wrapper finalization must run on the UI thread**,
-which the controlled-frame-point GC already guarantees — asserted, not assumed.
+**(g) The facade's lifetime story needs a third listener-death order the demo never met.**
+`Element` derives `EnableObserverPtr` (Element.h:47); dead handles read null; detached elements
+hold no dangling pointers (Element.cpp:1492, :2124-2143); listener detach fires destroy→detach on
+direct destruction (Element.cpp:99, :112) and detach-then-destroy on document unload
+(Context.cpp:1565-1567). **The third order M4 adds itself:** the context (or runtime) dies
+*before* RmlUi's deferred detach arrives — the old tree survives one frame past the recycle
+(f above), and the hard-stop path destroys trees after runtime death. So `JsEventListener`s are
+owned by a per-view registry in the module: context teardown **frees the JS refs and neuters the
+still-attached C++ shells** (OnDetach becomes self-reclaiming no-op); RmlUi's later detach
+reclaims them. Identity cache: keyed on raw `Element*`, populated lazily on wrap (clones bypass
+`OnElementCreate`, Element.cpp:214-225), erased in the process-global `OnElementDestroy` hook by
+probing each view's cache by pointer (misses are free); ObserverPtrs still read alive during the
+hook — key on the pointer. Every ObserverPtr op mutates an un-mutexed global pool
+(ObserverPtr.cpp:6-24): **wrapper finalization runs on the UI thread only** — the controlled GC
+point guarantees it; the finalizer of a detached element frees an `ElementPtr`, which needs the
+instancer alive (Element.cpp:2170-2171) — every context/runtime death point in §5 precedes
+`Rml::Shutdown`, satisfying it structurally.
 
 ---
 
@@ -127,307 +141,354 @@ which the controlled-frame-point GC already guarantees — asserted, not assumed
 
 ```
 VaCuusJs (new Runtime module)
-├─ ThirdParty vendored: Source/ThirdParty/quickjs-ng (4 .c + headers, VENDORED_TAG.txt)
-├─ FVaCuusJsRuntime      one per process, UI-thread-owned: JSRuntime, malloc hooks over FMemory,
-│                        16MB cap, GC threshold -1, interrupt watchdog, rejection tracker
-├─ FVaCuusJsViewContext  one per view: JSContext, globals (console, timers, rAF, vacuus.*),
-│                        module loader over the VFS, document binding, error overlay state
-├─ FVaCuusJsElementCache identity map Element* -> JSValue wrapper (per view context)
+├─ Source/ThirdParty/quickjs-ng   4 .c + headers + VENDORED_TAG.txt (tag, commit, patch #1)
+├─ FVaCuusJsRuntime      per process: JSRuntime, FMemory malloc hooks + live-byte counter,
+│                        16MB cap, GC threshold -1, watchdog, rejection tracker, fired-counters
+├─ FVaCuusJsViewContext  per view: JSContext, globals, module loader, listener registry,
+│                        element cache, overlay state
 ├─ FVaCuusJsScriptHost   implements IVaCuusScriptHost (declared in VaCuus core)
 └─ FVaCuusJsDocument     ElementDocument subclass capturing <script> via LoadInlineScript
 ```
 
 ### 3.1 The seam: `IVaCuusScriptHost`
 
-Declared in core (`VaCuus/Public/`), following `IVaCuusDocumentHost`'s pattern verbatim. Surface
-(UI thread unless noted):
-
-- `OnViewAdded(ViewId) / OnViewRemoved(ViewId)` — context lifecycle.
-- `OnDocumentLoaded(ViewId, Rml::ElementDocument*)` / `OnDocumentClosing(ViewId)` — script run
-  and context recycle points (§3.4).
-- `PumpFrame(double NowSeconds)` — rAF → timers → jobs, §3.5.
-- `CollectGarbage(reason)` — the controlled point, §3.6.
-- `ExecuteScript(ViewId, Source, SourceName)` — the command's landing.
-- `Shutdown()` — runtime death, called at the §7 split point.
-
-Registered via `FVaCuusModule::SetScriptHostFactory(...)` from `FVaCuusJsModule::StartupModule`,
-refused after the UI thread boots (the `SetRenderInterface` shape, VaCuusEngine.cpp:230-242). No
-host registered → every call site skips — the module-absent configuration. Runtime kill switch:
-`vacuus.Js.Enable` cvar (default 1), checked once at first-runtime-creation (the `vacuus.IdleGate`
-read pattern, VaCuusRecordingRenderInterface.cpp:42-52); flipping it after the runtime exists is
-documented as a no-op.
+Core-declared, `IVaCuusDocumentHost`-patterned. UI thread unless noted:
+`OnViewAdded/OnViewRemoved(ViewId)`; `OnDocumentReady(ViewId, Rml::ElementDocument*)` (the §2(f)
+host-driven point — recycle + run scripts); `OnDocumentClosing(ViewId)` (unload JS dispatch, at
+`Close()` time); `PumpFrame(NowSeconds)`; `CollectGarbage(reason)`; `ExecuteScript(ViewId,
+Source, SourceName)`; `Shutdown()`. Registered via `FVaCuusModule::SetScriptHostFactory` from
+`FVaCuusJsModule::StartupModule`, refused after the UI thread boots. Kill switch `vacuus.Js.Enable`
+(default 1), read once at first-runtime-creation; later flips documented no-ops.
 
 ### 3.2 Vendoring and the module build
 
-`Source/ThirdParty/quickjs-ng/` carries the four .c files, all project headers, the checked-in
-`builtin-*.h`, `LICENSE`, and `VENDORED_TAG.txt` (`v0.15.1` + commit). `VaCuusJs.Build.cs` clones
-the VaCuusRml preamble (NoPCHs, no unity, warnings relaxed, no exceptions) plus
-`CStandard = CStandardVersion.C11`; compilation via relay `.c` files in `Private/Gen/` (the
-VaCuusRml relay pattern; SQLiteCore proves the `.c` relay compiles). Defines: `_GNU_SOURCE`
-(CMakeLists.txt:278), Win64 adds `WIN32_LEAN_AND_MEAN` + `_WIN32_WINNT=0x0601` (:279-282), and
-**neither** shared-lib macro, so `JS_EXTERN` degrades to nothing (quickjs.h:62-76) — the C symbols
-stay module-internal; nothing crosses the module boundary as C (the host interface is the
-boundary).
+Four .c + headers + checked-in builtins + LICENSE + `VENDORED_TAG.txt` (tag, commit, **patch #1**
+from §2(a)). `VaCuusJs.Build.cs`: VaCuusRml preamble + `CStandard = C11`; relay `.c` files in
+`Private/Gen/`; defines `_GNU_SOURCE` (CMakeLists.txt:278), Win64 `WIN32_LEAN_AND_MEAN` +
+`_WIN32_WINNT=0x0601` (:279-282), neither shared-lib macro. The `nm -D` no-`JS_` export check is
+a build-time smoke test on Linux.
 
 ### 3.3 The runtime: memory, stack, watchdog
 
-- **Malloc hooks over `FMemory`**: `JS_NewRuntime2` with the five-hook `JSMallocFunctions`
-  (quickjs.h:451-457) forwarding to `FMemory::Malloc/Free/Realloc` (+`QuantizeSize` for
-  usable-size). The runtime's own accounting enforces the cap (`JS_SetMemoryLimit(16MB)`,
-  overridable by cvar `vacuus.Js.MemoryLimitMB`); UE's allocator sees every byte for LLM/stats.
-  At the cap: InternalError, never abort (quickjs.c:1645-1647, :8130-8135) — plus the §2(b) on-OOM
-  GC fallback.
-- **Stack**: `GVaCuusUIThreadStackSize` rises 512 KB → **2 MB** (the constant's own comment
-  anticipated this, VaCuusUIThread.cpp:42-50), and `JS_SetMaxStackSize(256 KB)` keeps the
-  interpreter's native recursion budget far under it, leaving RmlUi's own recursion room below.
-  quickjs's default JS stack is 1 MB (quickjs.h:423-425) — larger than the *old thread stack*,
-  which is exactly the class of quiet catastrophe the raise removes. Inline mode calls
-  `JS_UpdateStackTop` at each thread handoff (§2(c)). **[unverified]** headroom — the
-  stack-headroom experiment (plugin-integration.md §1.2): deep JS recursion must die as a JS
-  RangeError, never the guard page.
-- **Watchdog**: `JS_SetInterruptHandler` (quickjs.h:1139-1141; polled every 10k interpreter ops,
-  quickjs.c:479, :8234-8241) against a per-pump deadline (`vacuus.Js.WatchdogMs`, default 250 dev /
-  0=off shipping). A trip is an **uncatchable** InternalError (quickjs.c:8215-8218) — logged with
-  the script name; the pump resets via `JS_ResetUncatchableError` and continues the frame. A hung
-  script costs one budget overrun, never a hung UI thread.
+- **Malloc hooks over `FMemory`** (`JSMallocFunctions`, quickjs.h:451-457): forward to
+  `FMemory::Malloc/Free/Realloc` + `QuantizeSize`; maintain the atomic live-byte counter that
+  drives §3.6's trigger and the stats heap line; `LLM_SCOPE` tag so UE memory tooling attributes
+  the heap (asserted once in §8 by an FMemory-visible delta). `JS_SetMemoryLimit(16MB)`
+  (`vacuus.Js.MemoryLimitMB`); at the cap: InternalError + the §2(b) fallback.
+- **Stack**: `GVaCuusUIThreadStackSize` 512 KB → **2 MB**; `JS_SetMaxStackSize(256 KB)`. Inline
+  mode calls `JS_UpdateStackTop` at each handoff — and because inline mode runs deep in a
+  game-thread callstack, the anchor is refreshed **per RunFrameInline entry**, not once.
+  **[unverified]** headroom — the stack-headroom experiment: deep JS recursion dies as RangeError,
+  never the guard page.
+- **Watchdog**: `JS_SetInterruptHandler` (quickjs.h:1139-1141; polled every 10k ops,
+  quickjs.c:479, :8234-8241) against a deadline **armed at every host→JS entry boundary** —
+  document scripts, `ExecuteScript`, event dispatch, `on*` snippets, module eval, every pump
+  callback batch — not per-pump (v1's scope missed the two largest entry points, which run from
+  DrainCommands before the pump). `vacuus.Js.WatchdogMs`: default 250 dev, **50 shipping** — not
+  0: the watchdog is also §3.5's microtask-livelock backstop, so shipping keeps a generous
+  non-zero deadline. A trip is uncatchable (quickjs.c:8215-8218), logged with the entry's source
+  name, reset via `JS_ResetUncatchableError` at that same boundary. A trip mid-document-scripts
+  leaves the document adopted and shown; **remaining captured scripts are skipped**, one Error
+  says how many.
 
 ### 3.4 Contexts, documents, scripts
 
-- A view's `JSContext` is created on demand (first script, first ExecuteScript) via
-  `JS_NewContext` (intrinsics list at quickjs.c:2533-2557; BigInt's absence from it is settled by
-  experiment E3 before the context recipe freezes).
-- **Document replace recycles the context** (§2(e)): `OnDocumentClosing` frees it (timers,
-  listeners, modules, wrappers die — every JS-held `ElementPtr` finalizes while RmlUi is alive),
-  `OnDocumentLoaded` builds a fresh one and runs the new document's scripts. Unload-event JS runs
-  before the close, satisfied by dispatch-at-`Close()`-time (plugin-integration.md §4).
-- `<script>` capture per §2(f): `FVaCuusJsDocument` (document instancer registered by the host)
-  stores inline text + src paths with source lines; execution at `OnDocumentLoad`, document order,
-  externals read through the VFS resolution path (§3.7). Scripts are classic scripts
-  (`JS_EVAL_TYPE_GLOBAL`); modules are opt-in via `<script type="module">` → module eval (§3.7).
-- `ExecuteScript`: new command kind + `EnqueueExecuteScript` + `UVaCuusView::ExecuteScript`
-  (BlueprintCallable), source in the command `Payload` (the LoadDocumentMemory precedent,
-  VaCuusUIQueues.h:50-51), unknown-view drop at **Error** like BindModel — its loss is equally
-  invisible downstream (VaCuusUIThread.cpp:999-1020).
+- Context on demand (first script or ExecuteScript); `JS_NewContext` (intrinsics
+  quickjs.c:2533-2557; BigInt presence settled by E3 before the recipe freezes).
+- **Replace = recycle, host-ordered (§2(f))**: `OnDocumentClosing(old)` dispatches unload JS in
+  the old context; `AdoptDocument` closes old, shows new, then `OnDocumentReady` frees the old
+  context (listener registry neuters its shells — §2(g)), builds the fresh one, runs captured
+  scripts in document order. Live reload is a document replace and therefore browser-refresh
+  semantics; models surviving is the continuity story (M3 rule untouched).
+- `ExecuteScript` before any document: legal; the context exists, **`document` is `null`** until
+  a document is ready — specified, tested. Command: new kind + `EnqueueExecuteScript` +
+  `UVaCuusView::ExecuteScript` (BlueprintCallable), source in `Payload`
+  (the LoadDocumentMemory precedent, VaCuusUIQueues.h:50-51), unknown-view drop at **Error**
+  (the BindModel argument, VaCuusUIThread.cpp:999-1020).
+- `<script>` is head-only in RmlUi (no body handler; XMLNodeHandlerHead.cpp:84-91, :126-129) —
+  documented, not fought; a `<script src>` naming a missing file is one **Error** naming document
+  and path, remaining scripts still run.
 
 ### 3.5 The pump
 
-A new ungated RunFrame phase between DataApply and the record loop (the marker argument at
-VaCuusUIThread.cpp:873-877 applies verbatim; ungated because sizeless-but-alive UMG views must
-pump — the DataApply precedent, VaCuusUIThread.cpp:885-897). Order within the pump, from the
-demo's proven contract (hud-demo Js.h:23-25): **rAF → timers → `JS_ExecutePendingJob` to
-exhaustion** (one job per call, loop while >0 — quickjs.c:2173-2202).
+An ungated RunFrame phase between DataApply and the record loop (the DataApply placement argument
+verbatim, VaCuusUIThread.cpp:873-877, :885-897). Order: **rAF → timers → job drain** (the demo's
+proven contract, Js.h:23-25 — and deliberately not browser order; a promise resolved in a rAF
+callback resumes after this frame's timers, documented beside the API).
 
-- rAF: swap-out list so callbacks registered during the run land next frame (the demo's
-  re-entrancy rule, Js.cpp:531-534); timestamp = `GetSystemInterface()->GetElapsedTime()` sampled
-  once at pump top, in ms — the same clock RmlUi's animations advance on (Clock.cpp:7-14,
-  Element.cpp:2838-2849), so JS motion and RCSS motion share time. `cancelAnimationFrame` exists
-  (the demo lacked it — gap list).
-- Timers: due = `deadline <= now` with **frame-start cutoff** — a 0 ms timer registered during the
-  pump runs next frame, closing the demo's documented livelock (`(function f(){setTimeout(f,0)})()`
-  hangs the demo's pump — hud-demo-patterns.md §4 hazard). Interval re-arm from fire time.
-- Microtasks: `queueMicrotask` → `JS_EnqueueJob` (quickjs.h:1199-1201); promise jobs ride the same
-  drain.
-- Per-callback exception handling: `JS_GetException` (returns-and-clears, quickjs.h:818), read
-  `stack`, route to §3.8. One callback's throw never skips its siblings.
+- rAF: swap-out list (re-entrancy rule, Js.cpp:531-534); timestamp =
+  `GetSystemInterface()->GetElapsedTime()` ms, sampled once at pump top — the clock RmlUi
+  animations advance on (Clock.cpp:7-14, Element.cpp:2838-2849). `cancelAnimationFrame` exists.
+- Timers: due = deadline ≤ frame-start now; a 0 ms timer registered during the pump runs next
+  frame (closes the demo's documented livelock — hud-demo-patterns.md §4). Intervals re-arm from
+  fire time.
+- **Job drain: bounded.** `JS_ExecutePendingJob` loops while >0 (quickjs.c:2173-2202) **up to a
+  per-pump cap** (`vacuus.Js.MaxJobsPerPump`, default 10 000); at the cap the drain stops with
+  one Error naming the view, remaining jobs run next frame. The self-requeuing microtask —
+  `(function f(){queueMicrotask(f)})()` — is the same livelock shape as the 0 ms timer and gets
+  the same two defenses: the cap (deterministic, shipping-safe) and the watchdog (non-zero in
+  shipping, §3.3). Restore-the-bug for both.
+- Per-callback exceptions: `JS_GetException` (returns-and-clears, quickjs.h:818) → §3.8; one
+  callback's throw never skips siblings.
 
-Scopes `JsPump` and `JsGC` are declared in `EScope`/stats **before the phase lands** — the
-DataApply declare-first playbook (VaCuusStats.h:39-45), with the positional-enum name guard
-(VaCuusStats.cpp:48-49).
+Scopes `JsPump`/`JsGC` declared **before the phase lands** (the DataApply playbook,
+VaCuusStats.h:39-45; positional-enum guard VaCuusStats.cpp:48-49).
 
 ### 3.6 GC: the controlled point
 
-`JS_SetGCThreshold(rt, -1)` at runtime birth (§2(b)). `CollectGarbage` runs at **end of RunFrame,
-after the record loop** — the pause lands inside the frame the counter names but after this
-frame's output is published (plugin-integration.md §1.1 candidate (a)). Trigger heuristic: heap
-grew ≥ `vacuus.Js.GCStepKB` (default 512) since the last collection, or an OOM fallback fired this
-frame. The pause is measured under the `JsGC` scope; heap bytes (via `JS_ComputeMemoryUsage`,
-sampled at collection only — it walks the heap) and collections-per-window join the PerfLog
-window line (the `AddUIFrame` counter template, VaCuusStats.h:140-149).
+`JS_SetGCThreshold(rt, -1)` at birth. `CollectGarbage` at **end of RunFrame after the record
+loop** — pause inside the frame, after publish. Trigger: the malloc-hook live-byte counter grew
+≥ `vacuus.Js.GCStepKB` (default 512) since the last collection, or the OOM fallback fired.
+`JS_ComputeMemoryUsage` sampled at collections only; heap bytes + collections-per-window join the
+PerfLog window line (the `AddUIFrame` template, VaCuusStats.h:140-149). Finalizers run here — UI
+thread, instancers alive (§2(g)).
 
 ### 3.7 Modules and the VFS
 
-`JS_SetModuleLoaderFunc` — the classic normalize/loader split survives in ng (quickjs.h:1173-1175);
-attributes tier not needed. Specifiers: relative paths resolve against the importing module's
-directory, then the document roots; the `vfs://` prefix is **stripped before resolution** because
-`FPaths::IsRelative` would otherwise glue it under a root (plugin-integration.md §3). Files read
-through the same `IPlatformFile` path documents use (pak-transparent, VaCuus.Build.cs:55-60).
-Module eval returns a promise in ng (quickjs.c:31553-31557); after the pump's job drain, a still-
-pending module promise means top-level await on a host event — **logged and refused** (one Error
-naming the module; TLA is not part of Tier 1's contract) — grounded by experiment E1. A module
-runtime throw rejects the promise instead of raising (quickjs.c:31573-31574) — surfaced through
-the rejection tracker, not `JS_Eval`'s return. Module cache lives in the per-view context and dies
-with it on reload (§2(e)); live reload's watch extensions gain `.js`/`.mjs`
-(VaCuusLiveReload.cpp:20-26 is rml/rcss-only today — script edits currently reload **nothing**).
+`JS_SetModuleLoaderFunc` (classic split, quickjs.h:1173-1175). Specifiers: relative → importing
+module's directory, then document roots; `vfs://` stripped before resolution (`FPaths::IsRelative`
+would glue it under a root — plugin-integration.md §3); reads via the pak-transparent
+`IPlatformFile` path. Module eval returns a promise (quickjs.c:31553-31557): still-pending after
+the drain ⇒ top-level await ⇒ **refused, one Error naming the module** (E1 grounds it). A module
+runtime throw rejects the promise (quickjs.c:31573-31574) — surfaced via the rejection tracker.
+Missing import: loader returns NULL → engine ReferenceError (quickjs.c:30041-30048) plus our
+Error naming the resolved path. Module cache dies with the context (§3.4). Live-reload watch
+extensions gain `.js`/`.mjs` (today rml/rcss only — VaCuusLiveReload.cpp:20-26 — script edits
+reload nothing); a `.js` change triggers the same full document reload, which is a replace,
+which recycles — the path is §3.4's, no second mechanism.
 
 ### 3.8 Errors: log, overlay, rejection tracking
 
-- Every surfaced exception → `UE_LOG(LogVaCuusJS, Error)` with message + `stack` (a real string
-  property, quickjs.c:7766) + script/source name. `LogVaCuusJS` follows the `LogVaCuus`
-  declare/define pair in VaCuusJs's public header (plugin-integration.md §7).
-- **Dev overlay** (non-shipping): a host-owned overlay element appended to the view's document
-  root (absolutely positioned, `vacuus.Js.Overlay` cvar default 1 in dev), showing the last N
-  errors. Uncaught promise rejections enter it via `JS_SetHostPromiseRejectionTracker` — and are
-  **retracted** when the tracker re-fires with `is_handled=true` (a later-attached handler,
-  quickjs.c:55160-55170) — the overlay needs the retract path or it lies (quickjs-ng-0151.md §8).
-- The demo's exit-code-on-error observable becomes: total JS error count exposed on the host,
-  asserted zero in every M4 test that doesn't expect one.
+Every surfaced exception → `UE_LOG(LogVaCuusJS, Error)` (message + `stack` — a real property,
+quickjs.c:7766 — + source name); `LogVaCuusJS` follows the `LogVaCuus` declare/define pair.
+Dev overlay (non-shipping, `vacuus.Js.Overlay`): host-owned element in the view's document, last
+N errors; uncaught rejections enter via `JS_SetHostPromiseRejectionTracker` and are **retracted**
+on the `is_handled=true` re-fire (quickjs.c:55160-55170). The host exposes a total-JS-error
+counter; every test that expects none asserts zero.
 
 ### 3.9 The DOM facade
 
-Hardened from the demo per the gap list (hud-demo-patterns.md §9), spec §7 Tier 1 surface:
+Per the demo gap list (hud-demo-patterns.md §9), arch §7 Tier 1:
 
-- **Identity**: one wrapper per element — cache keyed on raw `Element*`, populated lazily on wrap
-  (clones bypass `OnElementCreate`, §2(g)), erased in `OnElementDestroy`. Two `getElementById`
-  calls are `===`-equal; the demo's per-call wrapping is the named defect this fixes.
-- **Handles**: `ObserverPtr` in an opaque (the demo's `ElementHandle` shape, class-id +
-  finalizer); dead handle ⇒ methods return null/false/undefined, never throw.
-- **Surface**: `document.createElement` (tag **lowercased by the facade** — uppercase tags
-  silently miss RCSS with asserts compiled out, rmlui-scripting.md §2 + E1) / `getElementById` /
-  `querySelector(All)` / `closest` (documented deviations: self never matches; `closest` starts at
-  the parent — Element.cpp:1544-1546, :1077-1090); `appendChild` / `insertBefore` / `remove` /
-  `removeChild` (ownership per `ElementPtr` move semantics; a JS-held detached element owns its
-  `ElementPtr` in the wrapper, freed by finalizer or transferred on append); `id`, `tagName`,
-  `parentNode`, `children`, `innerRML` get/set (set destroys replaced children synchronously —
-  their handles die, listeners detach before the call returns, rmlui-scripting.md §6);
-  `getAttribute`/`setAttribute`/`removeAttribute`; **classList** (`add/remove/toggle/contains`)
-  over `SetClass`/`IsClassSet`/`GetClassNames` — never the `class` attribute, which `SetClass`
-  leaves stale (Element.cpp:258-276, the trap in rmlui-scripting.md §5); **style proxy**
-  (string-based: get = `GetProperty(name)?->ToString()` copied at once — the returned pointer is
-  invalidated by any following call, Element.h:187-193; set = `SetProperty(name, value)`; remove).
-- **Events**: `addEventListener(type, fn, capture?)` / `removeEventListener` over the real capture
-  flag (Element.h:471-482); one `JsEventListener` per registration releasing its ref in
-  `OnDetach` and tolerating **both** death orders (§2(g)); event object: `type`, `target`,
-  `currentTarget`, `phase`, parameters (mouse/key data via `GetParameter`), `stopPropagation` /
-  `stopImmediatePropagation`; `preventDefault` **maps to stopPropagation** and the docs say so —
-  RmlUi runs default actions only while the event propagates; there is no separate default-action
-  veto (EventDispatcher.cpp:173-185). `dispatchEvent` for custom events (auto-registration
-  semantics per EventSpecification.cpp:125-133; the global-id-slot note documented).
-- The `on*` attribute path (`onclick="…"`): the global `EventListenerInstancer` hook
-  (Factory.cpp:549-556) — registered by the host, compiling the snippet against the view context.
+- **Identity**: one wrapper per element (cache per §2(g)); `getElementById` twice ⇒ `===`.
+- **Handles**: ObserverPtr opaque; dead ⇒ null/false/undefined, never throw (Js.cpp:1-3).
+- **Surface**: `createElement` (tag lowercased — uppercase silently misses RCSS with asserts out,
+  rmlui-scripting.md §2, E1) / `getElementById` / `querySelector(All)` / `closest` (deviations
+  documented: self never matches, Element.cpp:1544-1546; `closest` starts at the parent,
+  :1077-1090); `appendChild` / `insertBefore` / `remove` / `removeChild` (ElementPtr move
+  semantics; detached wrapper owns its ElementPtr, freed by finalizer or moved on append); `id`,
+  `tagName`, `parentNode`, `children`, `innerRML` get/set (set kills child handles + detaches
+  listeners synchronously — rmlui-scripting.md §6); attributes get/set/remove; **classList**
+  (`add/remove/toggle/contains`) over `SetClass`/`IsClassSet`/`GetClassNames` — never the class
+  attribute, which `SetClass` leaves stale (Element.cpp:258-276; the §8 test compares
+  `GetClassNames()` against `GetAttribute("class")` to see the trap); **style** proxy
+  (get = `GetProperty(name)?->ToString()` copied at once — the pointer dies on the next call,
+  Element.h:187-193; set/remove string-based).
+- **Events**: `add/removeEventListener(type, fn, capture?)` (real capture flag,
+  Element.h:471-482); registry-owned `JsEventListener` per registration, refs released on detach,
+  **all three** death orders tolerated (§2(g)); event object: `type/target/currentTarget/phase`,
+  parameters via `GetParameter` (mouse/key data), `stopPropagation/stopImmediatePropagation`;
+  `preventDefault` maps to stopPropagation — RmlUi runs default actions only while propagating
+  (EventDispatcher.cpp:173-185) — documented. `dispatchEvent` (auto-registration
+  EventSpecification.cpp:125-133; the global-id-slot note). Key/gamepad callbacks (arch §7's
+  vacuus.* item) are discharged **here**: `keydown/keyup/textinput` and the M2 gamepad event
+  names arrive as ordinary listeners — with a §8 test proving a gamepad event reaches JS.
+  `on*` attributes via the global `EventListenerInstancer` (Factory.cpp:549-556), compiled
+  against the view context.
 
-### 3.10 The write router — two-way binding lands here (M3's promissory note)
+### 3.10 The write router — two-way binding lands here
 
-M3 §4/I3 froze `Set()` to a refusal and named M4 as where writes become legal "routed to a
-delegate on the game thread instead of scribbling on a buffer". Implementation: the refusing
-`FVaCuusScalarDefinition::Set` gains a registered **write router** (a core seam, set by nobody in
-M3 configurations — behavior unchanged there). When VaCuusJs (or any host code) registers one:
-`Set(address, value)` marshals `(ViewId, dotted path, value as string/number/bool)` into a
-game-thread queue drained by `UVaCuusSubsystem::Tick`, surfacing as
-`UVaCuusView::OnModelWrite(FName Model, FString Path, FVaCuusJsValue Value)` (dynamic multicast).
-**The shadow is never written** — I3 stands; the value round-trips through gameplay:
-handler → game state → `UpdateModel` → the normal pipeline. `Set` returns false still (RmlUi
-skips its own `DirtyVariable` on false — DataModel per M3 notes — so no phantom re-render of a
-value that did not change). `data-value`/`data-checked`/`data-event` assignments thereby become
-functional without a single new RmlUi call. JS additionally gets `vacuus.emit(name, payload)` —
-the same queue, no model attached — the generic JS→game channel; `UVaCuusView::OnJsEvent`.
+M3 §4/I3's promissory note. A core seam on the refusing `FVaCuusScalarDefinition::Set` (the
+override is `Set(void*, const Rml::Variant&)` — VaCuusDataVariable.h:122; **plumbing**: the bound
+model is stamped with its `ViewId` at BindModel-drain time and the definition reaches it through
+a definition→model back-pointer registered per apply; the wire path is `DiagnosticPath` with its
+type-name root segment replaced by the model name). With a router registered: `Set` marshals
+`(ViewId, Model, Path, value)` into a **bounded** game-thread queue (the input-ring bound + drop
+diagnostic pattern), drained by `UVaCuusSubsystem::Tick` into
+`UVaCuusView::OnModelWrite(FName Model, FString Path, FVaCuusJsValue Value)`. The shadow is never
+written — I3 stands. `Set` returns false, **and then the host force-dirties the touched top-level
+name from the shadow on the next apply** — because RmlUi's default actions have already mutated
+the *control* (a checkbox toggles its attribute before dispatching change,
+InputTypeCheckbox.cpp:39-47, and a false `Set` skips `DirtyVariable`,
+DataControllerDefault.cpp:57-59 — without the revert-dirty the control stays visually toggled
+against an unchanged model forever). The revert re-runs the view from the authoritative shadow:
+the control snaps back unless the game actually changed the value. A routed write with **zero
+bound handlers** logs one Warning per (model, path); with a router registered the M3 refusal log
+is reworded (it is now the legal channel), and with none, M3 behavior is byte-identical — the
+M3a/M3b suites run untouched. JS gets `vacuus.emit(name, payload)` — same queue, no model —
+surfacing as `UVaCuusView::OnJsEvent`.
 
 ### 3.11 `vacuus.*` host API (Tier 1)
 
-`vacuus.view` (id, size), `vacuus.stats()` (the demo's shape fed from real scopes),
-`vacuus.emit(name, payload)` (§3.10), `vacuus.log(...)` (alias of console), localization hook
-deferred to M5 with the CLI work (documented). The arch-spec's vague "data-model access" is
-scoped for Tier 1 to what documents already have — binding expressions — plus the write router;
-a JS object mirror of models is deliberately absent (M3 built the one-way pipeline so JS would
-not need a second data path).
+`vacuus.view` (id, size); `vacuus.stats()`; `vacuus.emit(name, payload)`;
+**`vacuus.model(name)`** — the read surface M3 §12.1 promised ("JS access to the same models —
+same objects, no rework"): `.get(path)` reads the view's UI-thread shadow through the layout's
+existing value accessors (the shadow lives on this thread — M3 §3.1 — and the read is the same
+per-kind projection the scalar definitions ship; arrays read as length + indexed access). No
+write methods — writes are §3.10's router. `vacuus.log` aliases console. Localization hook: M5,
+with the CLI (documented deferral). Key/gamepad: §3.9's listeners.
 
 ## 4. Threading
 
-Everything JS runs on the UI thread: runtime creation, every eval, every callback, every
-finalizer (§2(g) — ObserverPtr pool), GC. Asserted at every host entry point with the existing
-`IsInUIThread` pattern. Inline mode: `JS_UpdateStackTop` at each handoff (§2(c)). Game-thread
-surface: enqueue-only (`ExecuteScript`, the write-router drain, config cvars).
+All JS on the UI thread — creation, evals, callbacks, finalizers, GC — asserted at host entries
+(vacuous in inline mode per §2(c); there the per-entry `JS_UpdateStackTop` is the load-bearing
+part). Game-thread surface: enqueues, the write-router drain, cvars.
 
-## 5. Shutdown (§7's ordering, made true on every path)
+## 5. Shutdown (the ordering, true on every path)
 
-Graceful: DrainCommands' in-band Shutdown already closes documents while the loop lives
-(VaCuusUIThread.cpp:950-953) — JS is alive for unload events; the runtime dies at the top of
-`Exit()` before the host loop. Hard-stop: `Exit()` step 1 splits — `CloseDocument()` over hosts →
-script host `Shutdown()` (runtime death; all JS-held `ElementPtr`s finalize while instancers
-live — Element.cpp:2170-2171 needs them) → host `Shutdown()` loop (context removal) →
-`Engine.Shutdown()` (the split argument and the RemoveView precedent:
-plugin-integration.md §1.3(c)). `JS_FreeRuntime` asserts an empty GC list in debug
-(quickjs.c:2348) — a leaked context is loud exactly where we want it.
+Graceful: in-band Shutdown closes documents while the loop lives (VaCuusUIThread.cpp:950-953) —
+unload JS runs; runtime dies at the top of `Exit()` before the host loop. Hard-stop: `Exit()`
+step 1 splits — `CloseDocument()` over hosts → **script-host `Shutdown()`**: per-view teardown
+(each context's listener registry frees JS refs and neuters shells — the trees are still
+attached; RmlUi's detach arrives later inside host `Shutdown()`/`RemoveContext` and reclaims the
+shells), then `JS_FreeContext` per view, then `JS_FreeRuntime` → host `Shutdown()` loop →
+`Engine.Shutdown()`. **The leak observable is host-side and Development-real**: outstanding
+context count, wrapper-cache sizes, live-listener counts and the malloc-hook live-byte counter,
+`check`ed zero (post-neuter, post-free) immediately before `JS_FreeRuntime` — the engine's own
+`assert(list_empty(...))` (quickjs.c:2348) is compiled out under UBT's global `NDEBUG=1`
+(UEBuildPlatform.cs:1344) in every configuration this project runs, and is therefore *not* the
+observable. Test configurations additionally build the vendored library with `ENABLE_DUMPS` +
+`JS_DUMP_LEAKS` (quickjs.h:475-481) so a leak also names itself in the log.
 
 ## 6. Diagnostics
 
-`vacuus.Js.DumpHeap` (console): `JS_ComputeMemoryUsage` summary per runtime + per-view context
-count + wrapper-cache sizes + timer/rAF/listener counts. The §3.8 error counter. Stats: `JsPump`
-and `JsGC` scopes, heap bytes + GCs-per-window on the PerfLog line. Every refusal named: TLA
-module, watchdog trip, OOM fallback, ExecuteScript on a dead view, script on a JS-disabled build.
+`vacuus.Js.DumpHeap`: memory-usage summary, per-view context + cache + timer/rAF/listener
+counts. **Fired-counters** (the M3b counter-layer pattern, host-exposed, exact): timers fired,
+rAF callbacks run, jobs executed, collections run, JS errors total. `JsPump`/`JsGC` scopes; heap
+bytes + GCs/window on the PerfLog line. Named refusals: TLA module, watchdog trip (with entry
+name), job-cap trip, OOM fallback, missing `<script src>`, missing import, ExecuteScript on a
+dead view or with JS disabled, routed write with no handler.
 
 ## 7. Budgets
 
+The workload note: the architecture spec's reference HUD (~1,750 elements) **does not exist as a
+document yet** — arch §11 said "completed by M3", which did not happen; `m3_demo.rml` is ~51
+elements. M4 therefore measures on **the demo port plus a churn workload** — the 200-row killfeed
+fixture driven from JS at the M3b cost-test rates — which matches the reference HUD's *allocation
+shape* (per-frame string/element churn) if not its element count; reference-HUD-scale numbers
+move to the milestone that builds that document (M6 prep), recorded on bead `VaCuus-akj.8` and as
+an arch-spec §14 amendment. **[unverified]** that churn-rate parity is the right proxy — the GC
+numbers themselves settle it.
+
 | | Target | Note |
 |---|---|---|
-| JsPump, idle (no timers due, no rAF) | ≤0.02 ms | the empty-pump floor; joins the idle gates |
-| JsPump, demo-port steady state | ≤0.30 ms | inside the §11 UI budget of 0.5 ms with Update+Record beside it |
-| JsGC pause, demo-port, per collection | ≤0.50 ms | **the number this milestone exists to take** — arch spec: "counts against the UI-thread budget"; measured p50/p99 across a soak |
-| Heap, demo-port steady state | well under 16 MB | `JS_ComputeMemoryUsage` at each GC |
-| Facade op costs (wrap, getElementById, setProperty) | measure, no target | per-op µs table for the docs |
-| Idle three layers with a JS-bearing idle document | 0 published / 0 applied / 0 evaluated, and 0 timers fired | extends M3b's exact gates |
-| Parity | demo-port renders the same states as the C++ driver | screenshot comparison at deterministic beats |
+| JsPump, idle (nothing due) | ≤0.02 ms | joins the idle gates |
+| JsPump, demo-port steady state | ≤0.30 ms | |
+| **Combined UI frame with GC in population**: p99 of (JsPump + JsGC + Update + Record) over the soak, collections included | **≤0.50 ms** | the §11 gate is per-frame *total* — v1 budgeted the parts and let the sum breach it; the combination rule is the row |
+| JsGC pause, per collection, demo-port + churn | report p50/p99 | the milestone's number; feeds the combined row |
+| Heap steady state | well under 16 MB | at-collection samples |
+| Facade op costs (wrap, getElementById, setProperty) | measure, no target | docs table |
+| Idle with a JS-bearing idle document | 0 published / 0 applied / 0 evaluated / **0 timers fired, 0 rAF run, 0 jobs executed** | exact, via §6's fired-counters |
+| Parity | port renders the C++ driver's states | deterministic serial arithmetic (§9), screenshots at beats |
 
 ## 8. Testing
 
-Restore-the-bug where marked; every refusal observed.
+Restore-the-bug where marked; every §6 refusal observed; the M3a/M3b suites untouched and green.
 
-- **Vendoring smoke**: eval `1+1`, `typeof queueMicrotask`, `typeof 1n` (E3 settles the context
-  recipe), version string equals the recorded tag.
-- **Pump**: rAF next-frame semantics (the demo's class-toggle idiom depends on it —
-  hud-demo-patterns.md §9); 0 ms self-rearming timer does NOT livelock **(restore: remove the
-  frame-start cutoff, watch the test hang → timeout-fail)**; interval re-arm; cancel both timer
-  kinds + cancelAnimationFrame; microtask runs before next frame's rAF; callback exception does
-  not skip siblings.
-- **GC**: threshold disabled ⇒ no implicit GC (allocate hard, assert zero collections between
-  frame points); OOM at a tiny test cap → InternalError + fallback GC ran (E5); pause measured.
-- **Watchdog**: `while(true)` trips, uncatchable, thread alive, next frame normal **(restore:
-  disable the handler, watch the test time out)**.
-- **Stack**: deep recursion → RangeError, not a crash (the stack-headroom experiment as a test).
-- **Facade**: identity (`getElementById` twice ⇒ `===`); dead handle after `remove()` ⇒ null
-  returns, no throw; createElement("DIV") matches RCSS `div` rules **(restore: drop the
-  lowercase, watch the style not apply — E1)**; classList vs stale class attribute (assert via
-  `GetClassNames` path); style proxy get-copies; querySelector deviations pinned; innerRML set
-  kills child handles + detaches listeners synchronously (E3 of rmlui-scripting.md); both
-  listener-death orders release the JS ref — heap-count observable **(restore: release in only
-  one hook, watch the other path's count grow — E2)**.
-- **Documents**: head script runs at OnDocumentLoad against a full body; body `<script>`
-  documented-inert (observed); reload recycles the context (timer from the old document never
-  fires after reload; scripts re-ran); ExecuteScript ordering after LoadDocument (FIFO
-  guarantee); unknown-view ExecuteScript drops at Error.
-- **Modules**: import chain via VFS; `vfs://` stripped; TLA module refused with the named Error
-  (E1); module throw surfaces through the rejection tracker; rejection later handled ⇒ overlay
-  retracts.
-- **Write router**: `data-event` assignment reaches `OnModelWrite` on the game thread with the
-  right payload; **the shadow is byte-identical after** (I3's test, now with the router on);
-  no router registered ⇒ M3 behavior verbatim (the M3a/M3b suites keep passing untouched).
-- **Shutdown**: both paths (graceful SIGTERM run + hard-stop) leak nothing — `JS_FreeRuntime`'s
-  debug assert is the observable; unload event observed before close.
-- **Demo parity + budgets**: §7 table.
+- **Vendoring smoke**: `1+1`; `typeof queueMicrotask === 'function'` **as a core built-in**
+  (guards against shadowing); E3 settles BigInt; version string == recorded tag; `nm -D` shows no
+  `JS_` exports (Linux).
+- **Pump**: rAF next-frame semantics (the class-toggle idiom); 0 ms self-rearm does not livelock
+  **(restore: drop the cutoff → hang/timeout)**; self-requeuing microtask does not livelock
+  **(restore: drop the job cap → hang/timeout)**; cancel APIs; a promise-in-rAF resumes this
+  frame after timers (the documented ordering pinned); sibling callbacks survive a throw.
+- **GC**: no implicit collections (allocate hard between frame points; observable = the
+  fired-counter for collections stays 0 while the live-byte counter climbs); OOM at a tiny cap →
+  InternalError + fallback collection counted (E5); pause measured.
+- **Watchdog**: `while(true)` in (a) ExecuteScript, (b) a document script, (c) a listener — all
+  three trip, thread alive, next frame normal, document-script trip skips the remaining scripts
+  with the counted Error **(restore: disable → timeout)**.
+- **Stack**: deep recursion → RangeError, not a crash; inline mode with a deep game-thread stack
+  (E2's shape).
+- **Facade**: identity `===`; dead-handle nulls; `createElement("DIV")` matches `div` RCSS
+  **(restore: drop the lowercase → style not applied)**; classList mutation ⇒ `GetClassNames()`
+  reflects it while `GetAttribute("class")` goes stale (the trap observed); style get-copies;
+  querySelector deviations pinned; innerRML set kills child handles + detaches synchronously;
+  **all three listener-death orders** release the JS ref — live-listener + heap counters as the
+  observable **(restore: release in one hook only → the other paths' counters climb)**;
+  **two-view isolation**: two JS views, interleaved, each sees only its own document and globals.
+- **Documents**: head scripts run at OnDocumentReady against a shown body; body `<script>` inert
+  (observed); **reload recycles** — old context's timer never fires after replace, scripts re-ran
+  in a fresh context (the §2(f) ordering test, restore-the-bug: execute scripts from
+  OnDocumentLoad instead → reload leaves JS dead, exactly v1's bug); ExecuteScript-before-
+  document sees `document === null`; FIFO after LoadDocument; unknown-view drop at Error;
+  missing `<script src>` → named Error, later scripts still run.
+- **Modules**: import chain via VFS; `vfs://` stripped; TLA refused (E1); module throw → tracker;
+  later-handled rejection retracts from the overlay (observed via overlay state); missing import
+  → both Errors.
+- **Write router**: checkbox click lands in `OnModelWrite` with the right payload; **the control
+  reverts** on the next apply while the model is unchanged **(restore: drop the revert-dirty →
+  checkbox stays toggled against the shadow — v1's silent divergence)**; shadow byte-identical +
+  element-level reads (the M3b I3 test extended); zero-handler Warning; router-absent ⇒ M3
+  byte-identical (suites prove it); `vacuus.emit` round-trip; queue overflow drops with the named
+  diagnostic.
+- **Read surface**: `vacuus.model().get` for each kind incl. array length/index; unknown
+  model/path → null + one Warning.
+- **on\* attributes**: `onclick` snippet fires against the view context; `dispatchEvent`
+  round-trip.
+- **Gamepad/key**: a synthesized gamepad event (M2's path) reaches a JS listener.
+- **Shutdown**: graceful (SIGTERM run) and hard-stop leak nothing — the §5 host-side counters
+  `check` zero; ENABLE_DUMPS build logs no leaks **(restore: skip the listener sweep on
+  hard-stop → counters non-zero / ASan)**.
+- **Demo parity + budgets**: §7's table; the churn workload's GC numbers recorded.
 
 ## 9. The demo port — acceptance
 
-`m4_demo.rml` + `hud_logic.js`: the M3 demo document driven by JS instead of `PumpDemoModel` —
-bars via rAF + style proxy, killfeed via interval + createElement/remove, damage numbers via
-timers, stance via classList, the write-refusal button now landing in `OnModelWrite` and echoed
-back through `UpdateModel`. `vacuus.M4Demo` toggles it; `Freeze` freezes the JS clock inputs the
-same way. AutoShot screenshots at deterministic beats compared against the C++ driver's states.
-Gameplay-fed fields (health from the game) keep flowing through data binding **unchanged** — the
-demo shows both paths coexisting, which is the product's actual shape.
+`m4_demo.rml` + `hud_logic.js`: the M3 demo document driven by JS — bars via rAF + style proxy,
+killfeed via interval + createElement/remove (serial-deterministic, the same arithmetic as the
+C++ driver so screenshots are computable, VaCuusRender.cpp's pool scheme), damage numbers via
+timers, stance via classList, the demo button landing in `OnModelWrite` and echoed back through
+`UpdateModel`, health read via `vacuus.model('hud').get('Health')`. Gameplay-fed fields keep
+flowing through data binding unchanged — both paths coexisting is the product's shape.
+`vacuus.M4Demo` toggles; `Freeze` freezes the JS clock inputs. Plus the **churn workload** (§7):
+the 200-row killfeed fixture document driven from JS at M3b's rates, for the GC population.
 
 ## 10. Risks
 
 | Risk | Mitigation |
 |---|---|
-| GC pause blows the budget at real heap sizes | §7 measures on the port; step-GC knob; worst case the heuristic runs more often on smaller heaps |
-| Stack undersized for JS-over-RmlUi recursion | 2 MB + 256 KB JS limit + the headroom test |
-| Runaway script hangs the UI thread | watchdog, uncatchable, tested |
-| Wrapper leaks keep elements' blocks alive | identity cache + OnElementDestroy erase + both-orders listener test + FreeRuntime's debug assert |
-| Reload semantics surprise (JS state loss) | browser-refresh semantics documented loudly; models surviving is the continuity story |
-| Per-process runtime deviates from arch spec | deliberate amendment with reasons (§2(e)); revisit only if a real isolation need appears |
-| quickjs-ng upstream drift | pinned tag + VENDORED_TAG.txt + the vendoring inventory note |
+| GC pause blows the combined gate | §7's combination row is the assertion; step knob; smaller steps → more, shorter pauses |
+| Stack undersized | 2 MB + 256 KB JS limit + headroom test |
+| Runaway script | watchdog at every entry, non-zero in shipping; job cap; both tested |
+| Wrapper/listener leaks | registry + neuter protocol + three-orders test + host-side counters (`check`, Development-real) |
+| Reload kills JS silently (v1's design bug) | host-ordered recycle (§2(f)) + the restore-the-bug reload test |
+| Symbol export collision on Linux | vendored patch #1 + `nm -D` smoke |
+| Per-process runtime deviates from arch spec | documented amendment (§2(e)) |
+| Reference-HUD-scale unknowns | §7's workload note; churn proxy; numbers recorded on the bead |
 
 ## 11. Out of scope
 
-`@vacuus/preact`, CLI, TSX, sourcemaps (M5); CDP/breakpoints (v2 per arch spec §7); TLA support;
-fetch/XHR/WebSocket (non-goals); JS object mirror of data models (§3.11); localization hook (M5);
-BigInt decision is settled by E3, not deferred.
+`@vacuus/preact`, CLI, TSX, sourcemaps, localization hook (M5); CDP/breakpoints (v2); TLA;
+fetch/XHR/WebSocket (non-goals); JS object *mirror* of models (the read surface §3.11 is the
+scoped discharge; a live proxy object is not built); per-subsystem runtimes (§2(e), revisit on a
+real isolation need).
+
+## 12. What v1 got wrong, and why it matters
+
+1. **The replace-path ordering was inverted** — v1 ran new-document scripts from
+   `Plugin::OnDocumentLoad`, which fires inside `LoadDocument` while the old context is current;
+   the recycle then freed everything the scripts had just built. Every live reload would have
+   left JS silently dead — the design's own §8 test would have caught it, but the design section
+   prescribed the bug. A hook's *name* is not its *timing*; the fix is host-ordered execution.
+2. **v1's leak observable was compiled out in every configuration we run** — `JS_FreeRuntime`'s
+   assert is `<assert.h>` under UBT's global `NDEBUG=1`. The project's own "invariant with no
+   observable" lesson, again. Host-side counters are the observable.
+3. **`JS_EXTERN` "degrades to nothing" was true only on Windows** — on Linux/macOS it is
+   unconditional default-visibility; v1 compressed the research note's careful "visibility /
+   nothing" into the false half. Vendored patch #1.
+4. **The watchdog guarded the wrong scope** — per-pump, while document scripts and ExecuteScript
+   run from DrainCommands. Armed per host→JS entry now.
+5. **The microtask drain had the exact livelock v1 loudly closed for timers** — and v1's
+   shipping default turned the only backstop off. Job cap + non-zero shipping watchdog.
+6. **The write router left toggled controls diverged from the model** — RmlUi mutates the control
+   before dispatching change; a false `Set` skips the re-render. The revert-dirty is the missing
+   half, and its restore-the-bug is the checkbox staying toggled.
+7. **A third listener-death order existed that neither the demo nor v1 covered** — context death
+   before RmlUi's deferred detach. The registry + neuter protocol.
+8. **v1 measured GC against a budget the sum could breach while every row passed** — the
+   combination rule is now the gate row. And the workload v1 called "the reference HUD" is ~51
+   elements; the honest §7 note + churn proxy replace the pretense.
+9. Smaller, same species: `queueMicrotask` is a core builtin v1 planned to reimplement (and its
+   smoke test tested the engine, not our wiring); M3 §12.1's read-access promise was silently
+   retired (now §3.11's read surface); key/gamepad was promised in arch §7 and appeared nowhere
+   (now §3.9); the fired-counters the idle gate needs existed nowhere (now §6).

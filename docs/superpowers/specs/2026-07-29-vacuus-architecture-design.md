@@ -390,6 +390,10 @@ budgets are asserted from M3.
   timers/rAF, console, VFS modules, error overlay.
   *Accept:* reference-HUD logic ported from C++ sim to JS; parity + §11 budgets hold
   incl. GC pauses.
+  *(Amended 2026-07-31, M4 spec §7: the §11 reference-HUD document was never built — "completed
+  by M3" did not happen. M4's budgets are measured on the demo port plus a 200-row churn
+  workload matching the reference HUD's allocation shape; reference-HUD-scale numbers move to
+  the milestone that builds that document.)*
 - **M5 — Web-DX Tier 2 + flagship renderer:** `@vacuus/preact` + CLI template (watch →
   M2 live reload); material-decorator spike → impl or declared fallback; scene
   backdrop-filter (OutputTexture-copy design, §5); world-space component.
