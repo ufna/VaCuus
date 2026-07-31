@@ -47,6 +47,30 @@ struct FVaCuusDemoTarget
 	int32 Distance = 0;
 };
 
+/**
+ * One killfeed line -- the M3b spec 1 row shape (3 FStrings + a bool), because that is the shape
+ * the 200-row cost table was measured on and the shape a real shooter's feed actually has.
+ * bHeadshot is a native bool and could not be anything else: a bitfield cannot exist inside a
+ * container (the test fixture at VaCuusModelLayoutTestTypes.h:561-568 carries the argument).
+ */
+USTRUCT()
+struct FVaCuusDemoKillfeedRow
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, Category = "VaCuus")
+	FString Killer;
+
+	UPROPERTY(EditAnywhere, Category = "VaCuus")
+	FString Victim;
+
+	UPROPERTY(EditAnywhere, Category = "VaCuus")
+	FString Weapon;
+
+	UPROPERTY(EditAnywhere, Category = "VaCuus")
+	bool bHeadshot = false;
+};
+
 USTRUCT()
 struct FVaCuusDemoModel
 {
@@ -91,4 +115,14 @@ struct FVaCuusDemoModel
 	/** The nested struct: two leaves, one top-level name. */
 	UPROPERTY(EditAnywhere, Category = "VaCuus")
 	FVaCuusDemoTarget Target;
+
+	/**
+	 * The M3b array: struct rows through `data-for`, on the same model and the same one-call
+	 * UpdateModel as everything above. The pump appends a row every ~1.5 s and TRIMS FROM THE
+	 * FRONT above 6 rows -- deliberately the expensive direction (spec 3.6): removing element 0
+	 * shifts every survivor, so each trim exercises the all-rows re-render path on screen,
+	 * where an append-only feed would only ever exercise row creation.
+	 */
+	UPROPERTY(EditAnywhere, Category = "VaCuus")
+	TArray<FVaCuusDemoKillfeedRow> Killfeed;
 };

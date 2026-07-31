@@ -67,5 +67,25 @@
 		<button id="write-btn" class="m3-btn" data-event-click="Ammo = 0">try to set Ammo = 0</button>
 		<div class="hint">Nothing happens, by design: see vacuus.DumpModel and the LogVaCuus warning.</div>
 	</div>
+
+	<!-- 5. THE M3b KILLFEED: `data-for` over a TArray of struct rows. The div carrying data-for
+	     is a hidden TEMPLATE, not the first row -- DataViewFor::Initialize sets `display: none`
+	     on it and every generated row is a clone of its tag and attributes (minus data-for)
+	     inserted BEFORE it (DataViewDefault.cpp:474, :523), which is why the row styling below
+	     hangs off the template's own class list. `{{Killfeed.size}}` is answered by the array
+	     DEFINITION's Child(), not by the RmlUi core -- the one case a hand-rolled definition
+	     breaks by omission (VaCuusDataVariable.cpp:514-519).
+	     data-if writes a LOCAL `display: none` when false and REMOVES it when true
+	     (DataViewDefault.cpp:224-245), so the HS pill's stylesheet display is what shows. -->
+	<div id="p-kills">
+		<div class="panel-title">5 &#183; KILLFEED (data-for over TArray, {{Killfeed.size}} rows)</div>
+		<div class="row kill-row" data-for="kill : Killfeed">
+			<span class="killer">{{kill.Killer}}</span>
+			<span class="k-sep">&#187;</span>
+			<span class="victim">{{kill.Victim}}</span>
+			<span class="weapon">{{kill.Weapon}}</span>
+			<span class="hs" data-if="kill.bHeadshot">HS</span>
+		</div>
+	</div>
 </body>
 </rml>
