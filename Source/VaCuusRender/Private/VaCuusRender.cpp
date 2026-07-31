@@ -1705,8 +1705,9 @@ static FAutoConsoleCommand GM4DemoCommand(
  *
  * ExecuteScript is fire-and-forget FIFO into the same command queue as everything else, so
  * the JS pause lands on the UI thread's next frame -- one frame of skew between the two
- * halves, which no observable here can distinguish. Optional [delaySeconds] third of the
- * arguments for -ExecCmds runs, where every command executes before the first frame.
+ * halves, which no observable here can distinguish. Optional [delaySeconds] as the second
+ * argument token (after the 1|0) for -ExecCmds runs, where every command executes before
+ * the first frame.
  */
 static void FreezeM4DemoModel(const TArray<FString>& Args)
 {

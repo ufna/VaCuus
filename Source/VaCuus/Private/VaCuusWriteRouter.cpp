@@ -621,9 +621,14 @@ bool FVaCuusWriteRouter::ReadModelValue(uint32 ViewId, FName ModelName, const FS
 	}
 
 	const FString IndexText = Path.Mid(BracketIndex + 1, CloseIndex - BracketIndex - 1);
-	if (IndexText.IsEmpty() || !IndexText.IsNumeric())
+	// Digits only, not IsNumeric(): that accepts "1.5" and "-2", and Atoi would then truncate
+	// "1.5" to element 1 -- a silent wrong read where the contract promises a named miss.
+	// Negative indices fall through to the same Warning instead of the out-of-bounds one.
+	const bool bDigitsOnly = !IndexText.IsEmpty() &&
+		!IndexText.FindByPredicate([](TCHAR C) { return !FChar::IsDigit(C); });
+	if (!bDigitsOnly)
 	{
-		WarnReadMissOnce(ViewId, ModelName, Path, TEXT("the index is not a number"));
+		WarnReadMissOnce(ViewId, ModelName, Path, TEXT("the index is not a non-negative integer"));
 		return false;
 	}
 	const int32 Index = FCString::Atoi(*IndexText);
