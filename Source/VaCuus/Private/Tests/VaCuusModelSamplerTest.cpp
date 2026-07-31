@@ -2,6 +2,7 @@
 
 #include "Misc/AutomationTest.h"
 
+#include "VaCuusCountingMalloc.h"
 #include "VaCuusDefines.h"
 #include "VaCuusModelChannel.h"
 #include "VaCuusModelLayout.h"
@@ -923,6 +924,330 @@ bool FVaCuusModelSyncCopyTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("with the source's strings"), Dest.Killfeed[0].Killer, FString(TEXT("Ada")));
 		TestEqual(TEXT("and the source's nested leaves"), Dest.Killfeed[0].Impact.Y, 7.f);
 	}
+
+	return true;
+}
+
+/**
+ * SPEC 9's GAME-THREAD ROWS AT THE MEASURED SHAPE -- 200 rows x 4 fields, the killfeed --
+ * taken with the Sampler.Cost protocol: warm up until every allocation that will ever
+ * happen has happened, mutate outside the timer, time Sample+Publish only, report the
+ * number and assert a 10x-loose tripwire.
+ *
+ *   | GT diff, idle, 200 rows                        | <= 0.02 ms |
+ *   | GT one-element change: store + publish         | <= 0.10 ms |
+ *   | all 200 rows changed                           | measured, no target |
+ *
+ * The all-changed row has no spec target and gets no tripwire: it exists to bound what a
+ * fully-churning feed costs, and to be read next to the one-element row -- the difference
+ * between them is what per-element dirty granularity could ever recover on this thread
+ * (spec 9's decision note: RmlUi re-evaluates per root name regardless, only copy cost is
+ * on the table).
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusModelSamplerArrayCostTest, "VaCuus.Model.Sampler.ArrayCost",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusModelSamplerArrayCostTest::RunTest(const FString& Parameters)
+{
+	using namespace VaCuusModelSamplerTest;
+	using namespace VaCuusKillfeedFixture;
+
+	FPipeline Pipeline(FVaCuusCostFeedModel::StaticStruct());
+
+	// THE FIXTURE, ASSERTED BY COUNT (plan 6.1): every number below is "per 200 rows of 4
+	// bound fields", and this is what pins that denominator to the fixture actually measured.
+	if (!TestEqual(TEXT("the feed model binds exactly one field"), Pipeline.Layout.GetFields().Num(), 1))
+	{
+		return false;
+	}
+	const FVaCuusModelField& Field = Pipeline.Layout.GetFields()[0];
+	if (!TestTrue(TEXT("and it is an Array"), Field.Kind == EVaCuusFieldKind::Array)
+		|| !TestTrue(TEXT("of struct rows"), Field.ArrayDesc->IsStructElement())
+		|| !TestEqual(TEXT("with 4 bound leaves per row"), Field.ArrayDesc->ElementLayout->GetFields().Num(), 4))
+	{
+		return false;
+	}
+
+	FVaCuusCostFeedModel Live;
+	Fill(Live, 200);
+	if (!TestEqual(TEXT("200 rows"), Live.Killfeed.Num(), 200))
+	{
+		return false;
+	}
+
+	auto ApplyOneUpdate = [&Pipeline]()
+	{
+		Pipeline.Channel.ConsumeUpdate(
+			[&Pipeline](const FVaCuusModelUpdate& Update)
+			{
+				const TConstArrayView<FVaCuusModelField> Fields = Pipeline.Layout.GetFields();
+				for (TConstSetBitIterator<> It(Update.DirtyFields); It; ++It)
+				{
+					Fields[It.GetIndex()].CopyValue(Pipeline.UIShadow.GetData(), Update.Values.GetData());
+				}
+			});
+	};
+
+	// Warm up: the forced first publish (I1) carries the whole array, the slot buffers and
+	// every element string in shadow and slots are allocated here, and the echo drains so
+	// the idle loop below really is idle (an unreaped Unacked bit would keep publishing).
+	for (int32 Warmup = 0; Warmup < 4; ++Warmup)
+	{
+		Live.Killfeed[0].Victim = FString::Printf(TEXT("Vwarm%03d"), Warmup);
+		Pipeline.Sampler.Sample(FVaCuusCostFeedModel::StaticStruct(), &Live, Pipeline.Channel);
+		Pipeline.Channel.Publish(Pipeline.Sampler.GetShadow());
+		ApplyOneUpdate();
+	}
+
+	constexpr int32 Iterations = 2000;
+
+	// (1) THE IDLE FRAME: 200 x 4 value-pointer compares that find nothing, and a publish
+	// that declines. The cost a bound 200-row feed imposes on every frame it does not
+	// change, which for a killfeed is almost all of them.
+	int32 IdleMarked = 0;
+	int32 IdlePublishes = 0;
+	double IdleSeconds = 0.0;
+	for (int32 It = 0; It < Iterations; ++It)
+	{
+		const double Start = FPlatformTime::Seconds();
+		IdleMarked += Pipeline.Sampler.Sample(FVaCuusCostFeedModel::StaticStruct(), &Live, Pipeline.Channel);
+		IdlePublishes += Pipeline.Channel.Publish(Pipeline.Sampler.GetShadow()) ? 1 : 0;
+		IdleSeconds += FPlatformTime::Seconds() - Start;
+	}
+	TestEqual(TEXT("the idle loop marked nothing"), IdleMarked, 0);
+	TestEqual(TEXT("and published nothing"), IdlePublishes, 0);
+
+	// (2) ONE ELEMENT CHANGES, mid-array so the early-out earns exactly half its keep: the
+	// diff scans rows 0..99 clean and stops inside row 100, the store SyncCopys all 200 rows
+	// into the game shadow, the publish SyncCopys them again into the slot -- the two copies
+	// spec 9's row names. Same-length replacement (9 TCHARs, like MakeRow's "Victim100"), so
+	// the steady state is the assignment-shaped one the pipeline promises.
+	int32 OneMarked = 0;
+	double OneSeconds = 0.0;
+	for (int32 It = 0; It < Iterations; ++It)
+	{
+		Live.Killfeed[100].Victim = FString::Printf(TEXT("Vic%06d"), It);
+
+		const double Start = FPlatformTime::Seconds();
+		OneMarked += Pipeline.Sampler.Sample(FVaCuusCostFeedModel::StaticStruct(), &Live, Pipeline.Channel);
+		Pipeline.Channel.Publish(Pipeline.Sampler.GetShadow());
+		OneSeconds += FPlatformTime::Seconds() - Start;
+
+		ApplyOneUpdate();
+	}
+	TestEqual(TEXT("one element marked the one bit, every iteration"), OneMarked, Iterations);
+
+	// (3) EVERY ROW CHANGES. In-place character writes rather than 600 Printfs so the
+	// untimed mutation does not dominate the loop's wall time; a one-character difference is
+	// a full change to a case-sensitive byte comparator, and the equal-length assignment it
+	// causes is the same buffer-reusing copy as (2), 200 rows wide.
+	int32 AllMarked = 0;
+	double AllSeconds = 0.0;
+	for (int32 It = 0; It < Iterations; ++It)
+	{
+		const TCHAR Stamp = TCHAR('A' + (It % 26));
+		const bool bFlag = (It & 1) != 0;
+		for (FVaCuusCostKillfeedRow& Row : Live.Killfeed)
+		{
+			Row.Killer[0] = Stamp;
+			Row.Victim[0] = Stamp;
+			Row.Weapon[0] = Stamp;
+			Row.bHeadshot = bFlag;
+		}
+
+		const double Start = FPlatformTime::Seconds();
+		AllMarked += Pipeline.Sampler.Sample(FVaCuusCostFeedModel::StaticStruct(), &Live, Pipeline.Channel);
+		Pipeline.Channel.Publish(Pipeline.Sampler.GetShadow());
+		AllSeconds += FPlatformTime::Seconds() - Start;
+
+		ApplyOneUpdate();
+	}
+	TestEqual(TEXT("all-rows churn still marks exactly the one bit"), AllMarked, Iterations);
+
+	const double IdleMs = (IdleSeconds / Iterations) * 1000.0;
+	const double OneMs = (OneSeconds / Iterations) * 1000.0;
+	const double AllMs = (AllSeconds / Iterations) * 1000.0;
+
+	const FString Report = FString::Printf(
+		TEXT("200x4 killfeed sample+diff+publish: idle %.5f ms/frame (budget 0.02), one-element store+publish %.5f ms/frame ")
+		TEXT("(budget 0.10), all-200-rows %.5f ms/frame (no target) -- %d iterations each"),
+		IdleMs, OneMs, AllMs, Iterations);
+	AddInfo(Report);
+	UE_LOG(LogVaCuus, Display, TEXT("VaCuus M3b array cost: %s"), *Report);
+
+	TestTrue(*FString::Printf(TEXT("the 200-row idle diff stays inside 10x the budget (%.5f ms)"), IdleMs), IdleMs < 0.2);
+	TestTrue(*FString::Printf(TEXT("the one-element frame stays inside 10x the budget (%.5f ms)"), OneMs), OneMs < 1.0);
+
+	return true;
+}
+
+/**
+ * SPEC 9's ALLOCATION ROW -- "warm same-Num republish, unchanged strings: 0 container
+ * reallocations, ~0 element allocations" -- measured, not argued from ReallocForCopy's
+ * source. Two observables, because each can fail where the other cannot look:
+ *
+ *  - POINTER STABILITY. If no reallocation happened, the container block and every element
+ *    FString's buffer are AT THE SAME ADDRESS afterwards -- directly checkable, per copy,
+ *    with no allocator hook, and exactly the assertion VaCuus.Model.SyncCopy deferred here
+ *    (its comment says so). This is what the engine's destroy-and-rebuild copy fails: it
+ *    frees every element buffer before rebuilding (PropertyArray.cpp:1260-1328), so every
+ *    string pointer moves.
+ *  - THE COUNTING PROXY (VaCuusCountingMalloc.h). Pointer equality cannot see a
+ *    realloc-to-the-same-address or an alloc/free pair that nets out; a count of entries
+ *    into the allocator can. The count is process-wide, so the protocol is MIN OF EIGHT
+ *    WINDOWS: an allocation the measured code makes deterministically is in every window,
+ *    a donation from a logger or timer thread is not. The tests here never start the UI
+ *    thread, so no VaCuus code is running anywhere else during a window.
+ *
+ * The bound is 4, not 0, on the spec's own instruction (a small bound, not a literal zero
+ * of the whole process): it absorbs a hypothetical per-window donation that happens to
+ * recur, while a structural regression -- destroy-and-rebuild is ~600 element allocations,
+ * a per-publish container move is ~1 realloc in EVERY window -- clears it by two orders of
+ * magnitude. The raw numbers are reported either way.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusModelSamplerArrayAllocTest, "VaCuus.Model.Sampler.ArrayAlloc",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusModelSamplerArrayAllocTest::RunTest(const FString& Parameters)
+{
+	using namespace VaCuusModelSamplerTest;
+	using namespace VaCuusKillfeedFixture;
+
+	constexpr int32 NumWindows = 8;
+	constexpr uint64 SmallBound = 4;
+
+	auto Describe = [](const TCHAR* What, const TArray<VaCuusAllocWindow::FCounts>& Windows)
+	{
+		uint64 MinTotal = MAX_uint64;
+		uint64 MaxTotal = 0;
+		FString Raw;
+		for (const VaCuusAllocWindow::FCounts& Counts : Windows)
+		{
+			MinTotal = FMath::Min(MinTotal, Counts.Total());
+			MaxTotal = FMath::Max(MaxTotal, Counts.Total());
+			Raw += FString::Printf(TEXT(" %llu+%llur"), Counts.Mallocs, Counts.Reallocs);
+		}
+		return FString::Printf(TEXT("%s: alloc+realloc per window min %llu max %llu, raw[%s ]"), What, MinTotal, MaxTotal, *Raw);
+	};
+
+	auto MinTotal = [](const TArray<VaCuusAllocWindow::FCounts>& Windows)
+	{
+		uint64 Min = MAX_uint64;
+		for (const VaCuusAllocWindow::FCounts& Counts : Windows)
+		{
+			Min = FMath::Min(Min, Counts.Total());
+		}
+		return Min;
+	};
+
+	// ---- 1. The primitive itself: warm same-Num SyncCopy, through the production funnel. ----
+
+	const FVaCuusModelLayout Layout(FVaCuusCostFeedModel::StaticStruct());
+	if (!TestEqual(TEXT("one field"), Layout.GetFields().Num(), 1))
+	{
+		return false;
+	}
+	const FVaCuusModelField& Field = Layout.GetFields()[0];
+
+	FVaCuusCostFeedModel Src;
+	Fill(Src, 200);
+	FVaCuusCostFeedModel Dest;
+
+	// The cold copy: everything allocates here, once, which is the pipeline's own warm-up
+	// in miniature.
+	Field.CopyValue(&Dest, &Src);
+	if (!TestEqual(TEXT("the cold copy carried all 200 rows"), Dest.Killfeed.Num(), 200))
+	{
+		return false;
+	}
+
+	// The addresses that must survive a warm copy. Element addresses may not be STORED by
+	// the pipeline (spec 2(c)) -- these captures are the test's instrument, legal precisely
+	// because nothing mutates the destination's shape between capture and check.
+	const void* ContainerData = Dest.Killfeed.GetData();
+	TArray<const void*> StringData;
+	StringData.Reserve(600);
+	for (const FVaCuusCostKillfeedRow& Row : Dest.Killfeed)
+	{
+		StringData.Add(*Row.Killer);
+		StringData.Add(*Row.Victim);
+		StringData.Add(*Row.Weapon);
+	}
+
+	TArray<VaCuusAllocWindow::FCounts> SyncWindows;
+	for (int32 Window = 0; Window < NumWindows; ++Window)
+	{
+		if (!TestTrue(TEXT("the counting window installed"), VaCuusAllocWindow::Begin()))
+		{
+			return false;
+		}
+		Field.CopyValue(&Dest, &Src);
+		SyncWindows.Add(VaCuusAllocWindow::End());
+
+		// ZERO CONTAINER REALLOCATIONS, held per copy: Resize at the same Num touches
+		// nothing, so the block cannot move (the VaCuus.Model.SyncCopy deferral).
+		TestTrue(TEXT("the container block did not move"), static_cast<const void*>(Dest.Killfeed.GetData()) == ContainerData);
+	}
+
+	// ELEMENT BUFFERS REUSED: FString::operator= keeps the destination buffer whenever the
+	// source fits (ReallocForCopy reallocates only when NewMax > PrevMax, Array.h:710-751,
+	// reached from operator= at :1012-1020) -- with unchanged strings, every one of the 600
+	// buffers stays put.
+	int32 MovedStrings = 0;
+	int32 Cursor = 0;
+	for (const FVaCuusCostKillfeedRow& Row : Dest.Killfeed)
+	{
+		MovedStrings += (static_cast<const void*>(*Row.Killer) != StringData[Cursor++]) ? 1 : 0;
+		MovedStrings += (static_cast<const void*>(*Row.Victim) != StringData[Cursor++]) ? 1 : 0;
+		MovedStrings += (static_cast<const void*>(*Row.Weapon) != StringData[Cursor++]) ? 1 : 0;
+	}
+	TestEqual(TEXT("no element string buffer moved across 8 warm copies"), MovedStrings, 0);
+	TestTrue(TEXT("and the values are still the source's"),
+		Dest.Killfeed[100].Victim.Equals(MakeRow(100).Victim, ESearchCase::CaseSensitive));
+
+	// ---- 2. The pipeline stage the spec row actually names: a warm same-Num REPUBLISH. ----
+	//
+	// An unconsumed publish leaves the field unacknowledged, so every further Publish
+	// rewrites the array into a slot with its CURRENT (unchanged) values -- the UI-stall
+	// republish of spec 3.4, which is exactly "same-Num, unchanged strings". Slot warm-up
+	// needs the first FOUR: unconsumed publishes alternate between two of the three buffers
+	// (SwapWriteBuffers swaps write with temp and the read index never moves,
+	// TripleBuffer.h:182-191), so publishes 1 and 2 allocate each buffer's shadow and
+	// content, 3 and 4 prove both warm; every window then lands on a warm slot.
+	FPipeline Pipeline(FVaCuusCostFeedModel::StaticStruct());
+	FVaCuusCostFeedModel Live;
+	Fill(Live, 200);
+	Pipeline.Sampler.Sample(FVaCuusCostFeedModel::StaticStruct(), &Live, Pipeline.Channel);
+
+	for (int32 Publish = 0; Publish < 4; ++Publish)
+	{
+		TestTrue(TEXT("a warm-up publish went out"), Pipeline.Channel.Publish(Pipeline.Sampler.GetShadow()));
+	}
+	TestEqual(TEXT("the field is outstanding, which is what keeps the republish alive"),
+		Pipeline.Channel.NumOutstandingFields(), 1);
+
+	TArray<VaCuusAllocWindow::FCounts> PublishWindows;
+	for (int32 Window = 0; Window < NumWindows; ++Window)
+	{
+		if (!TestTrue(TEXT("the counting window installed"), VaCuusAllocWindow::Begin()))
+		{
+			return false;
+		}
+		const bool bPublished = Pipeline.Channel.Publish(Pipeline.Sampler.GetShadow());
+		PublishWindows.Add(VaCuusAllocWindow::End());
+		TestTrue(TEXT("the counted publish carried the array"), bPublished);
+	}
+
+	const FString SyncReport = Describe(TEXT("warm same-Num SyncCopy (200x3 strings)"), SyncWindows);
+	const FString PublishReport = Describe(TEXT("warm same-Num republish"), PublishWindows);
+	AddInfo(SyncReport);
+	AddInfo(PublishReport);
+	UE_LOG(LogVaCuus, Display, TEXT("VaCuus M3b array allocations: %s | %s"), *SyncReport, *PublishReport);
+
+	TestTrue(*FString::Printf(TEXT("a warm SyncCopy allocates ~nothing (min %llu <= %llu)"), MinTotal(SyncWindows), SmallBound),
+		MinTotal(SyncWindows) <= SmallBound);
+	TestTrue(*FString::Printf(TEXT("a warm republish allocates ~nothing (min %llu <= %llu)"), MinTotal(PublishWindows), SmallBound),
+		MinTotal(PublishWindows) <= SmallBound);
 
 	return true;
 }
