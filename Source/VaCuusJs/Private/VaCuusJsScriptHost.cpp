@@ -14,6 +14,7 @@
 #include "HAL/IConsoleManager.h"
 
 #include <RmlUi/Core/Core.h>
+#include <RmlUi/Core/Element.h>
 #include <RmlUi/Core/ElementDocument.h>
 #include <RmlUi/Core/Factory.h>
 
@@ -25,6 +26,48 @@ static TAutoConsoleVariable<int32> CVarVaCuusJsMaxJobsPerPump(
 	TEXT("next frame. This is the deterministic half of the microtask-livelock defense (spec 3.5) -- the watchdog is ")
 	TEXT("the other -- so 0, which removes the bound entirely, is a state to debug with, never to ship. Read once ")
 	TEXT("per script-host creation."));
+
+#if !UE_BUILD_SHIPPING
+static TAutoConsoleVariable<int32> CVarVaCuusJsOverlay(
+	TEXT("vacuus.Js.Overlay"),
+	1,
+	TEXT("The dev error overlay (default 1): surfaced JS errors appear as a translucent list in the top-right of the ")
+	TEXT("view's document, newest first, retracting entries whose rejections get handled later. 0 hides it; errors ")
+	TEXT("are still logged and counted either way. Read at each overlay refresh. Non-shipping builds only."));
+#endif
+
+namespace VaCuusJsOverlayInternal
+{
+/** Stored entries per view; oldest drop past this. Display shows fewer (GOverlayDisplayLines) after coalescing. */
+constexpr int32 GMaxStoredErrorsPerView = 32;
+
+#if !UE_BUILD_SHIPPING
+/** The overlay element's reserved id -- how the refresh refinds it across frames without holding a pointer. */
+static const char* GOverlayElementId = "vacuus-js-overlay";
+
+/** Distinct (source, message) lines the overlay shows, newest-first (spec 3.8's "last N"). */
+constexpr int32 GOverlayDisplayLines = 5;
+
+/**
+ * Text -> RML-safe text: the overlay body is built with SetInnerRML, and an
+ * error message is arbitrary script-authored text -- unescaped, a message
+ * containing markup would be PARSED into the overlay's subtree.
+ */
+FString EscapeRmlText(const FString& In)
+{
+	FString Out = In;
+	Out.ReplaceInline(TEXT("&"), TEXT("&amp;"), ESearchCase::CaseSensitive);
+	Out.ReplaceInline(TEXT("<"), TEXT("&lt;"), ESearchCase::CaseSensitive);
+	Out.ReplaceInline(TEXT(">"), TEXT("&gt;"), ESearchCase::CaseSensitive);
+	Out.ReplaceInline(TEXT("\""), TEXT("&quot;"), ESearchCase::CaseSensitive);
+	// One line per entry is the display contract; a multi-line message (or one
+	// that smuggled a CR) flattens rather than breaking the layout.
+	Out.ReplaceInline(TEXT("\r"), TEXT(" "), ESearchCase::CaseSensitive);
+	Out.ReplaceInline(TEXT("\n"), TEXT(" "), ESearchCase::CaseSensitive);
+	return Out;
+}
+#endif
+}	 // namespace VaCuusJsOverlayInternal
 
 FVaCuusJsScriptHost::FVaCuusJsScriptHost()
 	: FVaCuusJsScriptHost(FParams())
@@ -151,6 +194,11 @@ void FVaCuusJsScriptHost::OnViewRemoved(uint32 ViewId)
 			It.RemoveCurrent();
 		}
 	}
+
+	// The error record dies with the VIEW, not with any document or context
+	// (FJsViewErrors' comment): this is the one removal point short of Shutdown.
+	// Also what keeps a recycled ViewId from inheriting a dead view's errors.
+	ViewErrors.Remove(ViewId);
 }
 
 void FVaCuusJsScriptHost::OnDocumentReady(uint32 ViewId, Rml::ElementDocument* Document)
@@ -410,6 +458,11 @@ void FVaCuusJsScriptHost::PumpFrame(double NowSeconds)
 				MaxJobsPerPump, Pair.Key);
 		}
 	}
+
+	// LAST in the pump, before any Context::Update can run (the declaration
+	// comment carries the whole re-entrancy argument): spend the dirty flags
+	// this frame's errors -- and last frame's mid-Update ones -- accumulated.
+	RefreshDirtyOverlays();
 }
 
 int32 FVaCuusJsScriptHost::DrainJobs(FVaCuusJsViewContext& View, int32 Budget, bool& bOutCapHit)
@@ -518,7 +571,12 @@ void FVaCuusJsScriptHost::EvalModule(FVaCuusJsViewContext& View, const FString& 
 			// module's exports never materialize (spec 3.7). bCapHit distinguishes
 			// the one other way to be pending here -- a job chain the budget cut --
 			// so the message never blames await for a livelock or vice versa.
-			View.GetRuntime().NoteSurfacedError();
+			// ReportSurfacedRefusal counts AND feeds the Task 8 overlay -- this is
+			// the one error with no exception and no rejection, so neither of the
+			// sink's other two feeders can carry it; the detailed log stays here.
+			View.GetRuntime().ReportSurfacedRefusal(View.GetContext(), *ModuleName,
+				bCapHit ? TEXT("still pending after the job drain hit the cap; the module is refused")
+						: TEXT("top-level await refused; the module never finishes loading"));
 			if (bCapHit)
 			{
 				UE_LOG(LogVaCuusJS, Error,
@@ -715,6 +773,16 @@ void FVaCuusJsScriptHost::Shutdown()
 		RmlPlugin.Reset();
 	}
 
+	// The error sink leaves before anything dies: context teardown below can
+	// still surface diagnostics (a finalizer-adjacent path), and those must not
+	// try to build overlay entries against a host mid-teardown. The error
+	// record itself goes with it -- a host teardown is every view's end.
+	if (Runtime.IsValid())
+	{
+		Runtime->SetErrorSink(nullptr);
+	}
+	ViewErrors.Empty();
+
 	// Contexts BEFORE the runtime -- every JSValue a context holds (timer and rAF
 	// callbacks, the DOM wrappers) must be freed before JS_FreeRuntime
 	// (research note quickjs-ng-0151.md section 2). The runtime's destructor then
@@ -731,6 +799,12 @@ void FVaCuusJsScriptHost::EnsureRuntime()
 	if (!Runtime.IsValid())
 	{
 		Runtime = MakeUnique<FVaCuusJsRuntime>(Params.RuntimeParams);
+
+		// The Task 8 error fan-out: installed the moment the runtime exists, so
+		// the very first script's very first error already reaches the overlay
+		// state. The host strictly outlives the runtime (it owns it), so the raw
+		// back-pointer needs no detach choreography beyond Shutdown's.
+		Runtime->SetErrorSink(this);
 	}
 }
 
@@ -745,6 +819,234 @@ FVaCuusJsViewContext* FVaCuusJsScriptHost::FindViewContextForDocument(Rml::Eleme
 	const uint32* ViewId = DocumentViews.Find(Document);
 	return ViewId != nullptr ? FindViewContext(*ViewId) : nullptr;
 }
+
+void FVaCuusJsScriptHost::OnJsError(JSContext* Ctx, EVaCuusJsErrorKind /*Kind*/, const TCHAR* Source,
+	const FString& Message, const FString& Stack, void* RejectionKey)
+{
+	using namespace VaCuusJsOverlayInternal;
+
+	// ATTRIBUTION (the sink contract): the context opaque IS the owning
+	// FVaCuusJsViewContext -- every JSContext in this module is born in its
+	// constructor (JS_SetContextOpaque there) and the destructor nulls the
+	// opaque before JS_FreeContext. Null therefore means UNATTRIBUTED -- a
+	// removed view's pinned job, or a context mid-teardown -- and unattributed
+	// is log-only BY DESIGN: the caller already logged and counted, there is no
+	// view whose overlay could honestly claim the error, and inventing one
+	// (say, "the first view") would misdirect whoever reads it.
+	FVaCuusJsViewContext* View = Ctx != nullptr ? static_cast<FVaCuusJsViewContext*>(JS_GetContextOpaque(Ctx)) : nullptr;
+	if (View == nullptr)
+	{
+		return;
+	}
+
+	// The Kind is part of the seam (Task 9's router may split on it) but the
+	// overlay does not: every entry displays as "source: message", and the
+	// Stack -- carried for any future consumer -- is deliberately not stored
+	// (FJsErrorEntry's comment; the log holds it).
+	(void)Stack;
+
+	FJsViewErrors& State = ViewErrors.FindOrAdd(View->GetViewId());
+	if (State.Entries.Num() >= GMaxStoredErrorsPerView)
+	{
+		State.Entries.RemoveAt(0);
+	}
+	State.Entries.Add({Source, Message, RejectionKey});
+	State.bOverlayDirty = true;
+}
+
+void FVaCuusJsScriptHost::OnJsRejectionHandled(JSContext* Ctx, void* RejectionKey)
+{
+	FVaCuusJsViewContext* View = Ctx != nullptr ? static_cast<FVaCuusJsViewContext*>(JS_GetContextOpaque(Ctx)) : nullptr;
+	if (View == nullptr)
+	{
+		return;
+	}
+	FJsViewErrors* State = ViewErrors.Find(View->GetViewId());
+	if (State == nullptr)
+	{
+		return;
+	}
+
+	// NEWEST match only, not RemoveAll, and the difference is honesty under
+	// address reuse: the key is a freed-able promise's pointer, so a long-dead
+	// entry can share the key with a NEW promise allocated at the recycled
+	// address -- and only the newest holder of the key can be the promise this
+	// re-fire is about (the engine retracts each promise at most once,
+	// quickjs.c:55182's is_handled latch). Removing all matches would retract
+	// the dead entry too, whose rejection was never handled by anyone.
+	for (int32 Index = State->Entries.Num() - 1; Index >= 0; --Index)
+	{
+		if (State->Entries[Index].RejectionKey == RejectionKey)
+		{
+			State->Entries.RemoveAt(Index);
+			State->bOverlayDirty = true;
+			break;
+		}
+	}
+}
+
+void FVaCuusJsScriptHost::RefreshDirtyOverlays()
+{
+#if !UE_BUILD_SHIPPING
+	for (TPair<uint32, FJsViewErrors>& Pair : ViewErrors)
+	{
+		if (Pair.Value.bOverlayDirty)
+		{
+			Pair.Value.bOverlayDirty = false;
+			RebuildOverlay(Pair.Key, Pair.Value);
+		}
+	}
+#endif
+	// Shipping: the flags simply stay set -- one bool per erroring view, never
+	// read. The entries and counters remain live (spec 3.8's counter contract).
+}
+
+#if !UE_BUILD_SHIPPING
+void FVaCuusJsScriptHost::RebuildOverlay(uint32 ViewId, const FJsViewErrors& State)
+{
+	using namespace VaCuusJsOverlayInternal;
+
+	// The view's CURRENT document, via the same routing map the on* dispatch
+	// trusts. None -- the view closed its document, or a replace's new tree has
+	// not surfaced an error yet -- means nothing to draw ON; the dirty flag is
+	// already spent, and the next error (or retract) re-marks it once a
+	// document exists. That is the documented replace behavior: the overlay
+	// element died with the old tree, the HOST-owned entries did not, and the
+	// rebuild is lazy on the next arrival.
+	Rml::ElementDocument* Document = nullptr;
+	for (const TPair<Rml::ElementDocument*, uint32>& Pair : DocumentViews)
+	{
+		if (Pair.Value == ViewId)
+		{
+			Document = Pair.Key;
+			break;
+		}
+	}
+	if (Document == nullptr)
+	{
+		return;
+	}
+
+	// Refound by reserved id every refresh, never held as a pointer: the
+	// element belongs to a tree whose replace/close lifecycle this host does
+	// not control, and the id lookup (Element::GetElementById, a tree walk)
+	// runs only on error arrival/retract -- rare by definition.
+	Rml::Element* Overlay = Document->GetElementById(GOverlayElementId);
+
+	if (CVarVaCuusJsOverlay.GetValueOnAnyThread() == 0 || State.Entries.IsEmpty())
+	{
+		// Off by cvar, or the last entry retracted: the overlay must VANISH, not
+		// linger empty (spec 3.8 -- an empty error box is itself a lie). The
+		// returned ElementPtr is discarded, destroying the subtree at statement
+		// end (Element.h:522-523); its OnElementDestroy sweep erases any cache
+		// entries a curious script created by querying the overlay.
+		if (Overlay != nullptr)
+		{
+			if (Rml::Element* Parent = Overlay->GetParentNode())
+			{
+				Parent->RemoveChild(Overlay);
+			}
+		}
+		return;
+	}
+
+	if (Overlay == nullptr)
+	{
+		// HOST-owned UI, built with raw Rml on purpose: the error path must not
+		// allocate JS (a facade createElement would mint a wrapper -- JS heap
+		// traffic on the very path that reports the heap's failures). The
+		// wrapper cache stays out of the picture unless a script itself queries
+		// the overlay, and that case is ordinary: the plugin's OnElementDestroy
+		// hook erases such entries when the overlay dies (spec 2(g)).
+		Rml::ElementPtr Fresh = Rml::Factory::InstanceElement(Document, "div", "div", Rml::XMLAttributes());
+		if (!Fresh)
+		{
+			return;
+		}
+		Fresh->SetId(GOverlayElementId);
+		Overlay = Document->AppendChild(MoveTemp(Fresh));
+		if (Overlay == nullptr)
+		{
+			return;
+		}
+
+		// Inline styles via SetProperty -- no RCSS file dependency, so the
+		// overlay works in any document, styled or bare.
+		Overlay->SetProperty("position", "absolute");
+		Overlay->SetProperty("top", "8dp");
+		Overlay->SetProperty("right", "8dp");
+		Overlay->SetProperty("max-width", "60%");
+		Overlay->SetProperty("display", "block");
+		Overlay->SetProperty("background-color", "#000000C0");
+		Overlay->SetProperty("color", "#FF9E9E");
+		Overlay->SetProperty("font-size", "12dp");
+		Overlay->SetProperty("padding", "6dp");
+		Overlay->SetProperty("z-index", "1000");
+
+		// A dev surface must never eat the game's input: without this the
+		// overlay would win hit tests over whatever it happens to cover.
+		Overlay->SetProperty("pointer-events", "none");
+
+		// Font: inherit the document's family when it has one (production
+		// documents style themselves); otherwise name the engine's own default
+		// face (VaCuusEngine.cpp loads fonts/LatoLatin-Regular.ttf at boot) --
+		// a text element with NO resolvable family is a per-layout RmlUi
+		// warning (LogMissingFontFace, ElementText.cpp:81-99), which in a bare
+		// document the overlay itself would otherwise cause.
+		if (Document->GetProperty<Rml::String>("font-family").empty())
+		{
+			Overlay->SetProperty("font-family", "LatoLatin");
+		}
+	}
+
+	// THE COALESCING RULE (Task 8, from the Task 7 handoff): identical
+	// (source, message) pairs collapse into one line with a multiplicity
+	// suffix, so the engine's sync-module double-fire -- one throw, two
+	// unhandled rejections with the SAME stringified reason (the body promise
+	// and m->promise both reject unhandled, js_execute_sync_module reads state
+	// without attaching handlers, quickjs.c:31390-31410) -- reads as one error
+	// that happened, not two different ones. Newest-first; at most
+	// GOverlayDisplayLines distinct lines, with duplicates of a SHOWN line
+	// still counted into its suffix and distinct lines past the cap dropped.
+	struct FDisplayLine
+	{
+		FString Text;
+		int32 Count = 0;
+	};
+	TArray<FDisplayLine> Lines;
+	TMap<FString, int32> KeyToLine;
+	for (int32 Index = State.Entries.Num() - 1; Index >= 0; --Index)
+	{
+		const FJsErrorEntry& Entry = State.Entries[Index];
+		const FString Key = Entry.Source + TEXT("\x1f") + Entry.Message;
+		if (const int32* Found = KeyToLine.Find(Key))
+		{
+			++Lines[*Found].Count;
+			continue;
+		}
+		if (Lines.Num() >= GOverlayDisplayLines)
+		{
+			continue;
+		}
+		KeyToLine.Add(Key, Lines.Add({Entry.Source + TEXT(": ") + Entry.Message, 1}));
+	}
+
+	FString Markup;
+	for (const FDisplayLine& Line : Lines)
+	{
+		FString Text = Line.Text;
+		if (Line.Count > 1)
+		{
+			// U+00D7 MULTIPLICATION SIGN, escaped so the file stays ASCII.
+			Text += FString::Printf(TEXT(" \u00D7%d"), Line.Count);
+		}
+		// display:block inline on each line: RmlUi's default display is inline
+		// and a bare document has no stylesheet to say otherwise.
+		Markup += TEXT("<div style=\"display: block;\">") + EscapeRmlText(Text) + TEXT("</div>");
+	}
+	Overlay->SetInnerRML(Rml::String(TCHAR_TO_UTF8(*Markup)));
+}
+#endif	  // !UE_BUILD_SHIPPING
 
 void FVaCuusJsScriptHost::AddUnresolvedAttributeListener(FVaCuusJsEventListener* Listener)
 {

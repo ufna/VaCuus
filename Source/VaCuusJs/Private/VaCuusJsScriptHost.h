@@ -119,7 +119,7 @@ private:
  * after old-close and Show() (through FVaCuusUIThread::GetActiveScriptHost),
  * and the command drain routes the ExecuteScript kind into ExecuteScript here.
  */
-class FVaCuusJsScriptHost final : public IVaCuusScriptHost
+class FVaCuusJsScriptHost final : public IVaCuusScriptHost, public IVaCuusJsErrorSink
 {
 public:
 	/**
@@ -177,6 +177,16 @@ public:
 	virtual void OnInlineFrameEntry() override;
 	virtual void Shutdown() override;
 	//~ End IVaCuusScriptHost
+
+	//~ Begin IVaCuusJsErrorSink (M4 Task 8, spec 3.8). Installed on the runtime
+	//~ at EnsureRuntime; called synchronously on this host's thread from every
+	//~ error path -- including mid-engine-operation for the rejection pair, so
+	//~ neither override runs JS: they resolve the context opaque, mutate
+	//~ ViewErrors, and set a dirty flag the NEXT pump's overlay refresh spends.
+	virtual void OnJsError(JSContext* Ctx, EVaCuusJsErrorKind Kind, const TCHAR* Source, const FString& Message,
+		const FString& Stack, void* RejectionKey) override;
+	virtual void OnJsRejectionHandled(JSContext* Ctx, void* RejectionKey) override;
+	//~ End IVaCuusJsErrorSink
 
 	/**
 	 * The plugin's callback: probes every materialized view context's wrapper
@@ -284,10 +294,71 @@ private:
 	 */
 	void EvalModule(FVaCuusJsViewContext& View, const FString& Source, const FString& ModuleName);
 
+	/**
+	 * One recorded error (M4 Task 8): what the overlay displays and what a
+	 * retract must find. Source+Message are the display pair (the coalescing
+	 * key); RejectionKey is non-null only for tracker entries -- the promise
+	 * pointer as identity token, never dereferenced (IVaCuusJsErrorSink).
+	 * The stack is deliberately NOT stored: the overlay shows one line per
+	 * error (spec 3.8, "last N errors"), and the full stack is already in the
+	 * log, which is the record.
+	 */
+	struct FJsErrorEntry
+	{
+		FString Source;
+		FString Message;
+		void* RejectionKey = nullptr;
+	};
+
+	/**
+	 * A view's error record, ON THE HOST and keyed by ViewId, deliberately NOT
+	 * on FVaCuusJsViewContext: a document replace recycles the context (spec
+	 * 3.4), and context-resident entries would vanish exactly when a developer
+	 * reloads to see whether the error is still there. Host-resident entries
+	 * survive the recycle -- honest across reloads -- and the overlay ELEMENT,
+	 * which does die with the replaced tree, is rebuilt lazily from them at the
+	 * next error's refresh. Cleared only when the view itself is removed, and
+	 * at Shutdown.
+	 */
+	struct FJsViewErrors
+	{
+		TArray<FJsErrorEntry> Entries;
+
+		/** Set by the sink, spent by RefreshDirtyOverlays at the next pump. */
+		bool bOverlayDirty = false;
+	};
+
+	/**
+	 * The overlay refresh, called at the END of PumpFrame -- and the placement
+	 * is the re-entrancy answer, not a convenience. An error can surface
+	 * MID-Context::Update (an event listener dispatched during Update throws),
+	 * and appending an element to the tree during Update's traversal has no
+	 * RmlUi safety guarantee -- the data-binding layer's re-entrancy tolerance
+	 * covers only its own view containers (DataView.cpp:70's converge loop; the
+	 * M3 notes' section on it), not arbitrary tree mutation under a running
+	 * Update. So the sink only marks bOverlayDirty, and this refresh applies it
+	 * here: PumpFrame runs before the record loop's Context::Update
+	 * (VaCuusUIThread.cpp RunFrame -- the JsPump scope precedes
+	 * RecordAndPublishFrame), so every overlay mutation lands between frames,
+	 * never inside one. Errors raised DURING this frame's DrainCommands or pump
+	 * still show this same frame; errors raised mid-Update show next frame.
+	 * The batching is free. Non-shipping no-op body in Shipping -- the entries
+	 * and the sink stay (spec 3.8's counter contract), only the UI is gated.
+	 */
+	void RefreshDirtyOverlays();
+
+#if !UE_BUILD_SHIPPING
+	/** One view's overlay rebuild: find the document, build/update/remove the element. UI thread. */
+	void RebuildOverlay(uint32 ViewId, const FJsViewErrors& State);
+#endif
+
 	const FParams Params;
 
 	/** Params.MaxJobsPerPump with -1 resolved to the cvar, once, at construction. */
 	const int32 MaxJobsPerPump;
+
+	/** See FJsViewErrors. Owning-thread only, like every container here. */
+	TMap<uint32, FJsViewErrors> ViewErrors;
 
 	/**
 	 * The most recent pump's timestamp -- the deadline base handed to a context

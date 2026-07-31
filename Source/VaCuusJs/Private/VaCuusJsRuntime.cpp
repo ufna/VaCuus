@@ -268,9 +268,36 @@ int FVaCuusJsRuntime::InterruptThunk(JSRuntime* /*Rt*/, void* Opaque)
 }
 
 void FVaCuusJsRuntime::RejectionThunk(
-	JSContext* Ctx, JSValueConst /*Promise*/, JSValueConst Reason, bool bIsHandled, void* Opaque)
+	JSContext* Ctx, JSValueConst Promise, JSValueConst Reason, bool bIsHandled, void* Opaque)
 {
 	FVaCuusJsRuntime* Self = static_cast<FVaCuusJsRuntime*>(Opaque);
+
+	// The entry/retract pairing key: the promise's object pointer, an identity
+	// token the sink compares and never dereferences (IVaCuusJsErrorSink's
+	// comment has the freed-promise argument). The same JSValue is what both
+	// tracker fire sites pass -- fulfill_or_reject_promise's `promise` argument
+	// (quickjs.c:54370-54375) and perform_promise_then's (quickjs.c:55164-55169)
+	// -- so the pointer pairs them exactly.
+	void* const RejectionKey = JS_VALUE_GET_PTR(Promise);
+
+	if (bIsHandled)
+	{
+		// The RETRACTION re-fire: a handler was attached to the already-rejected
+		// promise later (quickjs.c:55164-55169; is_handled then latches at
+		// :55182, so each promise retracts at most once). The sink withdraws the
+		// overlay entry (spec 3.8: the overlay must not lie). The error COUNTER
+		// is deliberately not decremented -- it counts fired diagnostics, not
+		// currently-standing ones, so tests can assert exact deltas. NOTE the
+		// reason is deliberately not stringified on this branch: JS_ToCString
+		// can invoke a user toString, and this callback runs mid-engine-
+		// operation -- the retract needs only the key.
+		UE_LOG(LogVaCuusJS, Verbose, TEXT("A rejected JS promise was later handled; its overlay entry is retracted"));
+		if (Self->ErrorSink != nullptr)
+		{
+			Self->ErrorSink->OnJsRejectionHandled(Ctx, RejectionKey);
+		}
+		return;
+	}
 
 	FString ReasonText(TEXT("<unstringifiable>"));
 	if (const char* Utf8 = JS_ToCString(Ctx, Reason))
@@ -285,20 +312,29 @@ void FVaCuusJsRuntime::RejectionThunk(
 		JS_FreeValue(Ctx, JS_GetException(Ctx));
 	}
 
-	if (!bIsHandled)
+	// Fired when a promise rejects with no handler attached (quickjs.c:54370-54375).
+	Self->NumErrors.fetch_add(1, std::memory_order_relaxed);
+	UE_LOG(LogVaCuusJS, Error, TEXT("Unhandled JS promise rejection: %s"), *ReasonText);
+
+	// The overlay entry. No stack even when the reason is an Error: `stack` is
+	// normally a plain data property (build_backtrace, quickjs.c:7766), but a
+	// script can redefine it as an accessor, and JS_GetPropertyStr would then run
+	// user JS from inside the engine's promise machinery -- ReportException may
+	// afford that risk at its closed entry boundary; this mid-operation callback
+	// may not.
+	if (Self->ErrorSink != nullptr)
 	{
-		// Fired when a promise rejects with no handler attached (quickjs.c:54371-54375).
-		Self->NumErrors.fetch_add(1, std::memory_order_relaxed);
-		UE_LOG(LogVaCuusJS, Error, TEXT("Unhandled JS promise rejection: %s"), *ReasonText);
+		Self->ErrorSink->OnJsError(
+			Ctx, EVaCuusJsErrorKind::Rejection, TEXT("promise"), ReasonText, FString(), RejectionKey);
 	}
-	else
+}
+
+void FVaCuusJsRuntime::ReportSurfacedRefusal(JSContext* Ctx, const TCHAR* Source, const FString& Message)
+{
+	NumErrors.fetch_add(1, std::memory_order_relaxed);
+	if (ErrorSink != nullptr)
 	{
-		// The RETRACTION re-fire: a handler was attached to the already-rejected
-		// promise later (quickjs.c:55165-55169). The M4 Task 8 overlay consumes this
-		// to withdraw the entry; until then the log is the record. The error COUNTER
-		// is deliberately not decremented -- it counts fired diagnostics, not
-		// currently-standing ones, so tests can assert exact deltas.
-		UE_LOG(LogVaCuusJS, Verbose, TEXT("A rejected JS promise was later handled (reason was: %s)"), *ReasonText);
+		ErrorSink->OnJsError(Ctx, EVaCuusJsErrorKind::Refusal, Source, Message, FString(), nullptr);
 	}
 }
 
@@ -415,6 +451,13 @@ void FVaCuusJsRuntime::ReportException(JSContext* Ctx, const TCHAR* SourceName)
 		Stack.IsEmpty() ? TEXT("") : TEXT("\n"), *Stack);
 
 	JS_FreeValue(Ctx, Exception);
+
+	// The Task 8 fan-out, LAST: the sink sees only strings plus the context for
+	// attribution, never the (already freed) exception value.
+	if (ErrorSink != nullptr)
+	{
+		ErrorSink->OnJsError(Ctx, EVaCuusJsErrorKind::Exception, SourceName, Message, Stack, nullptr);
+	}
 }
 
 void FVaCuusJsRuntime::UpdateStackTopOnThisThread()

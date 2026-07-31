@@ -11,6 +11,62 @@
 // nothing outside VaCuusJs may see a JSRuntime.
 #include "quickjs.h"
 
+/** The three shapes a surfaced JS-error diagnostic arrives in (M4 Task 8, spec 3.8). */
+enum class EVaCuusJsErrorKind : uint8
+{
+	/** A pending exception consumed by ReportException. */
+	Exception,
+	/** An unhandled promise rejection -- the tracker's is_handled=false fire (quickjs.c:54370-54375). */
+	Rejection,
+	/** A host-named refusal with no exception and no rejection to consume -- the TLA refusal (spec 3.7). */
+	Refusal,
+};
+
+/**
+ * The runtime-level error fan-out (M4 Task 8, spec 3.8): every surfaced error
+ * diagnostic -- ReportException, the rejection tracker, the named-refusal path
+ * -- forwards here AFTER it has logged and counted, so one implementer (the
+ * script host, which owns the per-view overlay state) sees them all without
+ * the runtime knowing what a view is.
+ *
+ * CALLING CONTRACT: synchronous, on the runtime's owning thread, from inside
+ * the reporting path -- which for OnJsError(Rejection)/OnJsRejectionHandled
+ * means from inside the engine's own promise machinery, mid-operation
+ * (fulfill_or_reject_promise / perform_promise_then). An implementation must
+ * therefore never call back into JS; reading the context opaque is the one
+ * sanctioned touch.
+ *
+ * ATTRIBUTION: the JSContext's opaque is the owning FVaCuusJsViewContext (set
+ * at context birth, nulled in its destructor before JS_FreeContext). A null
+ * opaque means the error is UNATTRIBUTED -- a removed view's pinned job, or a
+ * context mid-teardown -- and the sink treats it as log-only: the log and the
+ * counter (both already written by the caller) are the whole record, no
+ * overlay entry anywhere.
+ */
+class IVaCuusJsErrorSink
+{
+public:
+	virtual ~IVaCuusJsErrorSink() = default;
+
+	/**
+	 * One surfaced error. RejectionKey is non-null ONLY for Kind==Rejection:
+	 * JS_VALUE_GET_PTR of the rejected promise (quickjs.h:220/:246/:323 by value
+	 * representation) -- an IDENTITY TOKEN, never dereferenced. The promise may
+	 * be freed at any later point; a freed promise's key simply never re-fires,
+	 * and OnJsRejectionHandled compares keys, it never touches the pointee.
+	 */
+	virtual void OnJsError(JSContext* Ctx, EVaCuusJsErrorKind Kind, const TCHAR* Source, const FString& Message,
+		const FString& Stack, void* RejectionKey) = 0;
+
+	/**
+	 * The RETRACT half (spec 3.8: the overlay must not lie): a handler was
+	 * attached to an already-rejected, previously-reported promise, re-firing
+	 * the tracker with is_handled=true (quickjs.c:55164-55169). RejectionKey
+	 * matches the OnJsError fire for the same promise.
+	 */
+	virtual void OnJsRejectionHandled(JSContext* Ctx, void* RejectionKey) = 0;
+};
+
 /**
  * The process's one quickjs runtime (M4 spec 2(e)): capped, watched, counted.
  *
@@ -135,15 +191,26 @@ public:
 	void NoteJobExecuted() { NumJobsExecuted.fetch_add(1, std::memory_order_relaxed); }
 
 	/**
-	 * Counts a surfaced JS-error diagnostic that passed through NEITHER
-	 * ReportException NOR the rejection tracker -- the only two other writers of
-	 * NumErrors. One caller today (M4 Task 7): the host's top-level-await
-	 * refusal, which has no exception to consume (the module promise is merely
-	 * still pending) and no rejection to track, yet is exactly the kind of fired
-	 * diagnostic the counter promises tests and the Task 8 overlay (spec 3.8:
-	 * "the host exposes a total-JS-error counter").
+	 * Counts AND fans out a surfaced JS-error diagnostic that passed through
+	 * NEITHER ReportException NOR the rejection tracker -- the only two other
+	 * writers of NumErrors. One caller today (M4 Task 7): the host's
+	 * top-level-await refusal, which has no exception to consume (the module
+	 * promise is merely still pending) and no rejection to track, yet is
+	 * exactly the kind of fired diagnostic the counter promises tests and the
+	 * Task 8 overlay (spec 3.8: "the host exposes a total-JS-error counter").
+	 * The caller keeps its own UE_LOG (it carries detail this funnel does not);
+	 * Ctx is for the sink's attribution only. Owning thread.
 	 */
-	void NoteSurfacedError() { NumErrors.fetch_add(1, std::memory_order_relaxed); }
+	void ReportSurfacedRefusal(JSContext* Ctx, const TCHAR* Source, const FString& Message);
+
+	/**
+	 * The Task 8 overlay's registration point (spec 3.8): the host installs
+	 * itself at runtime creation, and every error path above forwards through
+	 * IVaCuusJsErrorSink after logging and counting. Null detaches. In ALL
+	 * builds -- the sink is the routing seam; only the overlay UI behind it is
+	 * non-shipping. Owning thread.
+	 */
+	void SetErrorSink(IVaCuusJsErrorSink* InSink) { ErrorSink = InSink; }
 
 	/**
 	 * vacuus.onUnload callbacks actually INVOKED (M4 Task 6) -- a fired-count,
@@ -238,6 +305,13 @@ private:
 		JSContext* Ctx, JSValueConst Promise, JSValueConst Reason, bool bIsHandled, void* Opaque);
 
 	JSRuntime* Runtime = nullptr;
+
+	/**
+	 * See SetErrorSink. Owning-thread-only, plain pointer on purpose: the host
+	 * outlives the runtime on every path (the host owns the runtime), so no
+	 * lifetime machinery is earned.
+	 */
+	IVaCuusJsErrorSink* ErrorSink = nullptr;
 
 	//~ See the accessors' comment. 0 = JS_INVALID_CLASS_ID (quickjs.h:692) until
 	//~ Construct registers them.
