@@ -562,4 +562,745 @@ bool FVaCuusModelUICostTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+/*
+ * ---- M3b: THE 200-ROW ARRAY MEASUREMENTS (spec 9, plan Task 6.4) ----
+ *
+ * Same architecture as the scalar cost test above -- everything is production except the
+ * host -- but the host is a new class rather than FCostHost for one structural reason: two
+ * of the four array rows (grow 0->200, shrink 200->0) are SINGLE-FRAME numbers, and a
+ * whole-run accumulator cannot see one frame. So this host keeps a PER-FRAME log of both
+ * brackets next to the model's cumulative fields-applied counter -- the FDataForProbeHost
+ * FrameLog idea -- and the test selects the one frame whose counter moved
+ * (FindSingleApplyFrame). That is the "SetMeasuring around exactly the one growth frame"
+ * protocol with the arming race removed: nothing has to be toggled at the right moment,
+ * because every frame is recorded and the apply frame is identified after the fact.
+ */
+namespace VaCuusModelCostTest
+{
+/** The model name GKillfeedDocument's data-model attribute resolves. */
+static const FName GFeedModelName(TEXT("feed"));
+
+/** Rows changed / probed by the three-view run; mid-array, like the DataForIdle control row. */
+static constexpr int32 ProbeRow = 137;
+
+/**
+ * The Task 5 killfeed document without the size probe: one data-for, four `{{...}}`
+ * entries per row in ONE text node -- so each row owns one DataViewText with four entries,
+ * all four re-run whenever the root is dirtied (DataViewDefault.cpp:348-359). 200 rows
+ * therefore cost ~800 expression evaluations per dirty, which is the "~4 bindings/row"
+ * basis spec 9's re-evaluation row is priced in.
+ *
+ * font-family is load-bearing, not decoration: a fontless text element logs "No font face
+ * defined" per layout pass, which at 200 rows would bury the log this project reads test
+ * results from (the VaCuus.Model.DataFor* documents carry the same argument).
+ */
+static const TCHAR* GKillfeedDocument = TEXT(R"(<rml>
+<head><style>body { display: block; font-family: LatoLatin; font-size: 16px; } div { display: block; }</style></head>
+<body data-model="feed">
+	<div id="rows"><div data-for="kill : Killfeed">{{ kill.Killer }}|{{ kill.Victim }}|{{ kill.Weapon }}|{{ kill.bHeadshot }}</div></div>
+</body>
+</rml>)");
+
+/**
+ * One recorded UI frame: both spec-9 brackets, the apply counter that locates a publish's
+ * frame, and the DOM observations the guards need. Written on the UI thread inside
+ * RecordAndPublishFrame, read on the test thread only at indices below the settled count
+ * (SettledFrames below) -- WaitForFrameCount's release/acquire hand-off alone can leave one
+ * unconsumed straggler frame appending; see SettledFrames.
+ */
+struct FArrayFrameRecord
+{
+	/** The model's cumulative fields-applied counter, as of this frame's apply. */
+	uint64 FieldsApplied = 0;
+
+	//~ This frame's two brackets, seconds. Per frame rather than accumulated, because the
+	//~ grow/shrink rows are the cost of ONE identified frame, not a mean.
+	double ApplySeconds = 0.0;
+	double UpdateSeconds = 0.0;
+
+	/** Generated data-for rows in the DOM after this frame's Update. */
+	int32 NumRows = 0;
+
+	//~ Row ProbeRow's InnerRML and its left neighbour's, when the host captures them: the
+	//~ DOM-change guard for the three-view subtraction (which row moved, and no other).
+	FString ProbeText;
+	FString NeighborText;
+};
+
+/**
+ * The probe host for the array rows: FCostHost's bracketing (the model is bound by the
+ * host and applied by the host, so this test's apply is not ALSO run by the UI thread's
+ * own loop -- one applier, one measurement) plus the per-frame log described above.
+ */
+class FArrayCostHost final : public IVaCuusDocumentHost
+{
+public:
+	FArrayCostHost(FString InContextName, TSharedRef<FVaCuusBoundModel> InModel, bool bInCaptureProbeRows)
+		: ContextName(MoveTemp(InContextName))
+		, Model(MoveTemp(InModel))
+		, bCaptureProbeRows(bInCaptureProbeRows)
+	{
+	}
+
+	virtual bool Initialize(uint32 InViewId, const TSharedRef<FVaCuusViewStatus>& InStatus) override
+	{
+		check(FVaCuusUIThread::IsInUIThread());
+
+		Status = InStatus;
+		Context = Rml::CreateContext(Rml::String(TCHAR_TO_UTF8(*ContextName)), Rml::Vector2i(1, 1));
+		if (Context == nullptr)
+		{
+			return false;
+		}
+
+		// RESERVED ONCE, NEVER REALLOCATED, for the FDataForProbeHost reason: the test
+		// thread reads settled records while a coalesced trigger may still append one more,
+		// and Reserve is what keeps those EARLIER-record reads valid -- a growth realloc
+		// would move the buffer out from under them. Reserve does NOT make the newest record
+		// readable: AddDefaulted_GetRef bumps ArrayNum before the record is constructed, so
+		// only the settled-count clamp (SettledFrames) may name it. Both halves are needed.
+		// The longest run here is ~210 frames.
+		FrameLog.Reserve(1024);
+
+		// Before any document, as `data-model` requires (Element.cpp:2202-2219).
+		bBound = Model->BindToContext(*Context);
+		return bBound;
+	}
+
+	virtual void Shutdown() override
+	{
+		check(FVaCuusUIThread::IsInUIThread());
+
+		CloseDocument();
+		if (Context)
+		{
+			Rml::RemoveContext(Rml::String(TCHAR_TO_UTF8(*ContextName)));
+			Context = nullptr;
+		}
+	}
+
+	virtual void SetViewSize(FIntPoint InViewSize) override
+	{
+		check(FVaCuusUIThread::IsInUIThread());
+
+		ViewSize = InViewSize;
+		if (Context)
+		{
+			Context->SetDimensions(Rml::Vector2i(ViewSize.X, ViewSize.Y));
+		}
+	}
+
+	virtual void LoadDocumentFromFile(const FString& VfsPath, uint64 LoadSerial) override {}
+
+	virtual void LoadDocumentFromMemory(const FString& RmlSource, uint64 LoadSerial) override
+	{
+		check(FVaCuusUIThread::IsInUIThread());
+
+		if (Context == nullptr)
+		{
+			return;
+		}
+
+		Document = Context->LoadDocumentFromMemory(Rml::String(TCHAR_TO_UTF8(*RmlSource)), "vacuus://array_cost.rml");
+		if (Document)
+		{
+			Document->Show(Rml::ModalFlag::None, Rml::FocusFlag::Document);
+		}
+	}
+
+	virtual void CloseDocument() override
+	{
+		check(FVaCuusUIThread::IsInUIThread());
+
+		if (Document)
+		{
+			Document->Close();
+			Document = nullptr;
+		}
+	}
+
+	virtual void SetVisible(bool bVisible) override {}
+
+	virtual bool HasView() const override
+	{
+		check(FVaCuusUIThread::IsInUIThread());
+		return Context != nullptr && Document != nullptr && ViewSize.X > 0 && ViewSize.Y > 0;
+	}
+
+	virtual Rml::Context* GetContext() const override
+	{
+		check(FVaCuusUIThread::IsInUIThread());
+		return Context;
+	}
+
+	virtual void RecordAndPublishFrame() override
+	{
+		check(FVaCuusUIThread::IsInUIThread());
+
+		// The apply, the real one -- the same call FVaCuusUIThread::ApplyModelUpdates()
+		// makes, at the same point in the frame: before Update(), so the re-evaluation a
+		// dirtied variable causes is paid inside the next bracket rather than this one.
+		const double BeforeApply = FPlatformTime::Seconds();
+		Model->ApplyPendingUpdate();
+		const double AfterApply = FPlatformTime::Seconds();
+
+		Context->Update();
+		const double AfterUpdate = FPlatformTime::Seconds();
+
+		// OUTSIDE BOTH BRACKETS, like FCostHost's probe: the DOM reads are the guards'
+		// instrument, and folding their cost into Update's would corrupt the number they
+		// guard.
+		FArrayFrameRecord& Frame = FrameLog.AddDefaulted_GetRef();
+		Frame.FieldsApplied = Model->GetNumFieldsApplied();
+		Frame.ApplySeconds = AfterApply - BeforeApply;
+		Frame.UpdateSeconds = AfterUpdate - AfterApply;
+		CaptureRows(Frame);
+
+		if (bMeasuring)
+		{
+			ApplySeconds += AfterApply - BeforeApply;
+			UpdateSeconds += AfterUpdate - AfterApply;
+			++NumMeasured;
+		}
+
+		Status->FramesRecorded.fetch_add(1, std::memory_order_release);
+	}
+
+	/** Starts/stops the whole-run accumulators. Test thread, between UI frames only. */
+	void SetMeasuring(bool bInMeasuring) { bMeasuring = bInMeasuring; }
+
+	double GetApplyMsPerFrame() const { return NumMeasured > 0 ? (ApplySeconds / NumMeasured) * 1000.0 : 0.0; }
+	double GetUpdateMsPerFrame() const { return NumMeasured > 0 ? (UpdateSeconds / NumMeasured) * 1000.0 : 0.0; }
+
+	//~ Post-frame observations; see FArrayFrameRecord for the hand-off rule.
+	TArray<FArrayFrameRecord> FrameLog;
+	int32 NumMeasured = 0;
+	bool bBound = false;
+
+private:
+	void CaptureRows(FArrayFrameRecord& Frame) const
+	{
+		Rml::Element* Container = Document != nullptr ? Document->GetElementById("rows") : nullptr;
+		if (Container == nullptr)
+		{
+			return;
+		}
+
+		// Generated rows are every child WITHOUT data-for, in row order -- the template
+		// keeps its attribute and rows are inserted before it (DataViewDefault.cpp:486-491,
+		// :522-523; the FDataForProbeHost capture states the argument in full).
+		const int NumChildren = Container->GetNumChildren();
+		int32 RowIndex = 0;
+		for (int Index = 0; Index < NumChildren; ++Index)
+		{
+			Rml::Element* Child = Container->GetChild(Index);
+			if (Child == nullptr || Child->HasAttribute("data-for"))
+			{
+				continue;
+			}
+
+			if (bCaptureProbeRows)
+			{
+				if (RowIndex == ProbeRow)
+				{
+					Frame.ProbeText = FString(UTF8_TO_TCHAR(Child->GetInnerRML().c_str()));
+				}
+				else if (RowIndex == ProbeRow - 1)
+				{
+					Frame.NeighborText = FString(UTF8_TO_TCHAR(Child->GetInnerRML().c_str()));
+				}
+			}
+			++RowIndex;
+		}
+
+		Frame.NumRows = RowIndex;
+	}
+
+	FString ContextName;
+	TSharedRef<FVaCuusBoundModel> Model;
+	bool bCaptureProbeRows = false;
+
+	TSharedPtr<FVaCuusViewStatus> Status;
+	Rml::Context* Context = nullptr;
+	Rml::ElementDocument* Document = nullptr;
+	FIntPoint ViewSize = FIntPoint::ZeroValue;
+
+	double ApplySeconds = 0.0;
+	double UpdateSeconds = 0.0;
+	bool bMeasuring = false;
+};
+
+/**
+ * How many FrameLog records the test thread may read; every test-thread index must stay
+ * below it, and FrameLog.Num()/Last() are never trusted. WaitForFrameCount alone is not
+ * enough: every Enqueue* ends in Trigger() (VaCuusUIThread.cpp:640), the wake event is a
+ * binary AutoReset latch (VaCuusUIThread.h:347), and FrameCount increments only AFTER
+ * RunFrame returns (VaCuusUIThread.cpp:774-775) -- so a trigger landing mid-frame leaves
+ * the event set and the worker runs one more frame concurrent with test-thread code, whose
+ * AddDefaulted_GetRef bumps ArrayNum before the record's FStrings are constructed.
+ * FramesRecorded is incremented with release AFTER the record is completely filled, exactly
+ * once per append; the acquire here pairs with that release. Read through the test's own
+ * TSharedRef (the same object the host publishes on), not through the host, whose Status
+ * member is written on the UI thread. The VaCuusDataForTest helper, duplicated because test
+ * translation units share only the fixture header.
+ */
+static int32 SettledFrames(const FVaCuusViewStatus& Status)
+{
+	return int32(Status.FramesRecorded.load(std::memory_order_acquire));
+}
+
+/**
+ * THE frame whose apply consumed a publish: the one index in [FirstFrame, EndFrame) where
+ * the cumulative fields-applied counter moved off Before; INDEX_NONE for none or several.
+ * EndFrame must be a SettledFrames() load, never Log.Num(). The VaCuusDataForTest helper,
+ * duplicated because test translation units share only the fixture header -- drift is
+ * caught by both call sites asserting the same protocol.
+ */
+static int32 FindSingleApplyFrame(const TArray<FArrayFrameRecord>& Log, int32 FirstFrame, int32 EndFrame, uint64 Before)
+{
+	int32 Found = INDEX_NONE;
+	uint64 Prev = Before;
+	for (int32 Index = FirstFrame; Index < EndFrame; ++Index)
+	{
+		if (Log[Index].FieldsApplied != Prev)
+		{
+			if (Found != INDEX_NONE)
+			{
+				return INDEX_NONE;
+			}
+			Found = Index;
+		}
+		Prev = Log[Index].FieldsApplied;
+	}
+
+	return Found;
+}
+}	 // namespace VaCuusModelCostTest
+
+/**
+ * SPEC 9's TWO CHANGED-ROW UI ROWS AT 200 ROWS (plan 6.4 a+b), by the three-view
+ * subtraction of the scalar test above:
+ *
+ *   STILL    -- a bound 200-row model that never changes: the Update() baseline, plus the
+ *               proof that an idle array costs exactly nothing at this layer too.
+ *   TOGGLE   -- one row's bool flips each frame. The differ marks the array, the apply
+ *               SyncCopys all 200 rows and dirties the root, every row's four expressions
+ *               re-evaluate -- and the only DOM write is a one-character text ("1"<->"0").
+ *               TOGGLE - STILL is therefore re-evaluation plus a floor-sized DOM write:
+ *               the closest an array can come to the scalar test's REDRAWN, because a
+ *               genuinely DOM-less array dirty does not exist -- any element change the
+ *               case-sensitive differ can see is a content change the document shows.
+ *   CHANGING -- one row's Victim gets a fresh same-length string each frame: re-evaluation
+ *               plus a real SetText and its relayout. CHANGING - STILL is spec 9's
+ *               "re-evaluation + DOM for one changed row" -- THE number the one-bit
+ *               granularity decision is taken on.
+ *
+ * The apply brackets of TOGGLE and CHANGING are spec 9's third row (the third SyncCopy +
+ * DirtyVariable): both carry the whole 200-row array every measured frame, by design --
+ * that is what one bit per array means, and pricing it is this test's purpose.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusModelArrayUICostTest, "VaCuus.Model.Cost.ArrayUIApply",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusModelArrayUICostTest::RunTest(const FString& Parameters)
+{
+	using namespace VaCuusModelCostTest;
+	using namespace VaCuusKillfeedFixture;
+
+	if (!FPlatformProcess::SupportsMultithreading())
+	{
+		AddInfo(TEXT("Skipped: no multithreading support, so there is no UI thread to drive"));
+		return true;
+	}
+
+	if (!TestFalse(TEXT("RmlUi is down before the test"), FVaCuusEngine::Get().IsInitialized()))
+	{
+		return false;
+	}
+
+	FVaCuusModule& Module = FVaCuusModule::Get();
+	FVaCuusUIThread* UIThread = Module.GetOrStartUIThread();
+	if (!TestNotNull(TEXT("UI thread"), UIThread))
+	{
+		return false;
+	}
+
+	ON_SCOPE_EXIT
+	{
+		Module.StopUIThread();
+	};
+
+	const UScriptStruct* Type = FVaCuusCostFeedModel::StaticStruct();
+
+	const TSharedRef<FVaCuusBoundModel> StillModel = MakeShared<FVaCuusBoundModel>(GFeedModelName, Type);
+	const TSharedRef<FVaCuusBoundModel> ToggleModel = MakeShared<FVaCuusBoundModel>(GFeedModelName, Type);
+	const TSharedRef<FVaCuusBoundModel> ChangingModel = MakeShared<FVaCuusBoundModel>(GFeedModelName, Type);
+	if (!TestTrue(TEXT("the three models built"),
+			StillModel->IsValid() && ToggleModel->IsValid() && ChangingModel->IsValid()))
+	{
+		return false;
+	}
+
+	TUniquePtr<FArrayCostHost> OwnedStill =
+		MakeUnique<FArrayCostHost>(TEXT("vacuus_arraycost_still"), StillModel, /*bCaptureProbeRows=*/true);
+	TUniquePtr<FArrayCostHost> OwnedToggle =
+		MakeUnique<FArrayCostHost>(TEXT("vacuus_arraycost_toggle"), ToggleModel, /*bCaptureProbeRows=*/true);
+	TUniquePtr<FArrayCostHost> OwnedChanging =
+		MakeUnique<FArrayCostHost>(TEXT("vacuus_arraycost_changing"), ChangingModel, /*bCaptureProbeRows=*/true);
+	FArrayCostHost* Still = OwnedStill.Get();
+	FArrayCostHost* Toggle = OwnedToggle.Get();
+	FArrayCostHost* Changing = OwnedChanging.Get();
+
+	const uint32 StillViewId = UIThread->AllocateViewId();
+	const uint32 ToggleViewId = UIThread->AllocateViewId();
+	const uint32 ChangingViewId = UIThread->AllocateViewId();
+
+	// Named, not inline: each status carries its host's FramesRecorded, which is what
+	// SettledFrames clamps that host's FrameLog reads by.
+	const TSharedRef<FVaCuusViewStatus> StillStatus = MakeShared<FVaCuusViewStatus>();
+	const TSharedRef<FVaCuusViewStatus> ToggleStatus = MakeShared<FVaCuusViewStatus>();
+	const TSharedRef<FVaCuusViewStatus> ChangingStatus = MakeShared<FVaCuusViewStatus>();
+
+	UIThread->EnqueueAddView(StillViewId, MoveTemp(OwnedStill), FIntPoint(400, 800), StillStatus);
+	UIThread->EnqueueLoadDocumentFromMemory(StillViewId, GKillfeedDocument, /*LoadSerial=*/1);
+	UIThread->EnqueueAddView(ToggleViewId, MoveTemp(OwnedToggle), FIntPoint(400, 800), ToggleStatus);
+	UIThread->EnqueueLoadDocumentFromMemory(ToggleViewId, GKillfeedDocument, /*LoadSerial=*/1);
+	UIThread->EnqueueAddView(ChangingViewId, MoveTemp(OwnedChanging), FIntPoint(400, 800), ChangingStatus);
+	UIThread->EnqueueLoadDocumentFromMemory(ChangingViewId, GKillfeedDocument, /*LoadSerial=*/1);
+
+	FVaCuusCostFeedModel StillLive;
+	FVaCuusCostFeedModel ToggleLive;
+	FVaCuusCostFeedModel ChangingLive;
+	Fill(StillLive, 200);
+	Fill(ToggleLive, 200);
+	Fill(ChangingLive, 200);
+
+	// One frame of mutation, then a sample and a publish for all three. The differ runs on
+	// the game thread for all of them, exactly as a game would drive it; only the two
+	// changed models ever mark, and each marks exactly its one array bit.
+	auto DriveFrame = [&](int32 Iteration)
+	{
+		ToggleLive.Killfeed[ProbeRow].bHeadshot = (Iteration & 1) != 0;
+		ChangingLive.Killfeed[ProbeRow].Victim = FString::Printf(TEXT("Vic%06d"), Iteration);
+
+		StillModel->Sample(Type, &StillLive);
+		ToggleModel->Sample(Type, &ToggleLive);
+		ChangingModel->Sample(Type, &ChangingLive);
+
+		StillModel->PublishPending();
+		ToggleModel->PublishPending();
+		ChangingModel->PublishPending();
+	};
+
+	// Warm up: the forced first publish carries the whole array, the 200 rows are created
+	// and laid out once (the grow spike, measured by its own test below), and every buffer
+	// on the apply path reaches capacity. None of that is per-frame cost.
+	for (int32 Iteration = 0; Iteration < 8; ++Iteration)
+	{
+		DriveFrame(Iteration);
+		if (!TestTrue(TEXT("warm-up frames ran"), RunFrames(*UIThread, 1)))
+		{
+			return false;
+		}
+	}
+
+	if (!TestTrue(TEXT("all three models bound to their contexts"), Still->bBound && Toggle->bBound && Changing->bBound))
+	{
+		return false;
+	}
+
+	const int32 StillWarmupFrames = SettledFrames(*StillStatus);
+	const int32 ToggleWarmupFrames = SettledFrames(*ToggleStatus);
+	const int32 ChangingWarmupFrames = SettledFrames(*ChangingStatus);
+	const uint64 ToggleFieldsAppliedAfterWarmup = ToggleModel->GetNumFieldsApplied();
+	const uint64 ChangingFieldsAppliedAfterWarmup = ChangingModel->GetNumFieldsApplied();
+
+	Still->SetMeasuring(true);
+	Toggle->SetMeasuring(true);
+	Changing->SetMeasuring(true);
+
+	for (int32 Iteration = 0; Iteration < NumMeasuredFrames; ++Iteration)
+	{
+		DriveFrame(Iteration + 8);
+		if (!TestTrue(TEXT("measured frames ran"), RunFrames(*UIThread, 1)))
+		{
+			return false;
+		}
+	}
+
+	Still->SetMeasuring(false);
+	Toggle->SetMeasuring(false);
+	Changing->SetMeasuring(false);
+
+	// ---- The guards: which row moved, and no other. ----
+
+	auto CountProbeChanges = [](const FArrayCostHost& Host, int32 FirstFrame, int32 EndFrame, bool bNeighbor)
+	{
+		int32 Changes = 0;
+		for (int32 Index = FirstFrame; Index < EndFrame; ++Index)
+		{
+			const FString& Now = bNeighbor ? Host.FrameLog[Index].NeighborText : Host.FrameLog[Index].ProbeText;
+			const FString& Prev = bNeighbor ? Host.FrameLog[Index - 1].NeighborText : Host.FrameLog[Index - 1].ProbeText;
+			Changes += Now.Equals(Prev, ESearchCase::CaseSensitive) ? 0 : 1;
+		}
+		return Changes;
+	};
+
+	const int32 StillSettled = SettledFrames(*StillStatus);
+	const int32 ToggleSettled = SettledFrames(*ToggleStatus);
+	const int32 ChangingSettled = SettledFrames(*ChangingStatus);
+
+	TestEqual(
+		TEXT("STILL never wrote the DOM across the window"), CountProbeChanges(*Still, StillWarmupFrames, StillSettled, false), 0);
+	TestTrue(TEXT("TOGGLE's probe row moved on essentially every frame"),
+		CountProbeChanges(*Toggle, ToggleWarmupFrames, ToggleSettled, false) >= NumMeasuredFrames - 2);
+	TestTrue(TEXT("CHANGING's probe row moved on essentially every frame"),
+		CountProbeChanges(*Changing, ChangingWarmupFrames, ChangingSettled, false) >= NumMeasuredFrames - 2);
+	TestEqual(TEXT("TOGGLE's untouched neighbour row never moved"),
+		CountProbeChanges(*Toggle, ToggleWarmupFrames, ToggleSettled, true), 0);
+	TestEqual(TEXT("CHANGING's untouched neighbour row never moved"),
+		CountProbeChanges(*Changing, ChangingWarmupFrames, ChangingSettled, true), 0);
+	TestEqual(TEXT("all 200 rows stayed on screen"), Changing->FrameLog[ChangingSettled - 1].NumRows, 200);
+
+	// The apply numbers below are per FRAME; this is what says each measured frame carried
+	// exactly the one whole-array field -- and, with it, that frames and iterations stayed
+	// in lockstep across the window.
+	TestEqual(TEXT("TOGGLE applied the one array field on each measured frame"),
+		int32(ToggleModel->GetNumFieldsApplied() - ToggleFieldsAppliedAfterWarmup), NumMeasuredFrames);
+	TestEqual(TEXT("CHANGING applied the one array field on each measured frame"),
+		int32(ChangingModel->GetNumFieldsApplied() - ChangingFieldsAppliedAfterWarmup), NumMeasuredFrames);
+
+	// The idle side, exact, at 200 rows: an unchanging bound array costs nothing here either.
+	TestEqual(TEXT("STILL published exactly once, ever"), int32(StillModel->GetNumPublishes()), 1);
+	TestEqual(TEXT("and applied exactly one update"), int32(StillModel->GetNumUpdatesApplied()), 1);
+	TestEqual(TEXT("carrying its one field once"), int32(StillModel->GetNumFieldsApplied()), 1);
+
+	// ---- The numbers. ----
+
+	const double StillApplyMs = Still->GetApplyMsPerFrame();
+	const double ToggleApplyMs = Toggle->GetApplyMsPerFrame();
+	const double ChangingApplyMs = Changing->GetApplyMsPerFrame();
+
+	const double StillUpdateMs = Still->GetUpdateMsPerFrame();
+	const double ToggleUpdateMs = Toggle->GetUpdateMsPerFrame();
+	const double ChangingUpdateMs = Changing->GetUpdateMsPerFrame();
+
+	const double ToggleDeltaMs = ToggleUpdateMs - StillUpdateMs;
+	const double OneRowMs = ChangingUpdateMs - StillUpdateMs;
+
+	AddInfo(FString::Printf(TEXT("apply (200-row SyncCopy + DirtyVariable), ms/frame: still %.5f (idle), toggle %.5f, ")
+							TEXT("changing %.5f; budget 0.10 ms"),
+		StillApplyMs, ToggleApplyMs, ChangingApplyMs));
+	AddInfo(FString::Printf(TEXT("Context::Update(), ms/frame: still %.5f, toggle %.5f, changing %.5f"), StillUpdateMs,
+		ToggleUpdateMs, ChangingUpdateMs));
+	AddInfo(FString::Printf(TEXT("re-evaluation + minimal DOM (bool toggle, one row): %.5f ms/frame (%.3f us per binding ")
+							TEXT("over 800)"),
+		ToggleDeltaMs, (ToggleDeltaMs * 1000.0) / 800.0));
+	AddInfo(FString::Printf(TEXT("re-evaluation + DOM for one changed row (THE decision number): %.5f ms/frame; ")
+							TEXT("budget 0.50 ms"),
+		OneRowMs));
+
+	UE_LOG(LogVaCuus, Display,
+		TEXT("VaCuus M3b UI array cost (%d frames, 200x4 rows): apply still=%.5f toggle=%.5f changing=%.5f ms | ")
+		TEXT("Update still=%.5f toggle=%.5f changing=%.5f ms | re-eval+minimal-DOM=%.5f ms | ")
+		TEXT("re-eval+DOM one changed row=%.5f ms"),
+		NumMeasuredFrames, StillApplyMs, ToggleApplyMs, ChangingApplyMs, StillUpdateMs, ToggleUpdateMs, ChangingUpdateMs,
+		ToggleDeltaMs, OneRowMs);
+
+	TestTrue(*FString::Printf(TEXT("the 200-row apply stays inside 10x the budget (%.5f ms)"), ChangingApplyMs),
+		ChangingApplyMs < 1.0);
+	TestTrue(*FString::Printf(TEXT("the one-changed-row Update delta stays inside 10x the budget (%.5f ms)"), OneRowMs),
+		OneRowMs < 5.0);
+
+	UIThread->EnqueueRemoveView(StillViewId);
+	UIThread->EnqueueRemoveView(ToggleViewId);
+	UIThread->EnqueueRemoveView(ChangingViewId);
+	RunFrames(*UIThread, 1);
+
+	return true;
+}
+
+/**
+ * SPEC 9's TWO SINGLE-FRAME ROWS (plan 6.4 c+d): grow 0->200 -- 200 SetInnerRML row parses
+ * in one Update (DataViewFor::Update creates every missing row inline,
+ * DataViewDefault.cpp:509-527), a load spike by design -- and shrink 200->0, whose view
+ * cleanup RmlUi itself flags `@performance: Horrible` (DataView.cpp:117-132): quadratic in
+ * rows, the reason spec 3.6 documents "don't clear per frame". Measured, no target, no
+ * tripwire: these are numbers for the spec table and the demo's design margins, not
+ * regression gates.
+ *
+ * PROTOCOL: five fresh contexts (fresh model, fresh view, fresh document each), and in
+ * each the one growth frame and the one shrink frame are identified by the fields-applied
+ * counter (FindSingleApplyFrame) out of the host's per-frame log -- the "SetMeasuring
+ * around exactly the one frame" protocol with nothing to arm. Reported as min/median/max
+ * across the five, because the first repetition also warms process-wide caches the later
+ * ones inherit, and that spread is part of the answer.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusModelArrayGrowShrinkTest, "VaCuus.Model.Cost.ArrayGrowShrink",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusModelArrayGrowShrinkTest::RunTest(const FString& Parameters)
+{
+	using namespace VaCuusModelCostTest;
+	using namespace VaCuusKillfeedFixture;
+
+	if (!FPlatformProcess::SupportsMultithreading())
+	{
+		AddInfo(TEXT("Skipped: no multithreading support, so there is no UI thread to drive"));
+		return true;
+	}
+
+	if (!TestFalse(TEXT("RmlUi is down before the test"), FVaCuusEngine::Get().IsInitialized()))
+	{
+		return false;
+	}
+
+	FVaCuusModule& Module = FVaCuusModule::Get();
+	FVaCuusUIThread* UIThread = Module.GetOrStartUIThread();
+	if (!TestNotNull(TEXT("UI thread"), UIThread))
+	{
+		return false;
+	}
+
+	ON_SCOPE_EXIT
+	{
+		Module.StopUIThread();
+	};
+
+	const UScriptStruct* Type = FVaCuusCostFeedModel::StaticStruct();
+	constexpr int32 NumRepetitions = 5;
+
+	TArray<double> GrowApplyMs, GrowUpdateMs, ShrinkApplyMs, ShrinkUpdateMs;
+
+	for (int32 Rep = 0; Rep < NumRepetitions; ++Rep)
+	{
+		const TSharedRef<FVaCuusBoundModel> Model = MakeShared<FVaCuusBoundModel>(GFeedModelName, Type);
+		if (!TestTrue(TEXT("the model built"), Model->IsValid()))
+		{
+			return false;
+		}
+
+		TUniquePtr<FArrayCostHost> OwnedHost = MakeUnique<FArrayCostHost>(
+			FString::Printf(TEXT("vacuus_arraycost_growshrink_%d"), Rep), Model, /*bCaptureProbeRows=*/false);
+		FArrayCostHost* Host = OwnedHost.Get();
+
+		const uint32 ViewId = UIThread->AllocateViewId();
+		const TSharedRef<FVaCuusViewStatus> Status = MakeShared<FVaCuusViewStatus>();
+		UIThread->EnqueueAddView(ViewId, MoveTemp(OwnedHost), FIntPoint(400, 800), Status);
+		UIThread->EnqueueLoadDocumentFromMemory(ViewId, GKillfeedDocument, /*LoadSerial=*/1);
+
+		// ---- Empty first: the document exists, bound, with zero rows. ----
+		//
+		// The forced first publish (I1) carries the EMPTY array -- the differ itself finds
+		// nothing to mark, which pins that the born-dirty channel, not the diff, is what
+		// establishes the UI's starting state.
+		FVaCuusCostFeedModel Live;
+		TestEqual(TEXT("an empty live struct marks nothing"), Model->Sample(Type, &Live), 0);
+		TestTrue(TEXT("but the born-dirty channel publishes anyway (I1)"), Model->PublishPending());
+		if (!TestTrue(TEXT("initial frames ran"), RunFrames(*UIThread, 3)))
+		{
+			return false;
+		}
+		if (!TestTrue(TEXT("the host bound its model"), Host->bBound))
+		{
+			return false;
+		}
+		{
+			const int32 InitialApply = FindSingleApplyFrame(Host->FrameLog, 0, SettledFrames(*Status), 0);
+			if (!TestTrue(TEXT("exactly one initial apply"), InitialApply != INDEX_NONE))
+			{
+				return false;
+			}
+			TestEqual(TEXT("and it showed zero rows"), Host->FrameLog[InitialApply].NumRows, 0);
+		}
+
+		// ---- GROW 0 -> 200, one publish, one frame. ----
+
+		int32 StepStart = SettledFrames(*Status);
+		uint64 Before = Host->FrameLog[StepStart - 1].FieldsApplied;
+
+		Fill(Live, 200);
+		TestEqual(TEXT("growth marks the one bit"), Model->Sample(Type, &Live), 1);
+		TestTrue(TEXT("and publishes"), Model->PublishPending());
+		if (!TestTrue(TEXT("growth frames ran"), RunFrames(*UIThread, 3)))
+		{
+			return false;
+		}
+
+		{
+			const int32 GrowFrame = FindSingleApplyFrame(Host->FrameLog, StepStart, SettledFrames(*Status), Before);
+			if (!TestTrue(TEXT("exactly one growth apply, in a recorded frame"), GrowFrame != INDEX_NONE))
+			{
+				return false;
+			}
+
+			// All 200 rows in the apply frame itself, none the frame before: the whole
+			// spike really is inside the one bracketed Update.
+			TestEqual(TEXT("the growth frame shows all 200 rows"), Host->FrameLog[GrowFrame].NumRows, 200);
+			TestEqual(TEXT("and the previous frame showed none"), Host->FrameLog[GrowFrame - 1].NumRows, 0);
+
+			GrowApplyMs.Add(Host->FrameLog[GrowFrame].ApplySeconds * 1000.0);
+			GrowUpdateMs.Add(Host->FrameLog[GrowFrame].UpdateSeconds * 1000.0);
+		}
+
+		if (!TestTrue(TEXT("settle frames ran"), RunFrames(*UIThread, 2)))
+		{
+			return false;
+		}
+
+		// ---- SHRINK 200 -> 0, one publish, one frame. ----
+
+		StepStart = SettledFrames(*Status);
+		Before = Host->FrameLog[StepStart - 1].FieldsApplied;
+
+		Live.Killfeed.Empty();
+		TestEqual(TEXT("the clear marks the one bit"), Model->Sample(Type, &Live), 1);
+		TestTrue(TEXT("and publishes"), Model->PublishPending());
+		if (!TestTrue(TEXT("shrink frames ran"), RunFrames(*UIThread, 3)))
+		{
+			return false;
+		}
+
+		{
+			const int32 ShrinkFrame = FindSingleApplyFrame(Host->FrameLog, StepStart, SettledFrames(*Status), Before);
+			if (!TestTrue(TEXT("exactly one shrink apply, in a recorded frame"), ShrinkFrame != INDEX_NONE))
+			{
+				return false;
+			}
+
+			TestEqual(TEXT("the shrink frame shows no rows"), Host->FrameLog[ShrinkFrame].NumRows, 0);
+			TestEqual(TEXT("and the previous frame still showed all 200"), Host->FrameLog[ShrinkFrame - 1].NumRows, 200);
+
+			ShrinkApplyMs.Add(Host->FrameLog[ShrinkFrame].ApplySeconds * 1000.0);
+			ShrinkUpdateMs.Add(Host->FrameLog[ShrinkFrame].UpdateSeconds * 1000.0);
+		}
+
+		UIThread->EnqueueRemoveView(ViewId);
+		RunFrames(*UIThread, 1);
+	}
+
+	auto Describe = [](const TCHAR* What, TArray<double>& Values)
+	{
+		Values.Sort();
+		FString Raw;
+		for (const double Value : Values)
+		{
+			Raw += FString::Printf(TEXT(" %.3f"), Value);
+		}
+		return FString::Printf(TEXT("%s min %.3f / median %.3f / max %.3f ms (raw:%s)"), What, Values[0],
+			Values[Values.Num() / 2], Values.Last(), *Raw);
+	};
+
+	const FString GrowReport = FString::Printf(TEXT("grow 0->200 one frame: %s; %s"),
+		*Describe(TEXT("Update"), GrowUpdateMs), *Describe(TEXT("apply"), GrowApplyMs));
+	const FString ShrinkReport = FString::Printf(TEXT("shrink 200->0 one frame: %s; %s"),
+		*Describe(TEXT("Update"), ShrinkUpdateMs), *Describe(TEXT("apply"), ShrinkApplyMs));
+	AddInfo(GrowReport);
+	AddInfo(ShrinkReport);
+	UE_LOG(LogVaCuus, Display, TEXT("VaCuus M3b array grow/shrink (%d fresh contexts): %s | %s"), NumRepetitions,
+		*GrowReport, *ShrinkReport);
+
+	return true;
+}
+
 #endif	  // WITH_DEV_AUTOMATION_TESTS

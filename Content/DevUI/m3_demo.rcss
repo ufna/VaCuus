@@ -33,9 +33,9 @@ body
 	color: #7FE3FF;
 }
 
-/* The four panels, absolutely positioned so nothing here depends on flow rules the
+/* The five panels, absolutely positioned so nothing here depends on flow rules the
    acceptance screenshot is not about. */
-#p-scalars, #p-bar, #p-nested, #p-write
+#p-scalars, #p-bar, #p-nested, #p-write, #p-kills
 {
 	position: absolute;
 	left: 48px;
@@ -50,6 +50,12 @@ body
 #p-bar     { top: 278px; height: 122px; }
 #p-nested  { top: 420px; height: 100px; }
 #p-write   { top: 540px; height: 132px; }
+
+/* Section 5, the M3b killfeed: a SECOND column rather than a fifth row, because the first
+   column already ends at y=672 and six 22px rows below it would fall off a 720-tall PIE
+   viewport -- the same reason the left column's heights are what they are. Later in the file
+   than the shared rule above so its left/width win the equal-specificity cascade. */
+#p-kills { left: 700px; top: 90px; width: 470px; height: 186px; }
 
 .panel-title
 {
@@ -114,6 +120,34 @@ body
 .m3-btn:hover  { background-color: #1D5570; }
 .m3-btn:active { background-color: #2A7A9C; }
 .m3-btn:focus  { border: 1px #7FE3FF; }
+
+/* Section 5 rows. The template div itself never shows (DataViewFor::Initialize hides it,
+   DataViewDefault.cpp:474); these style the generated clones, which carry the template's
+   class list. Killer bright, victim white, weapon muted: the row has to read as
+   "who > whom, with what" at screenshot size. */
+.kill-row { height: 22px; }
+.killer   { color: #7FE3FF; }
+.k-sep    { color: #74909C; }
+.victim   { color: #FFFFFF; }
+/* margin-left, not source whitespace: the text between the template's child elements does
+   not survive into the generated rows (checked on a real shot -- the weapon rendered glued
+   to the victim), so the gap has to be the box's, not the document's. */
+.weapon   { color: #74909C; font-size: 13px; margin-left: 8px; }
+
+/* The HS pill. data-if toggles a LOCAL display:none against this rule's display
+   (DataViewDefault.cpp:224-245), so inline-block here is the "true" state. Bordered and
+   recolored for the m1_hud reason the alert class gives: a marker that never appears must
+   not be confusable with one whose styling is merely subtle. */
+.hs
+{
+	display: inline-block;
+	color: #FF5A5A;
+	border: 1px #FF5A5A;
+	border-radius: 3px;
+	font-size: 12px;
+	padding: 0px 4px;
+	margin-left: 6px;
+}
 
 #probe { color: #74909C; margin-bottom: 6px; }
 

@@ -29,6 +29,15 @@ namespace
 TMap<const UScriptStruct*, TUniquePtr<FVaCuusModelDefinitions>> GDefinitionsByStruct;
 int32 GNumRefusedSets = 0;
 
+/**
+ * The evaluation counters (spec 3.5), same UI-thread-only plain-static rule as above:
+ * incremented only inside definition virtuals, which run only under Context::Update() on
+ * the UI thread, and read only through accessors that assert that thread.
+ */
+int32 GNumScalarGets = 0;
+int32 GNumArraySizes = 0;
+int32 GNumArrayChilds = 0;
+
 /** UTF-8, because that is what RmlUi's String holds (Config.h:108 aliases it to std::string). */
 Rml::String ToRmlString(const FString& Value)
 {
@@ -51,6 +60,10 @@ FVaCuusScalarDefinition::FVaCuusScalarDefinition(const FProperty* InProperty, EV
 
 bool FVaCuusScalarDefinition::Get(void* InValuePtr, Rml::Variant& OutVariant)
 {
+	// Counted before the guard: the idle gate asserts "no evaluation REACHED a definition",
+	// and a null-pointer arrival is still an arrival.
+	++GNumScalarGets;
+
 	// GUARDED EVEN THOUGH THE ONLY CALLER GUARDS FIRST. BasePointerDefinition::Get null-checks
 	// its own pointer before dereferencing (DataVariable.cpp:138-142), so this is unreachable
 	// today -- but RmlUi's own ScalarDefinition<T>::Get has no such check
@@ -135,6 +148,14 @@ bool FVaCuusScalarDefinition::Get(void* InValuePtr, Rml::Variant& OutVariant)
 
 		case EVaCuusFieldKind::ObjectPath:
 			return GetObjectPath(InValuePtr, OutVariant);
+
+		case EVaCuusFieldKind::Array:
+			// Unreachable by shape: pass 1 never builds a scalar definition FOR an Array
+			// field (its underlying is FVaCuusArrayDefinition), and an ELEMENT's kind is
+			// never Array either -- the desc-build scan refuses nested containers
+			// (VaCuusModelLayout.cpp, BuildLevel's array interception).
+			checkNoEntry();
+			return false;
 	}
 
 	checkNoEntry();
@@ -244,6 +265,25 @@ bool FVaCuusScalarDefinition::Set(void* /*InValuePtr*/, const Rml::Variant& /*Va
 	return false;
 }
 
+int FVaCuusScalarDefinition::Size(void* /*InValuePtr*/)
+{
+	// `data-for` over a leaf, which DataViewFor::Update reaches with no Type() check at all
+	// (DataViewDefault.cpp:498-503). The behaviour is RmlUi's own base contract -- 0, so the
+	// loop iterates no rows (DataVariable.cpp:40-44) -- but the base warning ("Tried to get
+	// the size from a non-array data type.") names nothing a UE-side author can find.
+	// LATCHED for the usual reason: a data-for target is re-resolved every time its root is
+	// dirtied, and the document is exactly as wrong on the ten-thousandth evaluation.
+	if (!bSizeMissLogged)
+	{
+		bSizeMissLogged = true;
+		UE_LOG(LogVaCuus, Warning,
+			TEXT("VaCuus model: data-for over '%s', which is not an array; it yields no rows. Reported once per field"),
+			*DiagnosticPath);
+	}
+
+	return 0;
+}
+
 // ---------------------------------------------------------------------------------------
 // FVaCuusPropertyDefinition
 // ---------------------------------------------------------------------------------------
@@ -274,14 +314,14 @@ FVaCuusStructDefinition::FVaCuusStructDefinition(FString InDiagnosticPath)
 {
 }
 
-void FVaCuusStructDefinition::AddLeaf(const FString& Segment, FVaCuusPropertyDefinition* Definition, int32 ContainerOffsetFromModelBase)
+void FVaCuusStructDefinition::AddLeaf(const FString& Segment, FVaCuusPropertyDefinition* Definition, int32 ContainerOffsetFromTypeBase)
 {
 	check(Definition != nullptr);
 
 	FMember& Member = Members.AddDefaulted_GetRef();
 	Member.Segment = ToRmlString(Segment);
 	Member.Definition = Definition;
-	Member.ContainerOffsetFromModelBase = ContainerOffsetFromModelBase;
+	Member.ContainerOffsetFromTypeBase = ContainerOffsetFromTypeBase;
 	Member.bNested = false;
 }
 
@@ -294,9 +334,9 @@ void FVaCuusStructDefinition::AddNested(const FString& Segment, FVaCuusStructDef
 	Member.Definition = Definition;
 
 	// ZERO, AND THERE IS NO PARAMETER TO GET IT WRONG WITH. A nested struct definition is
-	// handed the MODEL BASE unchanged; the offset is applied exactly once, when the leaf
-	// below it is handed out. See the file comment's invariant.
-	Member.ContainerOffsetFromModelBase = 0;
+	// handed the base of the definition set's own type unchanged; the offset is applied
+	// exactly once, when the leaf below it is handed out. See the file comment's invariant.
+	Member.ContainerOffsetFromTypeBase = 0;
 	Member.bNested = true;
 }
 
@@ -313,7 +353,7 @@ const FVaCuusStructDefinition::FMember* FVaCuusStructDefinition::Find(const Rml:
 	return nullptr;
 }
 
-Rml::DataVariable FVaCuusStructDefinition::Child(void* InModelBase, const Rml::DataAddressEntry& Address)
+Rml::DataVariable FVaCuusStructDefinition::Child(void* InBase, const Rml::DataAddressEntry& Address)
 {
 	// AN INDEXED ENTRY ON A STRUCT. DataAddressEntry(int) leaves `name` empty
 	// (DataTypes.h:36-41), so `{{Origin[0]}}` arrives here with index >= 0 and no name.
@@ -326,7 +366,8 @@ Rml::DataVariable FVaCuusStructDefinition::Child(void* InModelBase, const Rml::D
 		{
 			bIndexedMissLogged = true;
 			UE_LOG(LogVaCuus, Warning,
-				TEXT("VaCuus model: '%s' is a struct and was indexed as an array ([%d]); arrays are M3b. Reported once per struct"),
+				TEXT("VaCuus model: '%s' is a struct and was indexed as an array ([%d]); a struct member is reached by name, "
+					 "never by index. Reported once per struct"),
 				*DiagnosticPath, Address.index);
 		}
 
@@ -335,7 +376,7 @@ Rml::DataVariable FVaCuusStructDefinition::Child(void* InModelBase, const Rml::D
 
 	if (const FMember* Member = Find(Address.name))
 	{
-		return Rml::DataVariable(Member->Definition, static_cast<uint8*>(InModelBase) + Member->ContainerOffsetFromModelBase);
+		return Rml::DataVariable(Member->Definition, static_cast<uint8*>(InBase) + Member->ContainerOffsetFromTypeBase);
 	}
 
 	// A MISS IS A DIAGNOSTIC, NEVER A NULL DEREFERENCE -- and the diagnostic has to be ours.
@@ -388,10 +429,130 @@ Rml::StringList FVaCuusStructDefinition::ReflectMemberNames()
 	return Names;
 }
 
+int FVaCuusStructDefinition::Size(void* /*InBase*/)
+{
+	// `data-for` over a struct level -- the scalar definition's Size() carries the whole
+	// argument (base contract at DataVariable.cpp:40-44, unchecked caller at
+	// DataViewDefault.cpp:498-503); this override only changes whose name is in the line.
+	if (!bSizeMissLogged)
+	{
+		bSizeMissLogged = true;
+		UE_LOG(LogVaCuus, Warning,
+			TEXT("VaCuus model: data-for over '%s', which is a struct, not an array; it yields no rows. Reported once per struct"),
+			*DiagnosticPath);
+	}
+
+	return 0;
+}
+
 const FVaCuusStructDefinition* FVaCuusStructDefinition::FindNested(const FString& Segment) const
 {
 	const FMember* Member = Find(ToRmlString(Segment));
 	return (Member != nullptr && Member->bNested) ? static_cast<const FVaCuusStructDefinition*>(Member->Definition) : nullptr;
+}
+
+// ---------------------------------------------------------------------------------------
+// FVaCuusArrayDefinition
+// ---------------------------------------------------------------------------------------
+
+FVaCuusArrayDefinition::FVaCuusArrayDefinition(
+	const FArrayProperty* InArrayProperty, Rml::VariableDefinition* InElementDefinition, FString InDiagnosticPath)
+	: Rml::VariableDefinition(Rml::DataVariableType::Array)
+	, ArrayProperty(InArrayProperty)
+	, ElementDefinition(InElementDefinition)
+	, DiagnosticPath(MoveTemp(InDiagnosticPath))
+{
+	// DataVariableType::Array is decoration today -- nothing compiled keys on Type() ==
+	// Array, DataViewFor calls Size() with no type check -- but the Debugger relays switch
+	// on it and may be compiled in later, and it is one token (m3b-rmlui-arrays.md 2).
+	check(InArrayProperty != nullptr);
+	check(InElementDefinition != nullptr);
+}
+
+int FVaCuusArrayDefinition::Size(void* InValuePtr)
+{
+	// Counted before the guard, like the scalar Get: an arrival is an evaluation.
+	++GNumArraySizes;
+
+	// Same guard, same reason as FVaCuusScalarDefinition::Get -- BasePointerDefinition::Size
+	// already null-checks (DataVariable.cpp:152-156), so this is today-unreachable belt.
+	if (InValuePtr == nullptr)
+	{
+		return 0;
+	}
+
+	// COMPUTED FROM THE INCOMING POINTER AT CALL TIME, NEVER CACHED -- the class comment's
+	// invariant. The helper takes the VALUE pointer, i.e. the TArray's own address, not the
+	// containing struct (UnrealType.h:4285-4288), which is exactly what DereferencePointer
+	// handed over.
+	return FScriptArrayHelper(ArrayProperty, InValuePtr).Num();
+}
+
+Rml::DataVariable FVaCuusArrayDefinition::Child(void* InValuePtr, const Rml::DataAddressEntry& Address)
+{
+	++GNumArrayChilds;
+
+	if (InValuePtr == nullptr)
+	{
+		return Rml::DataVariable();
+	}
+
+	FScriptArrayHelper Helper(ArrayProperty, InValuePtr);
+	const int32 Num = Helper.Num();
+
+	// NAME FIRST, BOUNDS SECOND -- deliberately NOT RmlUi's order. Its ArrayDefinition::Child
+	// checks bounds first and matches "size" inside the out-of-bounds branch
+	// (DataVariable.h:143-163, the match at :151-152), which works because a named entry can
+	// never be in bounds -- the name constructor pins index to -1 (DataTypes.h:38-39) and
+	// ParseAddress emits only {index >= 0} or {non-empty name, index == -1}, rejecting
+	// negatives and empties outright (DataModel.cpp:19-20, :34-36). Same partition, so the
+	// two orders are equivalent; this one exists so the two failure modes cannot share a
+	// message -- RmlUi reuses its misleading "Data array index out of bounds." for a named
+	// miss (DataVariable.h:154).
+	if (Address.index < 0)
+	{
+		// THE "size" CASE IS THE ONE A HAND-ROLLED ARRAY DEFINITION BREAKS BY OMISSION:
+		// RmlUi implements `{{Arr.size}}` inside ArrayDefinition::Child, not in the core
+		// (DataVariable.h:151-152), so nothing else would answer it. MakeLiteralIntVariable
+		// encodes the int in the DataVariable's ptr against a static definition
+		// (DataVariable.cpp:57-72; declared RMLUICORE_API at DataVariable.h:67).
+		if (Address.name == "size")
+		{
+			return Rml::MakeLiteralIntVariable(Num);
+		}
+
+		if (!bNamedMissLogged)
+		{
+			bNamedMissLogged = true;
+			UE_LOG(LogVaCuus, Warning,
+				TEXT("VaCuus model: '%s' is an array and has no child '%s'%s -- only an index and the literal name 'size' resolve "
+					 "against it. Reported once per array"),
+				*DiagnosticPath, UTF8_TO_TCHAR(Address.name.c_str()),
+				Address.name.empty() ? TEXT(" (an EMPTY child name: ParseAddress cannot emit one, so this entry was hand-built)")
+									 : TEXT(""));
+		}
+
+		return Rml::DataVariable();
+	}
+
+	if (Address.index >= Num)
+	{
+		if (!bOutOfBoundsLogged)
+		{
+			bOutOfBoundsLogged = true;
+			UE_LOG(LogVaCuus, Warning,
+				TEXT("VaCuus model: '%s' was indexed out of bounds ([%d] with %d elements). Reported once per array"),
+				*DiagnosticPath, Address.index, Num);
+		}
+
+		return Rml::DataVariable();
+	}
+
+	// GetRawPtr is call-time arithmetic -- GetData() + Index * ElementSize
+	// (UnrealType.h:4324-4333) -- and its result lives for exactly this expression: it rides
+	// out inside the returned DataVariable, is consumed by the very next walk step or Get
+	// (DataModel.cpp:285-290), and is stored by nothing (spec 2(c)).
+	return Rml::DataVariable(ElementDefinition, Helper.GetRawPtr(Address.index));
 }
 
 // ---------------------------------------------------------------------------------------
@@ -404,8 +565,9 @@ FVaCuusModelDefinitions::FVaCuusModelDefinitions(const FVaCuusModelLayout& Layou
 
 	const FString ModelName = Layout.GetStruct()->GetName();
 
-	// PASS 1: one scalar definition and one property definition per LEAF, filed either as a
-	// root-level variable or as a member of the struct definition for its dotted prefix.
+	// PASS 1: one underlying definition -- scalar for every value kind, array for
+	// Kind::Array -- and one property definition per LEAF, filed either as a root-level
+	// variable or as a member of the struct definition for its dotted prefix.
 	TMap<FString, FVaCuusPropertyDefinition*> RootLeaves;
 
 	for (const FVaCuusModelField& Field : Layout.GetFields())
@@ -418,10 +580,59 @@ FVaCuusModelDefinitions::FVaCuusModelDefinitions(const FVaCuusModelLayout& Layou
 
 		const FString FieldPath = ModelName + TEXT(".") + Field.WireName;
 
-		FVaCuusScalarDefinition* Scalar =
-			ScalarDefinitions.Add_GetRef(MakeUnique<FVaCuusScalarDefinition>(Field.Property, Field.Kind, FieldPath)).Get();
+		Rml::VariableDefinition* Underlying = nullptr;
+		if (Field.Kind == EVaCuusFieldKind::Array)
+		{
+			// AN ARRAY LEAF DIFFERS ONLY IN WHAT THE PROPERTY DEFINITION WRAPS. Its element
+			// definition, per spec 3.5:
+			//
+			//  - scalar elements reuse FVaCuusScalarDefinition UNMODIFIED: it already
+			//    operates on value pointers -- BasePointerDefinition offsets before
+			//    forwarding on the field path -- and GetRawPtr(i) IS a value pointer
+			//    (spec 2(d)). The "[]" suffix keeps its diagnostics distinguishable from a
+			//    same-named field's.
+			//
+			//  - struct elements borrow the ELEMENT TYPE's root struct definition, fetched
+			//    through the registry keyed on the element UScriptStruct -- so two models
+			//    sharing a row type share its definitions, which is exactly why the array
+			//    definition must stay stateless (its class comment). The nested GetOrCreate
+			//    is safe re-entrancy: the outer call holds no pointer into the map while
+			//    this constructor runs and inserts only after it returns (GetOrCreate
+			//    below); and the recursion cannot loop, because the desc build refused
+			//    nested containers and container cycles before ever building the desc
+			//    (VaCuusModelLayout.cpp, BuildLevel's array interception).
+			const FVaCuusModelArrayDesc* Desc = Field.ArrayDesc;
+			check(Desc != nullptr);
+
+			Rml::VariableDefinition* ElementDefinition = nullptr;
+			if (Desc->IsStructElement())
+			{
+				const FVaCuusModelDefinitions* ElementDefinitions = FVaCuusDefinitionRegistry::GetOrCreate(*Desc->ElementLayout);
+				check(ElementDefinitions != nullptr);	 // element layouts are valid and non-empty by desc-build refusal
+				ElementDefinition = ElementDefinitions->GetRootStruct();
+			}
+			else
+			{
+				ElementDefinition = ScalarDefinitions
+										.Add_GetRef(MakeUnique<FVaCuusScalarDefinition>(
+											Desc->Inner, Desc->ElementKind, FieldPath + TEXT("[]")))
+										.Get();
+			}
+
+			Underlying =
+				ArrayDefinitions.Add_GetRef(MakeUnique<FVaCuusArrayDefinition>(Desc->ArrayProperty, ElementDefinition, FieldPath))
+					.Get();
+		}
+		else
+		{
+			Underlying = ScalarDefinitions.Add_GetRef(MakeUnique<FVaCuusScalarDefinition>(Field.Property, Field.Kind, FieldPath)).Get();
+		}
+
+		// The property definition reports its underlying's type -- BasePointerDefinition's
+		// constructor copies it (DataVariable.cpp:134-136) -- so a wrapped array reads back
+		// as DataVariableType::Array without being told.
 		FVaCuusPropertyDefinition* PropertyDefinition =
-			PropertyDefinitions.Add_GetRef(MakeUnique<FVaCuusPropertyDefinition>(Field.Property, Scalar)).Get();
+			PropertyDefinitions.Add_GetRef(MakeUnique<FVaCuusPropertyDefinition>(Field.Property, Underlying)).Get();
 
 		if (Prefix.IsEmpty())
 		{
@@ -451,11 +662,38 @@ FVaCuusModelDefinitions::FVaCuusModelDefinitions(const FVaCuusModelLayout& Layou
 			continue;
 		}
 
-		// Unreachable through FVaCuusModelLayout, which rolls back a top-level name whose
-		// nested struct contributed nothing. Logged rather than checked because the two are
+		// Unreachable through FVaCuusModelLayout for every kind: scalar and struct names
+		// roll back when their subtree contributed nothing, and an Array field always
+		// leaves a definition behind since pass 1's array branch (before the M3b adapter,
+		// arrays were skipped there and reached this line by design -- the loud
+		// placeholder; nothing does now). Logged rather than checked because the two are
 		// built independently and a silent absence is this milestone's signature failure.
 		UE_LOG(LogVaCuus, Error, TEXT("VaCuus model '%s': top-level name '%s' has no field behind it and will not be bound"),
 			*ModelName, *Name);
+	}
+
+	// PASS 3: the WHOLE TYPE as one struct definition, for its life as an ARRAY ELEMENT --
+	// another model's array of this type resolves {{Rows[i].Member}} by walking THIS
+	// definition from GetRawPtr(i), the "base of the definition set's own type" the file
+	// comment's invariant names. Built eagerly rather than lazily because the leaf/nested
+	// split it needs (RootLeaves) is a local of this constructor; the model-root path above
+	// neither uses it nor changed for it.
+	RootStruct = StructDefinitions.Add_GetRef(MakeUnique<FVaCuusStructDefinition>(ModelName)).Get();
+	for (const FString& Name : Layout.GetTopLevelNames())
+	{
+		if (FVaCuusPropertyDefinition** Leaf = RootLeaves.Find(Name))
+		{
+			// Offset 0, and not looked up: a top-level leaf's ContainerOffset is 0 by
+			// construction (BuildLevel starts at BaseOffset 0), and the property definition
+			// applies Offset_Internal itself in DereferencePointer.
+			RootStruct->AddLeaf(Name, *Leaf, /*ContainerOffsetFromTypeBase=*/0);
+		}
+		else if (FVaCuusStructDefinition** Nested = StructsByPrefix.Find(Name + TEXT(".")))
+		{
+			// The nested definition's leaves carry offsets absolute from this type's base
+			// already, so it plugs in here exactly as it does at pass 2's top level.
+			RootStruct->AddNested(Name, *Nested);
+		}
 	}
 }
 
@@ -615,4 +853,22 @@ int32 VaCuusData::GetNumRefusedSets()
 {
 	check(FVaCuusUIThread::IsInUIThread());
 	return GNumRefusedSets;
+}
+
+int32 VaCuusData::GetNumScalarGets()
+{
+	check(FVaCuusUIThread::IsInUIThread());
+	return GNumScalarGets;
+}
+
+int32 VaCuusData::GetNumArraySizes()
+{
+	check(FVaCuusUIThread::IsInUIThread());
+	return GNumArraySizes;
+}
+
+int32 VaCuusData::GetNumArrayChilds()
+{
+	check(FVaCuusUIThread::IsInUIThread());
+	return GNumArrayChilds;
 }

@@ -5,7 +5,9 @@
 #include "CoreMinimal.h"
 #include "UObject/StrongObjectPtr.h"
 
+class FArrayProperty;
 class FProperty;
+class FVaCuusModelLayout;
 class UScriptStruct;
 
 /**
@@ -86,9 +88,102 @@ enum class EVaCuusFieldKind : uint8
 	 * thread. See the classifier for the full argument.
 	 */
 	ObjectPath,
+
+	/**
+	 * FArrayProperty -> TArray<T>. A LEAF WITH A SUB-DESCRIPTION, not a flattened subtree:
+	 * leaf count is fixed at layout-build time while element count is per-instance, so an
+	 * array contributes ONE entry, one dirty bit -- the only granularity RmlUi can express
+	 * anyway, since its view map keys on top-level names alone -- and one
+	 * FVaCuusModelArrayDesc (FVaCuusModelField::ArrayDesc) describing the element type.
+	 * Element addresses are computed per use and stored nowhere:
+	 * FScriptArrayHelper::GetRawPtr(i) is GetData() + i*ElementSize evaluated at call time
+	 * (UnrealType.h:4324-4333), which is what makes "valid only for the current Num()"
+	 * harmless.
+	 */
+	Array,
 };
 
 VACUUS_API const TCHAR* LexToString(EVaCuusFieldKind Kind);
+
+/**
+ * What one Array field's ELEMENTS are, decided once at layout-build time -- the side table
+ * an EVaCuusFieldKind::Array leaf points into through FVaCuusModelField::ArrayDesc.
+ *
+ * PER-TYPE AND STATELESS, like everything else in the layout: no element pointer, no cached
+ * Num(), nothing per-instance. Every consumer constructs an FScriptArrayHelper over the
+ * incoming value pointer at call time -- the helper caches only the FScriptArray* itself, so
+ * it survives reallocation, while a SAVED GetRawPtr() result does not (UnrealType.h:4324-4333).
+ * "No stage stores an element address" is the invariant the whole array design rests on
+ * (spec 2(c)).
+ *
+ * Special members are out of line only because TUniquePtr<FVaCuusModelLayout> needs the
+ * complete type to destroy and this struct is declared first.
+ */
+struct FVaCuusModelArrayDesc
+{
+	VACUUS_API FVaCuusModelArrayDesc();
+	VACUUS_API FVaCuusModelArrayDesc(FVaCuusModelArrayDesc&&);
+	VACUUS_API FVaCuusModelArrayDesc& operator=(FVaCuusModelArrayDesc&&);
+	VACUUS_API ~FVaCuusModelArrayDesc();
+
+	/** The array property itself; safe to hold raw for the reason FVaCuusModelField::Property is. */
+	const FArrayProperty* ArrayProperty = nullptr;
+
+	/**
+	 * ArrayProperty->Inner. Its Offset_Internal is 0 -- an inner's owner is the
+	 * FArrayProperty, an FField and not a UObject, so SetupOffset aligns from zero
+	 * (Property.cpp:1269-1288) -- and the element stride is exactly GetElementSize():
+	 * GetRawPtr computes GetData() + Index * ElementSize with the size captured from the
+	 * inner (UnrealType.h:4285-4286, :4332), tail padding already baked in for struct
+	 * elements (PropertyStruct.cpp:114). So a value pointer for element i IS a container
+	 * pointer for nothing: it feeds the per-kind value accessors directly.
+	 */
+	const FProperty* Inner = nullptr;
+
+	/**
+	 * The element's scalar kind. MEANINGLESS FOR STRUCT ELEMENTS -- a struct element has a
+	 * layout, not a kind; test IsStructElement() first. Never Text and never Array here:
+	 * both are refused at desc build (see BuildLevel), so element compares and describes
+	 * never meet either.
+	 */
+	EVaCuusFieldKind ElementKind = EVaCuusFieldKind::Bool;
+
+	/**
+	 * Struct elements only. A PLAIN FVaCuusModelLayout over the element UScriptStruct --
+	 * same flattening, same classifier, same name rules, same TStrongObjectPtr pinning a
+	 * model root gets. Deliberately NOT a special element mode: the definition registry
+	 * keys on the raw UScriptStruct*, so a type used both as a model root and as a row type
+	 * gets one layout policy or none (spec 3.1). What a shared layout cannot refuse -- Text
+	 * anywhere in the element subtree, nested containers -- the desc build refuses on the
+	 * ARRAY FIELD instead. Built through the constructor that shares the caller's cycle
+	 * stack, which changes nothing for an acyclic element type; a type already on the stack
+	 * never gets an element layout at all, because the array field is refused first
+	 * (BuildLevel's cycle guard).
+	 */
+	TUniquePtr<FVaCuusModelLayout> ElementLayout;
+
+	bool IsStructElement() const { return ElementLayout.IsValid(); }
+
+	/**
+	 * Copies a whole array value: Dest and Src are VALUE pointers (the TArray's own
+	 * address) into two instances of the containing type, in any pairing the pipeline
+	 * needs. The one array copy primitive -- every stage reaches it through
+	 * FVaCuusModelField::CopyValue, which is what keeps the pipeline's call sites
+	 * kind-agnostic and the cost story below true at all of them.
+	 *
+	 * Resize to the source Num -- touching only the delta, surviving elements keep their
+	 * values -- then per-element assignment, or one Memcpy for POD inners. Deliberately
+	 * NOT the engine's own whole-array copy, which destroys every destination element
+	 * before rebuilding and so can never reuse an element's buffer; the .cpp carries the
+	 * full argument with the engine citations. Net: GROW-ONLY reuse -- allocations where
+	 * content outgrew capacity or Num grew -- while a SHRINK may still reallocate the
+	 * container block: the shrink path is RemoveValues -> FScriptArray::Remove with
+	 * shrinking allowed (UnrealType.h:4477-4483, ScriptArray.h:191-222), and the allocator
+	 * reallocates whenever its shrink policy says the slack is too big; the .cpp cites the
+	 * exact thresholds (spec 3.3, scoped by 3.4).
+	 */
+	VACUUS_API void SyncCopy(void* DestValuePtr, const void* SrcValuePtr) const;
+};
 
 /** One bound leaf. Nested structs contribute their leaves and no entry of their own. */
 struct FVaCuusModelField
@@ -136,6 +231,24 @@ struct FVaCuusModelField
 	EVaCuusFieldKind Kind = EVaCuusFieldKind::Bool;
 
 	/**
+	 * Index into the owning layout's array-desc table for an Array field; INDEX_NONE for
+	 * every other kind. The BUILD-TIME identity: descs are appended while the table can
+	 * still reallocate, so during the build only the index is stable.
+	 */
+	int32 ArrayDescIndex = INDEX_NONE;
+
+	/**
+	 * The desc itself for an Array field; null for every other kind. Fixed up ONCE by the
+	 * layout constructor, after BuildLevel has stopped appending -- the pointer targets an
+	 * element of the layout's desc table, and the layout is immutable from the
+	 * constructor's return on, so the table can never reallocate under it (moving the
+	 * layout moves the table's allocation ownership, not its elements). Exists so that
+	 * CopyValue below reaches the array copy without any caller carrying the layout: the
+	 * pipeline stages copy through the field alone.
+	 */
+	const FVaCuusModelArrayDesc* ArrayDesc = nullptr;
+
+	/**
 	 * The container to hand to Property's *_InContainer accessors, or to
 	 * ContainerPtrToValuePtr. Exists so that no caller ever does the offset arithmetic
 	 * itself -- FProperty offers five identically-behaved offset accessors, one of
@@ -170,6 +283,14 @@ struct FVaCuusModelField
 	 * Single, not Complete: FVaCuusModelLayout refuses ArrayDim > 1, so there is exactly one
 	 * value per entry.
 	 *
+	 * AN ARRAY FIELD DOES NOT TAKE THIS PATH: it funnels to ArrayDesc->SyncCopy, through the
+	 * pointer the layout fixed up at build time, so the pipeline's call sites stay
+	 * kind-agnostic while the array primitive stays swappable in one place. (CopySingleValue
+	 * on an FArrayProperty would be CORRECT -- it is the virtual whole-container deep copy --
+	 * but it empties the destination first, destroying every non-POD element,
+	 * PropertyArray.cpp:1260-1328; what to do about that is SyncCopy's concern, not this
+	 * function's.)
+	 *
 	 * Out of line, unlike ContainerPtr above, only because calling into FProperty needs the
 	 * complete type and this is a Public header that today gets away with a forward
 	 * declaration.
@@ -198,6 +319,11 @@ struct FVaCuusModelField
 	 * document renders identically -- which is exactly the disagreement somebody dumping two
 	 * shadows is looking for. Bools follow RmlUi ("1"/"0", :340-347) because there the shipped
 	 * form loses nothing.
+	 *
+	 * ARRAYS PRINT Num() AND THE FIRST 8 ELEMENTS with an elision marker (spec 6): a
+	 * 200-row killfeed dumped in full would bury the scalar fields the dump exists to show.
+	 * Struct elements print through the element layout's own fields, scalar elements
+	 * through the same per-kind accessors in value-pointer form.
 	 */
 	VACUUS_API FString DescribeValue(const void* StructBase) const;
 };
@@ -253,11 +379,18 @@ class VACUUS_API FVaCuusModelLayout
 {
 public:
 	/**
-	 * How many struct properties deep the flattening will go. Not a cycle guard: a
-	 * USTRUCT cannot contain itself by value at any depth, because its own size would
-	 * have to be infinite, so the recursion terminates by construction. This bounds
-	 * the wire names instead -- every level adds a dotted segment that a document
-	 * author has to type.
+	 * How many struct properties deep the flattening will go. Not a cycle guard, and with
+	 * arrays in the type graph one is needed ELSEWHERE: by-value nesting still cannot cycle
+	 * -- a USTRUCT containing itself by value would need infinite size -- but a TArray
+	 * member is heap indirection, so a TYPE GRAPH can loop through one, and this limit
+	 * would never fire on the way down because every element layout restarts Depth at 0.
+	 * UHT happens to refuse every native writing of the shape -- the direct one explicitly
+	 * (UhtArrayProperty.cs:216-222), the indirect ones at the forward reference they need
+	 * (zero code-generation hash, UhtProperty.cs:3066-3071) -- but nothing validates the
+	 * FProperty graph itself, which a runtime-built UUserDefinedStruct assembles freely.
+	 * That cycle is refused by the build stack at BuildLevel's array interception. What
+	 * this constant bounds is the wire names -- every level adds a dotted segment that a
+	 * document author has to type.
 	 */
 	static constexpr int32 MaxNestingDepth = 4;
 
@@ -281,12 +414,36 @@ public:
 	const FVaCuusModelField* FindField(FStringView InWireName) const;
 
 private:
+	/**
+	 * The element-layout form: the same build, threaded through the CALLER'S cycle stack.
+	 * A container cycle is visible only ACROSS layouts -- each element layout is a fresh
+	 * FVaCuusModelLayout whose Depth restarts at 0, so no per-layout state can see the
+	 * recursion; the stack of in-progress build roots is the one thing that spans them.
+	 * Private because the stack only means something mid-build: the sole caller is
+	 * BuildLevel's array interception, which checks the stack BEFORE constructing.
+	 */
+	FVaCuusModelLayout(const UScriptStruct* InStruct, TArray<const UScriptStruct*>& BuildStack);
+
+	/** The one build body behind both constructors; keeps InStruct on the stack for its duration. */
+	void Build(const UScriptStruct* InStruct, TArray<const UScriptStruct*>& BuildStack);
+
 	/** Walks one struct level, appending leaves and recursing into nested structs. */
-	void BuildLevel(const UScriptStruct* InStruct, const FString& Prefix, int32 BaseOffset, int32 TopLevelNameIndex, int32 Depth);
+	void BuildLevel(const UScriptStruct* InStruct, const FString& Prefix, int32 BaseOffset, int32 TopLevelNameIndex, int32 Depth,
+		TArray<const UScriptStruct*>& BuildStack);
 
 	TStrongObjectPtr<const UScriptStruct> Struct;
 	TArray<FVaCuusModelField> Fields;
 	TArray<FString> TopLevelNames;
+
+	/**
+	 * One entry per Array field, indexed by FVaCuusModelField::ArrayDescIndex. Appended
+	 * only inside BuildLevel; the constructor fixes each Array field's ArrayDesc pointer
+	 * into this table AFTER the build, and nothing may append past that point -- the
+	 * pointers dangle otherwise. (TUniquePtr inside the desc also makes the layout
+	 * move-only, which is what stops a copied layout carrying pointers into another
+	 * layout's table.)
+	 */
+	TArray<FVaCuusModelArrayDesc> ArrayDescs;
 };
 
 /**

@@ -203,8 +203,29 @@ struct FState
 	 * tick, unchanged, which must cost zero published frames and zero applied fields. Both
 	 * numbers are readable while it is frozen -- UVaCuusView::GetFramesPublished through
 	 * vacuus.M1HUD.PerfLog, and the applied-field count through vacuus.DumpModel.
+	 *
+	 * The killfeed freezes with everything else, by construction rather than by a check of its
+	 * own: PumpDemoModel returns from the frozen branch before any mutation, so the array rides
+	 * the same byte-identical struct -- an array field that kept appending under Freeze would
+	 * publish every 1.5 s and quietly destroy the idle row this switch exists to prove.
 	 */
 	bool bModelFrozen = false;
+
+	/**
+	 * The 1.5-second beat (floor(Elapsed / 1.5)) of the last appended killfeed row. Kept as a
+	 * beat rather than a timestamp because Elapsed itself is what Freeze's thaw rebases to zero
+	 * -- FreezeDemoModel resets this alongside ModelDriverStartSeconds, or the pump would
+	 * append nothing until the new clock caught up with the old beat count.
+	 */
+	int32 LastKillfeedBeat = 0;
+
+	/**
+	 * Rows appended since the demo came up, monotonic across Freeze/thaw. This is what the row
+	 * CONTENT derives from, and it is deliberately not the beat: the beat resets on thaw, and a
+	 * feed that replayed the same kills after a thaw would look exactly like the stale-array
+	 * bug the demo exists to rule out.
+	 */
+	int32 KillfeedSerial = 0;
 };
 
 static TUniquePtr<FState> GState;
@@ -470,6 +491,44 @@ static void PumpDemoModel()
 
 	Model.Target.Designation = FString::Printf(TEXT("BOGEY-%d"), Beat % 8);
 	Model.Target.Distance = 120 + (Beat % 9) * 35;
+
+	// The M3b killfeed: one row per 1.5-second beat, front-trimmed above 6. Slower than every
+	// other field on purpose -- rows have to be readable as ROWS on a screenshot, and a feed
+	// that scrolled per frame would photograph as noise. `>` rather than `!=` so a thaw's beat
+	// reset (see FreezeDemoModel) can only pause the feed, never replay it.
+	const int32 KillBeat = int32(Elapsed / 1.5);
+	if (KillBeat > GState->LastKillfeedBeat)
+	{
+		GState->LastKillfeedBeat = KillBeat;
+		const int32 Serial = GState->KillfeedSerial++;
+
+		// Deterministic from the serial, so two HITCH-FREE runs of the same length show the
+		// same feed -- which is what lets a headless screenshot be checked against an
+		// expectation instead of merely glanced at. A >1.5 s hitch narrows that guarantee:
+		// this pump appends at most one row while LastKillfeedBeat jumps to the hitched
+		// beat, so the skipped beat's row never exists -- the row COUNT then differs from a
+		// hitch-free run, though the content stays serial-sequential (rows still come from
+		// consecutive serials). Pool sizes 5, 7 and 4 are pairwise coprime, so the
+		// (Killer, Victim, Weapon) triple does not repeat for 140 rows.
+		static const TCHAR* Killers[] = {TEXT("RAPTOR"), TEXT("VIPER"), TEXT("GHOST"), TEXT("NOMAD"), TEXT("HAVOC")};
+		static const TCHAR* Weapons[] = {TEXT("railgun"), TEXT("SMG"), TEXT("DMR"), TEXT("knife")};
+
+		FVaCuusDemoKillfeedRow Row;
+		Row.Killer = Killers[Serial % UE_ARRAY_COUNT(Killers)];
+		Row.Victim = FString::Printf(TEXT("BOGEY-%02d"), Serial % 7);
+		Row.Weapon = Weapons[Serial % UE_ARRAY_COUNT(Weapons)];
+		Row.bHeadshot = (Serial % 3) == 0;
+		Model.Killfeed.Add(MoveTemp(Row));
+
+		// FROM THE FRONT, which is the expensive direction and the point (spec 7): removing
+		// element 0 shifts every survivor, so each trim makes RmlUi re-evaluate every row --
+		// the all-rows path -- where trimming the back would only ever delete the last one.
+		// A while, not an if, only so a lowered cap could never strand extra rows.
+		while (Model.Killfeed.Num() > 6)
+		{
+			Model.Killfeed.RemoveAt(0);
+		}
+	}
 
 	// ONE CALL WITH THE WHOLE STRUCT. The diff is inside: UpdateModel marks only what moved, and
 	// UVaCuusSubsystem::Tick turns whatever was marked into ONE publish for the frame.
@@ -1490,10 +1549,10 @@ static FAutoConsoleCommand GM2DemoCommand(
 
 static FAutoConsoleCommand GM3DemoCommand(
 	TEXT("vacuus.M3Demo"),
-	TEXT("Toggle the M3a data-binding demo (DevUI/m3_demo.rml): a USTRUCT carrying one property of every bound kind, ")
+	TEXT("Toggle the M3 data-binding demo (DevUI/m3_demo.rml): a USTRUCT carrying one property of every bound kind, ")
 	TEXT("driven every frame into a live RmlUi data model -- text substitution, a float as bar geometry, a flattened ")
-	TEXT("nested struct, a bound class, and a button whose write is refused. Pair it with vacuus.DumpModel and ")
-	TEXT("vacuus.M3Demo.Freeze."),
+	TEXT("nested struct, a bound class, a button whose write is refused, and a data-for killfeed over a TArray of ")
+	TEXT("struct rows (a row per ~1.5s, front-trimmed above 6). Pair it with vacuus.DumpModel and vacuus.M3Demo.Freeze."),
 	FConsoleCommandDelegate::CreateLambda([] { Toggle(GM3DemoVfsPath); }));
 
 /**
@@ -1522,6 +1581,12 @@ static void FreezeDemoModel(const TArray<FString>& Args)
 		// Rebased so the sweep resumes from the top rather than jumping to wherever wall clock
 		// happens to be, which would look like a glitch rather than a resume.
 		GState->ModelDriverStartSeconds = FPlatformTime::Seconds();
+
+		// The killfeed beat counts on the clock the line above just rebased; left alone it
+		// would sit above every new KillBeat and the feed would stay silent for as long as the
+		// freeze lasted. KillfeedSerial is deliberately NOT reset -- content continues, only
+		// the cadence restarts (see the FState members).
+		GState->LastKillfeedBeat = 0;
 	}
 
 	UE_LOG(LogVaCuus, Display,

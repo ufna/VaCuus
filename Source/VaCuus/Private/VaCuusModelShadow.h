@@ -33,8 +33,14 @@ class UScriptStruct;
  * the six errors v1 of the design shipped with.
  *
  * The cost of the real instance is that it is a full-fidelity copy: an FString field
- * really is an FString and really allocates. That is the price of the accessors, and it is
- * paid once per model, not per frame.
+ * really is an FString and really allocates. That is the price of the accessors. For
+ * SCALAR fields it is paid once per model, not per frame -- every later sync assigns
+ * through the same members. An ARRAY field is assignment-shaped per republish instead:
+ * each sync rewrites its elements in place (FVaCuusModelArrayDesc::SyncCopy),
+ * allocation-free only where the existing element and container capacity absorb the
+ * content -- the grow-only reuse rule (ReallocForCopy, Array.h:710-751, `NewMax >
+ * PrevMax`) and its shrink caveat live on SyncCopy (VaCuusModelLayout.cpp:27-52), and
+ * spec 9's counting allocator is what holds "capacity absorbs it" to account.
  *
  *
  * AND THE CONSEQUENCE THAT DECIDES WHAT MAY LIVE IN IT: THIS BUFFER IS INVISIBLE TO GC.
