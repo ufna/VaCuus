@@ -5,6 +5,7 @@
 #include "UObject/Object.h"
 
 #include "VaCuusInteractiveSnapshot.h"
+#include "VaCuusJsValue.h"
 
 #include "Templates/SharedPointer.h"
 
@@ -85,6 +86,21 @@ struct FVaCuusImeSurface
 DECLARE_MULTICAST_DELEGATE_TwoParams(FOnVaCuusViewLoadCompleted, UVaCuusView* /*View*/, bool /*bSuccess*/);
 
 /**
+ * One routed document write (M4 Task 9, spec 3.10) -- what a data-checked checkbox, a
+ * data-value input or a data-event assignment produces once the write router carries it
+ * to the game thread. Model is the bound model's name; Path is the wire path within it
+ * ("bPaused", "Origin.X", "Killfeed[0].Killer"); Value is the tagged payload
+ * (FVaCuusJsValue). The SHADOW WAS NOT WRITTEN and the control has snapped back to it:
+ * this delegate is the request, and calling UpdateModel with a changed struct is the
+ * grant -- one-way data flow with an explicit ask, not two-way mutation.
+ */
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(
+	FOnVaCuusModelWrite, FName, Model, const FString&, Path, const FVaCuusJsValue&, Value);
+
+/** One `vacuus.emit(name, payload)` from this view's JS (M4 Task 9, spec 3.11). Payload is the flat key/value set the emit carried. */
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnVaCuusJsEvent, FName, Name, const TArray<FVaCuusJsKeyValue>&, Payload);
+
+/**
  * Handle to one UI view: one Rml::Context living on the process-wide UI thread.
  *
  * Owns nothing thread-affine. Every method here is a non-blocking enqueue onto
@@ -107,6 +123,19 @@ class VACUUS_API UVaCuusView : public UObject
 public:
 	/** Newest completed load only; see the delegate's own comment for the coalescing rule. */
 	FOnVaCuusViewLoadCompleted OnLoadCompleted;
+
+	/**
+	 * Routed document writes land here, on the game thread, drained once per frame by
+	 * UVaCuusSubsystem::Tick from the router's bounded queue. A write arriving with
+	 * NOTHING bound logs one Warning per (model, path) -- the control already snapped
+	 * back, so an unheard write is otherwise invisible. See FOnVaCuusModelWrite.
+	 */
+	UPROPERTY(BlueprintAssignable, Category = "VaCuus|Data")
+	FOnVaCuusModelWrite OnModelWrite;
+
+	/** `vacuus.emit` events land here; same queue, same drain, no model. */
+	UPROPERTY(BlueprintAssignable, Category = "VaCuus|Data")
+	FOnVaCuusJsEvent OnJsEvent;
 
 	/**
 	 * Called by UVaCuusSubsystem::CreateView() right after the AddView command is

@@ -39,8 +39,13 @@ bool CanonicalizeVfsRelativePath(const FString& InPath, FString& OutCanonical);
  * "vfs://" + canonical(InRootRelativePath): the module name for an ENTRY the
  * host resolves itself (the loader mints names for imports via the normalize
  * thunk, which ends in the same two calls). Falls back to the input path,
- * scheme'd, when canonicalization refuses -- the loader will then miss and name
- * the path in its Error, which is a better diagnostic than a silent drop here.
+ * scheme'd and UN-canonicalized, when canonicalization refuses -- better than a
+ * silent drop, but be honest about where the fallback then goes: the loader
+ * strips the scheme and probes the RAW path against the ordered roots, so an
+ * entry src like "../x.mjs" probes "<Root>/../x.mjs" and CAN resolve to a real
+ * file OUTSIDE the root. Only IMPORT specifiers get the climb-above-root
+ * refusal (the normalize thunk's escape check); no sandbox is mandated for
+ * entries, whose src the document author wrote next to the document itself.
  */
 FString MakeModuleName(const FString& InRootRelativePath);
 }	 // namespace VaCuusJsModules

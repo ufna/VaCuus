@@ -196,6 +196,19 @@ public:
 	const FVaCuusModelShadow& GetUIShadow() const { return UIShadow; }
 
 	/**
+	 * The write router's revert-dirty (M4 Task 9, spec 3.10): DirtyVariable(TopLevelName)
+	 * on this model's handle, so the next Context::Update re-runs the name's views FROM
+	 * THE SHADOW -- which nothing has written, so a control RmlUi's default action
+	 * mutated (a clicked checkbox's `checked`, InputTypeCheckbox.cpp:43-46) snaps back to
+	 * the authoritative value. NOT a write and NOT an apply: the one shadow writer is
+	 * still ApplyUpdate(), this only marks a name dirty exactly as an apply would.
+	 *
+	 * UI thread only; a no-op before BindToContext(). Called from
+	 * FVaCuusWriteRouter::FlushPendingReverts, inside the frame's DataApply phase.
+	 */
+	void DirtyTopLevelFromShadow(const FString& TopLevelName);
+
+	/**
 	 * `vacuus.DumpModel`'s UI half: whether the bind reached a context, the UI shadow's values,
 	 * the published dirty set that last reached it, and the applied generation. UI thread; see
 	 * DumpGameSide() for why this is a separate call on a separate thread.

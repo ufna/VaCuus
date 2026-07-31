@@ -58,6 +58,17 @@ struct FVaCuusCapturedScript
 	 * modules), and a `.js` src is always classic too -- import it FROM an
 	 * `.mjs` entry instead (imports are modules by definition, whatever their
 	 * extension; only the ENTRY is gated by the convention).
+	 *
+	 * ENTRIES DO NOT DEDUPE AGAINST THE MODULE CACHE, unlike imports: an `.mjs`
+	 * entry whose module was already loaded as somebody's import -- or the same
+	 * entry listed twice in one <head> -- executes a SECOND time with a second
+	 * module instance, because JS_Eval's TYPE_MODULE path registers a fresh def
+	 * without consulting the loaded-modules list (js_create_module,
+	 * quickjs.c:29652) -- only the import-resolution path checks it first
+	 * (js_host_resolve_imported_module, quickjs.c:30031-30036). Browsers dedupe
+	 * entries by URL; we do not. Consequence: give an entry module no
+	 * observable side effects you are not prepared to see twice, or make it an
+	 * import behind a one-line entry.
 	 */
 	bool bIsModule = false;
 
@@ -95,9 +106,12 @@ struct FVaCuusCapturedScript
  * -- invoked by the document host after old-close and Show() -- runs what was
  * stored, in document order, in the fresh context.
  *
- * Every method is defined in the .cpp, LoadInlineScript first: the KEY
- * FUNCTION, whose out-of-line definition is what pins the vtable to this
- * module (the file comment's whole point).
+ * Every method is defined in the .cpp: the KEY FUNCTION -- the class's FIRST
+ * out-of-line, non-pure virtual in DECLARATION order, which under the Itanium
+ * ABI is the DESTRUCTOR, declared above both overrides -- is what pins the
+ * vtable to this module (the file comment's whole point). Keeping the other
+ * virtuals out-of-line too costs nothing and keeps the property immune to a
+ * reordering edit.
  */
 class VACUUSRML_API FVaCuusScriptDocument final : public Rml::ElementDocument
 {

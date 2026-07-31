@@ -116,10 +116,16 @@ char* FVaCuusJsViewContext::ModuleNormalizeThunk(
 		// canonical name for a module-to-module import (the engine passes the
 		// importer's module_name -- what it was compiled as, and both compile
 		// sites here compile under the canonical vfs name). For a dynamic
-		// import() from a CLASSIC script the base is that script's source name
-		// ("vacuus://doc.rml:3", "exec-fifo"...), whose directory is usually "" --
-		// a relative specifier from classic code resolves at the VFS root, the
-		// only honest reading of a baseless import; documented, not fought.
+		// import() from a CLASSIC script the base is that script's SOURCE NAME,
+		// and what happens depends on its shape: a slash-free name ("exec-fifo",
+		// an ExecuteScript label) has directory "" and the specifier resolves at
+		// the VFS root; an INLINE script's name ("vacuus://x.rml:3") contains
+		// slashes, so GetPath answers "vacuus:/" -- StripVfsScheme strips only
+		// vfs:// -- and the combined name canonicalizes to "vacuus:/<spec>",
+		// which resolves under no root and fails LOUDLY at the loader, naming
+		// the probe. So: relative dynamic imports work from named classic
+		// sources, and from inline documents they are a diagnosed miss -- use a
+		// root-relative or vfs:// specifier there. Documented, not fought.
 		const FString BaseDir = FPaths::GetPath(StripVfsScheme(FString(UTF8_TO_TCHAR(BaseName))));
 		Combined = BaseDir.IsEmpty() ? Specifier : BaseDir / Specifier;
 	}

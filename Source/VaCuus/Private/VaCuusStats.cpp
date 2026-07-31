@@ -131,6 +131,25 @@ static void LogScopeLine(const TCHAR* Bucket, int32 Scope, const FSummary& Summa
 	UE_LOG(LogVaCuus, Log, TEXT("PerfLog %s %s avg=%.3f p50=%.3f p99=%.3f max=%.3f ms (%d)"),
 		Bucket, GScopeNames[Scope], Summary.Avg, Summary.P50, Summary.P99, Summary.Max, Summary.Count);
 }
+
+/**
+ * The ALWAYS-ON last-sample store behind vacuus.stats() (M4 Task 9, spec 3.11), outside
+ * FState and its lock on purpose: the RAII timers call AddSample whether or not the
+ * PerfLog cvar is on, so a plain per-slot store here is one double write on a path that
+ * already did a virtual call and two clock reads -- while routing it through the locked
+ * state would put a mutex on every scope exit in every configuration.
+ *
+ * THREADING, stated because it is the whole safety argument: each slot has exactly ONE
+ * writing thread (a scope runs where its phase runs), and vacuus.stats() reads only the
+ * UI-thread-written slots (Update, Record) plus the JsPump interval -- from the UI
+ * thread, under JS execution. Same-thread read-after-write, no ordering needed; the
+ * game/render-thread slots are written here for symmetry and read by nobody yet.
+ */
+static double GLastSampleMs[FVaCuusPerfLog::Num] = {};
+
+/** Seconds between the last two JsPump samples -- the UI frame interval as the pump sees it, and vacuus.stats()'s fps source. */
+static double GLastJsPumpIntervalSeconds = 0.0;
+static double GLastJsPumpSampleSeconds = 0.0;
 } // namespace VaCuusPerfLogPrivate
 
 bool FVaCuusPerfLog::IsEnabled()
@@ -140,18 +159,42 @@ bool FVaCuusPerfLog::IsEnabled()
 
 void FVaCuusPerfLog::AddSample(EScope Scope, double Milliseconds)
 {
+	using namespace VaCuusPerfLogPrivate;
+
+	// Before the enabled gate: the last-sample store serves vacuus.stats() in every
+	// configuration (its comment carries the threading argument).
+	GLastSampleMs[Scope] = Milliseconds;
+	if (Scope == JsPump)
+	{
+		const double NowSeconds = FPlatformTime::Seconds();
+		if (GLastJsPumpSampleSeconds > 0.0)
+		{
+			GLastJsPumpIntervalSeconds = NowSeconds - GLastJsPumpSampleSeconds;
+		}
+		GLastJsPumpSampleSeconds = NowSeconds;
+	}
+
 	if (!IsEnabled())
 	{
 		return;
 	}
 
-	using namespace VaCuusPerfLogPrivate;
 	FState& State = GetState();
 	FScopeLock ScopeLock(&State.Lock);
 	if (State.bEnabled)
 	{
 		State.Window[Scope].Add(Milliseconds);
 	}
+}
+
+double FVaCuusPerfLog::GetLastSampleMs(EScope Scope)
+{
+	return VaCuusPerfLogPrivate::GLastSampleMs[Scope];
+}
+
+double FVaCuusPerfLog::GetLastUIFrameIntervalSeconds()
+{
+	return VaCuusPerfLogPrivate::GLastJsPumpIntervalSeconds;
 }
 
 void FVaCuusPerfLog::AddDraws(int32 NumDraws)

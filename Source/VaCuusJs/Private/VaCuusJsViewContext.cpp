@@ -174,13 +174,19 @@ void FVaCuusJsViewContext::InstallGlobals()
 	// through the host's test-only entry.
 	JS_SetPropertyStr(Ctx, Global, "document", JS_NULL);
 
-	// The `vacuus` host object (M4 Task 6 mints it, Task 9 populates it with
-	// model()/log). Tier 1 surface: `vacuus.onUnload` -- assign a function and
-	// DispatchUnload invokes it at close time. Seeded NULL rather than left
-	// absent so `vacuus.onUnload === null` feature-tests cleanly, mirroring
-	// `document`.
+	// The `vacuus` host object (M4 Task 6 minted it; Task 9's spec 3.11 surface lives
+	// on it now). `vacuus.onUnload` -- assign a function and DispatchUnload invokes it
+	// at close time -- is seeded NULL rather than left absent so
+	// `vacuus.onUnload === null` feature-tests cleanly, mirroring `document`.
+	// emit/model/view/stats come from InstallHostApi (VaCuusJsHostApi.cpp); vacuus.log
+	// is installed HERE because it is console.log under a second name -- the same thunk
+	// with the same magic, so the two cannot drift. Built COMPLETELY before the
+	// property set below hands ownership of the object to the global.
 	JSValue Vacuus = JS_NewObject(Ctx);
 	JS_SetPropertyStr(Ctx, Vacuus, "onUnload", JS_NULL);
+	JS_SetPropertyStr(Ctx, Vacuus, "log",
+		JS_NewCFunctionMagic(Ctx, &FVaCuusJsViewContext::ConsoleThunk, "log", 0, JS_CFUNC_generic_magic, EConsoleLevel::Log));
+	InstallHostApi(Vacuus);
 	JS_SetPropertyStr(Ctx, Global, "vacuus", Vacuus);
 
 	JSValue Console = JS_NewObject(Ctx);

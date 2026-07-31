@@ -10,6 +10,7 @@
 #include "VaCuusModelShadow.h"
 #include "VaCuusUIThread.h"
 #include "VaCuusViewStatus.h"
+#include "VaCuusWriteRouter.h"
 
 #include "VaCuusModelLayoutTestTypes.h"
 
@@ -320,6 +321,8 @@ public:
 	int32 ArrayChildsAfter = 0;
 	int32 RefusedSetsBefore = 0;
 	int32 RefusedSetsAfter = 0;
+	uint64 RoutedWritesBefore = 0;
+	uint64 RoutedWritesAfter = 0;
 	bool bShadowBytesIdentical = false;
 	bool bKillerElementIntact = false;
 	bool bNumberElementIntact = false;
@@ -630,9 +633,18 @@ bool FVaCuusArrayBindingTest::RunTest(const FString& Parameters)
 	// one spelling the assignment grammar admits (GDocumentMain's comment) -- and both RmlUi
 	// call sites skip their DirtyVariable when Set refuses (DataControllerDefault.cpp:57-59,
 	// DataExpression.cpp:1185-1197), so the DOM must not move either.
+	//
+	// SINCE M4 TASK 9 THIS PHASE IS ALSO THE ROUTER-ABSENT PROOF: the write router IS
+	// registered in this binary (FVaCuusUIThread::Init does it), but this fixture binds
+	// its shadow directly through BindModelVariables -- never the production BindModel
+	// drain -- so nothing is in the router's registry, both clicks fail attribution, and
+	// the refusal must run byte-identically: same counter, same Warning wording (the
+	// AddExpectedMessagePlain lines above), and the routed counter must NOT move. The
+	// router-PRESENT counterpart of these exact clicks is VaCuus.Js.Router.WriteRoutes.
 	Host->Actions[2] = [](FArrayProbeHost& Host)
 	{
 		Host.RefusedSetsBefore = VaCuusData::GetNumRefusedSets();
+		Host.RoutedWritesBefore = FVaCuusWriteRouter::GetNumRoutedWrites();
 
 		TArray<uint8> Before;
 		Before.Append(static_cast<const uint8*>(Host.GetShadowData()), Host.GetShadowSize());
@@ -650,6 +662,7 @@ bool FVaCuusArrayBindingTest::RunTest(const FString& Parameters)
 		Host.UpdateContext();
 
 		Host.RefusedSetsAfter = VaCuusData::GetNumRefusedSets();
+		Host.RoutedWritesAfter = FVaCuusWriteRouter::GetNumRoutedWrites();
 		Host.bShadowBytesIdentical = FMemory::Memcmp(Before.GetData(), Host.GetShadowData(), Host.GetShadowSize()) == 0;
 
 		// Case-SENSITIVE, because FString::operator== folds case (ESearchCase::IgnoreCase) and
@@ -765,6 +778,9 @@ bool FVaCuusArrayBindingTest::RunTest(const FString& Parameters)
 	const FCaptured& AfterClicks = Host->Captures[2];
 
 	TestEqual(TEXT("both assignments reached Set() and were refused"), Host->RefusedSetsAfter, Host->RefusedSetsBefore + 2);
+	TestEqual(TEXT("and the write router -- registered, but with this model unregistered -- routed neither (M4 Task 9's ")
+			  TEXT("router-absent guarantee)"),
+		Host->RoutedWritesAfter, Host->RoutedWritesBefore);
 	// The byte-compare's scope is the shadow's INLINE span only -- scalar fields and the
 	// TArray headers; the element values the clicks aimed at live in heap blocks it never
 	// touches, and the two element reads below are the assertions that guard those.

@@ -11,6 +11,7 @@
 #include "VaCuusStats.h"
 #include "VaCuusTextInput.h"
 #include "VaCuusUIQueues.h"
+#include "VaCuusWriteRouter.h"
 
 #include "HAL/IConsoleManager.h"
 #include "HAL/PlatformProcess.h"
@@ -856,6 +857,14 @@ bool FVaCuusUIThread::Init()
 		UE_LOG(LogVaCuus, Log, TEXT("UI thread created its script host; JS phases are live"));
 	}
 
+	// The write router (M4 Task 9, spec 3.10) -- registered UNCONDITIONALLY, script host
+	// or not: two-way binding is a core surface (a Blueprint game with JS off still gets
+	// OnModelWrite from a data-checked checkbox). This is the registration whose absence
+	// makes an M3 configuration byte-identical; the M3a/M3b suites running here with it
+	// PRESENT stay untouched anyway, because their fixture models never enter the
+	// router's registry (FVaCuusWriteRouter's class comment carries both halves).
+	FVaCuusWriteRouter::RegisterRouter();
+
 	// Set last, and before returning: Start() reads it as soon as Create() returns.
 	bInitSucceeded.store(true, std::memory_order_release);
 	return true;
@@ -951,6 +960,12 @@ void FVaCuusUIThread::Exit()
 	{
 		Engine.Shutdown();
 	}
+
+	// 2b. The write router retracts BEFORE the models die below: its registry holds raw
+	// FVaCuusBoundModel pointers, and this ordering is what makes them safe to hold at
+	// all. (The game-thread queue is deliberately left to its own consumer -- see
+	// FVaCuusWriteRouter::UnregisterRouter.)
+	FVaCuusWriteRouter::UnregisterRouter();
 
 	// 3. Only now may the hosts themselves die, on the thread that built them. The models go
 	// with them, and for the same reason RemoveView() drops them after Shutdown(): every
@@ -1089,6 +1104,14 @@ void FVaCuusUIThread::ApplyModelUpdates()
 			Model->ApplyPendingUpdate();
 		}
 	}
+
+	// The write router's revert-dirty (spec 3.10), AFTER the applies: a game that heard
+	// OnModelWrite and changed the field has just applied the new truth, and re-dirtying
+	// the same top-level name is a set-emplace, not a second evaluation. Before this
+	// frame's Context::Update either way, so a control a click mutated in THIS frame's
+	// DrainInput snaps back to the shadow within the same frame. Free when nothing was
+	// routed: an empty array walk.
+	FVaCuusWriteRouter::FlushPendingReverts();
 }
 
 void FVaCuusUIThread::DrainCommands()
@@ -1364,6 +1387,13 @@ void FVaCuusUIThread::RemoveView(uint32 ViewId)
 		ScriptHost->OnViewRemoved(ViewId);
 	}
 
+	// The router lets go BEFORE the context dies, and the ordering is a use-after-free
+	// guard, not tidiness: a click routed in the PREVIOUS frame's record loop may have a
+	// revert-dirty still pending, and the flush runs in ApplyModelUpdates -- AFTER this
+	// drain, in the same frame. Unregistering purges those pending entries, so the flush
+	// can never DirtyVariable into a DataModel that Shutdown() below is about to destroy.
+	FVaCuusWriteRouter::UnregisterViewModels(ViewId);
+
 	// Drops the context and the render-side resources, but not the host: RmlUi
 	// still holds a RenderManager keyed on its render interface until
 	// Rml::Shutdown() (see RetiredHosts). Every other view keeps running.
@@ -1420,6 +1450,13 @@ void FVaCuusUIThread::BindModel(uint32 ViewId, IVaCuusDocumentHost& Host, const 
 
 	Models.FindOrAdd(ViewId).Add(Model.ToSharedRef());
 	NumBoundModels.fetch_add(1, std::memory_order_release);
+
+	// The BindModel-drain stamp spec 3.10 asks for, landed as a REGISTRY entry rather
+	// than a member on the model: this is the one point that knows the (ViewId, name,
+	// model) triple, and from here on a document write into this model's storage
+	// attributes to it (FVaCuusWriteRouter's span-walk comment), and JS can read it
+	// through vacuus.model(name). Unregistered in RemoveView, before the ref drop.
+	FVaCuusWriteRouter::RegisterModel(ViewId, Model->GetModelName(), Model.ToSharedRef());
 }
 
 void FVaCuusUIThread::DumpModel(uint32 ViewId, FName ModelName)

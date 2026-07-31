@@ -42,7 +42,13 @@ namespace VaCuusJsOverlayInternal
 constexpr int32 GMaxStoredErrorsPerView = 32;
 
 #if !UE_BUILD_SHIPPING
-/** The overlay element's reserved id -- how the refresh refinds it across frames without holding a pointer. */
+/**
+ * The overlay element's reserved id -- how the refresh refinds it across frames without
+ * holding a pointer. RESERVED means taken from the document's namespace: a user element
+ * carrying id="vacuus-js-overlay" is what GetElementById finds first, so the refresh
+ * would restyle and rewrite THAT element. Nothing detects the collision; the id is
+ * hereby claimed, like `on*` attributes are by the instancer.
+ */
 static const char* GOverlayElementId = "vacuus-js-overlay";
 
 /** Distinct (source, message) lines the overlay shows, newest-first (spec 3.8's "last N"). */

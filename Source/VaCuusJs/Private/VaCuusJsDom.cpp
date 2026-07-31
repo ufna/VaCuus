@@ -248,6 +248,15 @@ void FVaCuusJsViewContext::RemoveCacheEntry(Rml::Element* RawKey)
 
 void FVaCuusJsViewContext::OnRmlElementDestroyed(Rml::Element* Element)
 {
+	// The vacuus.view member's liveness (M4 Task 9): a document closed WITHOUT a
+	// replacement dies here, one frame later, inside Context::Update's deferred free --
+	// the one death path no BindDocument call covers. This hook fires for every element
+	// the process destroys, the document itself included, so the compare is exact.
+	if (Element == CurrentDocument)
+	{
+		CurrentDocument = nullptr;
+	}
+
 	JSValue Value;
 	if (!WrapperCache.RemoveAndCopyValue(Element, Value))
 	{
@@ -275,6 +284,11 @@ void FVaCuusJsViewContext::BindDocument(Rml::ElementDocument* Document)
 	{
 		return;
 	}
+
+	// The vacuus.view getter's dimension source (M4 Task 9) -- stashed whether or not
+	// the wrap below succeeds, because the member must never outlive what it names:
+	// every caller that retires a document re-binds (the next document, or null).
+	CurrentDocument = Document;
 
 	JSValue DocValue = Document != nullptr ? WrapElement(Document) : JS_NULL;
 	if (JS_IsException(DocValue))

@@ -146,8 +146,30 @@ public:
 	/** Cheap cvar check; safe on any thread. */
 	static bool IsEnabled();
 
-	/** Record one scope timing in milliseconds. No-op while disabled. Any thread. */
+	/**
+	 * Record one scope timing in milliseconds. Window/percentile accounting is a no-op
+	 * while disabled; the LAST sample per scope is stored unconditionally (one double
+	 * write) so GetLastSampleMs() below always answers. Any thread.
+	 */
 	static void AddSample(EScope Scope, double Milliseconds);
+
+	/**
+	 * The newest sample a scope produced, ms; 0 until it has run once. The honest read
+	 * behind `vacuus.stats()` (M4 Task 9, spec 3.11): last-frame figures, always on, no
+	 * lock. Meaningful ONLY from the thread that writes the scope -- the UI thread for
+	 * Update/Record/JsPump and friends -- because each slot is a plain double with
+	 * single-writer/same-thread-reader discipline (the .cpp's store comment).
+	 */
+	static double GetLastSampleMs(EScope Scope);
+
+	/**
+	 * Seconds between the two most recent JsPump samples -- the UI-frame interval as the
+	 * pump sees it, and `vacuus.stats().fps`'s source; 0 until two pumps have run. The
+	 * pump is the one per-frame scope guaranteed to run whenever JS could ask (RunFrame
+	 * wraps PumpFrame unconditionally when a script host exists), which is why the fps
+	 * figure keys on it rather than on Update, which probe-host tests never sample.
+	 */
+	static double GetLastUIFrameIntervalSeconds();
 
 	/** Record one replayed buffer's draw-call count. No-op while disabled. */
 	static void AddDraws(int32 NumDraws);

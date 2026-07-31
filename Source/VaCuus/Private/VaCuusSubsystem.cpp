@@ -9,6 +9,7 @@
 #include "VaCuusUIThread.h"
 #include "VaCuusView.h"
 #include "VaCuusViewStatus.h"
+#include "VaCuusWriteRouter.h"
 
 #include "Containers/Ticker.h"
 #include "Engine/Engine.h"
@@ -86,6 +87,13 @@ void UVaCuusSubsystem::Tick(float DeltaTime)
 			ViewPtr->PublishModelUpdates();
 		}
 	}
+
+	// The write router's game-side drain (M4 Task 9): routed writes and vacuus.emit
+	// events become OnModelWrite / OnJsEvent broadcasts here, inside the GameTick scope
+	// where the game-thread budget is measured. The queue is process-wide (items route
+	// by ViewId, across subsystems), so in multi-PIE whichever subsystem ticks first
+	// drains everything and the rest find it empty -- one pass per frame either way.
+	FVaCuusWriteRouter::DrainGameThread();
 
 	FVaCuusUIThread* UIThread = GetUIThread();
 	if (!UIThread)

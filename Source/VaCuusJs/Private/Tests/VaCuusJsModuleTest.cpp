@@ -42,6 +42,9 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusJsModuleMissingTest, "VaCuus.Js.Modules.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusJsModuleCacheTest, "VaCuus.Js.Modules.CacheDiesWithContext",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusJsModuleEscapeTest, "VaCuus.Js.Modules.RootEscapeRefused",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
 namespace VaCuusJsModuleTest
 {
 using namespace VaCuusJsDomTest;
@@ -516,6 +519,70 @@ bool FVaCuusJsModuleCacheTest::RunTest(const FString& /*Parameters*/)
 	TestEqual(TEXT("the fresh context re-imported and re-deduped"), Rig.Eval(ViewId, "globalThis.cacheTicks"),
 		FString(TEXT("2")));
 	TestEqual(TEXT("zero errors across both loads"), ReadErrorCount(Rig), uint64(0));
+
+	return true;
+}
+
+/**
+ * AN IMPORT SPECIFIER THAT CLIMBS ABOVE THE ROOT IS REFUSED WITH THE NAMED ERROR: the
+ * normalize thunk's escape check (CanonicalizeVfsRelativePath returns false when ".."
+ * pops an empty stack), which is the ONLY place the climb refusal exists -- entry srcs
+ * fall back un-canonicalized and are deliberately not sandboxed (MakeModuleName's
+ * comment carries that honesty note). The specifier's shape is the classic traversal
+ * probe; the refusal must not depend on how many roots exist or what is on disk, so
+ * nothing but the entry itself is planted.
+ */
+bool FVaCuusJsModuleEscapeTest::RunTest(const FString& /*Parameters*/)
+{
+	using namespace VaCuusJsModuleTest;
+
+	const FString Root = GetPlantRoot();
+	if (Root.IsEmpty())
+	{
+		AddInfo(TEXT("Skipped: no DevUI root exists on disk to plant modules in"));
+		return true;
+	}
+
+	FPlanter Planter;
+	if (!Planter.Plant(*this, Root / TEXT("vacuus_js_mod_escape.mjs"),
+			TEXT("import '../../etc/passwd.js';\n")
+			TEXT("globalThis.escaped = 1;\n")))
+	{
+		return false;
+	}
+
+	FDomTestRig Rig;
+	if (const FDomTestRig::EBoot Boot = Rig.Boot(*this); Boot != FDomTestRig::EBoot::Ok)
+	{
+		return Boot == FDomTestRig::EBoot::Skip;
+	}
+
+	// Both halves of the refusal: OUR Error naming specifier and importer (the
+	// normalize thunk's UE_LOG), and the surfaced compile exception -- resolution runs
+	// INSIDE the entry's COMPILE_ONLY eval (quickjs.c:37395-37404), so the throw lands
+	// on the eval error path, which logs the same wording through ReportException.
+	AddExpectedMessagePlain(
+		TEXT("module specifier '../../etc/passwd.js' (from 'vfs://vacuus_js_mod_escape.mjs') escapes the document roots; refused"),
+		ELogVerbosity::Error, EAutomationExpectedMessageFlags::Contains, 1);
+	AddExpectedMessagePlain(TEXT("module specifier '../../etc/passwd.js' escapes the document roots"), ELogVerbosity::Error,
+		EAutomationExpectedMessageFlags::Contains, 1);
+
+	FJsDocProbeHost* Probe = nullptr;
+	const uint32 ViewId = AddSeamViewWithDocument(Rig, Probe, TEXT("JsModEscape"),
+		TEXT("<rml><head>")
+		TEXT("<script src=\"vacuus_js_mod_escape.mjs\"></script>")
+		TEXT("<script>globalThis.afterEscape = 1;</script>")
+		TEXT("</head><body id=\"x\"/></rml>"));
+	if (!TestTrue(TEXT("UI frames ran"), PumpRealFrames(*Rig.Thread, 2)))
+	{
+		return false;
+	}
+
+	TestEqual(TEXT("the escaping entry's body never ran"), Rig.Eval(ViewId, "typeof globalThis.escaped"),
+		FString(TEXT("undefined")));
+	TestEqual(TEXT("the script after the refused module still ran"), Rig.Eval(ViewId, "globalThis.afterEscape"),
+		FString(TEXT("1")));
+	TestEqual(TEXT("one counted error: the surfaced refusal (the thunk's own line is a log)"), ReadErrorCount(Rig), uint64(1));
 
 	return true;
 }

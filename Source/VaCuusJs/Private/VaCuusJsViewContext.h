@@ -174,6 +174,14 @@ public:
 	 */
 	int32 GetWrapperCacheSize() const { return WrapperCache.Num(); }
 
+	/**
+	 * The document BindDocument last bound, or null -- the `vacuus.view` getter's
+	 * route to the context's dimensions (Document -> GetContext() -> GetDimensions()).
+	 * A MEMBER rather than a read of the `document` global, so a script that clobbers
+	 * that global cannot make the view report someone else's size.
+	 */
+	Rml::ElementDocument* GetCurrentDocument() const { return CurrentDocument; }
+
 	//~ ---- Events (M4 Task 5; implementation in VaCuusJsEvents.cpp) ----
 
 	/**
@@ -257,6 +265,31 @@ private:
 	static JSValue ClearTimerThunk(JSContext* Ctx, JSValueConst This, int Argc, JSValueConst* Argv);
 	static JSValue RequestRafThunk(JSContext* Ctx, JSValueConst This, int Argc, JSValueConst* Argv);
 	static JSValue CancelRafThunk(JSContext* Ctx, JSValueConst This, int Argc, JSValueConst* Argv);
+
+	//~ ---- The vacuus.* host API (M4 Task 9, spec 3.11; implementation in
+	//~ VaCuusJsHostApi.cpp). Installed onto the `vacuus` object by InstallGlobals;
+	//~ everything below routes through GetSelfOrNull like every thunk, and reaches
+	//~ core through VaCuusGameBridge -- reads from the UI shadow, writes NEVER
+	//~ (vacuus.model has no set; writes are the router's, spec 3.10).
+
+	/** Populates Vacuus with emit/model/stats and the `view` getter. Called by InstallGlobals; Vacuus is borrowed. */
+	void InstallHostApi(JSValue Vacuus);
+
+	/** vacuus.emit(name, payload): the payload's own enumerable string properties, flat, to the game queue. */
+	static JSValue EmitThunk(JSContext* Ctx, JSValueConst This, int Argc, JSValueConst* Argv);
+
+	/** vacuus.model(name): mints {name, get} with the name bound into get's FuncData. */
+	static JSValue ModelThunk(JSContext* Ctx, JSValueConst This, int Argc, JSValueConst* Argv);
+
+	/** The bound get(path); FuncData[0] is the model-name string. */
+	static JSValue ModelGetThunk(
+		JSContext* Ctx, JSValueConst This, int Argc, JSValueConst* Argv, int Magic, JSValueConst* FuncData);
+
+	/** The vacuus.view getter: {id, width, height} computed at read time. */
+	static JSValue ViewGetterThunk(JSContext* Ctx, JSValueConst This);
+
+	/** vacuus.stats(): {updateMs, renderMs, fps} from the always-on last-sample store (FVaCuusPerfLog). */
+	static JSValue StatsThunk(JSContext* Ctx, JSValueConst This, int Argc, JSValueConst* Argv);
 
 	//~ ---- ES modules (M4 Task 7; implementation in VaCuusJsModules.cpp) ----
 
@@ -348,6 +381,9 @@ private:
 	FVaCuusJsRuntime& Runtime;
 	JSContext* Ctx = nullptr;
 	const uint32 ViewId;
+
+	/** See GetCurrentDocument(). Written only by BindDocument; the pointer's liveness is BindDocument's caller contract. */
+	Rml::ElementDocument* CurrentDocument = nullptr;
 
 	/**
 	 * THE IDENTITY CACHE (spec 3.9): raw Element* -> wrapper JSValue, the value
