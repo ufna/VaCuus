@@ -115,6 +115,18 @@ public:
 	virtual void EnableScissorRegion(bool bEnable) override;
 	virtual void SetScissorRegion(Rml::Rectanglei Region) override;
 	virtual void SetTransform(const Rml::Matrix4f* Transform) override;
+
+	// The M5 glass seven (spec §2(d)): the vocabulary `backdrop-filter` arrives in
+	// (ElementEffects.cpp:247-282). Filters are resources (legal out of frame — document
+	// teardown releases them); layer and clip-mask calls are draw state (in-frame only).
+	virtual Rml::CompiledFilterHandle CompileFilter(const Rml::String& Name, const Rml::Dictionary& Parameters) override;
+	virtual void ReleaseFilter(Rml::CompiledFilterHandle Filter) override;
+	virtual Rml::LayerHandle PushLayer() override;
+	virtual void CompositeLayers(Rml::LayerHandle Source, Rml::LayerHandle Destination, Rml::BlendMode BlendMode,
+		Rml::Span<const Rml::CompiledFilterHandle> Filters) override;
+	virtual void PopLayer() override;
+	virtual void EnableClipMask(bool bEnable) override;
+	virtual void RenderToClipMask(Rml::ClipMaskOperation Operation, Rml::CompiledGeometryHandle Geometry, Rml::Vector2f Translation) override;
 	//~ End Rml::RenderInterface
 
 	/**
@@ -217,8 +229,30 @@ private:
 
 	uint64 NextGeometryHandle = 1;
 	uint64 NextTextureHandle = 1;
+	uint64 NextFilterHandle = 1;
+
+	/**
+	 * PER FRAME, unlike every counter above: reset to 1 by BeginFrame(). Layer handles
+	 * are frame-scoped in RmlUi (the render stack is asserted empty at every frame start,
+	 * RmlUi Source/Core/RenderManager.cpp:51, and PopLayer is the only end of a layer's
+	 * life — no release call exists, RenderInterface.h:106-107), so restarting keeps two
+	 * identical glass frames byte-identical and therefore hash-equal. A cross-frame
+	 * counter here would defeat the idle gate for every glass document; see
+	 * FVaCuusLayerHandle. 0 stays reserved for the base layer (RenderInterface.h:96).
+	 */
+	uint64 NextLayerHandle = 1;
+
 	uint64 Generation = 0;
 	bool bInFrame = false;
+
+	/**
+	 * Filter types already refused with a log line, so the refusal is loud ONCE PER TYPE
+	 * per recorder rather than once per element per recompile (a hover restyle re-runs
+	 * CompileFilter for every filter on the element). RmlUi's own per-element warning
+	 * ("Could not compile filter on element", ElementEffects.cpp:164-165) still fires
+	 * each time and carries the element address; this latch carries the why.
+	 */
+	TSet<FString> RefusedFilterTypes;
 
 	/**
 	 * VaCuusHashFrameContent() of the last buffer this recorder PUBLISHED, and the

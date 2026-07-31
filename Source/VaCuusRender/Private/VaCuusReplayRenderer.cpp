@@ -350,6 +350,42 @@ void FVaCuusReplayRenderer::ReplayCommands(FRHICommandList& RHICmdList, const FV
 					CurrentTransform = Command.Transform;
 					break;
 				}
+
+				case EVaCuusCommandType::PushLayer:
+				case EVaCuusCommandType::PopLayer:
+				case EVaCuusCommandType::CompositeLayers:
+				{
+					// PASS-THROUGH IN v1, DELIBERATELY (M5 spec §2(d)) — glass is not a
+					// replay effect. Replay runs only on publish and the idle gate makes
+					// publishes ~never on a static HUD, so a backdrop baked here would
+					// freeze over the moving scene; the M5 Task 3 pipeline instead distills
+					// these commands from the BUFFER into a glass list the Slate element
+					// composites per engine frame (backdrop-glass.md §5, design A).
+					//
+					// Skipping cannot misplace any draw: a backdrop-only sequence issues no
+					// geometry between its PushLayer and PopLayer — only the two composites
+					// (ElementEffects.cpp:256-281). For element `filter:`/`mask-image:`
+					// content (the Exit-stage stack, ElementEffects.cpp:283-315), draws
+					// recorded "into" the pushed layer land directly in the base RT and the
+					// filtered composite is skipped, i.e. the element renders unfiltered —
+					// the pre-M5 behavior for those properties, kept for v1.
+					break;
+				}
+
+				case EVaCuusCommandType::EnableClipMask:
+				case EVaCuusCommandType::RenderToClipMask:
+				{
+					// SKIPPED IN v1 outside glass extraction (M5 spec §2(d)): applying the
+					// mask needs a stencil pass this RT does not carry yet. This preserves
+					// pre-M5 behavior for ordinary rounded-corner clipping exactly —
+					// before M5 these two virtuals sat at RmlUi's silent no-op defaults
+					// (RenderInterface.cpp:20-22) and no command was even recorded, so
+					// border-radius overflow has always been clipped by scissor alone here.
+					// Glass corners are Task 3's business: the distiller reads the mask
+					// geometry from the buffer (Command.Geometry resolves in NewGeometry)
+					// and masks the composite-time glass draw with it.
+					break;
+				}
 			}
 		}
 	}

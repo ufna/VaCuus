@@ -16,12 +16,54 @@
 using FVaCuusGeometryHandle = uint64;
 using FVaCuusTextureHandle = uint64;
 
+/**
+ * Filter handles follow the geometry pattern exactly: minted strictly increasing,
+ * never recycled, round-tripped through Rml::CompiledFilterHandle (uintptr_t)
+ * unchanged. Filters are cross-frame resources — RmlUi holds a compiled filter
+ * until ReleaseFilter (RenderInterface.h:122-125).
+ */
+using FVaCuusFilterHandle = uint64;
+
+/**
+ * Layer handles are NOT the geometry pattern, and the difference is load-bearing.
+ * RmlUi's layer stack is strictly per-frame: asserted empty at every frame start
+ * (RmlUi Source/Core/RenderManager.cpp:51) and there is no release call — PopLayer
+ * IS the end of a layer's life (RenderInterface.h:106-107). So the recorder restarts
+ * the counter at 1 every BeginFrame(): two identical frames then record identical
+ * handles and hash equal. A cross-frame monotonic counter would make every frame of
+ * a static glass HUD hash-unique and the idle gate would never withhold it again.
+ * Handle 0 stays reserved for the base layer (RenderInterface.h:96).
+ */
+using FVaCuusLayerHandle = uint64;
+
+/** Mirror of Rml::BlendMode; numeric values pinned by static_asserts in the recorder. */
+enum class EVaCuusBlendMode : uint8
+{
+	Blend,
+	Replace
+};
+
+/** Mirror of Rml::ClipMaskOperation; numeric values pinned by static_asserts in the recorder. */
+enum class EVaCuusClipMaskOp : uint8
+{
+	Set,
+	SetInverse,
+	Intersect
+};
+
 enum class EVaCuusCommandType : uint8
 {
 	DrawGeometry,
 	SetScissor,
 	DisableScissor,
-	SetTransform
+	SetTransform,
+
+	/** M5 glass (spec §2(d)): the layer/filter/clip-mask vocabulary backdrop-filter arrives in. */
+	PushLayer,
+	PopLayer,
+	CompositeLayers,
+	EnableClipMask,
+	RenderToClipMask
 };
 
 /** One recorded RmlUi render call. Fields beyond Type are per-command payload. */
@@ -29,13 +71,13 @@ struct FVaCuusCommand
 {
 	EVaCuusCommandType Type = EVaCuusCommandType::DrawGeometry;
 
-	/** DrawGeometry: geometry created in this or an earlier buffer. */
+	/** DrawGeometry, RenderToClipMask: geometry created in this or an earlier buffer. */
 	FVaCuusGeometryHandle Geometry = 0;
 
 	/** DrawGeometry: texture to sample; 0 = untextured. */
 	FVaCuusTextureHandle Texture = 0;
 
-	/** DrawGeometry: pixel-space translation applied to the geometry. */
+	/** DrawGeometry, RenderToClipMask: pixel-space translation applied to the geometry. */
 	FVector2f Translation = FVector2f::ZeroVector;
 
 	/** SetScissor: clip rect in window coordinates (unaffected by SetTransform). */
@@ -43,6 +85,31 @@ struct FVaCuusCommand
 
 	/** SetTransform: vertex transform in UE row-vector convention (v' = v * M). */
 	FMatrix44f Transform = FMatrix44f::Identity;
+
+	/** PushLayer: the handle minted for the new layer. CompositeLayers: the source layer. */
+	FVaCuusLayerHandle SourceLayer = 0;
+
+	/** CompositeLayers: the destination layer; 0 = the base layer (the per-view RT). */
+	FVaCuusLayerHandle DestLayer = 0;
+
+	/**
+	 * CompositeLayers: this command's filter list, THE VARIABLE-LENGTH RECORD, stored as a
+	 * slice [FilterOffset, FilterOffset + FilterCount) of the buffer's CompositeFilters
+	 * array. Offset+count rather than an inline TArray so FVaCuusCommand stays a
+	 * fixed-size aggregate the layout tripwires below can pin; the HASH still covers the
+	 * slice's CONTENTS, not just its shape — see VaCuusHashFrameContent.
+	 */
+	int32 FilterOffset = 0;
+	int32 FilterCount = 0;
+
+	/** CompositeLayers: how the (filtered) source blends onto the destination. */
+	EVaCuusBlendMode Blend = EVaCuusBlendMode::Blend;
+
+	/** RenderToClipMask: how the geometry modifies the mask. */
+	EVaCuusClipMaskOp ClipMaskOp = EVaCuusClipMaskOp::Set;
+
+	/** EnableClipMask: 1 = draws are masked from here on, 0 = mask off. */
+	uint8 bClipMaskEnable = 0;
 };
 
 /**
@@ -94,9 +161,9 @@ struct FAny
 template <typename TAggregate, typename... TInitialisers>
 constexpr bool bTakesInitialisers = requires { TAggregate{TInitialisers{}...}; };
 
-constexpr bool bCommandHasExactlySixMembers =
-	bTakesInitialisers<FVaCuusCommand, FAny, FAny, FAny, FAny, FAny, FAny> &&
-	!bTakesInitialisers<FVaCuusCommand, FAny, FAny, FAny, FAny, FAny, FAny, FAny>;
+constexpr bool bCommandHasExactlyThirteenMembers =
+	bTakesInitialisers<FVaCuusCommand, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny> &&
+	!bTakesInitialisers<FVaCuusCommand, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny>;
 } // namespace VaCuusLayout
 
 /**
@@ -143,6 +210,22 @@ struct FVaCuusTextureData
 };
 
 /**
+ * Payload of one compiled filter. Blur-only in v1 by policy (M5 spec §2(d)): the
+ * recorder's CompileFilter returns handle 0 for every other filter type, so an entry
+ * in NewFilters is always a blur and Sigma is its whole payload.
+ *
+ * Sigma is RmlUi's resolved value verbatim: FilterBlur::CompileFilter passes
+ * ResolveLength(sigma_value) — the blur() length itself, no 0.5 factor — under the
+ * key "sigma" (RmlUi Source/Core/FilterBlur.cpp:16-20). So `blur(12px)` at dp-ratio
+ * 1.0 records Sigma == 12.0. A struct rather than a bare float so the shader tier
+ * (M5 Track S) and any future filter payload have a place to grow.
+ */
+struct FVaCuusFilterData
+{
+	float Sigma = 0.0f;
+};
+
+/**
  * One recorded UI frame: the command list plus the resource delta since the
  * previous buffer. Produced on the game thread by FVaCuusRecordingRenderInterface,
  * consumed by the render-thread replayer.
@@ -180,28 +263,50 @@ struct FVaCuusCommandBuffer
 	 */
 	TMap<FVaCuusTextureHandle, FVaCuusTextureData> NewTextures;
 
+	/**
+	 * Filters first seen this frame, keyed by handle. Blur-only in v1: every entry is a
+	 * blur and carries its sigma — see FVaCuusFilterData. Resource traffic exactly like
+	 * NewGeometry: a sigma change releases the old filter and compiles a new handle
+	 * (RmlUi has no mutate-a-compiled-filter API, RenderInterface.h:118-125), so it is
+	 * double-covered at the idle gate — new handle in the command's filter list (hash)
+	 * AND an entry here (traffic).
+	 */
+	TMap<FVaCuusFilterHandle, FVaCuusFilterData> NewFilters;
+
 	/** Handles to release AFTER this buffer retires (commands above may still use them). */
 	TArray<FVaCuusGeometryHandle> ReleasedGeometry;
 	TArray<FVaCuusTextureHandle> ReleasedTextures;
+	TArray<FVaCuusFilterHandle> ReleasedFilters;
+
+	/**
+	 * The concatenated filter lists of every CompositeLayers command in this buffer, in
+	 * record order; each command slices it by FilterOffset/FilterCount. FRAME CONTENT,
+	 * not resource traffic: this is what the composite draws WITH, so it is covered by
+	 * VaCuusHashFrameContent (the slice bytes are hashed per command), not by
+	 * HasResourceTraffic(). Cleared with the buffer like Commands.
+	 */
+	TArray<FVaCuusFilterHandle> CompositeFilters;
 
 	/**
 	 * Does this buffer carry resource traffic the replayer must see even when the drawing
 	 * did not change? The idle gate's wake condition, and the reason it lives HERE.
 	 *
-	 * ADD A RESOURCE ARRAY ABOVE AND YOU MUST ADD IT TO THIS PREDICATE. The four arrays
+	 * ADD A RESOURCE ARRAY ABOVE AND YOU MUST ADD IT TO THIS PREDICATE. The six arrays
 	 * are the only channel by which created and released resources reach the replayer, and
 	 * they are cleared with the buffer; a buffer the gate withholds is dropped. So an array
 	 * this predicate does not name is a resource that silently never arrives -- or a release
 	 * nobody consumes -- on any frame where the commands happened not to change.
 	 *
-	 * NOT A HYPOTHETICAL GAP. The recorder implements 9 of Rml::RenderInterface's 21
-	 * virtuals; the 12 it leaves at their defaults include CompileShader/RenderShader/
+	 * NOT A HYPOTHETICAL GAP — the M5 filter pair below is this predicate's own warning
+	 * come true, on schedule. The recorder now implements 16 of Rml::RenderInterface's 21
+	 * virtuals; the 5 it still leaves at their defaults include CompileShader/RenderShader/
 	 * ReleaseShader (ThirdParty/RmlUi/Include/RmlUi/Core/RenderInterface.h:131-140, how
-	 * RmlUi 6 draws `decorator: linear-gradient`), CompileFilter/ReleaseFilter (:122-125,
-	 * `filter:` and `backdrop-filter:`) and EnableClipMask/RenderToClipMask (:78-86,
-	 * rounded-corner clipping). Each of those arrives with its own handle map on this
-	 * buffer, and a document with an animated gradient whose NewShaders map went unnamed
-	 * here would publish frame one and then freeze.
+	 * RmlUi 6 draws `decorator: linear-gradient`) and SaveLayerAsTexture/
+	 * SaveLayerAsMaskImage (:112-116, element `filter:` output and mask-image). Each of
+	 * those arrives with its own handle map on this buffer, and a document with an
+	 * animated gradient whose NewShaders map went unnamed here would publish frame one
+	 * and then freeze. CompositeFilters is deliberately NOT here: it is frame content
+	 * (see its declaration), covered by the hash.
 	 *
 	 * The compile-time half of that promise is the member-count assert in the definition
 	 * below: a new member on this struct fails the build until someone decides whether it
@@ -212,14 +317,14 @@ struct FVaCuusCommandBuffer
 
 namespace VaCuusLayout
 {
-constexpr bool bBufferHasExactlySevenMembers =
-	bTakesInitialisers<FVaCuusCommandBuffer, FAny, FAny, FAny, FAny, FAny, FAny, FAny> &&
-	!bTakesInitialisers<FVaCuusCommandBuffer, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny>;
+constexpr bool bBufferHasExactlyTenMembers =
+	bTakesInitialisers<FVaCuusCommandBuffer, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny> &&
+	!bTakesInitialisers<FVaCuusCommandBuffer, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny>;
 } // namespace VaCuusLayout
 
 inline bool FVaCuusCommandBuffer::HasResourceTraffic() const
 {
-	// THE COMPLETENESS TRIPWIRE for the four arrays this predicate names. Unlike the frame
+	// THE COMPLETENESS TRIPWIRE for the six arrays this predicate names. Unlike the frame
 	// hash's, this one has nothing else to fall back on: a resource array is not read as
 	// bytes, so no sizeof or offsetof clause would notice it, and no existing test exercises
 	// a resource type that does not exist yet. The member count is the whole guard.
@@ -228,16 +333,18 @@ inline bool FVaCuusCommandBuffer::HasResourceTraffic() const
 	// answers are "add it to the return below" and "it is not resource traffic, bump the
 	// count". Both are deliberate; neither is silent.
 	//
-	// Verified by restoring the bug rather than argued: adding a fifth resource map to the
-	// struct without naming it below fails this assert at compile time, with this message.
-	static_assert(VaCuusLayout::bBufferHasExactlySevenMembers,
+	// Verified by restoring the bug rather than argued: adding a resource map to the
+	// struct without naming it below fails this assert at compile time, with this message —
+	// re-verified when the M5 filter pair landed (the count was bumped 7 -> 10 in the same
+	// change that extended the return, exactly the ceremony this assert exists to force).
+	static_assert(VaCuusLayout::bBufferHasExactlyTenMembers,
 		"FVaCuusCommandBuffer gained or lost a member. If it is a resource array (a new handle map or "
 		"release list), add it to HasResourceTraffic() or the idle gate will withhold frames that carry "
 		"it. If it is frame content the replayer draws from, add it to VaCuusHashFrameContent() too. "
 		"Then update this count");
 
-	return NewGeometry.Num() > 0 || NewTextures.Num() > 0 || ReleasedGeometry.Num() > 0 ||
-		ReleasedTextures.Num() > 0;
+	return NewGeometry.Num() > 0 || NewTextures.Num() > 0 || NewFilters.Num() > 0 ||
+		ReleasedGeometry.Num() > 0 || ReleasedTextures.Num() > 0 || ReleasedFilters.Num() > 0;
 }
 
 /**
@@ -266,10 +373,28 @@ struct FVaCuusCommandHashImage
 	float Translation[2] = {0.0f, 0.0f};
 	int32 Scissor[4] = {0, 0, 0, 0};
 	float Transform[16] = {};
+	uint64 SourceLayer = 0;
+	uint64 DestLayer = 0;
+
+	// FilterOffset and FilterCount are both hashed even though only the count is content
+	// in its own right (the offset is bookkeeping into CompositeFilters, deterministic
+	// given the command list) — uniformity is the discipline here: every FVaCuusCommand
+	// field gets a slot, so nobody has to re-derive per field whether skipping it is safe.
+	// The count doubles as the length prefix that keeps the variable-length stream
+	// unambiguous; the slice's CONTENTS are hashed separately in VaCuusHashFrameContent.
+	int32 FilterOffset = 0;
+	int32 FilterCount = 0;
+
+	// The three byte-sized command fields widen to uint64 slots: a no-padding image is the
+	// property the static_assert below checks, and three u8s would need five explicit pad
+	// bytes someone could forget to zero.
+	uint64 Blend = 0;
+	uint64 ClipMaskOp = 0;
+	uint64 ClipMaskEnable = 0;
 };
 
 static_assert(sizeof(FVaCuusCommandHashImage) ==
-		3 * sizeof(uint64) + 2 * sizeof(float) + 4 * sizeof(int32) + 16 * sizeof(float),
+		8 * sizeof(uint64) + 2 * sizeof(float) + 6 * sizeof(int32) + 16 * sizeof(float),
 	"FVaCuusCommandHashImage must have no padding: VaCuusHashFrameContent hashes it as raw bytes");
 
 /**
@@ -287,11 +412,12 @@ static_assert(sizeof(FVaCuusCommandHashImage) ==
  * WHAT IS OUT, and why none of it can cause a false "unchanged":
  *  - Generation: identifies the buffer, not its content. Hashing it would make every
  *    frame differ from every other and the gate would never fire.
- *  - NewGeometry / NewTextures / ReleasedGeometry / ReleasedTextures: resource traffic
- *    the replayer must see even when the drawing did not change. The gate tests them
- *    for emptiness DIRECTLY (FVaCuusCommandBuffer::HasResourceTraffic) instead of
- *    hashing their payloads -- cheaper (no megabyte texture walked per frame) and safer,
- *    since "any traffic at all forces a publish" cannot be fooled by a hash collision.
+ *  - NewGeometry / NewTextures / NewFilters / ReleasedGeometry / ReleasedTextures /
+ *    ReleasedFilters: resource traffic the replayer must see even when the drawing did
+ *    not change. The gate tests them for emptiness DIRECTLY
+ *    (FVaCuusCommandBuffer::HasResourceTraffic) instead of hashing their payloads --
+ *    cheaper (no megabyte texture walked per frame) and safer, since "any traffic at
+ *    all forces a publish" cannot be fooled by a hash collision.
  *  - VERTEX COLOURS, which are the interesting case, because they are the one thing a
  *    frame can change with no command difference at all. They live inside NewGeometry's
  *    payloads, so the bullet above is what covers them -- see the argument below, which is
@@ -376,26 +502,30 @@ inline uint64 VaCuusHashFrameContent(const FVaCuusCommandBuffer& Buffer)
 	// feature can have: a field that never reaches FVaCuusCommandHashImage cannot make the
 	// hash differ, so a frame that changed reads as "unchanged" and is withheld -- a UI
 	// frozen on stale pixels, with nothing logged anywhere.
-	static_assert(VaCuusLayout::bCommandHasExactlySixMembers,
+	static_assert(VaCuusLayout::bCommandHasExactlyThirteenMembers,
 		"FVaCuusCommand gained or lost a field. Every field that reaches the replayer must be copied into "
 		"FVaCuusCommandHashImage below, or an unhashed field silently stops triggering a publish");
-	static_assert(sizeof(FVaCuusCommand) == 112 && offsetof(FVaCuusCommand, Type) == 0 &&
+	static_assert(sizeof(FVaCuusCommand) == 144 && offsetof(FVaCuusCommand, Type) == 0 &&
 			offsetof(FVaCuusCommand, Geometry) == 8 && offsetof(FVaCuusCommand, Texture) == 16 &&
 			offsetof(FVaCuusCommand, Translation) == 24 && offsetof(FVaCuusCommand, Scissor) == 32 &&
-			offsetof(FVaCuusCommand, Transform) == 48,
+			offsetof(FVaCuusCommand, Transform) == 48 && offsetof(FVaCuusCommand, SourceLayer) == 112 &&
+			offsetof(FVaCuusCommand, DestLayer) == 120 && offsetof(FVaCuusCommand, FilterOffset) == 128 &&
+			offsetof(FVaCuusCommand, FilterCount) == 132 && offsetof(FVaCuusCommand, Blend) == 136 &&
+			offsetof(FVaCuusCommand, ClipMaskOp) == 137 && offsetof(FVaCuusCommand, bClipMaskEnable) == 138,
 		"FVaCuusCommand's layout changed. Every field that reaches the replayer must be copied into "
 		"FVaCuusCommandHashImage below, or an unhashed field silently stops triggering a publish");
 
 	// XXH3, streaming (FXxHash64Builder, Hash/xxhash.h:204; Update is CORE_API at :215-216,
 	// i.e. out of line).
 	//
-	// ONE Update PER COMMAND, over the padding-free image below, rather than one per field --
-	// and the reason is completeness, not speed. Hashing the image as a single blob is the
-	// only form the COMPILER can check: the static_assert above proves the image has no gaps,
-	// so every byte between its first and last member is a field that was copied in. A
-	// sequence of per-field Update calls has no such check -- drop one call and the hash
-	// simply stops seeing that field, which is the exact failure the tripwires above exist to
-	// prevent, reintroduced one level down.
+	// ONE Update PER COMMAND over the padding-free image below (plus one for a command's
+	// variable-length filter slice, which by nature cannot live in a fixed image), rather
+	// than one per field -- and the reason is completeness, not speed. Hashing the image as
+	// a single blob is the only form the COMPILER can check: the static_assert above proves
+	// the image has no gaps, so every byte between its first and last member is a field
+	// that was copied in. A sequence of per-field Update calls has no such check -- drop
+	// one call and the hash simply stops seeing that field, which is the exact failure the
+	// tripwires above exist to prevent, reintroduced one level down.
 	//
 	// The call-overhead argument that used to lead here was WRONG IN DIRECTION and is gone:
 	// adding the whole hash moved Record from 0.039-0.043 ms to 0.040-0.041 ms, i.e. below
@@ -403,10 +533,12 @@ inline uint64 VaCuusHashFrameContent(const FVaCuusCommandBuffer& Buffer)
 	// justified on measured cost.
 	FXxHash64Builder Builder;
 
-	// Frame header. The command count is redundant today (fixed-size records mean
-	// equal byte lengths imply equal counts) and is here so it stays correct if a
-	// variable-length field is ever added to the image. It follows that NO TEST CAN PIN IT
-	// until that day: appending a command lengthens the stream by a whole image either way.
+	// Frame header. The command count stopped being redundant when the M5 filter lists
+	// made records variable-length — the day the old comment here said would come. Each
+	// record is now one image plus FilterCount trailing handles, so equal stream lengths
+	// no longer imply equal command counts (one command with 20 filter handles is as long
+	// as two with none), and the count is what keeps two such streams from ever needing a
+	// byte-level coincidence argument.
 	const uint64 Header[3] = {uint64(uint32(Buffer.ViewSize.X)), uint64(uint32(Buffer.ViewSize.Y)), uint64(Buffer.Commands.Num())};
 	Builder.Update(Header, sizeof(Header));
 
@@ -423,8 +555,32 @@ inline uint64 VaCuusHashFrameContent(const FVaCuusCommandBuffer& Buffer)
 		Image.Scissor[2] = Command.Scissor.Max.X;
 		Image.Scissor[3] = Command.Scissor.Max.Y;
 		FMemory::Memcpy(Image.Transform, Command.Transform.M, sizeof(Image.Transform));
+		Image.SourceLayer = Command.SourceLayer;
+		Image.DestLayer = Command.DestLayer;
+		Image.FilterOffset = Command.FilterOffset;
+		Image.FilterCount = Command.FilterCount;
+		Image.Blend = uint64(Command.Blend);
+		Image.ClipMaskOp = uint64(Command.ClipMaskOp);
+		Image.ClipMaskEnable = uint64(Command.bClipMaskEnable);
 
 		Builder.Update(&Image, sizeof(Image));
+
+		// THE VARIABLE-LENGTH HALF OF THE RECORD: a CompositeLayers command's filter list
+		// CONTENTS, not just its offset/count shape. This is what lets the idle gate see a
+		// sigma change on its command-list leg — a new sigma is a new filter handle (the
+		// recorder never recycles them), so the slice bytes differ even when the list's
+		// length does not. Drop this Update and a composite that swapped one blur for
+		// another would hash "unchanged"; the restore-the-bug for exactly that is
+		// VaCuus.Render.Glass.FilterListHash. Unambiguous by construction: FilterCount
+		// rides inside the image just hashed, so every handle byte in the stream is
+		// length-prefixed.
+		if (Command.FilterCount > 0)
+		{
+			check(Command.FilterOffset >= 0 &&
+				Command.FilterOffset + Command.FilterCount <= Buffer.CompositeFilters.Num());
+			Builder.Update(Buffer.CompositeFilters.GetData() + Command.FilterOffset,
+				Command.FilterCount * sizeof(FVaCuusFilterHandle));
+		}
 	}
 
 	return Builder.Finalize().Hash;
