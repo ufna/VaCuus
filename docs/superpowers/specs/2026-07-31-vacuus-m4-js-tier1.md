@@ -300,10 +300,18 @@ Per the demo gap list (hud-demo-patterns.md §9), arch §7 Tier 1:
 ### 3.10 The write router — two-way binding lands here
 
 M3 §4/I3's promissory note. A core seam on the refusing `FVaCuusScalarDefinition::Set` (the
-override is `Set(void*, const Rml::Variant&)` — VaCuusDataVariable.h:122; **plumbing**: the bound
-model is stamped with its `ViewId` at BindModel-drain time and the definition reaches it through
-a definition→model back-pointer registered per apply; the wire path is `DiagnosticPath` with its
-type-name root segment replaced by the model name). With a router registered: `Set` marshals
+override is `Set(void*, const Rml::Variant&)` — VaCuusDataVariable.h:122). *(Corrected after
+implementation: v2's "definition→model back-pointer" is impossible — definitions are per-type
+stateless statics shared across models. The attribution that works is **storage ownership**: a
+UI-thread registry of (ViewId, name, model) written at the BindModel drain, resolved at Set by a
+span test — the shadow's inline span, then each array field's element block — live allocations
+are disjoint, so a hit is exact. The wire path is `DiagnosticPath` with its type-name root
+replaced by the model name.)* **The echo rule, discovered in implementation:** the revert's
+attribute write re-fires RmlUi's change controller (`InputTypeCheckbox.cpp:22-37` dispatches for
+programmatic writes), so every revert — and every game-driven apply — would route the model's own
+value back. An attributed write whose value equals the shadow's (in RmlUi's string projection) is
+therefore **swallowed** — counted, not routed, no revert. Documented cost: a user write
+requesting the current value is swallowed too. With a router registered: `Set` marshals
 `(ViewId, Model, Path, value)` into a **bounded** game-thread queue (the input-ring bound + drop
 diagnostic pattern), drained by `UVaCuusSubsystem::Tick` into
 `UVaCuusView::OnModelWrite(FName Model, FString Path, FVaCuusJsValue Value)`. The shadow is never
