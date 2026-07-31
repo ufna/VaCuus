@@ -5,6 +5,7 @@
 #include "VaCuusDefines.h"
 #include "VaCuusInteractiveSnapshot.h"
 #include "VaCuusRecordingRenderInterface.h"
+#include "VaCuusScriptHost.h"
 #include "VaCuusSlateElement.h"
 #include "VaCuusStats.h"
 #include "VaCuusUIThread.h"
@@ -85,6 +86,18 @@ void FVaCuusRmlDocumentHost::Shutdown()
 
 	if (Document)
 	{
+		// Announced like every other close (M4 Task 6) -- though on the one
+		// production path that reaches this branch with a document still up,
+		// RemoveView, the script host already ran OnViewRemoved and this call
+		// finds no per-view JS state: the unload was dispatched THERE, before
+		// the context died (the mirror of Exit's ordering, where the step-1a
+		// CloseDocument loop empties this branch instead). Kept unconditional so
+		// no close of a current document is ever silent to the seam.
+		if (IVaCuusScriptHost* ScriptHost = FVaCuusUIThread::GetActiveScriptHost())
+		{
+			ScriptHost->OnDocumentClosing(ViewId);
+		}
+
 		// Queues the document unload; RmlUi processes it during RemoveContext (the
 		// context destructor owns `unloaded_documents`, so nothing is left behind).
 		Document->Close();
@@ -211,6 +224,25 @@ void FVaCuusRmlDocumentHost::AdoptDocument(Rml::ElementDocument* NewDocument, co
 	// `autofocus` for a modal dialog is a per-view opt-in for a later milestone.
 	Document->Show(Rml::ModalFlag::None, Rml::FocusFlag::Document);
 
+	// THE HOST-ORDERED SCRIPT POINT (M4 Task 6, spec 2(f)): after the old
+	// document's close above -- whose OnDocumentClosing dispatched unload JS
+	// into the old context while it was still alive -- and after Show(), so the
+	// captured <head> scripts run against a shown, current document. HERE and
+	// never from Plugin::OnDocumentLoad: that hook fires inside
+	// Context::LoadDocument (Context.cpp:299), before this function even
+	// regains control, while a replace's OLD context is still the view's --
+	// scripts executed there land in a context OnDocumentReady's recycle then
+	// frees, leaving JS silently dead after every reload (v1's recorded bug,
+	// spec 12.1).
+	//
+	// BEFORE ReportLoadResult, deliberately: scripts are the document's ready
+	// signal (they run like `defer`), so a game thread that has seen the load
+	// complete may assume they ran.
+	if (IVaCuusScriptHost* ScriptHost = FVaCuusUIThread::GetActiveScriptHost())
+	{
+		ScriptHost->OnDocumentReady(ViewId, Document);
+	}
+
 	UE_LOG(LogVaCuus, Log, TEXT("View %u loaded the %s document (%dx%d)"),
 		ViewId, *Description, ViewSize.X, ViewSize.Y);
 	ReportLoadResult(LoadSerial, /*bSuccess=*/true);
@@ -237,6 +269,17 @@ void FVaCuusRmlDocumentHost::CloseDocument()
 
 	if (Document)
 	{
+		// Unload JS first (M4 Task 6): OnDocumentClosing runs `vacuus.onUnload`
+		// in this view's context BEFORE Close() below queues the unload, so the
+		// callback sees a document that is still current -- the spec 3.4 order,
+		// identical on every path that funnels through here (explicit close, the
+		// replace inside AdoptDocument, the in-band Shutdown drain, Exit's
+		// hard-stop close loop).
+		if (IVaCuusScriptHost* ScriptHost = FVaCuusUIThread::GetActiveScriptHost())
+		{
+			ScriptHost->OnDocumentClosing(ViewId);
+		}
+
 		// QUEUES the unload -- it does not perform it. Close() only calls
 		// Context::UnloadDocument (ElementDocument.cpp:421-425), which moves the document
 		// into the context's `unloaded_documents` list; the elements, their compiled

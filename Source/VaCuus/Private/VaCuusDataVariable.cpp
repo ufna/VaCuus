@@ -5,6 +5,7 @@
 #include "VaCuusDefines.h"
 #include "VaCuusModelShadow.h"
 #include "VaCuusUIThread.h"
+#include "VaCuusWriteRouter.h"
 
 #include "UObject/AnsiStrProperty.h"
 #include "UObject/Class.h"
@@ -238,8 +239,29 @@ bool FVaCuusScalarDefinition::GetObjectPath(const void* InValuePtr, Rml::Variant
 	return false;
 }
 
-bool FVaCuusScalarDefinition::Set(void* /*InValuePtr*/, const Rml::Variant& /*Variant*/)
+bool FVaCuusScalarDefinition::Set(void* InValuePtr, const Rml::Variant& Variant)
 {
+	// THE WRITE ROUTER'S SEAM (M4 Task 9, spec 3.10). With the router registered -- the
+	// UI thread registers it in Init() -- a write whose value pointer lands in a
+	// PRODUCTION-BOUND model's storage is attributed, marshalled to the game thread and
+	// revert-dirtied by FVaCuusWriteRouter (its class comment carries the design), and
+	// the refusal below is replaced by the router's Verbose "routed" line: it is the
+	// legal channel now. Still `return false` -- the shadow is never written, both RmlUi
+	// call sites still skip their DirtyVariable, I3 stands. With NO router registered
+	// (an M3 configuration), this branch is one predicted-false compare; with the router
+	// up but the write unattributable (every M3a/M3b fixture binds its shadow directly,
+	// bypassing the registry), TryRouteScalarSet declines and the refusal runs verbatim
+	// -- which is what keeps those suites' expected messages true in this binary. The
+	// Get lambda is the echo rule's comparison source (the router's class comment);
+	// it runs only for ATTRIBUTED writes, so the counted evaluation it costs never
+	// lands on an idle or M3-shaped path.
+	if (FVaCuusWriteRouter::IsRouterRegistered()
+		&& FVaCuusWriteRouter::TryRouteScalarSet(DiagnosticPath, InValuePtr, Variant,
+			[this, InValuePtr](Rml::Variant& OutCurrent) { return Get(InValuePtr, OutCurrent); }))
+	{
+		return false;
+	}
+
 	// THE REFUSAL. Spec 4/I3 -- the header's GetNumRefusedSets() comment carries the whole
 	// argument. In one line: a write here would land in the shadow with no game-thread
 	// participation, the differ would then compare the live struct against its own shadow,

@@ -1,0 +1,177 @@
+/* VaCuus M4 JavaScript demo - stylesheet. m3_demo.rcss carried forward (same renderer
+   subset: solid fills, 1px borders, border-radius, text -- NO decorators/gradients/
+   transitions), plus the M4-only surfaces: the JS-driven second bar, the stance pill's
+   classList states, and the damage-number zone.
+
+   RmlUi ships NO user-agent stylesheet ('display' defaults to "inline",
+   StyleSheetSpecification.cpp:306), so every tag that needs a box is told here. */
+div { display: block; }
+span { display: inline; }
+
+body
+{
+	display: block;
+	width: 100%;
+	height: 100%;
+	font-family: LatoLatin;
+	font-size: 16px;
+	color: #D2E9F2;
+}
+
+#m4-title
+{
+	position: absolute;
+	left: 48px;
+	top: 36px;
+	font-size: 26px;
+	color: #7FE3FF;
+}
+
+/* The six panels, absolutely positioned so nothing depends on flow rules the acceptance
+   screenshot is not about. Left column: scalars/bars/nested/write; right column:
+   killfeed on top (as M3), damage numbers under it. */
+#p-scalars, #p-bar, #p-nested, #p-write, #p-kills, #p-dmg
+{
+	position: absolute;
+	left: 48px;
+	width: 620px;
+	padding: 14px 18px;
+	background-color: #0A1A24E0;
+	border: 1px #1E5A73;
+	border-radius: 6px;
+}
+
+#p-scalars { top: 90px;  height: 168px; }
+#p-bar     { top: 278px; height: 158px; }
+#p-nested  { top: 456px; height: 100px; }
+#p-write   { top: 576px; height: 132px; }
+
+/* The right column, m3_demo's layout argument verbatim: later in the file than the
+   shared rule above so left/width win the equal-specificity cascade. */
+#p-kills { left: 700px; top: 90px;  width: 470px; height: 186px; }
+#p-dmg   { left: 700px; top: 296px; width: 470px; height: 96px; }
+
+.panel-title
+{
+	color: #56C7E8;
+	font-size: 14px;
+	margin-bottom: 10px;
+}
+
+.row { height: 22px; }
+
+.key
+{
+	color: #74909C;
+	width: 190px;
+	display: inline-block;
+}
+
+.val { color: #FFFFFF; }
+
+/* data-class-alert="bAlert": the game-fed bool as a class, unchanged from M3. */
+#p-scalars.alert
+{
+	background-color: #3A0B10E0;
+	border: 1px #FF5A5A;
+}
+
+/* Panel 2: the BOUND bar (data-style-width) over the JS bar (style proxy from rAF).
+   Different fill colors on purpose -- the panel's claim is that both bars are always
+   the same LENGTH, and same-colored bars would let one occlusion bug read as proof. */
+#bar-track, #js-bar-track
+{
+	width: 100%;
+	height: 26px;
+	margin-bottom: 10px;
+	background-color: #102A38;
+	border: 1px #1E5A73;
+}
+
+#bar-fill
+{
+	height: 24px;
+	background-color: #2FD07A;
+}
+
+/* The JS twin. Width 0 until the first rAF write lands, which is one frame after the
+   document shows -- a JS bar stuck at 0 while the bound bar moves is the failure shot. */
+#js-bar-fill
+{
+	width: 0%;
+	height: 24px;
+	background-color: #35A7E0;
+}
+
+/* The stance pill's classList states (stance-0/1/2 = Standing/Crouched/Prone). Set via
+   Element::SetClass, which styles directly -- the class ATTRIBUTE staying stale is the
+   facade's documented trap and no part of rendering. Three loud colors: a class that
+   never arrives must not be confusable with subtle styling. */
+#stance-val.stance-0 { color: #2FD07A; }
+#stance-val.stance-1 { color: #FFC14E; }
+#stance-val.stance-2 { color: #FF5A5A; }
+
+/* The write button, M3's control unchanged -- what changed is where the click LANDS. */
+.m3-btn
+{
+	display: inline-block;
+	padding: 6px 14px;
+	margin-top: 4px;
+	background-color: #14384A;
+	border: 1px #2E7F9E;
+	border-radius: 4px;
+	color: #CFEFFA;
+}
+
+.m3-btn:hover  { background-color: #1D5570; }
+.m3-btn:active { background-color: #2A7A9C; }
+.m3-btn:focus  { border: 1px #7FE3FF; }
+
+/* Killfeed rows -- IDENTICAL styling to m3_demo.rcss, deliberately: the parity
+   screenshots compare an M4 feed against the M3 arithmetic, and a styling drift would
+   read as a content drift. The rows here are JS-created clones of the same markup the
+   M3 data-for template generated. */
+.kill-row { height: 22px; }
+.killer   { color: #7FE3FF; }
+.k-sep    { color: #74909C; }
+.victim   { color: #FFFFFF; }
+/* margin-left, not source whitespace: inter-span text does not survive row generation
+   (observed on a real M3 shot) -- and the JS rows are built without any, so the gap has
+   to be the box's here too. */
+.weapon   { color: #74909C; font-size: 13px; margin-left: 8px; }
+
+.hs
+{
+	display: inline-block;
+	color: #FF5A5A;
+	border: 1px #FF5A5A;
+	border-radius: 3px;
+	font-size: 12px;
+	padding: 0px 4px;
+	margin-left: 6px;
+}
+
+/* Damage numbers: inline spans so survivors reflow left as their elders' timers reap
+   them; crit every 4th serial, larger and brighter. */
+.dmg
+{
+	display: inline-block;
+	color: #FFC14E;
+	font-size: 20px;
+	margin-right: 14px;
+}
+
+.dmg-crit
+{
+	color: #FF5A5A;
+	font-size: 24px;
+}
+
+#probe { color: #74909C; margin-bottom: 6px; }
+
+.hint
+{
+	color: #5B7280;
+	font-size: 13px;
+	margin-top: 8px;
+}

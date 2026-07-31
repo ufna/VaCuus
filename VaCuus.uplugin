@@ -26,6 +26,11 @@
 			"LoadingPhase": "Default"
 		},
 		{
+			"Name": "VaCuusJs",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		},
+		{
 			"Name": "VaCuusRender",
 			"Type": "Runtime",
 			"LoadingPhase": "PostConfigInit"

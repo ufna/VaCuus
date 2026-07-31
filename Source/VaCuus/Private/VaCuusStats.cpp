@@ -10,8 +10,10 @@
 DEFINE_STAT(STAT_VaCuusDrainCommands);
 DEFINE_STAT(STAT_VaCuusDrainInput);
 DEFINE_STAT(STAT_VaCuusDataApply);
+DEFINE_STAT(STAT_VaCuusJsPump);
 DEFINE_STAT(STAT_VaCuusUpdate);
 DEFINE_STAT(STAT_VaCuusRecord);
+DEFINE_STAT(STAT_VaCuusJsGC);
 DEFINE_STAT(STAT_VaCuusReplay);
 DEFINE_STAT(STAT_VaCuusComposite);
 DEFINE_STAT(STAT_VaCuusGameTick);
@@ -24,7 +26,7 @@ DEFINE_STAT(STAT_VaCuusCommands);
 static TAutoConsoleVariable<int32> CVarVaCuusPerfLog(
 	TEXT("vacuus.M1HUD.PerfLog"),
 	0,
-	TEXT("1 = print every VaCuus scope's timings (avg/p50/p99/max, window + cumulative) to the log every 5 seconds: the UI thread's DrainCommands/DrainInput/DataApply/Update/Record, the render thread's Replay/Composite, and the game thread's GameTick/SlateTick/Input/ModelSample."));
+	TEXT("1 = print every VaCuus scope's timings (avg/p50/p99/max, window + cumulative) to the log every 5 seconds: the UI thread's DrainCommands/DrainInput/DataApply/JsPump/Update/Record/JsGC, the render thread's Replay/Composite, and the game thread's GameTick/SlateTick/Input/ModelSample."));
 
 namespace VaCuusPerfLogPrivate
 {
@@ -36,8 +38,10 @@ static const TCHAR* GScopeNames[FVaCuusPerfLog::Num] = {
 	TEXT("DrainCommands (UI)"),
 	TEXT("DrainInput    (UI)"),
 	TEXT("DataApply     (UI)"),
+	TEXT("JsPump        (UI)"),
 	TEXT("Update        (UI)"),
 	TEXT("Record        (UI)"),
+	TEXT("JsGC          (UI)"),
 	TEXT("Replay        (RT)"),
 	TEXT("Composite     (RT)"),
 	TEXT("GameTick      (GT)"),
@@ -69,6 +73,16 @@ struct FState
 	uint64 WindowUISkipped = 0;
 	uint64 TotalUIPublished = 0;
 	uint64 TotalUISkipped = 0;
+
+	/** JS collections actually run (the JsGC scope samples every declined check too). */
+	uint64 WindowJsGCs = 0;
+	uint64 TotalJsGCs = 0;
+
+	/** Worst per-collection pause in the window; the scope's p99 dilutes it with declines. */
+	double WindowJsGCMaxPauseMs = 0.0;
+
+	/** JSMemoryUsage.malloc_size at the most recent collection; 0 until one has run. */
+	uint64 LastJsHeapBytes = 0;
 
 	double WindowStartSeconds = 0.0;
 	double EnableSeconds = 0.0;
@@ -117,6 +131,25 @@ static void LogScopeLine(const TCHAR* Bucket, int32 Scope, const FSummary& Summa
 	UE_LOG(LogVaCuus, Log, TEXT("PerfLog %s %s avg=%.3f p50=%.3f p99=%.3f max=%.3f ms (%d)"),
 		Bucket, GScopeNames[Scope], Summary.Avg, Summary.P50, Summary.P99, Summary.Max, Summary.Count);
 }
+
+/**
+ * The ALWAYS-ON last-sample store behind vacuus.stats() (M4 Task 9, spec 3.11), outside
+ * FState and its lock on purpose: the RAII timers call AddSample whether or not the
+ * PerfLog cvar is on, so a plain per-slot store here is one double write on a path that
+ * already did a virtual call and two clock reads -- while routing it through the locked
+ * state would put a mutex on every scope exit in every configuration.
+ *
+ * THREADING, stated because it is the whole safety argument: each slot has exactly ONE
+ * writing thread (a scope runs where its phase runs), and vacuus.stats() reads only the
+ * UI-thread-written slots (Update, Record) plus the JsPump interval -- from the UI
+ * thread, under JS execution. Same-thread read-after-write, no ordering needed; the
+ * game/render-thread slots are written here for symmetry and read by nobody yet.
+ */
+static double GLastSampleMs[FVaCuusPerfLog::Num] = {};
+
+/** Seconds between the last two JsPump samples -- the UI frame interval as the pump sees it, and vacuus.stats()'s fps source. */
+static double GLastJsPumpIntervalSeconds = 0.0;
+static double GLastJsPumpSampleSeconds = 0.0;
 } // namespace VaCuusPerfLogPrivate
 
 bool FVaCuusPerfLog::IsEnabled()
@@ -126,18 +159,42 @@ bool FVaCuusPerfLog::IsEnabled()
 
 void FVaCuusPerfLog::AddSample(EScope Scope, double Milliseconds)
 {
+	using namespace VaCuusPerfLogPrivate;
+
+	// Before the enabled gate: the last-sample store serves vacuus.stats() in every
+	// configuration (its comment carries the threading argument).
+	GLastSampleMs[Scope] = Milliseconds;
+	if (Scope == JsPump)
+	{
+		const double NowSeconds = FPlatformTime::Seconds();
+		if (GLastJsPumpSampleSeconds > 0.0)
+		{
+			GLastJsPumpIntervalSeconds = NowSeconds - GLastJsPumpSampleSeconds;
+		}
+		GLastJsPumpSampleSeconds = NowSeconds;
+	}
+
 	if (!IsEnabled())
 	{
 		return;
 	}
 
-	using namespace VaCuusPerfLogPrivate;
 	FState& State = GetState();
 	FScopeLock ScopeLock(&State.Lock);
 	if (State.bEnabled)
 	{
 		State.Window[Scope].Add(Milliseconds);
 	}
+}
+
+double FVaCuusPerfLog::GetLastSampleMs(EScope Scope)
+{
+	return VaCuusPerfLogPrivate::GLastSampleMs[Scope];
+}
+
+double FVaCuusPerfLog::GetLastUIFrameIntervalSeconds()
+{
+	return VaCuusPerfLogPrivate::GLastJsPumpIntervalSeconds;
 }
 
 void FVaCuusPerfLog::AddDraws(int32 NumDraws)
@@ -180,6 +237,24 @@ void FVaCuusPerfLog::AddUIFrame(bool bPublished)
 	}
 }
 
+void FVaCuusPerfLog::AddJsGC(double PauseMs, uint64 HeapBytes)
+{
+	if (!IsEnabled())
+	{
+		return;
+	}
+
+	using namespace VaCuusPerfLogPrivate;
+	FState& State = GetState();
+	FScopeLock ScopeLock(&State.Lock);
+	if (State.bEnabled)
+	{
+		++State.WindowJsGCs;
+		State.WindowJsGCMaxPauseMs = FMath::Max(State.WindowJsGCMaxPauseMs, PauseMs);
+		State.LastJsHeapBytes = HeapBytes;
+	}
+}
+
 void FVaCuusPerfLog::TickLog()
 {
 	using namespace VaCuusPerfLogPrivate;
@@ -203,6 +278,9 @@ void FVaCuusPerfLog::TickLog()
 		State.WindowFrames = State.TotalFrames = 0;
 		State.WindowUIPublished = State.TotalUIPublished = 0;
 		State.WindowUISkipped = State.TotalUISkipped = 0;
+		State.WindowJsGCs = State.TotalJsGCs = 0;
+		State.WindowJsGCMaxPauseMs = 0.0;
+		State.LastJsHeapBytes = 0;
 		State.WindowStartSeconds = State.EnableSeconds = NowSeconds;
 		State.bEnabled = bWantEnabled;
 		if (bWantEnabled)
@@ -231,6 +309,7 @@ void FVaCuusPerfLog::TickLog()
 	State.TotalReplays += State.WindowReplays;
 	State.TotalUIPublished += State.WindowUIPublished;
 	State.TotalUISkipped += State.WindowUISkipped;
+	State.TotalJsGCs += State.WindowJsGCs;
 	for (int32 Scope = 0; Scope < Num; ++Scope)
 	{
 		State.Cumulative[Scope].Append(State.Window[Scope]);
@@ -268,6 +347,14 @@ void FVaCuusPerfLog::TickLog()
 		State.TotalUIPublished, State.TotalUISkipped,
 		IdlePercent(State.TotalUIPublished, State.TotalUISkipped));
 
+	// The M4 GC line (AddJsGC). `heap` is the AT-COLLECTION sample -- 0.0 KB with GCs=0
+	// means "never sampled", not "empty heap"; the JsGC SCOPE line above still shows the
+	// per-frame trigger-check cost, which is almost entirely declines.
+	UE_LOG(LogVaCuus, Log,
+		TEXT("PerfLog window JsGC runs=%llu maxpause=%.3f ms | total runs=%llu | heap=%.1f KB (at last collection)"),
+		State.WindowJsGCs, State.WindowJsGCMaxPauseMs, State.TotalJsGCs,
+		double(State.LastJsHeapBytes) / 1024.0);
+
 	for (int32 Scope = 0; Scope < Num; ++Scope)
 	{
 		LogScopeLine(TEXT("[win]"), Scope, Summarize(State.Window[Scope]));
@@ -286,5 +373,7 @@ void FVaCuusPerfLog::TickLog()
 	State.WindowFrames = 0;
 	State.WindowUIPublished = 0;
 	State.WindowUISkipped = 0;
+	State.WindowJsGCs = 0;
+	State.WindowJsGCMaxPauseMs = 0.0;
 	State.WindowStartSeconds = NowSeconds;
 }

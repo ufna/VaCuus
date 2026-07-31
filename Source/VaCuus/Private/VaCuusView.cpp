@@ -10,6 +10,7 @@
 #include "VaCuusTextInput.h"
 #include "VaCuusUIThread.h"
 #include "VaCuusViewStatus.h"
+#include "VaCuusWriteRouter.h"
 
 #include "CoreGlobals.h"
 #include "UObject/Class.h"
@@ -25,6 +26,11 @@ void UVaCuusView::InitializeView(UVaCuusSubsystem* InSubsystem, uint32 InViewId,
 	Status = InStatus;
 	LastViewSize = InInitialViewSize;
 	bRegistered = true;
+
+	// The write router's game-side dispatch map (M4 Task 9): what lets the queue drain
+	// find this handle by the ViewId every routed item carries. Weak on that side, so
+	// this registration keeps nothing alive.
+	FVaCuusWriteRouter::RegisterGameView(ViewId, this);
 }
 
 void UVaCuusView::Invalidate()
@@ -40,6 +46,10 @@ void UVaCuusView::Invalidate()
 	// The status object stays: the UI thread's host holds its own reference, and
 	// dropping ours would only make a late PollStatus() crash instead of no-op.
 	bRegistered = false;
+
+	// After this, a routed item still in flight for this view drops at Verbose in the
+	// drain -- the same fate as input for a dead view, one rule for both directions.
+	FVaCuusWriteRouter::UnregisterGameView(ViewId);
 }
 
 void UVaCuusView::BeginDestroy()
@@ -48,6 +58,15 @@ void UVaCuusView::BeginDestroy()
 	// Invalidate) has already detached by now; this is what keeps a view nobody retired from
 	// leaving a registered context behind.
 	DetachIme();
+
+	// Same safety net for the router's dispatch map: without it, a never-invalidated
+	// view leaves a stale (null-reading, but permanent) entry behind. Idempotent, and
+	// guarded because CDO construction/destruction may run off the game thread while a
+	// real view's BeginDestroy is GC's, i.e. game-thread.
+	if (ViewId != 0 && IsInGameThread())
+	{
+		FVaCuusWriteRouter::UnregisterGameView(ViewId);
+	}
 
 	Super::BeginDestroy();
 }
@@ -198,6 +217,23 @@ void UVaCuusView::LoadDocumentFromMemory(const FString& RmlSource)
 	const uint64 Serial = NextLoadSerial++;
 	Status->LoadRequestSerial.store(Serial, std::memory_order_relaxed);
 	UIThread->EnqueueLoadDocumentFromMemory(ViewId, RmlSource, Serial, LastViewSize);
+}
+
+void UVaCuusView::ExecuteScript(const FString& Source)
+{
+	check(IsInGameThread());
+
+	FVaCuusUIThread* UIThread = GetUIThread();
+	if (!UIThread)
+	{
+		UE_LOG(LogVaCuus, Warning, TEXT("ExecuteScript() on an invalid view is ignored"));
+		return;
+	}
+
+	// The source name is deliberately deterministic -- view id, no serial -- so
+	// a log reader can attribute an error to the API surface it came through,
+	// and a test can match the refusal lines exactly.
+	UIThread->EnqueueExecuteScript(ViewId, Source, FString::Printf(TEXT("<ExecuteScript view %u>"), ViewId));
 }
 
 void UVaCuusView::Close()

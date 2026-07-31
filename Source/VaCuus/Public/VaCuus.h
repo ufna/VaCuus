@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include "VaCuusScriptHost.h"
+
 #include "Modules/ModuleManager.h"
 #include "Templates/UniquePtr.h"
 
@@ -72,6 +74,19 @@ public:
 	/** Stops and joins the UI thread (its Exit() tears RmlUi down). Game thread only. */
 	VACUUS_API void StopUIThread();
 
+	/**
+	 * Registers (or, with nullptr, clears) the factory the next UI thread boot uses
+	 * to build its script host (M4). FVaCuusJsModule::StartupModule is the one
+	 * production caller; the factory runs ON the UI thread, in Init().
+	 *
+	 * Must be called while no UI thread exists; refused (with an error) otherwise --
+	 * the FVaCuusEngine::SetRenderInterface shape, and for the same reason: the
+	 * consumer snapshots it at boot, so a later change would silently apply to a
+	 * FUTURE boot while looking like it applied to this one. Game thread only, like
+	 * every other mutator of UIThread.
+	 */
+	VACUUS_API void SetScriptHostFactory(FVaCuusScriptHostFactory InFactory);
+
 private:
 	/**
 	 * Owned by the module rather than by a function-local static so it dies in
@@ -86,4 +101,12 @@ private:
 	 * not pay for a thread or for RmlUi's boot.
 	 */
 	TUniquePtr<FVaCuusUIThread> UIThread;
+
+	/**
+	 * Handed to each UI thread at construction and snapshotted there: the thread
+	 * cannot read it from here itself, because its Init() runs off the game thread
+	 * and FModuleManager refuses module lookups there (see FVaCuusUIThread's
+	 * constructor comment on why Engine is a reference).
+	 */
+	FVaCuusScriptHostFactory ScriptHostFactory;
 };

@@ -88,7 +88,7 @@ FVaCuusUIThread* FVaCuusModule::GetOrStartUIThread()
 		return nullptr;
 	}
 
-	TUniquePtr<FVaCuusUIThread> NewThread = MakeUnique<FVaCuusUIThread>(*Engine);
+	TUniquePtr<FVaCuusUIThread> NewThread = MakeUnique<FVaCuusUIThread>(*Engine, ScriptHostFactory);
 	if (NewThread->Start())
 	{
 		UIThread = MoveTemp(NewThread);
@@ -134,6 +134,26 @@ void FVaCuusModule::StopUIThread()
 	// view and RmlUi itself down — all on the UI thread, which is the only thread
 	// allowed to. In inline mode it runs that same teardown right here.
 	UIThread.Reset();
+}
+
+void FVaCuusModule::SetScriptHostFactory(FVaCuusScriptHostFactory InFactory)
+{
+	check(IsInGameThread());
+
+	// The FVaCuusEngine::SetRenderInterface enforcement shape (VaCuusEngine.cpp:230-242):
+	// the UI thread snapshots the factory when it is CONSTRUCTED and creates the host in
+	// Init(), so a factory set while a thread exists could never affect that thread --
+	// accepting it would only arm a surprise for the next boot. UIThread validity is the
+	// whole gate: StopUIThread() resets the pointer, after which the factory may change
+	// again (test stubs, module unload) and the next GetOrStartUIThread() picks it up.
+	if (UIThread.IsValid())
+	{
+		UE_LOG(LogVaCuus, Error,
+			TEXT("SetScriptHostFactory() must be called before the UI thread starts; ignored"));
+		return;
+	}
+
+	ScriptHostFactory = MoveTemp(InFactory);
 }
 
 #undef LOCTEXT_NAMESPACE

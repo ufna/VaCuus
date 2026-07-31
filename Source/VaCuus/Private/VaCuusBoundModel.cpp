@@ -143,6 +143,25 @@ void FVaCuusBoundModel::ApplyPendingUpdate()
 	Channel.ConsumeUpdate([this](const FVaCuusModelUpdate& Update) { ApplyUpdate(Update); });
 }
 
+void FVaCuusBoundModel::DirtyTopLevelFromShadow(const FString& TopLevelName)
+{
+	check(FVaCuusUIThread::IsInUIThread());
+
+	if (!bBoundToContext)
+	{
+		// A routed write can only have originated from a bound model's own views, so this
+		// is teardown-window territory, not a caller bug: nothing to re-run, nothing lost.
+		return;
+	}
+
+	// The same call ApplyUpdate makes per dirtied field, minus the copy -- the shadow
+	// already holds the authoritative value, which is the entire point of the revert.
+	// Converted per call rather than through TopLevelNamesUtf8: routed writes happen at
+	// user-interaction rate, and the router hands over the name it derived from the wire
+	// path, not an index.
+	ModelHandle.DirtyVariable(VaCuusBoundModelPrivate::ToRmlString(TopLevelName));
+}
+
 void FVaCuusBoundModel::ApplyUpdate(const FVaCuusModelUpdate& Update)
 {
 	// Both are instances of the layout's type, so the layout's offsets address the same field

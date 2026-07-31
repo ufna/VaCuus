@@ -1,0 +1,93 @@
+<rml>
+<head>
+	<title>VaCuus M4 JavaScript Demo</title>
+	<link type="text/rcss" href="m4_demo.rcss"/>
+	<!-- Captured at load, executed by the script host at OnDocumentReady -- after the body
+	     is shown, never from Plugin::OnDocumentLoad (spec 2(f)); src resolves through the
+	     ordered DevUI roots at run time. -->
+	<script src="m4_hud_logic.js"></script>
+</head>
+
+<!-- `data-model="hud"` is resolved EXACTLY ONCE, in Element::SetParent, when this body is
+     parented into the context (ThirdParty/RmlUi/Source/Core/Element.cpp:2202-2219), which is
+     why vacuus.M4Demo calls BindModel BEFORE LoadDocument -- the m3_demo.rml comment carries
+     the full argument. The model is the M3 demo's own FVaCuusDemoModel: the gameplay-fed
+     fields below keep flowing through data binding UNCHANGED (spec 9), while the killfeed,
+     damage numbers, stance and the second bar are DOM the m4_hud_logic.js script drives
+     directly. Stance and Killfeed exist in the struct but are deliberately unbound here:
+     JS owns those surfaces now, and binding them too would draw two competing truths. -->
+<body data-model="hud">
+	<div id="m4-title">VaCuus M4 // JAVASCRIPT DEMO</div>
+
+	<!-- 1. GAMEPLAY-FED SCALARS, exactly M3's pipeline: {{Field}} is DataViewText, fed by
+	     the reduced C++ driver through UpdateModel every frame. The one non-M3 row is
+	     Stance: its span is EMPTY markup that m4_hud_logic.js fills through innerRML and
+	     colors through classList on the C++ driver's old 2s beat -- a JS-owned cell inside
+	     a data-bound panel, which is the coexistence claim in one row. -->
+	<div id="p-scalars" data-class-alert="bAlert">
+		<div class="panel-title">1 &#183; GAME-FED SCALARS ({{Tick}} updates published)</div>
+		<div class="row"><span class="key">CallSign</span><span class="val">{{CallSign}}</span></div>
+		<div class="row"><span class="key">Ammo</span><span class="val">{{Ammo}}</span></div>
+		<div class="row"><span class="key">Stance (JS classList)</span><span class="val" id="stance-val"></span></div>
+		<div class="row"><span class="key">Zone</span><span class="val">{{Zone}}</span></div>
+		<div class="row"><span class="key">Objective</span><span class="val">{{Objective}}</span></div>
+	</div>
+
+	<!-- 2. ONE VALUE, TWO BARS. The top bar is M3's data-style-width binding; the bottom
+	     bar is m4_hud_logic.js reading the SAME field through
+	     vacuus.model('hud').get('Health') in a rAF callback and writing the width through
+	     the style proxy. Both read the same UI shadow, so any daylight between the two
+	     bars is a bug in one of the two paths -- the panel is its own assertion. -->
+	<div id="p-bar">
+		<div class="panel-title">2 &#183; HEALTH: BOUND BAR vs JS rAF BAR</div>
+		<div id="bar-track">
+			<div id="bar-fill" data-style-width="Health + '%'"/>
+		</div>
+		<div id="js-bar-track">
+			<div id="js-bar-fill"/>
+		</div>
+		<div class="row"><span class="key">Health</span><span class="val">{{Health}}</span></div>
+	</div>
+
+	<!-- 3. A FLATTENED NESTED STRUCT, unchanged from M3: two leaves, one top-level name,
+	     still fed by the C++ driver. -->
+	<div id="p-nested">
+		<div class="panel-title">3 &#183; NESTED STRUCT (game-fed, unchanged)</div>
+		<div class="row"><span class="key">Target.Designation</span><span class="val">{{Target.Designation}}</span></div>
+		<div class="row"><span class="key">Target.Distance</span><span class="val">{{Target.Distance}}</span></div>
+	</div>
+
+	<!-- 4. THE M3 REFUSAL BUTTON, NOW HEARD. Same control, new contract (spec 3.10): the
+	     assignment reaches FVaCuusScalarDefinition::Set, which routes (ViewId, hud, Ammo,
+	     value) to the game thread instead of merely refusing. The demo driver's
+	     OnModelWrite handler applies it to the live struct and the next UpdateModel echoes
+	     it back through data binding -- the accepted-write loop, one write per click. The
+	     shadow itself is never written by the UI (I3 stands); `Ammo - 1` rather than M3's
+	     `= 0` so EVERY click carries a fresh value and lands (a write equal to the shadow
+	     is swallowed by the echo rule, spec 3.10). -->
+	<div id="p-write">
+		<div class="panel-title">4 &#183; WRITES ARE ROUTED (the accepted-write loop)</div>
+		<div id="probe" data-attr-vacuus-ammo="Ammo">ammo mirrored into an attribute</div>
+		<button id="write-btn" class="m3-btn" data-event-click="Ammo = Ammo - 1">expend one round (Ammo = Ammo - 1)</button>
+		<div class="hint">Click: OnModelWrite fires on the game thread; the driver mutates the live struct; UpdateModel echoes it back.</div>
+	</div>
+
+	<!-- 5. THE KILLFEED, NOW PURE DOM. No data-for, no template: #kill-rows starts empty
+	     and m4_hud_logic.js appends a .kill-row div per 1.5s beat via createElement +
+	     innerRML, trimming above 6 from the front -- the same serial arithmetic as the C++
+	     driver (pools 5/7/4, HS on serial%3==0), so a screenshot's rows are computable
+	     from elapsed time alone. -->
+	<div id="p-kills">
+		<div class="panel-title">5 &#183; KILLFEED (JS createElement/remove, <span id="kill-count">0</span> rows)</div>
+		<div id="kill-rows"></div>
+	</div>
+
+	<!-- 6. DAMAGE NUMBERS: born on a 0.9s interval, each removed by its own 1.2s
+	     setTimeout -- spec 9's "damage numbers via timers", value and crit computable
+	     from the damage serial. -->
+	<div id="p-dmg">
+		<div class="panel-title">6 &#183; DAMAGE NUMBERS (JS timers)</div>
+		<div id="dmg-zone"></div>
+	</div>
+</body>
+</rml>

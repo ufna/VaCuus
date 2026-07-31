@@ -4,6 +4,8 @@
 
 #include "CoreMinimal.h"
 
+#include "VaCuusScriptHost.h"
+
 #include "HAL/Event.h"
 #include "HAL/PlatformTLS.h"
 #include "HAL/Runnable.h"
@@ -67,8 +69,13 @@ public:
 	 * than looked up: FVaCuusEngine::Get() goes through FModuleManager, which in 5.8
 	 * refuses to hand a module out to a non-game thread (and hard-asserts while that
 	 * module is being unloaded -- exactly when Exit() runs).
+	 *
+	 * InScriptHostFactory (M4) is COPIED IN at construction for the same
+	 * FModuleManager reason: Init() runs on the worker and cannot ask the module for
+	 * it. Null (the default, and every configuration without VaCuusJs) means no
+	 * script host and no JS phases in the frame.
 	 */
-	explicit FVaCuusUIThread(FVaCuusEngine& InEngine);
+	explicit FVaCuusUIThread(FVaCuusEngine& InEngine, FVaCuusScriptHostFactory InScriptHostFactory = nullptr);
 
 	/** Stops the worker and joins it before any member is destroyed. */
 	virtual ~FVaCuusUIThread() override;
@@ -142,6 +149,17 @@ public:
 	void EnqueueCloseDocument(uint32 ViewId);
 	void EnqueueResize(uint32 ViewId, FIntPoint ViewSize);
 	void EnqueueSetVisible(uint32 ViewId, bool bVisible);
+
+	/**
+	 * Evaluates Source against the view's JS context when the drain reaches it
+	 * (M4 Task 6); SourceName names it in errors and backtraces. FIFO from the
+	 * single producer, so an ExecuteScript enqueued after a LoadDocument* runs
+	 * against the loaded document. Before any document, `document` is null
+	 * (spec 3.4); with JS off or an unknown view the drain/script host says so
+	 * at Error (see EVaCuusCommandKind::ExecuteScript).
+	 */
+	void EnqueueExecuteScript(uint32 ViewId, const FString& Source, const FString& SourceName);
+
 	void EnqueueShutdown();
 
 	/**
@@ -244,8 +262,35 @@ public:
 	/** Blocks until GetFrameCount() >= Target. Returns false on timeout. Test helper. */
 	bool WaitForFrameCount(uint64 Target, double TimeoutSeconds);
 
+	/**
+	 * True while this thread owns a live script host (M4). Safe from any thread.
+	 *
+	 * The seam's only cross-thread observable, and it exists because its absence
+	 * would be untestable: "no factory registered means the frame loop skips the JS
+	 * phases" is a claim about a host the game thread cannot see -- without this,
+	 * asserting the JS-off configuration would come down to grepping the log for
+	 * silence.
+	 */
+	bool HasScriptHost() const;
+
 	/** True when the calling thread is the VaCuus UI thread. Backs the check() wrappers. */
 	static bool IsInUIThread();
+
+	/**
+	 * The live script host, or null in every JS-less configuration. UI THREAD
+	 * ONLY (checked), and static for the same reason IsInUIThread() is: the
+	 * callers are document-host implementations in modules that depend on this
+	 * one (FVaCuusRmlDocumentHost's AdoptDocument/CloseDocument -- the M4 Task 6
+	 * seam), which hold no FVaCuusUIThread and must not reach one through
+	 * FModuleManager on a worker thread. At most one UI thread exists per
+	 * process (the class comment), so a process-wide slot loses nothing.
+	 *
+	 * Published in Init() after the host is created, retracted in Exit() after
+	 * the host dies -- between those points every drained command, and therefore
+	 * every host call that wants this, sees a stable pointer. MUST NOT BE
+	 * STORED: it dies with the thread.
+	 */
+	static IVaCuusScriptHost* GetActiveScriptHost();
 
 	//~ Begin FRunnable interface
 	/** Asks the worker to leave its loop and wakes it. Idempotent, and safe after it exited. */
@@ -304,6 +349,20 @@ private:
 
 	/** The RmlUi library wrapper this thread boots in Init() and tears down in Exit(). */
 	FVaCuusEngine& Engine;
+
+	/** Snapshot taken at construction (see the constructor comment); consumed by Init(). */
+	FVaCuusScriptHostFactory ScriptHostFactory;
+
+	/**
+	 * The process's script host (M4), or null in every JS-less configuration: no
+	 * factory registered, vacuus.Js.Enable 0 at boot, or the factory declined.
+	 * Created in Init() after RmlUi is up, destroyed at the top of Exit() before
+	 * the document hosts -- only the UI thread touches it.
+	 */
+	TUniquePtr<IVaCuusScriptHost> ScriptHost;
+
+	/** Backs HasScriptHost(); set in Init(), cleared in Exit(). */
+	std::atomic<bool> bScriptHostLive{false};
 
 	/** Owned; deleted (which stops and joins) first of all in the destructor. */
 	FRunnableThread* Thread = nullptr;
