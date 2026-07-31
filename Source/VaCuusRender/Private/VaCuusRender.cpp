@@ -604,7 +604,11 @@ static void StartModelDriver(UVaCuusView* View)
 		return;
 	}
 
-	if (!View->BindModel(FName(GM3ModelName), FVaCuusDemoModel::StaticStruct()))
+	// The bare string, NEVER FName(GM3ModelName): in a cooked game an FName round-trip returns
+	// the pool's first-registered casing -- the engine's 'HUD' (class AHUD) -- and the model
+	// binds under a name `data-model="hud"` cannot reach (VaCuus-akj.23; the mechanism is on
+	// UVaCuusView::BindModel).
+	if (!View->BindModel(GM3ModelName, FVaCuusDemoModel::StaticStruct()))
 	{
 		// Already logged in detail by BindModel. The document will still load and will still be
 		// laid out; it will simply show nothing, which is precisely the failure this milestone

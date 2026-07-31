@@ -121,8 +121,8 @@ bool FVaCuusModelApplyTest::RunTest(const FString& Parameters)
 	// TWO VIEWS, AND THE SECOND IS THE POINT. Sized: a real document, recorded every frame.
 	// Sizeless: created with FIntPoint::ZeroValue and never given a document, exactly like a
 	// UMG view before its first Slate tick, so HasView() is false for its whole life.
-	const TSharedRef<FVaCuusBoundModel> SizedModel = MakeShared<FVaCuusBoundModel>(FName(TEXT("hud")), Type);
-	const TSharedRef<FVaCuusBoundModel> SizelessModel = MakeShared<FVaCuusBoundModel>(FName(TEXT("hud")), Type);
+	const TSharedRef<FVaCuusBoundModel> SizedModel = MakeShared<FVaCuusBoundModel>(TEXT("hud"), Type);
+	const TSharedRef<FVaCuusBoundModel> SizelessModel = MakeShared<FVaCuusBoundModel>(TEXT("hud"), Type);
 	if (!TestTrue(TEXT("both models built"), SizedModel->IsValid() && SizelessModel->IsValid()))
 	{
 		return false;
@@ -250,7 +250,7 @@ bool FVaCuusModelApplyTest::RunTest(const FString& Parameters)
 	// anything. The DOM half -- data-for over real rows through a real context -- is
 	// VaCuus.Model.ArrayBinding, and the pipeline-fed form is Task 5's end-to-end.
 	const UScriptStruct* ArrayType = FVaCuusArrayTestModel::StaticStruct();
-	const TSharedRef<FVaCuusBoundModel> ArrayModel = MakeShared<FVaCuusBoundModel>(FName(TEXT("feed")), ArrayType);
+	const TSharedRef<FVaCuusBoundModel> ArrayModel = MakeShared<FVaCuusBoundModel>(TEXT("feed"), ArrayType);
 	if (!TestTrue(TEXT("the array model built"), ArrayModel->IsValid()))
 	{
 		return false;

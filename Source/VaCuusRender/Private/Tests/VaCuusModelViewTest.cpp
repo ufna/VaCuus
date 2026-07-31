@@ -58,7 +58,7 @@
  */
 namespace VaCuusModelViewTest
 {
-static const FName GModelName(TEXT("hud"));
+static const TCHAR* GModelName = TEXT("hud");
 static const FIntPoint GViewSize(400, 300);
 
 /**
@@ -270,6 +270,146 @@ bool FVaCuusModelViewIdleTest::RunTest(const FString& Parameters)
 	}
 	TestEqual(TEXT("the change settles back to zero published frames"),
 		int32(Fixture.View->GetFramesPublished() - PublishedAfterChange), 0);
+
+	Fixture.Subsystem->DestroyView(Fixture.View);
+	RunFrames(*UIThread, 1);
+
+	return true;
+}
+
+/**
+ * THE MODEL NAME REACHES RmlUi WITH THE CALLER'S EXACT CASING -- the contract whose violation
+ * was VaCuus-akj.23, and a violation only a PACKAGED game could produce. `data-model` is
+ * matched byte-for-byte (Element.cpp:2212 -> Context::GetDataModelPtr, a find() on a map
+ * keyed on std::string), but a cooked target's FName::ToString() returns the
+ * casing of the name's FIRST process-wide registration (WITH_CASE_PRESERVING_NAME follows
+ * WITH_EDITORONLY_DATA, NameTypes.h:32-33) -- so the engine's 'HUD' (class AHUD) turned the
+ * demo's FName("hud") into a model called 'HUD', and m4_demo.rml's `data-model="hud"` attached
+ * to nothing, with every stage individually logging success.
+ *
+ * WHAT THIS CAN AND CANNOT SHOW IN AN EDITOR SUITE, said plainly: an editor build preserves
+ * per-instance FName casing, so the ORIGINAL line (`ModelName.ToString()` in BindToContext)
+ * would pass here -- the original bug is only observable in a packaged build, and its proof is
+ * the packaged before/after logs on the bead. What this test pins is the contract that fix
+ * rests on: the string handed to Context::CreateDataModel is the caller's, byte-for-byte, and
+ * never any FName round-trip. Reroute it through the name pool's COMPARISON entry -- which is
+ * exactly what a cooked ToString() returns, e.g.
+ * `FName(*ModelNameStr).GetComparisonNameEntry()->GetPlainNameString()` in BindToContext --
+ * and this fails twice: the load logs the unexpected `[Rml] Could not locate data model`
+ * Error, and the positive control below publishes nothing because `{{Title}}` stayed inert
+ * literal text.
+ *
+ * THE POOL CLAIM BELOW IS THE TEST'S WHOLE TRAP. Registering the hostile casing FIRST is what
+ * the engine does to 'hud' in a cooked game; with it in place, the comparison entry for every
+ * later case-variant is 'VACUUSCASEPROBE', so the reroute above has something to mangle the
+ * name INTO. Without the claim, the reroute would return the caller's own casing and the test
+ * would prove nothing.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusModelViewNameCaseTest, "VaCuus.Model.View.NameCase",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusModelViewNameCaseTest::RunTest(const FString& Parameters)
+{
+	using namespace VaCuusModelViewTest;
+
+	if (!FPlatformProcess::SupportsMultithreading())
+	{
+		AddInfo(TEXT("Skipped: no multithreading support, so there is no UI thread to drive"));
+		return true;
+	}
+
+	if (!TestFalse(TEXT("RmlUi is down before the test"), FVaCuusEngine::Get().IsInitialized()))
+	{
+		return false;
+	}
+
+	// The engine's role in the original bug, played deliberately: the FIRST registration of
+	// this name anywhere in the process, in a casing the document below never writes. FNames
+	// are process-global and never unregistered, so this holds for every later run in the
+	// same session too -- which is fine, it is the precondition, not the assertion.
+	const FName PoolClaim(TEXT("VACUUSCASEPROBE"));
+	(void)PoolClaim;
+
+	static const TCHAR* CaseDocument = TEXT(R"(<rml>
+<head><style>
+body { display: block; width: 100%; height: 100%; font-family: LatoLatin; font-size: 20px; color: #FFFFFF; }
+div { display: block; }
+</style></head>
+<body data-model="VaCuusCaseProbe">
+	<div id="title">{{Title}}</div>
+</body>
+</rml>)");
+
+	FVaCuusModule& Module = FVaCuusModule::Get();
+	FVaCuusUIThread* UIThread = Module.GetOrStartUIThread();
+	if (!TestNotNull(TEXT("UI thread"), UIThread))
+	{
+		return false;
+	}
+
+	ON_SCOPE_EXIT
+	{
+		Module.StopUIThread();
+	};
+
+	FFixture Fixture;
+	if (!TestNotNull(TEXT("the subsystem created a view"), Fixture.View))
+	{
+		return false;
+	}
+
+	const UScriptStruct* Type = FVaCuusModelViewTestModel::StaticStruct();
+
+	if (!TestTrue(TEXT("BindModel succeeded"), Fixture.View->BindModel(TEXT("VaCuusCaseProbe"), Type)))
+	{
+		return false;
+	}
+	Fixture.View->LoadDocumentFromMemory(CaseDocument);
+
+	FVaCuusModelViewTestModel Live;
+	Live.Title = TEXT("Alpha");
+	Fixture.View->UpdateModel(FName(TEXT("VaCuusCaseProbe")), Type, &Live);
+
+	// Reach the steady state first, exactly as the Idle test argues: the first frames publish
+	// for their own reasons (first frame, glyph geometry), and the discriminator below only
+	// means something once nothing else is publishing.
+	int32 SettleFrames = 0;
+	uint64 LastPublished = 0;
+	int32 StableFrames = 0;
+	while (SettleFrames < 200 && StableFrames < 10)
+	{
+		if (!TestTrue(TEXT("frames ran"), Fixture.Frame(*UIThread)))
+		{
+			return false;
+		}
+		++SettleFrames;
+
+		const uint64 Published = Fixture.View->GetFramesPublished();
+		StableFrames = (Published == LastPublished) ? StableFrames + 1 : 0;
+		LastPublished = Published;
+	}
+
+	if (!TestTrue(TEXT("the view reached a steady state"), StableFrames >= 10))
+	{
+		return false;
+	}
+
+	// THE DISCRIMINATOR, borrowed from the Idle test's positive control because it is exactly
+	// the attached/unattached distinction: a `{{Title}}` under a RESOLVED model turns a changed
+	// string into released-plus-recompiled glyph geometry -- a publish -- while under an
+	// unresolved `data-model` it is inert literal text and a changed value moves nothing.
+	const uint64 PublishedBefore = Fixture.View->GetFramesPublished();
+	Live.Title = TEXT("Beta");
+	Fixture.View->UpdateModel(FName(TEXT("VaCuusCaseProbe")), Type, &Live);
+
+	if (!TestTrue(TEXT("frames ran"), Fixture.Frame(*UIThread, 3)))
+	{
+		return false;
+	}
+
+	TestTrue(TEXT("the case-exact model attached: a changed field publishes a frame"),
+		Fixture.View->GetFramesPublished() > PublishedBefore);
+	TestEqual(TEXT("and the echo came back"), Fixture.View->NumOutstandingModelFields(FName(TEXT("VaCuusCaseProbe"))), 0);
 
 	Fixture.Subsystem->DestroyView(Fixture.View);
 	RunFrames(*UIThread, 1);

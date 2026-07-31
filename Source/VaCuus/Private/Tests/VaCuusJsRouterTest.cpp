@@ -461,7 +461,7 @@ bool FVaCuusRouterWriteTest::RunTest(const FString& /*Parameters*/)
 	// performs -- bound through the BindModel command below, which is what registers it
 	// with the router.
 	const TSharedRef<FVaCuusBoundModel> Model =
-		MakeShared<FVaCuusBoundModel>(FName(TEXT("hud")), FVaCuusRouterTestModel::StaticStruct());
+		MakeShared<FVaCuusBoundModel>(TEXT("hud"), FVaCuusRouterTestModel::StaticStruct());
 	if (!TestTrue(TEXT("the model built"), Model->IsValid()))
 	{
 		return false;
@@ -662,7 +662,7 @@ bool FVaCuusRouterReadSurfaceTest::RunTest(const FString& /*Parameters*/)
 	}
 
 	const TSharedRef<FVaCuusBoundModel> Model =
-		MakeShared<FVaCuusBoundModel>(FName(TEXT("hud")), FVaCuusRouterTestModel::StaticStruct());
+		MakeShared<FVaCuusBoundModel>(TEXT("hud"), FVaCuusRouterTestModel::StaticStruct());
 	if (!TestTrue(TEXT("the model built"), Model->IsValid()))
 	{
 		return false;
@@ -944,7 +944,7 @@ bool FVaCuusJsIdleExactZerosTest::RunTest(const FString& /*Parameters*/)
 	};
 
 	const TSharedRef<FVaCuusBoundModel> Model =
-		MakeShared<FVaCuusBoundModel>(FName(TEXT("hud")), FVaCuusRouterTestModel::StaticStruct());
+		MakeShared<FVaCuusBoundModel>(TEXT("hud"), FVaCuusRouterTestModel::StaticStruct());
 	if (!TestTrue(TEXT("the model built"), Model->IsValid()))
 	{
 		return false;

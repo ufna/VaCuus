@@ -322,7 +322,7 @@ bool FVaCuusModelUICostTest::RunTest(const FString& Parameters)
 	};
 
 	const UScriptStruct* Type = FVaCuusSamplerCostModel::StaticStruct();
-	const FName ModelName(TEXT("hud"));
+	const FString ModelName(TEXT("hud"));
 
 	const TSharedRef<FVaCuusBoundModel> StillModel = MakeShared<FVaCuusBoundModel>(ModelName, Type);
 	const TSharedRef<FVaCuusBoundModel> RedrawnModel = MakeShared<FVaCuusBoundModel>(ModelName, Type);
@@ -578,7 +578,7 @@ bool FVaCuusModelUICostTest::RunTest(const FString& Parameters)
 namespace VaCuusModelCostTest
 {
 /** The model name GKillfeedDocument's data-model attribute resolves. */
-static const FName GFeedModelName(TEXT("feed"));
+static const FString GFeedModelName(TEXT("feed"));
 
 /** Rows changed / probed by the three-view run; mid-array, like the DataForIdle control row. */
 static constexpr int32 ProbeRow = 137;

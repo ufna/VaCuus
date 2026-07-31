@@ -44,7 +44,7 @@
  */
 namespace VaCuusDataForTest
 {
-static const FName GModelName(TEXT("feed"));
+static const FString GModelName(TEXT("feed"));
 
 /**
  * Everything one recorded frame showed, written on the UI thread inside

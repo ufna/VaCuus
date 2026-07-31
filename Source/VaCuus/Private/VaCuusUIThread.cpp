@@ -699,7 +699,21 @@ void FVaCuusUIThread::Enqueue(FVaCuusUICommand&& Command)
 	// the close in Exit()).
 	if (bStopRequested.load(std::memory_order_acquire))
 	{
-		UE_LOG(LogVaCuus, Verbose, TEXT("UI command dropped: the UI thread is stopping"));
+		// A BindModel is the one command whose loss has no second symptom -- the model never
+		// binds, every UpdateModel writes into a channel nothing consumes, and the idle gate
+		// correctly publishes nothing (the drain's unknown-view branch makes the same
+		// argument at the same level). Everything else lost here is a frame of work during
+		// teardown, which Verbose is for.
+		if (Command.Kind == EVaCuusCommandKind::BindModel)
+		{
+			UE_LOG(LogVaCuus, Error,
+				TEXT("BindModel('%s') for view %u dropped: the UI thread is stopping. The model will never bind"),
+				Command.Model.IsValid() ? *Command.Model->GetModelNameString() : TEXT("<none>"), Command.ViewId);
+		}
+		else
+		{
+			UE_LOG(LogVaCuus, Verbose, TEXT("UI command dropped: the UI thread is stopping"));
+		}
 		return;
 	}
 
@@ -1230,7 +1244,7 @@ void FVaCuusUIThread::DrainCommands()
 				UE_LOG(LogVaCuus, Error,
 					TEXT("BindModel('%s') dropped: view %u is not registered on the UI thread. The model will never bind, and every ")
 					TEXT("UpdateModel for it goes nowhere"),
-					Command->Model.IsValid() ? *Command->Model->GetModelName().ToString() : TEXT("<none>"), Command->ViewId);
+					Command->Model.IsValid() ? *Command->Model->GetModelNameString() : TEXT("<none>"), Command->ViewId);
 				continue;
 			}
 
@@ -1436,7 +1450,7 @@ void FVaCuusUIThread::BindModel(uint32 ViewId, IVaCuusDocumentHost& Host, const 
 		// nothing to create the model on and no way to tell the game thread -- a BindModel
 		// carries no serial -- so this line is the only trace.
 		UE_LOG(LogVaCuus, Error, TEXT("View %u has no Rml context; the data model '%s' is not bound and its updates go nowhere"),
-			ViewId, *Model->GetModelName().ToString());
+			ViewId, *Model->GetModelNameString());
 		return;
 	}
 

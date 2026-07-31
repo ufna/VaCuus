@@ -42,7 +42,7 @@ namespace VaCuusModelApiTest
 {
 using namespace VaCuusModelTest;
 
-static const FName GModelName(TEXT("hud"));
+static const TCHAR* GModelName = TEXT("hud");
 
 /**
  * A view built the production way -- through UVaCuusSubsystem::CreateView -- on a subsystem
@@ -213,7 +213,7 @@ bool FVaCuusModelApiTest::RunTest(const FString& Parameters)
 	// (d) A second model under a name already taken -- refused, because RmlUi has no unbind
 	// and re-creating the name would leave the FIRST model's shadow on screen.
 	TestFalse(TEXT("a duplicate model name is refused"), Fixture.View->BindModel(GModelName, Type));
-	TestFalse(TEXT("and a null type is refused"), Fixture.View->BindModel(FName(TEXT("nulltype")), nullptr));
+	TestFalse(TEXT("and a null type is refused"), Fixture.View->BindModel(TEXT("nulltype"), nullptr));
 	TestFalse(TEXT("...leaving nothing bound under that name"), Fixture.View->HasModel(FName(TEXT("nulltype"))));
 
 	// THE POSITIVE CONTROL FOR THE OBSERVABLE. Without it every assertion above would also
@@ -234,7 +234,7 @@ bool FVaCuusModelApiTest::RunTest(const FString& Parameters)
 
 	// Warns and still binds: the model is correct for the NEXT load, which is what a live
 	// reload will do. What it cannot do is attach to the document that is already up.
-	TestTrue(TEXT("a late bind still succeeds"), Fixture.View->BindModel(FName(TEXT("late")), Type));
+	TestTrue(TEXT("a late bind still succeeds"), Fixture.View->BindModel(TEXT("late"), Type));
 	TestTrue(TEXT("...and is registered"), Fixture.View->HasModel(FName(TEXT("late"))));
 
 	if (!TestTrue(TEXT("frames ran"), Fixture.Frame(*UIThread, 2)))
