@@ -6,6 +6,13 @@
 
 #include "VaCuusJsRuntime.h"
 
+namespace Rml
+{
+class Element;
+class ElementDocument;
+}
+struct FVaCuusJsElementHandle;
+
 /**
  * One view's JSContext (M4 spec 3.4): the global object, the callback queues,
  * and nothing shared. Created ON DEMAND by FVaCuusJsScriptHost at the first
@@ -19,8 +26,12 @@
  *    M4 Task 6 replaces it with the real document object on OnDocumentReady);
  *  - the timer list and the rAF pending list, with the demo's two re-entrancy
  *    rules and the frame-start cutoff the demo lacked (see PumpCallbacks);
- *  - from M4 Task 4 on: the element identity cache and the wrapper prototypes --
- *    this class is where the DOM facade's per-view state hangs.
+ *  - the DOM facade's per-view state (M4 Task 4, VaCuusJsDom.cpp): the element
+ *    identity cache (WrapperCache), the per-context wrapper prototypes
+ *    (JS_SetClassProto keeps them on the JSContext), and the compiled style
+ *    proxy factory. The `document` global becomes a real Document wrapper via
+ *    BindDocument -- called by tests through the host's test-only entry now,
+ *    by OnDocumentReady in M4 Task 6.
  *
  * NOT here: the job queue. Promise reactions and queueMicrotask ride the
  * RUNTIME-wide job list (JS_EnqueueJob/JS_ExecutePendingJob are JSRuntime
@@ -73,6 +84,47 @@ public:
 	 */
 	void PumpCallbacks(double NowSeconds);
 
+	//~ ---- The DOM facade (M4 Task 4; implementation in VaCuusJsDom.cpp) ----
+
+	/**
+	 * Points the `document` global at Document (wrapped through the identity
+	 * cache), or back at null. Production wiring is M4 Task 6's OnDocumentReady;
+	 * until then the caller is FVaCuusJsScriptHost::BindDocumentForTest. UI
+	 * thread in production -- this wraps, and wrapping allocates an ObserverPtr
+	 * block from RmlUi's un-mutexed global pool (ObserverPtr.cpp:6-24).
+	 */
+	void BindDocument(Rml::ElementDocument* Document);
+
+	/**
+	 * The identity cache's front door: one wrapper per live element, `===`
+	 * across lookups. Returns an OWNED ref (caller frees or returns to JS);
+	 * the cache itself keeps a BORROWED one (VaCuusJsDomHandle.h has the
+	 * retention story). Null in, JS_NULL out. Populated lazily on first wrap,
+	 * NEVER from OnElementCreate -- clones bypass Factory::InstanceElement and
+	 * would miss a hook-populated map (Element.cpp:214-225).
+	 */
+	JSValue WrapElement(Rml::Element* Element);
+
+	/**
+	 * The process-global OnElementDestroy hook's per-view probe (spec 2(g)),
+	 * called by FVaCuusJsScriptHost for EVERY element the process destroys:
+	 * erases the dying element's cache entry, if this view ever wrapped it.
+	 * Misses are one TMap lookup -- free. Runs inside ~Element (Element.cpp:99),
+	 * so no JS is executing on this thread right now, though the call may sit
+	 * BELOW a facade thunk that triggered the destruction (innerRML, remove).
+	 */
+	void OnRmlElementDestroyed(Rml::Element* Element);
+
+	/** Finalizer-side cache erase; called only while bInCache was still set. */
+	void RemoveCacheEntry(Rml::Element* RawKey);
+
+	/**
+	 * TEST OBSERVABILITY (the cache-hygiene invariant needs an observable, the
+	 * M2 lesson): live cache entries. Not a counter -- the exact current size,
+	 * so a test can assert it returns to a recorded baseline.
+	 */
+	int32 GetWrapperCacheSize() const { return WrapperCache.Num(); }
+
 private:
 	/**
 	 * The demo's timer record (hud-demo VacuusJs.cpp:32-39), UE-shaped. Ids are
@@ -114,9 +166,74 @@ private:
 	static JSValue RequestRafThunk(JSContext* Ctx, JSValueConst This, int Argc, JSValueConst* Argv);
 	static JSValue CancelRafThunk(JSContext* Ctx, JSValueConst This, int Argc, JSValueConst* Argv);
 
+	//~ ---- DOM facade internals (VaCuusJsDom.cpp) ----
+
+	/** Builds the Element and Document prototypes and hands them to JS_SetClassProto. */
+	void InstallDomPrototypes();
+
+	/**
+	 * The wrapper behind This if it is one of ours, else null. Class-id checked
+	 * through JS_GetOpaque (quickjs.h:1045, null on mismatch) for BOTH classes --
+	 * a script may .call() a facade method on any object, and a foreign `this`
+	 * must read as a dead handle, not as UB.
+	 */
+	FVaCuusJsElementHandle* GetHandle(JSValueConst Value) const;
+
+	/** GetHandle + the dead-check: the live element, or null. EVERY method opens with this. */
+	Rml::Element* GetLiveElement(JSValueConst Value) const;
+
+	//~ Document prototype (createElement / getElementById / body).
+	static JSValue DocCreateElementThunk(JSContext* Ctx, JSValueConst This, int Argc, JSValueConst* Argv);
+	static JSValue DocGetElementByIdThunk(JSContext* Ctx, JSValueConst This, int Argc, JSValueConst* Argv);
+	static JSValue DocBodyGetterThunk(JSContext* Ctx, JSValueConst This);
+
+	//~ Element prototype: tree surgery.
+	static JSValue InsertThunk(JSContext* Ctx, JSValueConst This, int Argc, JSValueConst* Argv, int Magic);
+	static JSValue RemoveChildThunk(JSContext* Ctx, JSValueConst This, int Argc, JSValueConst* Argv);
+	static JSValue RemoveThunk(JSContext* Ctx, JSValueConst This, int Argc, JSValueConst* Argv);
+
+	//~ Element prototype: queries and attributes (magic-dispatched families).
+	static JSValue QueryThunk(JSContext* Ctx, JSValueConst This, int Argc, JSValueConst* Argv, int Magic);
+	static JSValue AttributeThunk(JSContext* Ctx, JSValueConst This, int Argc, JSValueConst* Argv, int Magic);
+
+	//~ Element prototype: properties.
+	static JSValue StringGetterThunk(JSContext* Ctx, JSValueConst This, int Magic);
+	static JSValue StringSetterThunk(JSContext* Ctx, JSValueConst This, JSValueConst Value, int Magic);
+	static JSValue ParentNodeGetterThunk(JSContext* Ctx, JSValueConst This);
+	static JSValue ChildrenGetterThunk(JSContext* Ctx, JSValueConst This);
+	static JSValue ClassListGetterThunk(JSContext* Ctx, JSValueConst This);
+	static JSValue StyleGetterThunk(JSContext* Ctx, JSValueConst This);
+
+	//~ Bound helpers (JSCFunctionData, quickjs.h:453): FuncData[0] is the
+	//~ element wrapper the classList object / style proxy was minted from.
+	static JSValue ClassListOpThunk(
+		JSContext* Ctx, JSValueConst This, int Argc, JSValueConst* Argv, int Magic, JSValueConst* FuncData);
+	static JSValue StyleOpThunk(
+		JSContext* Ctx, JSValueConst This, int Argc, JSValueConst* Argv, int Magic, JSValueConst* FuncData);
+
 	FVaCuusJsRuntime& Runtime;
 	JSContext* Ctx = nullptr;
 	const uint32 ViewId;
+
+	/**
+	 * THE IDENTITY CACHE (spec 3.9): raw Element* -> wrapper JSValue, the value
+	 * BORROWED -- deliberately no dup, so the cache pins nothing and a wrapper
+	 * lives exactly as long as JS references it. Identity without retention:
+	 * lookups dup on the way out, and the entry leaves by whichever dies first
+	 * -- the element (OnRmlElementDestroyed, by raw pointer) or the wrapper
+	 * (the finalizer, via the bInCache handshake VaCuusJsDomHandle.h explains).
+	 * The destructor neuters every surviving entry's back-pointer BEFORE
+	 * JS_FreeContext, whose finalizer sweep must not reach into a dying map.
+	 */
+	TMap<Rml::Element*, JSValue> WrapperCache;
+
+	/**
+	 * The compiled style-proxy factory (a JS function value, VaCuusJsDom.cpp) --
+	 * a member, NOT a global: a script that clobbers globals cannot break the
+	 * style getter. JS_UNDEFINED until InstallDomPrototypes compiles it; freed
+	 * in the destructor before JS_FreeContext.
+	 */
+	JSValue StyleFactory = JS_UNDEFINED;
 
 	/**
 	 * The deadline base: the CURRENT pump's now while a pump runs (set first

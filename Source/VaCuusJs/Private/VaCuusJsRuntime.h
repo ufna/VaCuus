@@ -95,6 +95,15 @@ public:
 	bool IsValid() const { return Runtime != nullptr; }
 	JSRuntime* GetRuntime() const { return Runtime; }
 
+	//~ The DOM facade's wrapper classes (M4 Task 4). Registered HERE because
+	//~ JSClassID allocation and JS_NewClass are per-RUNTIME operations
+	//~ (quickjs.h:693, :696); the per-CONTEXT half -- the prototypes -- is
+	//~ JS_SetClassProto (quickjs.h:527), installed by each FVaCuusJsViewContext.
+	//~ Two classes, one finalizer, one opaque shape (FVaCuusJsElementHandle):
+	//~ a document IS an Rml::Element, it just carries a richer prototype.
+	JSClassID GetElementClassId() const { return ElementClassId; }
+	JSClassID GetDocumentClassId() const { return DocumentClassId; }
+
 	/**
 	 * Live bytes currently held from FMemory by this runtime, in the allocator's
 	 * OWN accounting basis: the sum of FMemory::GetAllocSize over live blocks,
@@ -186,6 +195,11 @@ private:
 		JSContext* Ctx, JSValueConst Promise, JSValueConst Reason, bool bIsHandled, void* Opaque);
 
 	JSRuntime* Runtime = nullptr;
+
+	//~ See the accessors' comment. 0 = JS_INVALID_CLASS_ID (quickjs.h:692) until
+	//~ Construct registers them.
+	JSClassID ElementClassId = 0;
+	JSClassID DocumentClassId = 0;
 
 	/** See GetLiveBytes(). Atomic: written by the owning thread's hooks, read anywhere. */
 	std::atomic<int64> LiveBytes{0};

@@ -3,6 +3,7 @@
 #include "VaCuusJsViewContext.h"
 
 #include "VaCuusJs.h"
+#include "VaCuusJsDomHandle.h"
 
 namespace VaCuusJsViewContextInternal
 {
@@ -44,6 +45,7 @@ FVaCuusJsViewContext::FVaCuusJsViewContext(FVaCuusJsRuntime& InRuntime, uint32 I
 
 	JS_SetContextOpaque(Ctx, this);
 	InstallGlobals();
+	InstallDomPrototypes();
 }
 
 FVaCuusJsViewContext::~FVaCuusJsViewContext()
@@ -57,9 +59,30 @@ FVaCuusJsViewContext::~FVaCuusJsViewContext()
 	// frame finishes BEFORE PumpFrame (VaCuusUIThread.cpp RunFrame's phase order).
 	check(RafRunning.IsEmpty());
 
+	// NEUTER THE CACHE FIRST. JS_FreeContext below finalizes every surviving
+	// wrapper, and each finalizer would otherwise reach back through its
+	// OwnerContext into a map that is mid-destruction. Clearing the handshake
+	// flag (and the pointer, for good measure) turns those finalizers into pure
+	// releases: free the Owned ElementPtr -- legal, this destructor always runs
+	// before Rml::Shutdown, so the instancers are alive (spec 2(g)) -- and
+	// delete the handle. The values are BORROWED (WrapperCache's comment), so
+	// emptying the map frees nothing.
+	for (TPair<Rml::Element*, JSValue>& Pair : WrapperCache)
+	{
+		JSClassID ClassId = 0;
+		if (FVaCuusJsElementHandle* Handle = static_cast<FVaCuusJsElementHandle*>(JS_GetAnyOpaque(Pair.Value, &ClassId)))
+		{
+			Handle->bInCache = false;
+			Handle->OwnerContext = nullptr;
+		}
+	}
+	WrapperCache.Empty();
+
 	// Every held JSValue goes before the context, the context before the runtime
 	// (research note quickjs-ng-0151.md section 2); the runtime destructor's
 	// live-byte check is what would catch a miss here.
+	JS_FreeValue(Ctx, StyleFactory);
+	StyleFactory = JS_UNDEFINED;
 	for (FTimer& Timer : Timers)
 	{
 		JS_FreeValue(Ctx, Timer.Fn);
@@ -88,7 +111,9 @@ void FVaCuusJsViewContext::InstallGlobals()
 
 	// `document` exists from birth and is NULL until a document is ready (spec
 	// 3.4, tested): scripts can feature-test `document === null` instead of
-	// tripping a ReferenceError. M4 Task 6 replaces it on OnDocumentReady.
+	// tripping a ReferenceError. BindDocument swaps in the real Document wrapper
+	// -- today only through the host's test-only entry, in M4 Task 6 from
+	// OnDocumentReady.
 	JS_SetPropertyStr(Ctx, Global, "document", JS_NULL);
 
 	JSValue Console = JS_NewObject(Ctx);

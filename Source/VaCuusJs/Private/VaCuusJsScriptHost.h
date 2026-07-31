@@ -10,7 +10,47 @@
 #include "Containers/SortedMap.h"
 #include "Templates/UniquePtr.h"
 
+#include <RmlUi/Core/Plugin.h>
+
+namespace Rml
+{
+class Element;
+}
+class FVaCuusJsScriptHost;
 class FVaCuusJsViewContext;
+
+/**
+ * The host's ear on RmlUi's process-global plugin bus (M4 Task 4) -- exactly
+ * one hook for now, OnElementDestroy, fired from inside ~Element
+ * (Element.cpp:99) for EVERY element the process destroys. That is what keeps
+ * the identity cache honest: the host probes each live view context's cache by
+ * raw pointer and erases the dying element's entry (spec 2(g)); misses cost
+ * one TMap lookup. GetEventClasses narrows delivery to element events only
+ * (Plugin.h's EVT_ELEMENT), so the registry never calls anything else here.
+ *
+ * Registered in the host's constructor, unregistered in Shutdown() -- both on
+ * the thread that owns the host, and registration is legal before
+ * Rml::Initialise (RegisterPlugin only forwards OnInitialise when RmlUi is
+ * already up, Core.cpp:353-359), which covers the library-level tests that
+ * build a host with RmlUi down. The registry itself is un-mutexed; safe here
+ * because a host is only ever created/destroyed while nothing else drives
+ * RmlUi (production: the UI thread's own Init/Exit; tests: the exclusivity
+ * contract every VaCuusJs test already runs under).
+ */
+class FVaCuusJsRmlPlugin final : public Rml::Plugin
+{
+public:
+	explicit FVaCuusJsRmlPlugin(FVaCuusJsScriptHost& InHost)
+		: Host(InHost)
+	{
+	}
+
+	virtual int GetEventClasses() override { return EVT_ELEMENT; }
+	virtual void OnElementDestroy(Rml::Element* Element) override;
+
+private:
+	FVaCuusJsScriptHost& Host;
+};
 
 /**
  * The IVaCuusScriptHost implementation (M4): the UI thread's factory-built
@@ -85,6 +125,24 @@ public:
 	virtual void Shutdown() override;
 	//~ End IVaCuusScriptHost
 
+	/**
+	 * The plugin's callback: probes every materialized view context's wrapper
+	 * cache for the dying element (spec 2(g)). Runs on the thread that drives
+	 * RmlUi -- the same thread that owns this host, possibly below a facade
+	 * thunk (innerRML, remove) or a wrapper finalizer that triggered the
+	 * destruction; it only reads the context map, so both are safe.
+	 */
+	void OnRmlElementDestroy(Rml::Element* Element);
+
+	/**
+	 * TEST-ONLY (M4 Task 4): points ViewId's `document` global at a real
+	 * Rml::ElementDocument, materializing the context if needed -- the facade
+	 * tests' stand-in for the production wiring, which is Task 6's
+	 * OnDocumentReady with the spec 2(f) recycle ordering this entry does NOT
+	 * perform. Module-private header, so nothing ships past the seam.
+	 */
+	void BindDocumentForTest(uint32 ViewId, Rml::ElementDocument* Document);
+
 	//~ Test observability. This header is module-private, so these leak nothing
 	//~ past the seam; the counters the pump tests assert on live on the runtime.
 	FVaCuusJsRuntime* GetRuntime() const { return Runtime.Get(); }
@@ -93,6 +151,13 @@ public:
 private:
 	/** Creates the runtime on first need (spec 2(e)); no-op once it exists. */
 	void EnsureRuntime();
+
+	/**
+	 * The context-materialization ExecuteScript and BindDocumentForTest share:
+	 * runtime first (process-wide, lazy), then the view's context. Null when
+	 * the view is unknown or JS_NewContext failed (which already logged why).
+	 */
+	FVaCuusJsViewContext* EnsureViewContext(uint32 ViewId);
 
 	/**
 	 * Phase 3 of one view's pump segment: the runtime-wide job drain, bounded by
@@ -126,6 +191,14 @@ private:
 	 * Every REGISTERED view, keyed by id; the value is null until the view's
 	 * first script materializes its context. TSortedMap so the pump iterates in
 	 * view-id order -- deterministic cross-view scheduling for free.
+	 *
+	 * TEARDOWN RULE: a context is always MOVED OUT of this map before it is
+	 * destroyed (OnViewRemoved, Shutdown) -- its dying wrappers can fire
+	 * OnElementDestroy, whose handler iterates this very map, and that
+	 * iteration must never walk a container mid-mutation.
 	 */
 	TSortedMap<uint32, TUniquePtr<FVaCuusJsViewContext>> ViewContexts;
+
+	/** The OnElementDestroy ear (see FVaCuusJsRmlPlugin); registered ctor-to-Shutdown. */
+	TUniquePtr<FVaCuusJsRmlPlugin> RmlPlugin;
 };

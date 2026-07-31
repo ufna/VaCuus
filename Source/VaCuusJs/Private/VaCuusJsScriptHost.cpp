@@ -8,6 +8,8 @@
 
 #include "HAL/IConsoleManager.h"
 
+#include <RmlUi/Core/Core.h>
+
 static TAutoConsoleVariable<int32> CVarVaCuusJsMaxJobsPerPump(
 	TEXT("vacuus.Js.MaxJobsPerPump"),
 	10000,
@@ -22,11 +24,22 @@ FVaCuusJsScriptHost::FVaCuusJsScriptHost()
 {
 }
 
+void FVaCuusJsRmlPlugin::OnElementDestroy(Rml::Element* Element)
+{
+	Host.OnRmlElementDestroy(Element);
+}
+
 FVaCuusJsScriptHost::FVaCuusJsScriptHost(const FParams& InParams)
 	: Params(InParams)
 	, MaxJobsPerPump(
 		  InParams.MaxJobsPerPump >= 0 ? InParams.MaxJobsPerPump : CVarVaCuusJsMaxJobsPerPump.GetValueOnAnyThread())
 {
+	// At host creation, per the spec 2(g) cache design -- not at first context:
+	// the hook must already be listening when the first element a context could
+	// ever wrap comes to exist. See FVaCuusJsRmlPlugin for the registration
+	// legality notes (pre-Initialise registration, the un-mutexed registry).
+	RmlPlugin = MakeUnique<FVaCuusJsRmlPlugin>(*this);
+	Rml::RegisterPlugin(RmlPlugin.Get());
 }
 
 FVaCuusJsScriptHost::~FVaCuusJsScriptHost()
@@ -58,9 +71,18 @@ void FVaCuusJsScriptHost::OnViewRemoved(uint32 ViewId)
 	// neuter it on that path before any callback can see a dead tree.
 	//
 	// Destruction frees every callback JSValue against a still-live Rml tree (the
-	// caller's ordering guarantee) -- irrelevant while nothing here touches Rml,
-	// load-bearing from Task 4's element wrappers on.
-	ViewContexts.Remove(ViewId);
+	// caller's ordering guarantee) -- load-bearing since Task 4: the context's
+	// finalizer sweep releases wrapper ObserverPtrs and owned ElementPtrs, which
+	// need the Rml pools and instancers alive.
+	//
+	// MOVED OUT BEFORE DYING (the ViewContexts teardown rule): a finalized
+	// wrapper that still owned a detached subtree fires OnElementDestroy, whose
+	// handler iterates ViewContexts -- the dying entry must already be gone, and
+	// the map must not be mid-Remove. The dying context needs no probes anyway:
+	// its destructor neuters its own cache first.
+	TUniquePtr<FVaCuusJsViewContext> Dying;
+	ViewContexts.RemoveAndCopyValue(ViewId, Dying);
+	Dying.Reset();
 }
 
 void FVaCuusJsScriptHost::OnDocumentReady(uint32 /*ViewId*/, Rml::ElementDocument* /*Document*/)
@@ -210,35 +232,77 @@ void FVaCuusJsScriptHost::CollectGarbage(const TCHAR* Reason)
 
 void FVaCuusJsScriptHost::ExecuteScript(uint32 ViewId, const FString& Source, const FString& SourceName)
 {
-	TUniquePtr<FVaCuusJsViewContext>* Entry = ViewContexts.Find(ViewId);
-	if (Entry == nullptr)
+	if (ViewContexts.Find(ViewId) == nullptr)
 	{
 		// A named refusal rather than a silent drop -- the BindModel lesson
 		// (VaCuusUIThread.cpp's drain): losing a script silently is this seam's
-		// quietest failure. Checked BEFORE EnsureRuntime, so a stray call cannot
-		// even boot the runtime.
+		// quietest failure. Checked BEFORE EnsureViewContext, so a stray call
+		// cannot even boot the runtime.
 		UE_LOG(LogVaCuusJS, Error, TEXT("ExecuteScript('%s') for unknown view %u dropped"), *SourceName, ViewId);
 		return;
 	}
 
+	if (FVaCuusJsViewContext* View = EnsureViewContext(ViewId))
+	{
+		View->Eval(Source, SourceName);
+	}
+}
+
+FVaCuusJsViewContext* FVaCuusJsScriptHost::EnsureViewContext(uint32 ViewId)
+{
+	TUniquePtr<FVaCuusJsViewContext>* Entry = ViewContexts.Find(ViewId);
+	if (Entry == nullptr)
+	{
+		return nullptr;
+	}
+
 	if (!Entry->IsValid())
 	{
-		// First script for this view: runtime first (process-wide, lazy), then the
-		// context. LastPumpNowSeconds seeds the deadline base -- ExecuteScript runs
-		// from DrainCommands, one phase before this frame's pump, so "the previous
-		// pump's now" is at most one frame stale.
+		// First need for this view: runtime first (process-wide, lazy), then the
+		// context. LastPumpNowSeconds seeds the deadline base -- ExecuteScript
+		// runs from DrainCommands, one phase before this frame's pump, so "the
+		// previous pump's now" is at most one frame stale.
 		EnsureRuntime();
 		TUniquePtr<FVaCuusJsViewContext> NewContext = MakeUnique<FVaCuusJsViewContext>(
 			*Runtime, ViewId, LastPumpNowSeconds, Params.bTestRelaxTimerCutoff, Params.TestTimerPassHardStop);
 		if (!NewContext->IsValid())
 		{
 			// JS_NewContext already said why, with the view named.
-			return;
+			return nullptr;
 		}
 		*Entry = MoveTemp(NewContext);
 	}
 
-	(*Entry)->Eval(Source, SourceName);
+	return Entry->Get();
+}
+
+void FVaCuusJsScriptHost::OnRmlElementDestroy(Rml::Element* Element)
+{
+	// Every materialized context gets the probe; each is one TMap lookup, and
+	// views that never ran JS are null entries skipped for free. READ-ONLY over
+	// the map -- the teardown rule (ViewContexts' comment) guarantees no entry
+	// is mid-mutation when a destruction lands here.
+	for (TPair<uint32, TUniquePtr<FVaCuusJsViewContext>>& Pair : ViewContexts)
+	{
+		if (Pair.Value.IsValid())
+		{
+			Pair.Value->OnRmlElementDestroyed(Element);
+		}
+	}
+}
+
+void FVaCuusJsScriptHost::BindDocumentForTest(uint32 ViewId, Rml::ElementDocument* Document)
+{
+	if (ViewContexts.Find(ViewId) == nullptr)
+	{
+		UE_LOG(LogVaCuusJS, Error, TEXT("BindDocumentForTest for unknown view %u dropped"), ViewId);
+		return;
+	}
+
+	if (FVaCuusJsViewContext* View = EnsureViewContext(ViewId))
+	{
+		View->BindDocument(Document);
+	}
 }
 
 void FVaCuusJsScriptHost::OnInlineFrameEntry()
@@ -251,13 +315,27 @@ void FVaCuusJsScriptHost::OnInlineFrameEntry()
 
 void FVaCuusJsScriptHost::Shutdown()
 {
+	// The plugin leaves the bus FIRST: teardown destroys elements (owned
+	// detached subtrees dying with their wrappers), and those destructions need
+	// no cache probes -- each dying context neuters its own cache before its
+	// finalizer sweep. Unregistering is legal whatever RmlUi's state, including
+	// after Rml::Shutdown already released the registry (the explicit blessing
+	// in PluginRegistry.cpp:41-46) -- though in the production order this host
+	// is always gone before Rml is (VaCuusUIThread.cpp Exit(), step 1a).
+	if (RmlPlugin.IsValid())
+	{
+		Rml::UnregisterPlugin(RmlPlugin.Get());
+		RmlPlugin.Reset();
+	}
+
 	// Contexts BEFORE the runtime -- every JSValue a context holds (timer and rAF
-	// callbacks, later the DOM wrappers) must be freed before JS_FreeRuntime
+	// callbacks, the DOM wrappers) must be freed before JS_FreeRuntime
 	// (research note quickjs-ng-0151.md section 2). The runtime's destructor then
 	// checks the live-byte counter back to zero, which is exactly what would
-	// catch a context this sweep missed. Idempotent: both containers empty on the
-	// second call.
-	ViewContexts.Empty();
+	// catch a context this sweep missed. Moved out first per the ViewContexts
+	// teardown rule. Idempotent: everything is already empty on the second call.
+	TSortedMap<uint32, TUniquePtr<FVaCuusJsViewContext>> Doomed = MoveTemp(ViewContexts);
+	Doomed.Empty();
 	Runtime.Reset();
 }
 

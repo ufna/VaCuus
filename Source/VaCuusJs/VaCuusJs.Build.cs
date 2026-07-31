@@ -57,6 +57,12 @@ public class VaCuusJs : ModuleRules
 		// core) and the stats/perf-log surface (VACUUS_API). STRICTLY one-way: core
 		// must never depend back on this module -- the seam is what keeps quickjs
 		// unreachable from everywhere else.
-		PrivateDependencyModuleNames.AddRange(new[] { "Core", "VaCuus" });
+		//
+		// VaCuusRml from M4 Task 4 on: the DOM facade wraps Rml::Element directly
+		// (ObserverPtr handles, ElementPtr ownership, the OnElementDestroy plugin),
+		// and VaCuus keeps its RmlUi dependency Private, so the headers do not
+		// arrive transitively. Private here too, same as VaCuus and VaCuusRender:
+		// nothing under a Public/ header may name an Rml type by include.
+		PrivateDependencyModuleNames.AddRange(new[] { "Core", "VaCuus", "VaCuusRml" });
 	}
 }

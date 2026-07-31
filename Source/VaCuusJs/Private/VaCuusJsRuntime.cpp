@@ -3,6 +3,7 @@
 #include "VaCuusJsRuntime.h"
 
 #include "VaCuusJs.h"
+#include "VaCuusJsDomHandle.h"
 #include "VaCuusStats.h"
 
 #include "HAL/IConsoleManager.h"
@@ -122,6 +123,23 @@ void FVaCuusJsRuntime::Construct(const FParams& InParams)
 	if (!InParams.bTestLeaveEngineGCEnabled)
 	{
 		JS_SetGCThreshold(Runtime, (size_t)-1);
+	}
+
+	// The DOM facade's wrapper classes (M4 Task 4): ids and class defs are
+	// per-RUNTIME state (JS_NewClassID takes the runtime, quickjs.h:693;
+	// JS_NewClass registers on it, :696), so they live here and every view
+	// context of this runtime shares them -- each context then hangs its OWN
+	// prototype on the shared id via JS_SetClassProto (quickjs.h:527). One
+	// finalizer for both: the opaque shape is identical (VaCuusJsDomHandle.h).
+	{
+		static const JSClassDef GElementClassDef = {"VaCuusElement", &VaCuusJsDomFinalizer, nullptr, nullptr, nullptr};
+		static const JSClassDef GDocumentClassDef = {"VaCuusDocument", &VaCuusJsDomFinalizer, nullptr, nullptr, nullptr};
+		JS_NewClassID(Runtime, &ElementClassId);
+		JS_NewClassID(Runtime, &DocumentClassId);
+		const int ElementResult = JS_NewClass(Runtime, ElementClassId, &GElementClassDef);
+		const int DocumentResult = JS_NewClass(Runtime, DocumentClassId, &GDocumentClassDef);
+		checkf(ElementResult == 0 && DocumentResult == 0,
+			TEXT("JS_NewClass failed -- FMemory does not fail small allocations, so this is a vendoring problem"));
 	}
 
 	// Polled every 10k interpreter operations (JS_INTERRUPT_COUNTER_INIT,
