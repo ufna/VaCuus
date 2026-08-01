@@ -597,6 +597,18 @@ bool FVaCuusJsTranslateTest::RunTest(const FString& Parameters)
 		Rig.Eval(ViewId, "try { vacuus.translate(5); 'no-throw' } catch (e) { 'TypeError:' + (e instanceof TypeError) }"),
 		FString(TEXT("TypeError:true")));
 
+	// THE ADVERSARIAL CASE (Task 8 review blocker): a param VALUE carrying
+	// another param's token stays literal — killer/victim ARE user data in the
+	// killfeed, so a player named 'xX{victim}Xx' must keep that name on screen.
+	// The per-param ReplaceInline loop rewrote it ('xXMothXx downed Moth');
+	// the single left-to-right pass never rescans appended text. Restore the
+	// bug (revert to the loop) and this line reads the rewritten string.
+	TestEqual(TEXT("a param value carrying another param's token stays literal"),
+		Rig.Eval(ViewId, "vacuus.translate('{killer} downed {victim}', {killer: 'xX{victim}Xx', victim: 'Moth'})"),
+		FString(TEXT("xX{victim}Xx downed Moth")));
+	TestEqual(TEXT("a self-referential param is trivially safe"),
+		Rig.Eval(ViewId, "vacuus.translate('{n}', {n: '{n}'})"), FString(TEXT("{n}")));
+
 	// THE GAME PUSHES A TABLE (the handler seam: SetTranslationTable ->
 	// SetTable -> the queue -> the drain's InstallSnapshot). The automation
 	// thread IS the game thread and IS the queue's single producer.

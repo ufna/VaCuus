@@ -292,6 +292,16 @@ JSValue FVaCuusJsViewContext::TranslateThunk(JSContext* Ctx, JSValueConst /*This
 	// `{name}` renders literally instead of becoming an expression. Substitution
 	// runs on the identity string too — a params-bearing key works before any
 	// table exists.
+	//
+	// Params are COLLECTED FIRST, then substituted in ONE left-to-right pass over
+	// the pattern that never rescans appended text. The per-param ReplaceInline
+	// loop this replaces mutated the same evolving string once per property:
+	// order-dependent, and a param VALUE containing another param's token was
+	// rewritten on a later iteration — translate('{killer} downed {victim}',
+	// {killer: 'xX{victim}Xx', victim: 'Moth'}) produced 'xXMothXx downed Moth',
+	// and killer/victim are exactly the user-data shape the killfeed feeds here.
+	// Under the single pass property order is irrelevant and {n: '{n}'} is
+	// trivially safe (VaCuus.Js.Translate carries the adversarial case).
 	if (Argc >= 2 && JS_IsObject(Argv[1]))
 	{
 		JSPropertyEnum* Properties = nullptr;
@@ -300,6 +310,8 @@ JSValue FVaCuusJsViewContext::TranslateThunk(JSContext* Ctx, JSValueConst /*This
 		{
 			return JS_EXCEPTION;
 		}
+		TMap<FString, FString> Params;
+		Params.Reserve(NumProperties);
 		for (uint32_t Index = 0; Index < NumProperties; ++Index)
 		{
 			JSValue Value = JS_GetProperty(Ctx, Argv[1], Properties[Index].atom);
@@ -331,19 +343,60 @@ JSValue FVaCuusJsViewContext::TranslateThunk(JSContext* Ctx, JSValueConst /*This
 									   : FString::Printf(TEXT("%g"), Converted.Number);
 							break;
 						case EVaCuusJsValueKind::String:
-							Text = Converted.String;
+							Text = MoveTemp(Converted.String);
 							break;
 						case EVaCuusJsValueKind::Null:
 							break;
 					}
-					Resolved.ReplaceInline(
-						*FString::Printf(TEXT("{%s}"), UTF8_TO_TCHAR(Name)), *Text, ESearchCase::CaseSensitive);
+					Params.Add(UTF8_TO_TCHAR(Name), MoveTemp(Text));
 					JS_FreeCString(Ctx, Name);
 				}
 			}
 			JS_FreeValue(Ctx, Value);
 		}
 		JS_FreePropertyEnum(Ctx, Properties, NumProperties);
+
+		// THE ONE PASS: scan for '{'; a token ends at the first '}' (an inner '{'
+		// before it restarts the scan, so "{a{b}" keeps "{a" literal and still
+		// substitutes {b} — the ReplaceInline behavior for that input). A known
+		// name appends its value; an unknown token, or a dangling '{', appends its
+		// own characters unchanged — never a rescan of what was appended.
+		FString Output;
+		Output.Reserve(Resolved.Len());
+		const TCHAR* Chars = *Resolved;
+		const int32 Len = Resolved.Len();
+		int32 Pos = 0;
+		while (Pos < Len)
+		{
+			if (Chars[Pos] != TEXT('{'))
+			{
+				Output.AppendChar(Chars[Pos++]);
+				continue;
+			}
+			int32 Close = Pos + 1;
+			while (Close < Len && Chars[Close] != TEXT('}') && Chars[Close] != TEXT('{'))
+			{
+				++Close;
+			}
+			if (Close >= Len || Chars[Close] == TEXT('{'))
+			{
+				// No token here: everything up to the inner '{' (or the end) is literal.
+				Output.AppendChars(Chars + Pos, Close - Pos);
+				Pos = Close;
+				continue;
+			}
+			const FString TokenName = FString::ConstructFromPtrSize(Chars + Pos + 1, Close - Pos - 1);
+			if (const FString* Substitution = Params.Find(TokenName))
+			{
+				Output += *Substitution;
+			}
+			else
+			{
+				Output.AppendChars(Chars + Pos, Close - Pos + 1);
+			}
+			Pos = Close + 1;
+		}
+		Resolved = MoveTemp(Output);
 	}
 
 	return JS_NewString(Ctx, TCHAR_TO_UTF8(*Resolved));

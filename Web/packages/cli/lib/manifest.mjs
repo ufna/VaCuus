@@ -101,6 +101,9 @@ export function extractManifest(dtsPath) {
 			style: {
 				reason: 'element.style mints a fresh JS Proxy per access; own-key enumeration is trap-defined, not prototype truth. Typed as VaCuusStyle, verified behaviorally by VaCuus.Js.Dom.StyleCamelCase.',
 			},
+			innerHTML: {
+				reason: "Library-installed alias, not engine surface: @vacuus/preact defines innerHTML over innerRML on the element prototype at first vnode (Web/packages/preact-vacuus/src/index.js installInnerHTMLAlias), so a context that has run the adapter shows it present-but-untyped. The .d.ts types what the ENGINE installs; the conformance walk runs in a bundle-free context for exactly this reason, and the alias (and its brace hazard) is the adapter's documented contract.",
+			},
 			globalScan: {
 				reason: 'globalThis own-props include the entire QuickJS ES intrinsic surface (Object, Math, Promise, queueMicrotask, ...), which is the TS lib\'s domain, not this manifest\'s — so the globals group is verified typed->present only. A facade global added without typing escapes this walk; InstallGlobals (VaCuusJsViewContext.cpp) is the one function to review when adding one.',
 			},

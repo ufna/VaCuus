@@ -35,11 +35,34 @@ export function appConfig(appDir) {
 	return { pkg, cfg };
 }
 
+/** preact's version as the app resolves it — the provenance's and the banner's shared truth. */
+function resolvedPreactVersion(appDir) {
+	const require = createRequire(join(appDir, 'package.json'));
+	return JSON.parse(readFileSync(require.resolve('preact/package.json'), 'utf8')).version;
+}
+
+/**
+ * Every emitted bundle embeds preact, so every bundle must carry preact's MIT
+ * notice — the license's "included in all copies or substantial portions"
+ * condition. The text comes from the COMMITTED copy beside the adapter
+ * (Web/packages/preact-vacuus/PREACT-LICENSE, the Source/ThirdParty
+ * convention), not from node_modules, so the shipped notice is the reviewed
+ * one. `/*!` marks it minifier-preserved; esbuild offsets the inline
+ * sourcemap past its own banner, so symbolicate stays exact.
+ */
+function licenseBanner(appDir) {
+	const licensePath = join(PLUGIN_ROOT, 'Web', 'packages', 'preact-vacuus', 'PREACT-LICENSE');
+	const license = readFileSync(licensePath, 'utf8').trimEnd();
+	const body = license.replace(/^/gm, ' * ').replace(/[ \t]+$/gm, '');
+	return `/*!\n * Bundles preact ${resolvedPreactVersion(appDir)} — https://github.com/preactjs/preact\n *\n${body}\n */`;
+}
+
 function esbuildOptions(appDir, cfg, outfile) {
 	return {
 		entryPoints: [join(appDir, cfg.entry)],
 		outfile,
 		bundle: true,
+		banner: { js: licenseBanner(appDir) },
 		// IIFE: the bundle runs as a captured classic <script src> through the
 		// document path (XMLNodeHandlerHead script capture), not as an ES module.
 		format: 'iife',
@@ -60,10 +83,8 @@ function esbuildOptions(appDir, cfg, outfile) {
 }
 
 function writeProvenance(appDir, cfg, outfile) {
-	const require = createRequire(join(appDir, 'package.json'));
-	const preactVersion = JSON.parse(readFileSync(require.resolve('preact/package.json'), 'utf8')).version;
 	const provenance = {
-		preactVersion,
+		preactVersion: resolvedPreactVersion(appDir),
 		facadeManifestHash: facadeManifestHash(),
 		buildCommand: `node Web/packages/cli/bin/vacuus.mjs build --app ${relative(PLUGIN_ROOT, appDir)}`,
 	};

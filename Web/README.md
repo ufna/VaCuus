@@ -13,6 +13,12 @@ every other machine and CI stay hermetic; the in-engine suite verifies the
 provenance and skips-with-a-named-warning when a facade change makes a bundle
 stale (spec §2(l)).
 
+**Licensing:** every built bundle embeds preact (MIT). Its license is committed
+at `packages/preact-vacuus/PREACT-LICENSE` (the Source/ThirdParty convention),
+and `vacuus build`/`vacuus dev` prepend that MIT notice to every emitted bundle
+as an esbuild banner — a committed bundle without the notice is a license
+violation, not a style choice.
+
 ## Setup and daily use
 
 ```bash

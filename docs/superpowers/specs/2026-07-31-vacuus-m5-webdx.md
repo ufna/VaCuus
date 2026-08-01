@@ -171,6 +171,13 @@ UI-thread callback into a game-registered handler (the write-router seam pattern
 identity; the CLI template routes user-visible strings through it; RmlUi's own
 `TranslateString` path already exists for RML text (the M2 system interface) — the JS hook is
 the missing half. Refusal shape: no handler ⇒ identity + one latched Verbose line.
+*(Corrected at implementation, 2026-08-01: translate shipped as a SNAPSHOT lookup, not the
+callback worded here — the game pushes a whole table (`UVaCuusSubsystem::SetTranslationTable`
+→ publish-by-replacement snapshot, monotonic version) and the UI thread reads the installed
+snapshot synchronously; a per-call game handler would run game code on the UI thread or force
+the API async, so it was rejected, not deferred. The refusal shape holds with "table" for
+"handler": no table ⇒ identity + one latched Verbose per context. `VaCuus.Js.Translate` and
+`FVaCuusTranslationRegistry`'s header carry the record.)*
 
 ## 3. Architecture
 
