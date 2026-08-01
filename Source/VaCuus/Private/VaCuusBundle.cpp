@@ -380,9 +380,21 @@ namespace VaCuusBundleCook
  * hash covers the sorted path list AND every file's contents, so an EDIT, an ADD, a
  * DELETE and a RENAME all change the hash -- per-file File() dependencies alone would
  * miss added files. Re-executed by the cooker when validating whether the bundle
- * package may be incrementally skipped (incremental is default-ON in 5.8:
- * `bool bDefaultIncremental = true;`, CookOnTheFlyServer.cpp:10544-10548); a changed
- * hash invalidates the package, PreSave runs again, the tree repacks.
+ * package may be incrementally skipped -- and reaching that validation at all takes
+ * TWO opt-ins a stock 5.8 does not make (bundle-cook-experiments.md, errata 1-2):
+ * the CODE default is incremental-on (`bool bDefaultIncremental = true;`,
+ * CookOnTheFlyServer.cpp:10544-10548) but the SHIPPED config overrides it off
+ * (`CookIncrementalDefaultIncremental=false`, BaseEditor.ini:393 -- a stock cook is a
+ * full cook unless `-CookIncremental` is passed), and skipping is class-gated to an
+ * allowlist that stock config fills with engine script packages only
+ * (BaseEditor.ini:475); a project plugin's class repacks on EVERY cook -- safe, never
+ * skipped -- until the project opts it in, as the host does
+ * (VcHost/Config/DefaultEditor.ini:14, `+IncrementalClassAllowList=
+ * /Script/VaCuus.VaCuusBundle`). Once both doors are open: a changed hash
+ * invalidates the package, PreSave runs again, the tree repacks -- and an unchanged
+ * hash is what lets the cooker skip it, which errata row Z2b shows the legacy
+ * `-legacyiterative` path can NEVER honestly decide (no ZenStore storage for
+ * dependency data: a deleted file ships stale, silently).
  */
 static void HashBundleTree(FCbFieldViewIterator Args, UE::Cook::FCookDependencyContext& Context)
 {

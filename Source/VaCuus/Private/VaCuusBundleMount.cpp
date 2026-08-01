@@ -436,6 +436,34 @@ FString GetConfiguredBundleAssetPath()
 }
 }	 // namespace VaCuusBundleConfig
 
+namespace VaCuusScriptServing
+{
+// Relaxed like the FVaCuusFileInterface members and Mount::ServedOpens: each counter
+// is an independent monotonic tally, read for a log line -- no ordering ties them.
+static std::atomic<uint64> GNumBundleScriptServes{0};
+static std::atomic<uint64> GNumLooseScriptServes{0};
+
+void NoteBundleScriptServe()
+{
+	GNumBundleScriptServes.fetch_add(1, std::memory_order_relaxed);
+}
+
+void NoteLooseScriptServe()
+{
+	GNumLooseScriptServes.fetch_add(1, std::memory_order_relaxed);
+}
+
+uint64 GetNumBundleScriptServes()
+{
+	return GNumBundleScriptServes.load(std::memory_order_relaxed);
+}
+
+uint64 GetNumLooseScriptServes()
+{
+	return GNumLooseScriptServes.load(std::memory_order_relaxed);
+}
+}	 // namespace VaCuusScriptServing
+
 namespace VaCuusBundleCommands
 {
 /**

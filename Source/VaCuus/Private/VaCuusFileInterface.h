@@ -31,6 +31,9 @@ public:
 	 * open is a potential stale-shadow bug, and the packaged bundle gates assert the
 	 * loose count is ZERO (spec M6 2(d)'s M==0). Logged from the destructor because
 	 * this object's life IS the RmlUi session (FVaCuusEngine owns it boot-to-shutdown).
+	 * A second line with the same shape prints the VaCuusScriptServing totals -- script
+	 * reads never pass through this interface, and M==0 must mean no loose serves
+	 * ANYWHERE, scripts included (see the .cpp).
 	 */
 	virtual ~FVaCuusFileInterface() override;
 

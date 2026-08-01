@@ -87,6 +87,20 @@ FVaCuusFileInterface::~FVaCuusFileInterface()
 	const uint64 LooseOpens = GetNumLooseOpens();
 	UE_LOG(LogVaCuus, Log, TEXT("VaCuus VFS teardown: %llu open(s) served by mounted bundles, %llu by loose roots"),
 		BundleOpens, LooseOpens);
+
+	// The SCRIPT half of the same assertion, same "by loose roots" grep shape: script
+	// reads bypass this interface entirely (VaCuusJs reads <script src>/module files via
+	// ReadScriptByVfsPath), so without this line "M==0" would only mean no loose
+	// DOCUMENT serves -- a bundle missing every .js would still grep green. Printed
+	// here, not at VaCuusJs shutdown, because ShutdownModule never runs in an
+	// `Automation RunTests ...; Quit` session (CLAUDE.md) while this destructor rides
+	// the RmlUi session teardown the first line already proved reaches the log.
+	UE_LOG(LogVaCuus, Log,
+		TEXT("VaCuus VFS teardown: %llu script read(s) served by mounted bundles, %llu by loose roots"),
+		VaCuusScriptServing::GetNumBundleScriptServes(), VaCuusScriptServing::GetNumLooseScriptServes());
+
+	// Per-bundle ServedOpens counts document opens AND script reads (both serving paths
+	// bump it), so these lines reconcile against the SUM of the two totals above.
 	for (const TSharedRef<FVaCuusBundleMount>& Record : FVaCuusBundleMountTable::GetAllRecords())
 	{
 		UE_LOG(LogVaCuus, Log, TEXT("  bundle '%s' served %llu open(s)"), *Record->BundleName,

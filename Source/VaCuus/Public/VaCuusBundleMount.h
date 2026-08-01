@@ -166,3 +166,24 @@ namespace VaCuusBundleConfig
  */
 VACUUS_API FString GetConfiguredBundleAssetPath();
 }	 // namespace VaCuusBundleConfig
+
+namespace VaCuusScriptServing
+{
+/*
+ * The SCRIPT half of the M==0 serving accounting (spec M6 2(d)). Scripts do not flow
+ * through Rml::FileInterface -- VaCuusJs reads <script src> and module files itself
+ * (VaCuusJsScriptSource::ReadScriptByVfsPath) -- so FVaCuusFileInterface's own
+ * NumBundleOpens/NumLooseOpens counters cannot see them, and without these a loose
+ * script serve in a bundle-mounted build would be invisible to the packaged gates'
+ * "0 by loose roots" grep: exactly the silent class the M==0 line exists to kill.
+ *
+ * Process-wide statics rather than members, because the reader and the writer are in
+ * different modules with only this one (VaCuusJs depends on VaCuus, never the
+ * reverse): the script source bumps them, and ~FVaCuusFileInterface prints them on
+ * the teardown line the gates grep. Any thread; monotonic for the process's life.
+ */
+VACUUS_API void NoteBundleScriptServe();
+VACUUS_API void NoteLooseScriptServe();
+VACUUS_API uint64 GetNumBundleScriptServes();
+VACUUS_API uint64 GetNumLooseScriptServes();
+}	 // namespace VaCuusScriptServing

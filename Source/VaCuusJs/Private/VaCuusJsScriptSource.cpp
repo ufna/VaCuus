@@ -5,6 +5,11 @@
 #include "VaCuusBundleMount.h"
 #include "VaCuusContentPaths.h"
 
+// LogVaCuus, not LogVaCuusJS, for the two serving lines in this file: they are VFS
+// observability -- the same accounting FVaCuusFileInterface prints -- and the packaged
+// gates grep ONE category for it (VaCuusDefines.h exports it VACUUS_API).
+#include "VaCuusDefines.h"
+
 #include "GenericPlatform/GenericPlatformFile.h"
 #include "HAL/PlatformFileManager.h"
 #include "Misc/FileHelper.h"
@@ -65,12 +70,31 @@ bool ReadScriptByVfsPath(const FString& VfsPath, FString& OutSource, FString* Ou
 					return false;
 				}
 				Mount->ServedOpens.fetch_add(1, std::memory_order_relaxed);
+				VaCuusScriptServing::NoteBundleScriptServe();
 				FFileHelper::BufferToString(OutSource, Mount->Base + Entry->Offset, static_cast<int32>(Entry->Size));
 				if (OutServedFrom)
 				{
 					*OutServedFrom = FString::Printf(TEXT("bundle://%s/%s"), *Mount->BundleName, *NormalizedPath);
 				}
 				return true;
+			}
+
+			if (Lookup->Mounts.Num() > 0)
+			{
+				// The silent-miss killer, FVaCuusFileInterface::Open's Warning mirrored
+				// (spec M6 2(d)): with bundles mounted, a loose script fallback usually
+				// means the pack missed a .js -- and a script that quietly serves loose
+				// here is invisible to the document-side accounting, because script
+				// reads never touch the Rml file interface. Say WHICH bundles were
+				// probed, at Warning, before the loose read below.
+				TArray<FString> ProbedNames;
+				for (const TSharedRef<FVaCuusBundleMount>& Mount : Lookup->Mounts)
+				{
+					ProbedNames.Add(Mount->BundleName);
+				}
+				UE_LOG(LogVaCuus, Warning,
+					TEXT("Script '%s' is in NO mounted bundle (probed: %s); falling back to the loose roots"),
+					*VfsPath, *FString::Join(ProbedNames, TEXT(", ")));
 			}
 		}
 	}
@@ -85,6 +109,12 @@ bool ReadScriptByVfsPath(const FString& VfsPath, FString& OutSource, FString* Ou
 	{
 		return false;
 	}
+
+	// Counted only on SUCCESS (a miss served nothing), into the process-wide script
+	// tally ~FVaCuusFileInterface prints beside its own open counts -- the parallel
+	// line that makes the packaged gates' M==0 cover scripts too. Absolute paths
+	// count as loose exactly like Open's absolute passthrough does.
+	VaCuusScriptServing::NoteLooseScriptServe();
 	if (OutServedFrom)
 	{
 		*OutServedFrom = Resolved;
