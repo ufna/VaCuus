@@ -1,0 +1,9 @@
+/* Known-bad fixture for the bare-attribute-selector rule: the subject has no
+   element/class/id anchor. Web/smoke.mjs asserts this file FIRES. */
+[disabled] {
+	color: #888888;
+}
+
+.panel [data-state] {
+	opacity: 0.5;
+}

@@ -287,17 +287,17 @@ void UVaCuusView::Resize(FIntPoint ViewSize)
 	UE_LOG(LogVaCuus, Verbose, TEXT("View %u: queued resize to %dx%d"), ViewId, ViewSize.X, ViewSize.Y);
 }
 
-bool UVaCuusView::BindModel(FName ModelName, const UScriptStruct* Type)
+bool UVaCuusView::BindModel(const FString& ModelName, const UScriptStruct* Type)
 {
 	check(IsInGameThread());
 
 	if (Type == nullptr)
 	{
-		UE_LOG(LogVaCuus, Error, TEXT("View %u: BindModel('%s') needs a struct type"), ViewId, *ModelName.ToString());
+		UE_LOG(LogVaCuus, Error, TEXT("View %u: BindModel('%s') needs a struct type"), ViewId, *ModelName);
 		return false;
 	}
 
-	if (ModelName.IsNone())
+	if (ModelName.IsEmpty())
 	{
 		// The name is what a document's `data-model` attribute is compared against
 		// (Element.cpp:2203-2206), so an unnamed model is one no document can reach.
@@ -306,14 +306,19 @@ bool UVaCuusView::BindModel(FName ModelName, const UScriptStruct* Type)
 		return false;
 	}
 
+	// The KEY, not the identity: everything below that indexes does so through this FName
+	// (case-insensitive), while the exact-case ModelName string travels inside the model to
+	// RmlUi -- the split the header comment on Models explains.
+	const FName ModelKey(*ModelName);
+
 	FVaCuusUIThread* UIThread = GetUIThread();
 	if (!UIThread)
 	{
-		UE_LOG(LogVaCuus, Warning, TEXT("BindModel('%s') on an invalid view is ignored"), *ModelName.ToString());
+		UE_LOG(LogVaCuus, Warning, TEXT("BindModel('%s') on an invalid view is ignored"), *ModelName);
 		return false;
 	}
 
-	if (Models.Contains(ModelName))
+	if (Models.Contains(ModelKey))
 	{
 		// Refused here rather than left to RmlUi, which would also refuse it -- one
 		// Log::LT_ERROR from Context::CreateDataModel (Context.cpp:1075), and that one does
@@ -323,8 +328,8 @@ bool UVaCuusView::BindModel(FName ModelName, const UScriptStruct* Type)
 		// side also keeps the game-thread map single-valued, which nothing downstream rechecks.
 		UE_LOG(LogVaCuus, Error,
 			TEXT("View %u already has a model called '%s'; the second BindModel is ignored (there is no unbind in RmlUi, so a ")
-			TEXT("name cannot be reused on one view)"),
-			ViewId, *ModelName.ToString());
+			TEXT("name cannot be reused on one view; names are compared case-insensitively here)"),
+			ViewId, *ModelName);
 		return false;
 	}
 
@@ -346,14 +351,14 @@ bool UVaCuusView::BindModel(FName ModelName, const UScriptStruct* Type)
 			TEXT("View %u: BindModel('%s') after a document load was already requested. RmlUi resolves `data-model` once, when a ")
 			TEXT("document is parented into the context, so this model will NOT attach to the document that is up -- only to the ")
 			TEXT("next one loaded. Bind every model before the first LoadDocument."),
-			ViewId, *ModelName.ToString());
+			ViewId, *ModelName);
 	}
 
 	const TSharedRef<FVaCuusBoundModel> Model = MakeShared<FVaCuusBoundModel>(ModelName, Type);
 	if (!Model->IsValid())
 	{
 		// The layout walk has already logged whatever it could not resolve.
-		UE_LOG(LogVaCuus, Error, TEXT("View %u: BindModel('%s') could not build a model over '%s'"), ViewId, *ModelName.ToString(),
+		UE_LOG(LogVaCuus, Error, TEXT("View %u: BindModel('%s') could not build a model over '%s'"), ViewId, *ModelName,
 			*Type->GetName());
 		return false;
 	}
@@ -367,16 +372,16 @@ bool UVaCuusView::BindModel(FName ModelName, const UScriptStruct* Type)
 		UE_LOG(LogVaCuus, Warning,
 			TEXT("View %u: model '%s' over '%s' has no bindable field; the model is created so `data-model` resolves, but every ")
 			TEXT("expression against it will be empty (see the per-property lines above)"),
-			ViewId, *ModelName.ToString(), *Type->GetName());
+			ViewId, *ModelName, *Type->GetName());
 	}
 
 	// The game-thread half is live from here; the UI thread creates the RmlUi model when it
 	// drains the command below.
-	Models.Add(ModelName, Model);
+	Models.Add(ModelKey, Model);
 	UIThread->EnqueueBindModel(ViewId, Model);
 
 	UE_LOG(LogVaCuus, Log, TEXT("View %u: model '%s' over '%s' queued for binding (%d field(s), %d top-level name(s))"), ViewId,
-		*ModelName.ToString(), *Type->GetName(), Model->GetLayout().GetFields().Num(), Model->GetLayout().GetTopLevelNames().Num());
+		*ModelName, *Type->GetName(), Model->GetLayout().GetFields().Num(), Model->GetLayout().GetTopLevelNames().Num());
 	return true;
 }
 
@@ -510,7 +515,7 @@ void UVaCuusView::PublishModelUpdates()
 	}
 }
 
-bool UVaCuusView::CreateModelFromStruct(FName ModelName, const int32& Struct)
+bool UVaCuusView::CreateModelFromStruct(const FString& ModelName, const int32& Struct)
 {
 	// Never called: the UFUNCTION is CustomThunk, so Blueprint dispatches to
 	// execCreateModelFromStruct below and C++ callers use BindModel() directly. A body exists
@@ -527,7 +532,10 @@ void UVaCuusView::UpdateWholeModel(FName ModelName, const int32& Struct)
 
 DEFINE_FUNCTION(UVaCuusView::execCreateModelFromStruct)
 {
-	P_GET_PROPERTY(FNameProperty, ModelName);
+	// A STRING OFF THE STACK, NOT A NAME: an FName here would hand BindModel the name pool's
+	// casing rather than the designer's in a cooked game -- BindModel's header comment has the
+	// full mechanism (VaCuus-akj.23).
+	P_GET_PROPERTY(FStrProperty, ModelName);
 
 	// THE WILDCARD PIN, AND WHERE THE TYPE COMES FROM. StepCompiledIn<FStructProperty> walks
 	// the next argument on the script stack and leaves MostRecentProperty describing whatever

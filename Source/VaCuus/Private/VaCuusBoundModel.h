@@ -77,10 +77,23 @@ public:
 	 * Builds the layout, both shadows and the channel for InStruct. Diagnostics for anything
 	 * skipped go to LogVaCuus during the layout walk.
 	 *
+	 * THE NAME IS AN FString, NOT AN FName, AND THE TYPE IS THE FIX FOR A PACKAGED-ONLY BUG
+	 * (VaCuus-akj.23). RmlUi resolves `data-model` byte-for-byte: Element::SetParent hands the
+	 * attribute's string to Context::GetDataModelPtr (Element.cpp:2212), which is a find() on
+	 * `UnorderedMap<String, ...> data_models` (Context.h:383) -- robin_hood::unordered_flat_map
+	 * keyed on std::string (Config.h:83; the vendored build defines no
+	 * RMLUI_NO_THIRDPARTY_CONTAINERS), so 'hud' and 'HUD' are different models. An FName cannot carry
+	 * that identity in a packaged game: WITH_CASE_PRESERVING_NAME follows WITH_EDITORONLY_DATA
+	 * (NameTypes.h:32-33), so a cooked target's FName::ToString() returns the casing of the
+	 * name's FIRST registration process-wide -- and the engine registers 'HUD' (class AHUD)
+	 * before any plugin code runs, so FName("hud") stringified as 'HUD', the model was created
+	 * under 'HUD', and the document's `data-model="hud"` matched nothing. Editor builds (even
+	 * -game) preserve per-instance casing, which is why the bug never showed there.
+	 *
 	 * Any thread that may touch an already-linked UScriptStruct; in practice the game thread,
 	 * from UVaCuusView::BindModel.
 	 */
-	FVaCuusBoundModel(FName InModelName, const UScriptStruct* InStruct);
+	FVaCuusBoundModel(const FString& InModelName, const UScriptStruct* InStruct);
 
 	//~ Neither copyable nor movable: FVaCuusModelChannel is neither (it holds a reference to
 	//~ Layout, which is a member of this object), and RmlUi holds a raw pointer to UIShadow's
@@ -91,7 +104,12 @@ public:
 	/** False when the struct did not resolve or a shadow could not be allocated. */
 	bool IsValid() const;
 
+	/** The case-insensitive key: write-router registry, game-side map lookups, delegates. */
 	FName GetModelName() const { return ModelName; }
+
+	/** The case-EXACT name RmlUi knows this model by; the only form a log line should print. */
+	const FString& GetModelNameString() const { return ModelNameStr; }
+
 	const FVaCuusModelLayout& GetLayout() const { return Layout; }
 
 	//~ ------------------------------------------------------------------ Game thread
@@ -219,6 +237,13 @@ private:
 	/** The body of the apply, factored out only so the ConsumeUpdate lambda stays one line. */
 	void ApplyUpdate(const FVaCuusModelUpdate& Update);
 
+	/**
+	 * The name EXACTLY as the caller wrote it, and the ONLY string that may reach
+	 * Context::CreateDataModel -- see the constructor comment for why an FName round-trip
+	 * mangles it in a packaged game. ModelName below is derived from it and is a
+	 * case-insensitive KEY, never an identity.
+	 */
+	FString ModelNameStr;
 	FName ModelName;
 
 	//~ DECLARATION ORDER IS LOAD-BEARING: Sampler and Channel each hold a

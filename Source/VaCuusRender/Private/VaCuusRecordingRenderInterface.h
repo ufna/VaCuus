@@ -115,6 +115,28 @@ public:
 	virtual void EnableScissorRegion(bool bEnable) override;
 	virtual void SetScissorRegion(Rml::Rectanglei Region) override;
 	virtual void SetTransform(const Rml::Matrix4f* Transform) override;
+
+	// The M5 glass seven (spec §2(d)): the vocabulary `backdrop-filter` arrives in
+	// (ElementEffects.cpp:247-282). Filters are resources (legal out of frame — document
+	// teardown releases them); layer and clip-mask calls are draw state (in-frame only).
+	virtual Rml::CompiledFilterHandle CompileFilter(const Rml::String& Name, const Rml::Dictionary& Parameters) override;
+	virtual void ReleaseFilter(Rml::CompiledFilterHandle Filter) override;
+	virtual Rml::LayerHandle PushLayer() override;
+	virtual void CompositeLayers(Rml::LayerHandle Source, Rml::LayerHandle Destination, Rml::BlendMode BlendMode,
+		Rml::Span<const Rml::CompiledFilterHandle> Filters) override;
+	virtual void PopLayer() override;
+	virtual void EnableClipMask(bool bEnable) override;
+	virtual void RenderToClipMask(Rml::ClipMaskOperation Operation, Rml::CompiledGeometryHandle Geometry, Rml::Vector2f Translation) override;
+
+	// The M5 shader trio (spec §2(e)): the vocabulary `decorator: linear/radial/conic-
+	// gradient` and `decorator: shader(<builtin>)` arrive in (DecoratorGradient.cpp:252-259,
+	// :422-428, :619-625; DecoratorShader.cpp:35). Shaders are resources (legal out of frame
+	// — document teardown releases them via RenderManager::ReleaseResource,
+	// RenderManager.cpp:364-368); RenderShader is draw state (in-frame only).
+	virtual Rml::CompiledShaderHandle CompileShader(const Rml::String& Name, const Rml::Dictionary& Parameters) override;
+	virtual void RenderShader(Rml::CompiledShaderHandle Shader, Rml::CompiledGeometryHandle Geometry, Rml::Vector2f Translation,
+		Rml::TextureHandle Texture) override;
+	virtual void ReleaseShader(Rml::CompiledShaderHandle Shader) override;
 	//~ End Rml::RenderInterface
 
 	/**
@@ -217,8 +239,71 @@ private:
 
 	uint64 NextGeometryHandle = 1;
 	uint64 NextTextureHandle = 1;
+	uint64 NextFilterHandle = 1;
+	uint64 NextShaderHandle = 1;
+
+	/**
+	 * PER FRAME, unlike every counter above: reset to 1 by BeginFrame(). Layer handles
+	 * are frame-scoped in RmlUi (the render stack is asserted empty at every frame start,
+	 * RmlUi Source/Core/RenderManager.cpp:51, and PopLayer is the only end of a layer's
+	 * life — no release call exists, RenderInterface.h:106-107), so restarting keeps two
+	 * identical glass frames byte-identical and therefore hash-equal. A cross-frame
+	 * counter here would defeat the idle gate for every glass document; see
+	 * FVaCuusLayerHandle. 0 stays reserved for the base layer (RenderInterface.h:96).
+	 */
+	uint64 NextLayerHandle = 1;
+
 	uint64 Generation = 0;
 	bool bInFrame = false;
+
+	/**
+	 * Filter types already refused with a log line, so the refusal is loud ONCE PER TYPE
+	 * per recorder rather than once per element per recompile (a hover restyle re-runs
+	 * CompileFilter for every filter on the element). RmlUi's own per-element warning
+	 * ("Could not compile filter on element", ElementEffects.cpp:164-165) still fires
+	 * each time and carries the element address; this latch carries the why.
+	 */
+	TSet<FString> RefusedFilterTypes;
+
+	/**
+	 * Shader names/builtin keys already refused with a log line — the filter latch's
+	 * discipline for the same reason (a hover restyle re-runs CompileShader per element).
+	 * One set for both unknown builtin keys and unknown CompileShader names: either way
+	 * the entry is "the string RmlUi sent that this recorder returned 0 for", and RmlUi's
+	 * own per-element warning ("Could not generate decorator element data",
+	 * ElementEffects.cpp:150-151) carries the element; this latch carries the why and the
+	 * known keys.
+	 */
+	TSet<FString> RefusedShaderKeys;
+
+	/**
+	 * Latched once per recorder: a gradient whose stop list exceeded
+	 * VaCuusMaxGradientStops was truncated to the reference-backend cap. The truncation
+	 * itself is RmlUi's own backends' behavior (RmlUi_Renderer_GL3.cpp:1635) — the latch
+	 * exists because they do it silently and we do not.
+	 */
+	bool bLoggedStopOverflow = false;
+
+	/**
+	 * THE RECORDER'S LIVE MATERIAL TABLE (M5 Task 5b) — handles of compiled
+	 * Kind=Material shaders not yet released. Non-empty is this view's forced-republish
+	 * flag: a live material decorator is GPU-evaluated state neither the content hash
+	 * nor the traffic predicate can see (spec §2(f) — the composite only samples the
+	 * RT), so while this set is non-empty the idle gate republishes, clamped to engine
+	 * rate (see EndFrameAndPublish). PER RECORDER, therefore per view — one view's
+	 * material HUD cannot force another view's publishes, which is what retires the
+	 * spike's process-global gate term.
+	 */
+	TSet<FVaCuusShaderHandle> LiveMaterialShaders;
+
+	/**
+	 * GFrameCounter value at the last publish that a live material was re-evaluated by —
+	 * the forced-republish CLAMP's memory. The UI thread can outrun the engine (a
+	 * multi-view frame, a triggered catch-up), and publishing twice inside one engine
+	 * frame buys a second replay no composite ever samples; the spike's own record
+	 * says to clamp rather than adopt composite-time draws (spec §3.3's remedy pricing).
+	 */
+	uint64 LastMaterialRepublishFrame = 0;
 
 	/**
 	 * VaCuusHashFrameContent() of the last buffer this recorder PUBLISHED, and the

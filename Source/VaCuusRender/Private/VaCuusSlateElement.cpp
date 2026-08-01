@@ -3,13 +3,31 @@
 #include "VaCuusSlateElement.h"
 
 #include "VaCuusCommandBuffer.h"
+#include "VaCuusDefines.h"
 #include "VaCuusStats.h"
 #include "VaCuusUIShaders.h"
 
+#include "GlobalRenderResources.h"
+#include "PipelineStateCache.h"
+#include "RHIResourceUtils.h"
 #include "RHIStaticStates.h"
 #include "RenderGraphBuilder.h"
 #include "RenderGraphUtils.h"
 #include "ScreenPass.h"
+
+/**
+ * Exp-GLASS-BACKBUFFER-SRV's runtime switch. The engine's own Slate blur binds the very
+ * same OutputTexture as an SRV mid-frame (SlateRHIRenderingPolicy.cpp:1718-1738,
+ * SlatePostProcessor.cpp:784-792), so direct sampling is the default; the fallback is the
+ * engine's own copy-pass shape (SlateRHIRenderer.cpp:1140-1147) for an RHI whose
+ * swapchain image refuses SRV use. Which path a session took is logged once, latched.
+ */
+static TAutoConsoleVariable<int32> CVarVaCuusGlassBackbufferSRV(
+	TEXT("vacuus.GlassBackbufferSRV"),
+	1,
+	TEXT("1 (default) = the glass downsample samples the Slate output texture directly as an SRV (the engine's own blur ")
+	TEXT("does the same). 0 = copy the glass region out first (SlateRHIRenderer.cpp:1140-1147 shape). The direct path ")
+		TEXT("also falls back automatically when the output texture was created without ShaderResource."));
 
 void FVaCuusSlateElement::SetPendingBuffer_RenderThread(FRHICommandList& RHICmdList, TUniquePtr<FVaCuusCommandBuffer> InBuffer)
 {
@@ -18,6 +36,14 @@ void FVaCuusSlateElement::SetPendingBuffer_RenderThread(FRHICommandList& RHICmdL
 	{
 		return;
 	}
+
+	// The glass distillation point (M5 spec §2(a)): every published buffer, in publish
+	// order, BEFORE the queue can trim it — a backlog-consumed buffer surrenders its
+	// resource deltas but its glass signature still replaced the list here, so "newest
+	// published buffer defines the glass" holds however the queue is drained. Wholesale
+	// replacement is the distiller's own first statement.
+	GlassDistiller.Distill(*InBuffer);
+	RefreshGlassDrawResources(RHICmdList);
 
 	// Defensive bound: paints drain the queue and the volatile widget repaints
 	// every frame, so reaching MaxPendingBuffers means some undiscovered
@@ -44,11 +70,35 @@ void FVaCuusSlateElement::SetDestRect_RenderThread(const FIntRect& InDestRect)
 	DestRect = InDestRect;
 }
 
+void FVaCuusSlateElement::SetGlassAllowed_RenderThread(bool bInAllowed)
+{
+	check(IsInRenderingThread());
+	if (bGlassAllowed != bInAllowed)
+	{
+		bGlassAllowed = bInAllowed;
+
+		// The transition is worth a line each way: glass silently missing is otherwise
+		// indistinguishable from a distiller bug, and HDR is exactly the config where
+		// nothing else will look wrong (backdrop-glass.md §1: the elements texture has no
+		// scene under bCompositeUIWithSceneHDR, so there is nothing valid to blur).
+		UE_LOG(LogVaCuus, Log, TEXT("VaCuus glass %s (game-thread HDR mirror: r.HDR.EnableHDROutput is %s)"),
+			bGlassAllowed ? TEXT("enabled") : TEXT("disabled — LDR-only by design"), bGlassAllowed ? TEXT("off") : TEXT("on"));
+	}
+}
+
 void FVaCuusSlateElement::ReleaseResources_RenderThread()
 {
 	check(IsInRenderingThread());
 	PendingBuffers.Empty();
 	Replayer.ReleaseResources();
+
+	// The glass state is torn down with the replayer for the same pairing reason its
+	// ReleaseResources documents: a fresh recorder restarts handles at 1, and stale
+	// cross-buffer maps would resolve the new handles to the old payloads.
+	GlassDistiller.Reset();
+	GlassDraws.Empty();
+	GlassHalfRT[0].SafeRelease();
+	GlassHalfRT[1].SafeRelease();
 }
 
 void FVaCuusSlateElement::Draw_RenderThread(FRDGBuilder& GraphBuilder, const FDrawPassInputs& Inputs)
@@ -95,12 +145,26 @@ void FVaCuusSlateElement::Draw_RenderThread(FRDGBuilder& GraphBuilder, const FDr
 		return;
 	}
 
+	// 3. The M5 glass passes, BEFORE the UI composite so the panel's own translucent
+	// background blends over the blurred scene (spec §2(a)). ENGINE-FRAME WORK, not
+	// publish work: the list persists across idle frames like the RT itself, and the
+	// scene under it moves every frame — baking this at replay time is the frozen
+	// backdrop Exp-GLASS-IDLE-FREEZE exists to rule out. Skipped whole under HDR
+	// output: the game-thread mirror (SetGlassAllowed_RenderThread) is the shipped
+	// discriminator, with bOutputIsHDRDisplay honored as the belt for the non-composite
+	// HDR case where it still reads true.
+	if (bGlassAllowed && !Inputs.bOutputIsHDRDisplay && GlassDistiller.GetEntries().Num() > 0 &&
+		GlassDistiller.GetViewSize().X > 0 && GlassDistiller.GetViewSize().Y > 0)
+	{
+		AddGlassPasses(GraphBuilder, Inputs);
+	}
+
 	// Composite scope: graph-build cost of the composite section (registration,
 	// parameters, AddDrawScreenPass). The pass's own execution shows up under
 	// the RDG event VaCuusComposite.
 	VACUUS_PERF_SCOPE(Composite);
 
-	// 3. Composite. Registration is consistent by construction: RDG assumes
+	// 4. Composite. Registration is consistent by construction: RDG assumes
 	// external textures sit in SRVMask (kDefaultAccess), which is exactly the
 	// replayer's out-of-Replay invariant.
 	FRDGTextureRef UITexture = RegisterExternalTexture(GraphBuilder, OutputRT, TEXT("VaCuusUIRT"));
@@ -138,4 +202,353 @@ void FVaCuusSlateElement::Draw_RenderThread(FRDGBuilder& GraphBuilder, const FDr
 		/*OutputViewport=*/FScreenPassTextureViewport(Inputs.OutputTexture, OutputRect),
 		/*InputViewport=*/FScreenPassTextureViewport(UITexture),
 		VertexShader, PixelShader, BlendState, Parameters);
+}
+
+namespace VaCuusGlass
+{
+/**
+ * The engine's paired-weight gaussian fill (AddSlatePostProcessOldGaussianBlur,
+ * SlatePostProcessor.cpp:658-696), reproduced because that function is module-private.
+ * Two mirrored taps share one bilinear fetch: each vec4 slot packs (weight, offset,
+ * weight, offset), slot 0's xy being the center tap. Unnormalized like the engine's — at
+ * a 3-sigma kernel the tail loss is under half a percent.
+ */
+static int32 FillBlurWeights(FVaCuusBlurPS::FParameters* Parameters, float Sigma)
+{
+	const float Strength = FMath::Max(0.5f, Sigma);
+
+	// The engine's own kernel rule (SBackgroundBlur::ComputeEffectiveKernelSize,
+	// SBackgroundBlur.cpp:172-188): 3x the strength, made odd. Clamped to what the
+	// uniform array carries — ~41.7 sigma in half-res texels = ~80px of view-space sigma,
+	// far past anything a HUD panel asks for.
+	int32 KernelSize = FMath::RoundToInt(Strength * 3.0f);
+	KernelSize = FMath::Clamp(KernelSize | 1, 3, 2 * FVaCuusBlurPS::MaxBlurSamples - 1);
+
+	const auto GetWeight = [](float Dist, float InStrength)
+	{
+		const float Strength2 = InStrength * InStrength;
+		return (1.0f / FMath::Sqrt(2.0f * PI * Strength2)) * FMath::Exp(-(Dist * Dist) / (2.0f * Strength2));
+	};
+
+	const auto GetWeightAndOffset = [&GetWeight](float Dist, float InStrength)
+	{
+		const float Weight1 = GetWeight(Dist, InStrength);
+		const float Weight2 = GetWeight(Dist + 1.0f, InStrength);
+		const float TotalWeight = Weight1 + Weight2;
+		const float Offset = TotalWeight > 0.0f ? (Weight1 * Dist + Weight2 * (Dist + 1.0f)) / TotalWeight : 0.0f;
+		return FVector2f(TotalWeight, Offset);
+	};
+
+	const int32 SampleCount = FMath::DivideAndRoundUp(KernelSize, 2);
+
+	Parameters->WeightAndOffsets[0] = FVector4f(FVector2f(GetWeight(0.0f, Strength), 0.0f), GetWeightAndOffset(1.0f, Strength));
+	for (int32 Dist = 3, SampleIndex = 1; Dist < KernelSize && SampleIndex < FVaCuusBlurPS::MaxBlurSamples; Dist += 4, ++SampleIndex)
+	{
+		Parameters->WeightAndOffsets[SampleIndex] =
+			FVector4f(GetWeightAndOffset(float(Dist), Strength), GetWeightAndOffset(float(Dist + 2), Strength));
+	}
+
+	Parameters->SampleCount = SampleCount;
+	return SampleCount;
+}
+
+/** One separable blur direction over HalfRect: Source -> Dest, sigma in DEST texels. */
+static void AddBlurPass(FRDGBuilder& GraphBuilder, FGlobalShaderMap* ShaderMap, FRDGTextureRef Source, FRDGTextureRef Dest,
+	const FIntRect& HalfRect, float Sigma, const FVector2f& Direction)
+{
+	TShaderMapRef<FScreenPassVS> VertexShader(ShaderMap);
+	TShaderMapRef<FVaCuusBlurPS> PixelShader(ShaderMap);
+
+	const FScreenPassTextureViewport InputViewport(Source, HalfRect);
+	const FScreenPassTextureViewportParameters InputParameters = GetScreenPassTextureViewportParameters(InputViewport);
+
+	FVaCuusBlurPS::FParameters* Parameters = GraphBuilder.AllocParameters<FVaCuusBlurPS::FParameters>();
+	Parameters->BlurTexture = Source;
+	Parameters->BlurSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+	Parameters->BufferSizeAndDirection = FVector4f(InputParameters.ExtentInverse, Direction);
+	Parameters->UVBounds = FVector4f(InputParameters.UVViewportBilinearMin, InputParameters.UVViewportBilinearMax);
+	Parameters->RenderTargets[0] = FRenderTargetBinding(Dest, ERenderTargetLoadAction::ELoad);
+	FillBlurWeights(Parameters, Sigma);
+
+	AddDrawScreenPass(GraphBuilder, RDG_EVENT_NAME("VaCuusGlassBlur"), FScreenPassViewInfo(),
+		/*OutputViewport=*/FScreenPassTextureViewport(Dest, HalfRect), InputViewport, VertexShader, PixelShader, Parameters);
+}
+} // namespace VaCuusGlass
+
+void FVaCuusSlateElement::RefreshGlassDrawResources(FRHICommandList& RHICmdList)
+{
+	if (GlassDrawsGeneration == GlassDistiller.GetListGeneration())
+	{
+		return;
+	}
+	GlassDrawsGeneration = GlassDistiller.GetListGeneration();
+	GlassDraws.Reset();
+
+	for (const FVaCuusGlassEntry& Entry : GlassDistiller.GetEntries())
+	{
+		FGlassDraw& Draw = GlassDraws.AddDefaulted_GetRef();
+
+		// The square case generates a DrawRegion quad through the SAME vertex layout and
+		// draw path as a mask, so there is exactly one glass draw code path. White with
+		// full alpha — the same coverage the mask geometry carries
+		// (ElementBackgroundBorder.cpp:72). All four channel bytes equal, so the
+		// RGBA-vs-FColor byte-order note on FVaCuusVertex cannot bite here.
+		TArray<FVaCuusVertex, TInlineAllocator<4>> QuadVertices;
+		TArray<int32, TInlineAllocator<6>> QuadIndices;
+		if (!Entry.MaskGeometry.IsValid())
+		{
+			const FVector2f Min(float(Entry.DrawRegion.Min.X), float(Entry.DrawRegion.Min.Y));
+			const FVector2f Max(float(Entry.DrawRegion.Max.X), float(Entry.DrawRegion.Max.Y));
+			const FColor White(255, 255, 255, 255);
+			QuadVertices.Append({{Min, White, FVector2f::ZeroVector}, {FVector2f(Max.X, Min.Y), White, FVector2f::ZeroVector},
+				{Max, White, FVector2f::ZeroVector}, {FVector2f(Min.X, Max.Y), White, FVector2f::ZeroVector}});
+			QuadIndices.Append({0, 1, 2, 0, 2, 3});
+		}
+
+		const TConstArrayView<FVaCuusVertex> VertexView = Entry.MaskGeometry.IsValid()
+			? MakeConstArrayView(Entry.MaskGeometry->Vertices.GetData(), Entry.MaskGeometry->Vertices.Num())
+			: MakeConstArrayView(QuadVertices.GetData(), QuadVertices.Num());
+		const TConstArrayView<int32> IndexView = Entry.MaskGeometry.IsValid()
+			? MakeConstArrayView(Entry.MaskGeometry->Indices.GetData(), Entry.MaskGeometry->Indices.Num())
+			: MakeConstArrayView(QuadIndices.GetData(), QuadIndices.Num());
+
+		if (VertexView.Num() == 0 || IndexView.Num() < 3)
+		{
+			continue; // Keep the (empty) slot so GlassDraws stays parallel to the entries.
+		}
+
+		Draw.VB = UE::RHIResourceUtils::CreateVertexBufferFromArray<FVaCuusVertex>(
+			RHICmdList, TEXT("VaCuusGlassVB"), EBufferUsageFlags::Static, VertexView);
+		Draw.IB = UE::RHIResourceUtils::CreateIndexBufferFromArray<int32>(
+			RHICmdList, TEXT("VaCuusGlassIB"), EBufferUsageFlags::Static, IndexView);
+		Draw.NumVertices = VertexView.Num();
+		Draw.NumIndices = IndexView.Num();
+	}
+}
+
+void FVaCuusSlateElement::AddGlassPasses(FRDGBuilder& GraphBuilder, const FDrawPassInputs& Inputs)
+{
+	// Graph-build cost of the whole glass section; the passes' execution shows under the
+	// RDG events VaCuusGlass*. The per-window SAMPLE COUNT of this scope against
+	// `published=` in the same PerfLog window is the idle-freeze observable: an idle
+	// glass HUD keeps producing these at engine rate with publishes at zero.
+	VACUUS_PERF_SCOPE(Glass);
+
+	const TArray<FVaCuusGlassEntry>& Entries = GlassDistiller.GetEntries();
+	const FIntPoint OutputExtent = Inputs.OutputTexture->Desc.Extent;
+	const FVaCuusGlassMapping Mapping =
+		VaCuusMakeGlassMapping(DestRect, Inputs.ElementsOffset, GlassDistiller.GetViewSize(), Inputs.SceneViewRect, OutputExtent);
+
+	// THE COORDINATE MAPPING (spec §2(a)), per engine frame from the LIVE transform:
+	// regions, mask vertices (via the draw matrix below) and sigma all go through it,
+	// clamped to SceneViewRect — view space is never pre-baked into window space.
+	struct FMappedEntry
+	{
+		int32 EntryIndex = 0;
+		FIntRect SampleRect;
+		FIntRect DrawRect;
+		FIntPoint HalfSize;
+		FVector2f SigmaOut;
+	};
+	TArray<FMappedEntry, TInlineAllocator<4>> MappedEntries;
+	FIntPoint NeededExtent = FIntPoint::ZeroValue;
+	FIntRect SampleBounds;
+	for (int32 Index = 0; Index < Entries.Num(); ++Index)
+	{
+		if (!GlassDraws.IsValidIndex(Index) || GlassDraws[Index].NumIndices < 3)
+		{
+			continue;
+		}
+
+		FMappedEntry Mapped;
+		Mapped.EntryIndex = Index;
+		Mapped.SampleRect = Mapping.MapRect(Entries[Index].SampleRegion);
+		Mapped.DrawRect = Mapping.MapRect(Entries[Index].DrawRegion);
+		Mapped.SigmaOut = Mapping.MapSigma(Entries[Index].Sigma);
+		if (Mapped.SampleRect.Area() <= 0 || Mapped.DrawRect.Area() <= 0)
+		{
+			continue; // Fully clipped (off the scene view): nothing to sample or draw.
+		}
+
+		Mapped.HalfSize = FIntPoint(
+			FMath::Max(1, FMath::DivideAndRoundUp(Mapped.SampleRect.Width(), 2)),
+			FMath::Max(1, FMath::DivideAndRoundUp(Mapped.SampleRect.Height(), 2)));
+		NeededExtent = FIntPoint(FMath::Max(NeededExtent.X, Mapped.HalfSize.X), FMath::Max(NeededExtent.Y, Mapped.HalfSize.Y));
+		SampleBounds = MappedEntries.Num() == 0 ? Mapped.SampleRect : FIntRect(
+			FIntPoint(FMath::Min(SampleBounds.Min.X, Mapped.SampleRect.Min.X), FMath::Min(SampleBounds.Min.Y, Mapped.SampleRect.Min.Y)),
+			FIntPoint(FMath::Max(SampleBounds.Max.X, Mapped.SampleRect.Max.X), FMath::Max(SampleBounds.Max.Y, Mapped.SampleRect.Max.Y)));
+		MappedEntries.Add(Mapped);
+	}
+	if (MappedEntries.Num() == 0)
+	{
+		return;
+	}
+	++NumGlassFrames;
+
+	// The pooled ping-pong pair: PERSISTENT and sized to the mapped glass bounds, not the
+	// screen (spec §2(c)) — per element, so N glass-bearing views cost N pairs, which is
+	// the budget table's stated multiplier. Format follows the output so a 10-bit LDR
+	// backbuffer is not squeezed through 8 bits on the way round.
+	const EPixelFormat HalfFormat = Inputs.OutputTexture->Desc.Format;
+	for (FTextureRHIRef& RT : GlassHalfRT)
+	{
+		if (!RT.IsValid() || RT->GetSizeXY() != NeededExtent || RT->GetFormat() != HalfFormat)
+		{
+			const FRHITextureCreateDesc Desc =
+				FRHITextureCreateDesc::Create2D(TEXT("VaCuusGlassHalfRT"), NeededExtent, HalfFormat)
+					.SetFlags(ETextureCreateFlags::RenderTargetable | ETextureCreateFlags::ShaderResource)
+					.SetClearValue(FClearValueBinding::Transparent)
+					// Invariant: outside the glass passes both RTs sit in SRVMask —
+					// consistent with RDG's external-texture default, like the UI RT.
+					.SetInitialState(ERHIAccess::SRVMask);
+			RT = GraphBuilder.RHICmdList.CreateTexture(Desc);
+		}
+	}
+	FRDGTextureRef HalfA = RegisterExternalTexture(GraphBuilder, GlassHalfRT[0], TEXT("VaCuusGlassHalfA"));
+	FRDGTextureRef HalfB = RegisterExternalTexture(GraphBuilder, GlassHalfRT[1], TEXT("VaCuusGlassHalfB"));
+
+	// The scene source (Exp-GLASS-BACKBUFFER-SRV): direct SRV when the output texture
+	// carries ShaderResource and the cvar has not forced the fallback; otherwise one
+	// bounded AddCopyTexturePass into a transient (the engine fallback shape,
+	// SlateRHIRenderer.cpp:1140-1147). The DESC FLAG is the runtime check — an RHI whose
+	// swapchain image cannot be sampled does not create it ShaderResource.
+	const bool bOutputSampleable = EnumHasAnyFlags(Inputs.OutputTexture->Desc.Flags, TexCreate_ShaderResource);
+	const bool bDirectSRV = bOutputSampleable && CVarVaCuusGlassBackbufferSRV.GetValueOnRenderThread() != 0;
+	FRDGTextureRef SceneSource = Inputs.OutputTexture;
+	FIntPoint SourceShift = FIntPoint::ZeroValue;
+	if (!bDirectSRV)
+	{
+		FRDGTextureRef SceneCopy = GraphBuilder.CreateTexture(
+			FRDGTextureDesc::Create2D(SampleBounds.Size(), HalfFormat, FClearValueBinding::Black,
+				TexCreate_RenderTargetable | TexCreate_ShaderResource),
+			TEXT("VaCuusGlassSceneCopy"));
+		AddCopyTexturePass(GraphBuilder, Inputs.OutputTexture, SceneCopy, SampleBounds.Min, FIntPoint::ZeroValue, SampleBounds.Size());
+		SceneSource = SceneCopy;
+		SourceShift = SampleBounds.Min;
+	}
+	if (!bLoggedBackbufferPath)
+	{
+		bLoggedBackbufferPath = true;
+		UE_LOG(LogVaCuus, Log,
+			TEXT("Exp-GLASS-BACKBUFFER-SRV: glass samples the Slate output %s (texture ShaderResource=%s, vacuus.GlassBackbufferSRV=%d)"),
+			bDirectSRV ? TEXT("DIRECTLY as an SRV") : TEXT("through a bounded copy pass"),
+			bOutputSampleable ? TEXT("yes") : TEXT("no"), CVarVaCuusGlassBackbufferSRV.GetValueOnRenderThread());
+	}
+
+	FGlobalShaderMap* ShaderMap = GetGlobalShaderMap(GMaxRHIFeatureLevel);
+	TShaderMapRef<FScreenPassVS> ScreenVertexShader(ShaderMap);
+	TShaderMapRef<FVaCuusCompositePS> DownsamplePS(ShaderMap);
+	TShaderMapRef<FVaCuusUIVS> GlassVertexShader(ShaderMap);
+	TShaderMapRef<FVaCuusGlassPS> GlassPixelShader(ShaderMap);
+	const FMatrix44f PixelToClip = VaCuusReplay::MakePixelToClipMatrix(OutputExtent);
+
+	for (const FMappedEntry& Mapped : MappedEntries)
+	{
+		const FVaCuusGlassEntry& Entry = Entries[Mapped.EntryIndex];
+		const FIntRect HalfRect(0, 0, Mapped.HalfSize.X, Mapped.HalfSize.Y);
+
+		// (1) One bilinear pass sampling the scene region into half-res — simultaneously
+		// the copy and the downsample (backdrop-glass.md §2). The pass-through composite
+		// PS is exactly the sampler this needs; the default opaque blend overwrites.
+		//
+		// EVERY ENGINE FRAME, deliberately — gating passes (1)-(2) on "a publish arrived"
+		// is the replay-baked shape and it FREEZES: prototyped for Exp-GLASS-IDLE-FREEZE
+		// (2026-08-01) — with the refresh publish-gated, the backdrop under an idle panel
+		// measured RMSE exactly 0 between two beats 8s apart while the scene behind the
+		// blur-free control panel changed 24.8%; this shipped per-frame refresh measured
+		// 11.6% in the same protocol. Both outcomes in the Task 3 report.
+		{
+			FVaCuusCompositePS::FParameters* Parameters = GraphBuilder.AllocParameters<FVaCuusCompositePS::FParameters>();
+			Parameters->CompositeTexture = SceneSource;
+			Parameters->CompositeSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+			Parameters->RenderTargets[0] = FRenderTargetBinding(HalfA, ERenderTargetLoadAction::ELoad);
+
+			const FIntRect ShiftedSample(Mapped.SampleRect.Min - SourceShift, Mapped.SampleRect.Max - SourceShift);
+			AddDrawScreenPass(GraphBuilder, RDG_EVENT_NAME("VaCuusGlassDownsample"), FScreenPassViewInfo(),
+				/*OutputViewport=*/FScreenPassTextureViewport(HalfA, HalfRect),
+				/*InputViewport=*/FScreenPassTextureViewport(SceneSource, ShiftedSample), ScreenVertexShader, DownsamplePS, Parameters);
+		}
+
+		// (2) Separable gaussian ping-pong at half-res, sigma mapped per axis and then
+		// scaled into half-res texels by each axis's actual downsample ratio.
+		const FVector2f HalfRatio(
+			float(Mapped.HalfSize.X) / float(Mapped.SampleRect.Width()), float(Mapped.HalfSize.Y) / float(Mapped.SampleRect.Height()));
+		VaCuusGlass::AddBlurPass(GraphBuilder, ShaderMap, HalfA, HalfB, HalfRect, Mapped.SigmaOut.X * HalfRatio.X, FVector2f(1.0f, 0.0f));
+		VaCuusGlass::AddBlurPass(GraphBuilder, ShaderMap, HalfB, HalfA, HalfRect, Mapped.SigmaOut.Y * HalfRatio.Y, FVector2f(0.0f, 1.0f));
+
+		// (3) The masked glass draw: the entry's geometry (mask copy or generated quad)
+		// through the mapping matrix, sampling the blurred half-res at the output pixel,
+		// scissored to the mapped write region. SrcAlpha/InvSrcAlpha on color so the
+		// mask's coverage lerps blurred-over-sharp; dest alpha untouched (CW_RGB) — the
+		// output's alpha channel is never meaningful (2 bits on the desktop default).
+		{
+			// Row-vector composition: mask translation (view px) -> mapping scale+offset
+			// (output px) -> clip. Collapsed into one affine before the ortho.
+			FMatrix44f Affine = FMatrix44f::Identity;
+			Affine.M[0][0] = Mapping.Scale.X;
+			Affine.M[1][1] = Mapping.Scale.Y;
+			Affine.M[3][0] = Entry.MaskTranslation.X * Mapping.Scale.X + Mapping.Offset.X;
+			Affine.M[3][1] = Entry.MaskTranslation.Y * Mapping.Scale.Y + Mapping.Offset.Y;
+
+			FVaCuusUIShaderParameters VSParameters;
+			VSParameters.Projection = Affine * PixelToClip;
+			VSParameters.UITexture = GWhiteTexture->TextureRHI;
+			VSParameters.UISampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+			VSParameters.bUseTexture = 0;
+
+			FVaCuusGlassPS::FParameters* PSParameters = GraphBuilder.AllocParameters<FVaCuusGlassPS::FParameters>();
+			PSParameters->GlassTexture = HalfA;
+			PSParameters->GlassSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+			PSParameters->RenderTargets[0] = FRenderTargetBinding(Inputs.OutputTexture, ERenderTargetLoadAction::ELoad);
+
+			// SV_Position (output px, already at pixel centers) -> half-res UV: the
+			// downsample maps SampleRect.Min to half texel 0, at HalfRatio texels per
+			// output pixel. Bounds keep bilinear taps inside this entry's region of the
+			// pooled RT, whose extent may exceed it.
+			const FVector2f RTExtentInv(1.0f / float(NeededExtent.X), 1.0f / float(NeededExtent.Y));
+			PSParameters->GlassUVTransform = FVector4f(HalfRatio.X * RTExtentInv.X, HalfRatio.Y * RTExtentInv.Y,
+				-float(Mapped.SampleRect.Min.X) * HalfRatio.X * RTExtentInv.X,
+				-float(Mapped.SampleRect.Min.Y) * HalfRatio.Y * RTExtentInv.Y);
+			PSParameters->GlassUVBounds = FVector4f(0.5f * RTExtentInv.X, 0.5f * RTExtentInv.Y,
+				(float(Mapped.HalfSize.X) - 0.5f) * RTExtentInv.X, (float(Mapped.HalfSize.Y) - 0.5f) * RTExtentInv.Y);
+
+			const FGlassDraw Draw = GlassDraws[Mapped.EntryIndex]; // ref-counted copies for the lambda
+			const FIntRect DrawRect = Mapped.DrawRect;
+
+			GraphBuilder.AddPass(RDG_EVENT_NAME("VaCuusGlassDraw"), PSParameters, ERDGPassFlags::Raster,
+				[PSParameters, VSParameters, GlassVertexShader, GlassPixelShader, Draw, DrawRect, OutputExtent](
+					FRDGAsyncTask, FRHICommandList& RHICmdList)
+				{
+					RHICmdList.SetViewport(0.0f, 0.0f, 0.0f, float(OutputExtent.X), float(OutputExtent.Y), 1.0f);
+					RHICmdList.SetScissorRect(
+						true, uint32(DrawRect.Min.X), uint32(DrawRect.Min.Y), uint32(DrawRect.Max.X), uint32(DrawRect.Max.Y));
+
+					FGraphicsPipelineStateInitializer GraphicsPSOInit;
+					RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
+					GraphicsPSOInit.BlendState =
+						TStaticBlendState<CW_RGB, BO_Add, BF_SourceAlpha, BF_InverseSourceAlpha, BO_Add, BF_Zero, BF_One>::GetRHI();
+					GraphicsPSOInit.RasterizerState = TStaticRasterizerState<FM_Solid, CM_None>::GetRHI();
+					GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<false, CF_Always>::GetRHI();
+					GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GVaCuusVertexDeclaration.VertexDeclarationRHI;
+					GraphicsPSOInit.BoundShaderState.VertexShaderRHI = GlassVertexShader.GetVertexShader();
+					GraphicsPSOInit.BoundShaderState.PixelShaderRHI = GlassPixelShader.GetPixelShader();
+					GraphicsPSOInit.PrimitiveType = PT_TriangleList;
+					SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
+
+					{
+						FRHIBatchedShaderParameters& BatchedParameters = RHICmdList.GetScratchShaderParameters();
+						SetShaderParameters(BatchedParameters, GlassVertexShader, VSParameters);
+						RHICmdList.SetBatchedShaderParameters(GlassVertexShader.GetVertexShader(), BatchedParameters);
+					}
+					SetShaderParameters(RHICmdList, GlassPixelShader, GlassPixelShader.GetPixelShader(), *PSParameters);
+
+					RHICmdList.SetStreamSource(0, Draw.VB, 0);
+					RHICmdList.DrawIndexedPrimitive(Draw.IB,
+						/*BaseVertexIndex=*/0, /*FirstInstance=*/0, uint32(Draw.NumVertices),
+						/*StartIndex=*/0, uint32(Draw.NumIndices / 3), /*NumInstances=*/1);
+
+					RHICmdList.SetScissorRect(false, 0, 0, 0, 0);
+				});
+		}
+	}
 }

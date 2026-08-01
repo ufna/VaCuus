@@ -7,7 +7,11 @@
 #include "VaCuusJsDomTestRig.h"
 #include "VaCuusStats.h"
 
+#include "VaCuusContentPaths.h"
+
 #include "HAL/PlatformTime.h"
+#include "Misc/FileHelper.h"
+#include "Misc/SecureHash.h"
 
 /*
  * SPEC 7's BUDGET TABLE, MEASURED (M4 plan Task 10.3) -- the M3a/M3b Cost-harness
@@ -560,6 +564,135 @@ bool FVaCuusJsCostPumpSteadyTest::RunTest(const FString& /*Parameters*/)
 	UE_LOG(LogVaCuusJS, Display, TEXT("VaCuus M4 cost: %s"), *Report);
 
 	TestTrue(*FString::Printf(TEXT("steady JsPump stays inside 10x the budget (%.5f ms)"), PumpMean), PumpMean < 3.0);
+
+	Rig.Thread->EnqueueRemoveView(ViewId);
+	PumpRealFrames(*Rig.Thread, 1);
+	return true;
+}
+
+/**
+ * THE M5 RE-MEASUREMENT (M5 spec §6, "Preact HUD steady state — the M4 row
+ * re-measured on the port"): the SAME method and budget as PumpSteadyDemo one
+ * test up, on the committed TSX HUD bundle (@vacuus/preact over the facade)
+ * loaded through the real captured <script src> path. The HUD's steady shape
+ * mirrors the M4 script's deliberately — one rAF per frame reading
+ * model('hud').Health with a change-gated setState commit, a 1.5 s killfeed
+ * beat — so the two rows compare like for like. Skips (green, with the reason)
+ * when the committed bundle's provenance is stale against the current facade
+ * manifest: the measurement would then be of a bundle the suite already told
+ * the controller to rebuild (VaCuus.Js.Preact.BundleMount owns that warning).
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusJsCostPumpSteadyTsxTest, "VaCuus.Js.Cost.PumpSteadyTsx",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusJsCostPumpSteadyTsxTest::RunTest(const FString& /*Parameters*/)
+{
+	using namespace VaCuusJsCostTest;
+
+	// The provenance gate, quiet flavor (the named warning is BundleMount's).
+	{
+		const TArray<FString>& Roots = VaCuusContentPaths::GetDocumentRoots();
+		FString Provenance;
+		TArray<uint8> ManifestBytes;
+		if (Roots.IsEmpty() ||
+			!FFileHelper::LoadFileToString(Provenance, *(Roots[0] / TEXT("M5Hud/hud_bundle.provenance.json"))) ||
+			!FFileHelper::LoadFileToArray(ManifestBytes, *(Roots[0] / TEXT("Tests/vacuus-api-manifest.json"))))
+		{
+			AddError(TEXT("the committed M5Hud provenance or the facade manifest is missing"));
+			return false;
+		}
+		FSHAHash Hash;
+		FSHA1::HashBuffer(ManifestBytes.GetData(), ManifestBytes.Num(), Hash.Hash);
+		if (!Provenance.Contains(Hash.ToString().ToLower()))
+		{
+			AddInfo(TEXT("skipped: hud_bundle.js provenance is stale against the facade manifest — rebuild via ")
+				TEXT("`node Web/packages/cli/bin/vacuus.mjs build --app Web/apps/demo-hud` (BundleMount carries the warning)"));
+			return true;
+		}
+	}
+
+	// The TSX HUD reads 'hud'.Health per rAF frame; unbound here, so the read
+	// surface latches ONE Warning and the deterministic fallback sweep drives
+	// the bar (the demo-port test's own shape, one seat up).
+	AddExpectedMessagePlain(TEXT("model 'hud', path 'Health'"), ELogVerbosity::Warning,
+		EAutomationExpectedMessageFlags::Contains, 1);
+
+	FDomTestRig Rig;
+	const FDomTestRig::EBoot Boot = Rig.Boot(*this);
+	if (Boot != FDomTestRig::EBoot::Ok)
+	{
+		return Boot == FDomTestRig::EBoot::Skip;
+	}
+
+	static const TCHAR* GTsxDocument = TEXT(R"(<rml>
+<head><style>body { display: block; font-family: LatoLatin; font-size: 14px; } div { display: block; } button { display: inline-block; } h1 { display: block; } span { display: inline; }</style>
+<script src="M5Hud/hud_bundle.js"></script>
+</head>
+<body><div id="mount"/></body>
+</rml>)");
+
+	FJsCostProbeHost* Probe = nullptr;
+	TSharedPtr<FVaCuusViewStatus> Status;
+	const uint32 ViewId = AddCostView(Rig, Probe, Status, TEXT("vacuus_jscost_tsx"), GTsxDocument);
+	if (!TestTrue(TEXT("the TSX document loaded"), WaitForLoad(Rig, *Status)))
+	{
+		return false;
+	}
+
+	const FVaCuusJsRuntime* Runtime = FWrappedDomHost::Inner ? FWrappedDomHost::Inner->GetRuntime() : nullptr;
+	if (!TestNotNull(TEXT("the runtime exists"), Runtime))
+	{
+		return false;
+	}
+
+	// The mount must be real before anything is measured — a bundle that failed
+	// to mount would "measure" an idle pump and pass on nothing.
+	if (!TestEqual(TEXT("the TSX HUD mounted"),
+			Rig.Eval(ViewId, "document.getElementById('hud-root') !== null ? 'yes' : 'no'"), FString(TEXT("yes"))))
+	{
+		return false;
+	}
+
+	if (!TestTrue(TEXT("warm-up frames ran"), PumpRealFrames(*Rig.Thread, 60)))
+	{
+		return false;
+	}
+
+	const uint64 RafBefore = Runtime->GetNumRafCallbacksRun();
+	const uint64 ErrorsBefore = Runtime->GetNumErrors();
+	const int32 WindowStart = SettledFrames(*Status);
+
+	if (!TestTrue(TEXT("the steady window ran"), PumpRealFrames(*Rig.Thread, 2000)))
+	{
+		return false;
+	}
+
+	const int32 WindowEnd = SettledFrames(*Status);
+	const uint64 RafRun = Runtime->GetNumRafCallbacksRun() - RafBefore;
+
+	TestTrue(*FString::Printf(TEXT("the HUD rAF ran once per frame (%llu callbacks over %d frames)"), RafRun,
+				 WindowEnd - WindowStart),
+		RafRun >= uint64(WindowEnd - WindowStart));
+	TestEqual(TEXT("0 JS errors across the steady window"), Runtime->GetNumErrors(), ErrorsBefore);
+
+	TArray<double> PumpMs;
+	for (int32 Index = WindowStart; Index < WindowEnd; ++Index)
+	{
+		PumpMs.Add(Probe->FrameLog[Index].PumpMs);
+	}
+
+	const double PumpMean = Mean(PumpMs);
+	const double PumpP99 = Percentile(PumpMs, 0.99);
+	const FString Report = FString::Printf(
+		TEXT("JsPump steady state, TSX HUD (@vacuus/preact hud_bundle.js, %d frames): mean %.5f ms, p99 %.5f ms; ")
+		TEXT("target 0.30 ms (M5 spec §6, the M4 row re-measured)"),
+		PumpMs.Num(), PumpMean, PumpP99);
+	AddInfo(Report);
+	UE_LOG(LogVaCuusJS, Display, TEXT("VaCuus M5 cost: %s"), *Report);
+
+	// The M4 convention: the tripwire is 10x the budget so a structural
+	// regression fails and machine jitter does not.
+	TestTrue(*FString::Printf(TEXT("steady TSX JsPump stays inside 10x the budget (%.5f ms)"), PumpMean), PumpMean < 3.0);
 
 	Rig.Thread->EnqueueRemoveView(ViewId);
 	PumpRealFrames(*Rig.Thread, 1);

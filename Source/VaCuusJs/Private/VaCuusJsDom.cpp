@@ -6,7 +6,11 @@
  * method opens with the dead-check -- a handle whose element got removed simply
  * goes dead: methods return null/false/undefined, never throw (the hud demo's
  * founding rule, hud-demo VacuusJs.cpp:1-3). Listeners and events are M4
- * Task 5, deliberately absent here.
+ * Task 5, deliberately absent here. M5 Task 1 grew the surface to what stock
+ * preact 10.29.7 actually touches -- text nodes (with the binding-scanner
+ * bypass), traversal, discrimination, createElementNS, attributes, the style
+ * camelCase mapping -- each member gated on an E-P experiment observation
+ * (docs/research/m5-api-notes/ep-observations.md).
  *
  * Split out of VaCuusJsViewContext.cpp for size only -- everything in this file
  * is FVaCuusJsViewContext (plus the shared finalizer), running on whatever
@@ -24,6 +28,7 @@
 
 #include <RmlUi/Core/Element.h>
 #include <RmlUi/Core/ElementDocument.h>
+#include <RmlUi/Core/ElementText.h>
 #include <RmlUi/Core/Factory.h>
 #include <RmlUi/Core/Property.h>
 #include <RmlUi/Core/StringUtilities.h>
@@ -77,6 +82,34 @@ enum EStyleOp : int32
 	StyleRemove
 };
 
+enum ECreateOp : int32
+{
+	CreateTag = 0,	  // createElement(tag)
+	CreateTagNS		  // createElementNS(ns, tag) -- ns ignored, tag shifts one right
+};
+
+enum ENodeStep : int32
+{
+	NodeFirstChild = 0,
+	NodeLastChild,
+	NodeNextSibling,
+	NodePreviousSibling
+};
+
+enum EChildList : int32
+{
+	ChildListElements = 0,	  // `children`: #text filtered out (the DOM contract)
+	ChildListNodes			  // `childNodes`: #text included
+};
+
+/** DOM nodeType values (the only three this facade can produce). */
+enum ENodeType : int32
+{
+	NodeTypeElement = 1,
+	NodeTypeText = 3,
+	NodeTypeDocument = 9
+};
+
 /**
  * Coerces Value to UTF-8 into Out. False = the coercion itself threw (a
  * toString that throws); the exception is pending and the caller must
@@ -99,6 +132,56 @@ bool ToRmlString(JSContext* Ctx, JSValueConst Value, Rml::String& Out)
 JSValue NewRmlString(JSContext* Ctx, const Rml::String& Value)
 {
 	return JS_NewStringLen(Ctx, Value.c_str(), Value.size());
+}
+
+/**
+ * The text-node discriminator. Tag compare, DELIBERATELY NOT rmlui_dynamic_cast
+ * (the cross-module custom-RTTI trap, WrapElement's comment): the "#text"
+ * instancer is registered once at Rml::Initialise (Factory.cpp:178) and returns
+ * a pooled ElementText (ElementInstancer.cpp:44-48); RmlUi's own parser ERRORS
+ * if a "#text" instancer produces anything else (Factory.cpp:402-407), so under
+ * this plugin's default-instancer world the tag is a sound discriminator --
+ * querySelector discriminates text by the same compare (Element.cpp:1547).
+ */
+bool IsTextElement(const Rml::Element* Element)
+{
+	return Element != nullptr && Element->GetTagName() == "#text";
+}
+
+/**
+ * camelCase -> kebab-case for the style surface (E-P4): preact writes
+ * `style.backgroundColor = 'red'` (setStyle assigns the camel key verbatim,
+ * src/diff/props.js:21), and RmlUi registers every property kebab-cased -- the
+ * verbatim name failed the inline parse with a warning, observed. Names
+ * starting with '-' pass verbatim: '--x' custom properties arrive through
+ * setProperty already correct (props.js:16-17), and vendor-style
+ * '-lower-kebab' names have nothing to map. NO 'px' completion happens here,
+ * also per E-P4: preact appends 'px' to bare numbers ITSELF (props.js:23 --
+ * `style.width = 100` arrived as "100px"), so a bare number reaching RmlUi is
+ * a real authoring error and gets RmlUi's own loud "Syntax error parsing
+ * inline property declaration" refusal.
+ */
+Rml::String MapStyleName(const Rml::String& Name)
+{
+	if (Name.empty() || Name[0] == '-')
+	{
+		return Name;
+	}
+	Rml::String Out;
+	Out.reserve(Name.size() + 4);
+	for (const char C : Name)
+	{
+		if (C >= 'A' && C <= 'Z')
+		{
+			Out += '-';
+			Out += static_cast<char>(C - 'A' + 'a');
+		}
+		else
+		{
+			Out += C;
+		}
+	}
+	return Out;
 }
 
 /**
@@ -326,7 +409,24 @@ void FVaCuusJsViewContext::InstallDomPrototypes()
 		JS_CGETSET_MAGIC_DEF(
 			"innerRML", FVaCuusJsViewContext::StringGetterThunk, FVaCuusJsViewContext::StringSetterThunk, PropInnerRML),
 		JS_CGETSET_DEF("parentNode", FVaCuusJsViewContext::ParentNodeGetterThunk, nullptr),
-		JS_CGETSET_DEF("children", FVaCuusJsViewContext::ChildrenGetterThunk, nullptr),
+		JS_CGETSET_MAGIC_DEF("children", FVaCuusJsViewContext::ChildListGetterThunk, nullptr, ChildListElements),
+		JS_CGETSET_MAGIC_DEF("childNodes", FVaCuusJsViewContext::ChildListGetterThunk, nullptr, ChildListNodes),
+		JS_CGETSET_MAGIC_DEF("firstChild", FVaCuusJsViewContext::NodeStepGetterThunk, nullptr, NodeFirstChild),
+		JS_CGETSET_MAGIC_DEF("lastChild", FVaCuusJsViewContext::NodeStepGetterThunk, nullptr, NodeLastChild),
+		JS_CGETSET_MAGIC_DEF("nextSibling", FVaCuusJsViewContext::NodeStepGetterThunk, nullptr, NodeNextSibling),
+		JS_CGETSET_MAGIC_DEF(
+			"previousSibling", FVaCuusJsViewContext::NodeStepGetterThunk, nullptr, NodePreviousSibling),
+		JS_CGETSET_DEF("nodeType", FVaCuusJsViewContext::NodeTypeGetterThunk, nullptr),
+		// localName IS RmlUi's tagName: verbatim lowercase equals DOM localName
+		// semantics (StringGetterThunk's tagName comment) -- and it is the name
+		// preact compares vnode types against when adopting existing DOM
+		// (src/diff/index.js:449-451, the E-P1 excess-children scan).
+		JS_CGETSET_MAGIC_DEF("localName", FVaCuusJsViewContext::StringGetterThunk, nullptr, PropTagName),
+		JS_CGETSET_DEF("attributes", FVaCuusJsViewContext::AttributesGetterThunk, nullptr),
+		// nodeValue and data are ALIASES over ElementText::Get/SetText; on
+		// non-text nodes both read null and writes no-op (TextDataGetterThunk).
+		JS_CGETSET_DEF("nodeValue", FVaCuusJsViewContext::TextDataGetterThunk, FVaCuusJsViewContext::TextDataSetterThunk),
+		JS_CGETSET_DEF("data", FVaCuusJsViewContext::TextDataGetterThunk, FVaCuusJsViewContext::TextDataSetterThunk),
 		JS_CGETSET_DEF("classList", FVaCuusJsViewContext::ClassListGetterThunk, nullptr),
 		JS_CGETSET_DEF("style", FVaCuusJsViewContext::StyleGetterThunk, nullptr),
 		JS_CFUNC_DEF("addEventListener", 2, FVaCuusJsViewContext::AddEventListenerThunk),
@@ -335,7 +435,9 @@ void FVaCuusJsViewContext::InstallDomPrototypes()
 	};
 
 	static const JSCFunctionListEntry GDocumentProtoEntries[] = {
-		JS_CFUNC_DEF("createElement", 1, FVaCuusJsViewContext::DocCreateElementThunk),
+		JS_CFUNC_MAGIC_DEF("createElement", 1, FVaCuusJsViewContext::DocCreateElementThunk, CreateTag),
+		JS_CFUNC_MAGIC_DEF("createElementNS", 2, FVaCuusJsViewContext::DocCreateElementThunk, CreateTagNS),
+		JS_CFUNC_DEF("createTextNode", 1, FVaCuusJsViewContext::DocCreateTextNodeThunk),
 		JS_CFUNC_DEF("getElementById", 1, FVaCuusJsViewContext::DocGetElementByIdThunk),
 		JS_CGETSET_DEF("body", FVaCuusJsViewContext::DocBodyGetterThunk, nullptr),
 	};
@@ -375,7 +477,7 @@ void FVaCuusJsViewContext::InstallDomPrototypes()
 // Document prototype
 // ---------------------------------------------------------------------------
 
-JSValue FVaCuusJsViewContext::DocCreateElementThunk(JSContext* Ctx, JSValueConst This, int Argc, JSValueConst* Argv)
+JSValue FVaCuusJsViewContext::DocCreateElementThunk(JSContext* Ctx, JSValueConst This, int Argc, JSValueConst* Argv, int Magic)
 {
 	using namespace VaCuusJsDomInternal;
 
@@ -385,13 +487,20 @@ JSValue FVaCuusJsViewContext::DocCreateElementThunk(JSContext* Ctx, JSValueConst
 		return JS_NULL;	   // dead context (GetSelfOrNull's comment): same shape as a dead handle
 	}
 
-	if (Self->GetLiveElement(This) == nullptr || Argc < 1)
+	// createElementNS is createElement with the tag one argument later, the
+	// namespace IGNORED: RmlUi has no namespace machinery -- an "svg" element
+	// here is whatever instancer the tag names, nothing more. The spelling
+	// exists because preact 10.29.7 creates EVERY element through it
+	// (src/diff/index.js:465-469, default namespace XHTML); E-P1 observed the
+	// unshimmed mount dying on exactly this call.
+	const int TagIndex = Magic == CreateTagNS ? 1 : 0;
+	if (Self->GetLiveElement(This) == nullptr || Argc < TagIndex + 1)
 	{
 		return JS_NULL;
 	}
 
 	Rml::String Tag;
-	if (!ToRmlString(Ctx, Argv[0], Tag))
+	if (!ToRmlString(Ctx, Argv[TagIndex], Tag))
 	{
 		return JS_EXCEPTION;
 	}
@@ -416,6 +525,65 @@ JSValue FVaCuusJsViewContext::DocCreateElementThunk(JSContext* Ctx, JSValueConst
 	{
 		return JS_NULL;
 	}
+
+	JSValue Wrapper = Self->WrapElement(Fresh.get());
+	if (JS_IsException(Wrapper))
+	{
+		return Wrapper;	   // Fresh releases here -- nothing leaked
+	}
+	if (FVaCuusJsElementHandle* Handle = Self->GetHandle(Wrapper))
+	{
+		Handle->Owned = MoveTemp(Fresh);
+	}
+	return Wrapper;
+}
+
+JSValue FVaCuusJsViewContext::DocCreateTextNodeThunk(JSContext* Ctx, JSValueConst This, int Argc, JSValueConst* Argv)
+{
+	using namespace VaCuusJsDomInternal;
+
+	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	if (Self == nullptr)
+	{
+		return JS_NULL;	   // dead context: same shape as a dead handle
+	}
+
+	if (Self->GetLiveElement(This) == nullptr || Argc < 1)
+	{
+		return JS_NULL;
+	}
+
+	Rml::String Text;
+	if (!ToRmlString(Ctx, Argv[0], Text))
+	{
+		return JS_EXCEPTION;
+	}
+
+	// THE BINDING-SCANNER BYPASS IS THE POINT (M5 spec 2(j)). The parser's text
+	// entry, Factory::InstanceElementText, is NOT a createTextNode: it drops
+	// all-whitespace text (Factory.cpp:338-341), re-parses '<'-bearing text as
+	// RML (:344-388), REFUSES malformed brace text outright (:352-357), and
+	// tags '{{expr}}'-bearing text with `data-text` (:391-392) -- which, inside
+	// any data-model scope, becomes a live DataViewText the moment the node is
+	// inserted (SetDataModel -> ApplyDataViewsControllers, Element.cpp:2162).
+	// A preact app rendering USER STRINGS through that path hands user data to
+	// the expression evaluator: an injection class. So the facade instances the
+	// bare "#text" element -- the same generic Factory call createElement uses,
+	// same detached-owning ownership -- and assigns the string through
+	// ElementText::SetText (ElementText.h:17, ElementText.cpp:108-117: verbatim
+	// store, layout dirtied), which scans nothing, ever. Escaping is re-applied
+	// only on RML serialization (GetRML -> EncodeRml, ElementText.cpp:443-446;
+	// braces are NOT escaped there -- reading innerRML back is safe, but
+	// FEEDING that string to any RML parse re-scans it, the documented
+	// round-trip hazard).
+	Rml::ElementPtr Fresh = Rml::Factory::InstanceElement(nullptr, "#text", "#text", Rml::XMLAttributes());
+	if (!Fresh)
+	{
+		return JS_NULL;
+	}
+	// static_cast justified by the instancer registration -- IsTextElement's
+	// comment; rmlui_dynamic_cast would answer null cross-module (WrapElement).
+	static_cast<Rml::ElementText*>(Fresh.get())->SetText(Text);
 
 	JSValue Wrapper = Self->WrapElement(Fresh.get());
 	if (JS_IsException(Wrapper))
@@ -871,8 +1039,10 @@ JSValue FVaCuusJsViewContext::ParentNodeGetterThunk(JSContext* Ctx, JSValueConst
 	return Self->WrapElement(Element->GetParentNode());
 }
 
-JSValue FVaCuusJsViewContext::ChildrenGetterThunk(JSContext* Ctx, JSValueConst This)
+JSValue FVaCuusJsViewContext::ChildListGetterThunk(JSContext* Ctx, JSValueConst This, int Magic)
 {
+	using namespace VaCuusJsDomInternal;
+
 	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
 	if (Self == nullptr)
 	{
@@ -881,12 +1051,17 @@ JSValue FVaCuusJsViewContext::ChildrenGetterThunk(JSContext* Ctx, JSValueConst T
 
 	// A LIVE SNAPSHOT PER CALL, not DOM's live HTMLCollection: a fresh array
 	// reflecting the tree as of this access; later tree mutations do not update
-	// an array a script already holds -- re-read `children` instead. Dead
-	// handles read an empty array (the querySelectorAll softening). Contents:
-	// DOM children only (GetNumChildren excludes RmlUi's non-DOM extras like
-	// scrollbars, Element.cpp:1147-1150), minus text nodes -- RmlUi text is an
-	// element tagged "#text", which querySelector skips the same way
-	// (Element.cpp:1547) and DOM's `children` never contains.
+	// an array a script already holds -- re-read instead. Dead handles read an
+	// empty array (the querySelectorAll softening). Both spellings walk DOM
+	// children only (GetNumChildren excludes RmlUi's non-DOM extras like
+	// scrollbars, Element.cpp:1147-1150); they differ EXACTLY on text nodes --
+	// RmlUi text is an element tagged "#text", which querySelector skips the
+	// same way (Element.cpp:1547):
+	//   - `children` (ChildListElements) filters #text out, the DOM contract
+	//     for an HTMLCollection of elements;
+	//   - `childNodes` (ChildListNodes) keeps them, the DOM contract for a
+	//     NodeList -- and what preact snapshots for its excess-children scan
+	//     (src/render.js:55, src/diff/index.js:492).
 	JSValue Array = JS_NewArray(Ctx);
 	Rml::Element* Element = Self->GetLiveElement(This);
 	if (Element == nullptr)
@@ -899,7 +1074,7 @@ JSValue FVaCuusJsViewContext::ChildrenGetterThunk(JSContext* Ctx, JSValueConst T
 	for (int ChildIndex = 0; ChildIndex < NumChildren; ++ChildIndex)
 	{
 		Rml::Element* Child = Element->GetChild(ChildIndex);
-		if (Child == nullptr || Child->GetTagName() == "#text")
+		if (Child == nullptr || (Magic == ChildListElements && IsTextElement(Child)))
 		{
 			continue;
 		}
@@ -912,6 +1087,181 @@ JSValue FVaCuusJsViewContext::ChildrenGetterThunk(JSContext* Ctx, JSValueConst T
 		JS_DefinePropertyValueUint32(Ctx, Array, Index++, Wrapper, JS_PROP_C_W_E);	  // takes Wrapper
 	}
 	return Array;
+}
+
+JSValue FVaCuusJsViewContext::NodeStepGetterThunk(JSContext* Ctx, JSValueConst This, int Magic)
+{
+	using namespace VaCuusJsDomInternal;
+
+	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	if (Self == nullptr)
+	{
+		return JS_NULL;	   // dead context: same shape as a dead handle
+	}
+
+	Rml::Element* Element = Self->GetLiveElement(This);
+	if (Element == nullptr)
+	{
+		return JS_NULL;
+	}
+
+	// The four accessors RmlUi already ships (Element.h:418-429): all of them
+	// include #text children and exclude only non-DOM extras -- GetFirstChild
+	// reads children[0] under the DOM count, GetLastChild ends before the
+	// non-DOM tail, and both sibling walks stop at the last DOM child
+	// (Element.cpp:1095-1141). nextSibling is LOAD-BEARING for preact's keyed
+	// reorder: E-P5 observed [4,3,2,1] land as row4,row2,row3,row1 without it
+	// -- the insert() anchor walk (src/diff/children.js:374-376) read
+	// undefined and every subsequent placement degraded to append.
+	Rml::Element* Result = nullptr;
+	switch (Magic)
+	{
+		case NodeFirstChild:
+			Result = Element->GetFirstChild();
+			break;
+		case NodeLastChild:
+			Result = Element->GetLastChild();
+			break;
+		case NodeNextSibling:
+			Result = Element->GetNextSibling();
+			break;
+		case NodePreviousSibling:
+			Result = Element->GetPreviousSibling();
+			break;
+		default:
+			break;
+	}
+	return Self->WrapElement(Result);
+}
+
+JSValue FVaCuusJsViewContext::NodeTypeGetterThunk(JSContext* Ctx, JSValueConst This)
+{
+	using namespace VaCuusJsDomInternal;
+
+	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	if (Self == nullptr)
+	{
+		return JS_NULL;	   // dead context: same shape as a dead handle
+	}
+
+	Rml::Element* Element = Self->GetLiveElement(This);
+	if (Element == nullptr)
+	{
+		return JS_NULL;	   // dead: null, the house rule (DOM has no dead nodes to imitate)
+	}
+
+	// The three node kinds this facade can ever wrap, discriminated the same
+	// way the wrapping itself is: a document is the owner-document
+	// SELF-reference (WrapElement's comment; ElementDocument.cpp:135,
+	// Element.cpp:2136-2141), text is the "#text" tag (IsTextElement), and
+	// everything else is an element. Preact branches on 3 to match text against
+	// existing DOM (src/diff/index.js:451) and on 8 -- comments, which cannot
+	// exist here -- in its anchor walk (src/diff/children.js:376).
+	int32 NodeType = NodeTypeElement;
+	if (Element->GetOwnerDocument() == Element)
+	{
+		NodeType = NodeTypeDocument;
+	}
+	else if (IsTextElement(Element))
+	{
+		NodeType = NodeTypeText;
+	}
+	return JS_NewInt32(Ctx, NodeType);
+}
+
+JSValue FVaCuusJsViewContext::AttributesGetterThunk(JSContext* Ctx, JSValueConst This)
+{
+	using namespace VaCuusJsDomInternal;
+
+	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	if (Self == nullptr)
+	{
+		return JS_NewArray(Ctx);	// dead context: the dead-handle empty array
+	}
+
+	// A snapshot array of {name, value} pairs -- NamedNodeMap's iteration
+	// surface without its live-map machinery, values stringified through the
+	// same Variant conversion getAttribute uses. Preact walks exactly
+	// `attributes.length` / `[i].name` / `[i].value` when it adopts an
+	// existing element on mount into non-empty DOM (src/diff/index.js:497-503)
+	// -- E-P1 post-facade observed the adoption dying on this very read before
+	// the getter existed. Dead handles read an empty array (the children
+	// shape).
+	JSValue Array = JS_NewArray(Ctx);
+	Rml::Element* Element = Self->GetLiveElement(This);
+	if (Element == nullptr)
+	{
+		return Array;
+	}
+
+	uint32 Index = 0;
+	for (const auto& Attribute : Element->GetAttributes())
+	{
+		JSValue Pair = JS_NewObject(Ctx);
+		if (JS_IsException(Pair))
+		{
+			JS_FreeValue(Ctx, Array);
+			return Pair;
+		}
+		JS_SetPropertyStr(Ctx, Pair, "name", NewRmlString(Ctx, Attribute.first));
+		JS_SetPropertyStr(Ctx, Pair, "value", NewRmlString(Ctx, Attribute.second.Get<Rml::String>()));
+		JS_DefinePropertyValueUint32(Ctx, Array, Index++, Pair, JS_PROP_C_W_E);	   // takes Pair
+	}
+	return Array;
+}
+
+JSValue FVaCuusJsViewContext::TextDataGetterThunk(JSContext* Ctx, JSValueConst This)
+{
+	using namespace VaCuusJsDomInternal;
+
+	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	if (Self == nullptr)
+	{
+		return JS_NULL;	   // dead context: same shape as a dead handle
+	}
+
+	Rml::Element* Element = Self->GetLiveElement(This);
+	if (Element == nullptr || !IsTextElement(Element))
+	{
+		// Dead reads null (house rule); so does every non-text node -- DOM's
+		// nodeValue for elements and documents IS null. That `data` also
+		// answers null on elements (DOM leaves it undefined there) is the cost
+		// of one shared prototype, documented as a deviation.
+		return JS_NULL;
+	}
+	return NewRmlString(Ctx, static_cast<const Rml::ElementText*>(Element)->GetText());
+}
+
+JSValue FVaCuusJsViewContext::TextDataSetterThunk(JSContext* Ctx, JSValueConst This, JSValueConst Value)
+{
+	using namespace VaCuusJsDomInternal;
+
+	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	if (Self == nullptr)
+	{
+		return JS_UNDEFINED;	// dead context: assignment silently no-ops
+	}
+
+	Rml::Element* Element = Self->GetLiveElement(This);
+	if (Element == nullptr || !IsTextElement(Element))
+	{
+		return JS_UNDEFINED;	// dead or not text: silent no-op, DOM's own nodeValue-set behavior
+	}
+
+	Rml::String Text;
+	if (!ToRmlString(Ctx, Value, Text))
+	{
+		return JS_EXCEPTION;
+	}
+
+	// THE SAME BYPASS AS createTextNode (DocCreateTextNodeThunk's comment):
+	// SetText stores verbatim and dirties layout when changed
+	// (ElementText.cpp:108-117); no brace scan, no RML parse, ever. This write
+	// is preact's steady-state text-update path -- `dom.data = value`
+	// (src/diff/index.js:484-485), observed in E-P3 as the ONLY call after the
+	// mount's createTextNode.
+	static_cast<Rml::ElementText*>(Element)->SetText(Text);
+	return JS_UNDEFINED;
 }
 
 JSValue FVaCuusJsViewContext::ClassListGetterThunk(JSContext* Ctx, JSValueConst This)
@@ -1074,6 +1424,10 @@ JSValue FVaCuusJsViewContext::StyleOpThunk(
 	{
 		return JS_EXCEPTION;
 	}
+
+	// All three ops map, so a camelCase write reads back through the same
+	// camelCase name -- MapStyleName's comment has the E-P4 contract.
+	Name = MapStyleName(Name);
 
 	switch (Magic)
 	{

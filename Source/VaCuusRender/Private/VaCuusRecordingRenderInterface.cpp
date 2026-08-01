@@ -3,6 +3,9 @@
 #include "VaCuusRecordingRenderInterface.h"
 
 #include "VaCuusDefines.h"
+#include "VaCuusMaterialDraw.h" // IsEnabled/IsForcedRepublishEnabled: the M5 material tier's switches at CompileShader and the idle gate
+#include "VaCuusStyleSet.h"		// FVaCuusStyleRegistry::GetInstalledSnapshot: the shader(<stylekey>) resolution table
+#include "VaCuusUIShaders.h"	// VaCuusBuiltinShaders: the shader(<key>) registry CompileShader validates against
 
 #include "HAL/IConsoleManager.h"
 #include "HAL/PlatformTLS.h"
@@ -12,6 +15,8 @@
 #include "ProfilingDebugging/CpuProfilerTrace.h"
 
 #include <RmlUi/Core/Core.h>
+#include <RmlUi/Core/DecorationTypes.h> // Rml::ColorStop, for the gradient dictionaries
+#include <RmlUi/Core/Dictionary.h>	   // Rml::Get over the CompileFilter/CompileShader parameter dictionaries
 #include <RmlUi/Core/FileInterface.h>
 
 #include <cstddef>
@@ -31,6 +36,20 @@ static_assert(sizeof(int) == sizeof(int32), "Rml index type must be 32-bit");
 // Recorder handles round-trip through Rml handles (uintptr_t) unchanged.
 static_assert(sizeof(Rml::CompiledGeometryHandle) == sizeof(FVaCuusGeometryHandle), "Rml geometry handle must be 64-bit");
 static_assert(sizeof(Rml::TextureHandle) == sizeof(FVaCuusTextureHandle), "Rml texture handle must be 64-bit");
+static_assert(sizeof(Rml::CompiledFilterHandle) == sizeof(FVaCuusFilterHandle), "Rml filter handle must be 64-bit");
+static_assert(sizeof(Rml::LayerHandle) == sizeof(FVaCuusLayerHandle), "Rml layer handle must be 64-bit");
+static_assert(sizeof(Rml::CompiledShaderHandle) == sizeof(FVaCuusShaderHandle), "Rml shader handle must be 64-bit");
+
+// The two mirrored enums are recorded by static_cast, so their numeric values must track
+// RmlUi's (RenderInterface.h:10-18). Pinned value by value: a reordered or extended Rml
+// enum fails here instead of silently recording the wrong operation.
+static_assert(uint8(Rml::BlendMode::Blend) == uint8(EVaCuusBlendMode::Blend) &&
+		uint8(Rml::BlendMode::Replace) == uint8(EVaCuusBlendMode::Replace),
+	"EVaCuusBlendMode must mirror Rml::BlendMode value for value");
+static_assert(uint8(Rml::ClipMaskOperation::Set) == uint8(EVaCuusClipMaskOp::Set) &&
+		uint8(Rml::ClipMaskOperation::SetInverse) == uint8(EVaCuusClipMaskOp::SetInverse) &&
+		uint8(Rml::ClipMaskOperation::Intersect) == uint8(EVaCuusClipMaskOp::Intersect),
+	"EVaCuusClipMaskOp must mirror Rml::ClipMaskOperation value for value");
 
 /**
  * THE KILL SWITCH for the idle short-circuit, and the reason it is worth its handful of
@@ -118,16 +137,18 @@ FVaCuusRecordingRenderInterface::~FVaCuusRecordingRenderInterface()
 	// are torn down together. Logged (not ensured) because that legitimate
 	// path would otherwise trip on every shutdown.
 	//
-	// The SECOND site that used to name all four delta arrays inline; it asks the buffer
-	// now, for the same reason the gate does. The message below still itemises the four --
-	// a fifth array would make it read "0 of everything" here, which is a cosmetic gap and
+	// The SECOND site that used to name all the delta arrays inline; it asks the buffer
+	// now, for the same reason the gate does. The message below still itemises the eight --
+	// a ninth array would make it read "0 of everything" here, which is a cosmetic gap and
 	// not a lost resource, and FVaCuusCommandBuffer::HasResourceTraffic is one grep away.
 	if (Pending && Pending->HasResourceTraffic())
 	{
 		UE_LOG(LogVaCuus, Log,
-			TEXT("Recorder destroyed with unpublished resource traffic (new: %d geometry, %d textures; released: %d geometry, %d textures) — dropped"),
-			Pending->NewGeometry.Num(), Pending->NewTextures.Num(),
-			Pending->ReleasedGeometry.Num(), Pending->ReleasedTextures.Num());
+			TEXT("Recorder destroyed with unpublished resource traffic (new: %d geometry, %d textures, %d filters, %d shaders; ")
+			TEXT("released: %d geometry, %d textures, %d filters, %d shaders) — dropped"),
+			Pending->NewGeometry.Num(), Pending->NewTextures.Num(), Pending->NewFilters.Num(), Pending->NewShaders.Num(),
+			Pending->ReleasedGeometry.Num(), Pending->ReleasedTextures.Num(), Pending->ReleasedFilters.Num(),
+			Pending->ReleasedShaders.Num());
 	}
 }
 
@@ -750,6 +771,380 @@ void FVaCuusRecordingRenderInterface::SetTransform(const Rml::Matrix4f* Transfor
 	// nullptr -> identity, which is FVaCuusCommand's default Transform.
 }
 
+Rml::CompiledFilterHandle FVaCuusRecordingRenderInterface::CompileFilter(const Rml::String& Name, const Rml::Dictionary& Parameters)
+{
+	CheckOwnerThread();
+
+	// THE BLUR-ONLY POLICY (M5 spec §2(d)). RmlUi registers ten filter instancers
+	// (Factory.cpp:216-226); v1 compiles exactly one. Returning 0 is the SAFE refusal by
+	// RmlUi's own contract: RenderManager::CompileFilter wraps the handle into a live
+	// CompiledFilter only when it is nonzero (RenderManager.cpp:274-283), so a zero never
+	// reaches ReleaseFilter (CompiledFilter::Release guards on the invalid handle,
+	// CompiledFilterShader.cpp:14-21) and never lands in a composite's filter list
+	// (AddHandleTo skips the invalid handle, CompiledFilterShader.cpp:6-12). RmlUi then
+	// warns per element ("Could not compile filter on element",
+	// ElementEffects.cpp:153-165) and renders the element with the filter dropped — the
+	// same discipline as an unknown decorator key.
+	if (Name != "blur")
+	{
+		// Latched per TYPE, not per element: RmlUi's warning already names each element;
+		// this line exists to say which types would have worked, once.
+		bool bAlreadyRefused = false;
+		RefusedFilterTypes.Add(UTF8_TO_TCHAR(Name.c_str()), &bAlreadyRefused);
+		if (!bAlreadyRefused)
+		{
+			UE_LOG(LogVaCuus, Warning,
+				TEXT("CompileFilter: filter type '%s' is not supported — VaCuus compiles 'blur' only; the effect is dropped per element"),
+				UTF8_TO_TCHAR(Name.c_str()));
+		}
+		return Rml::CompiledFilterHandle(0);
+	}
+
+	// FilterBlur::CompileFilter sends exactly {"sigma": resolved length in px} — the
+	// blur() length itself, no 0.5 factor (FilterBlur.cpp:16-20) — so blur(12px) at
+	// dp-ratio 1.0 arrives as sigma 12.0 and is recorded verbatim.
+	const float Sigma = Rml::Get(Parameters, "sigma", 0.0f);
+
+	const FVaCuusFilterHandle Handle = NextFilterHandle++;
+	ensureMsgf(Handle != 0, TEXT("Filter handle counter wrapped to the invalid sentinel"));
+
+	FVaCuusFilterData& Data = GetPending().NewFilters.Add(Handle);
+	Data.Sigma = Sigma;
+
+	return Rml::CompiledFilterHandle(Handle);
+}
+
+void FVaCuusRecordingRenderInterface::ReleaseFilter(Rml::CompiledFilterHandle Filter)
+{
+	CheckOwnerThread();
+
+	// Resource call, legal out of frame: ElementEffects::ReleaseEffects destroys compiled
+	// filters at document teardown (ElementEffects.cpp:169-183), which runs from
+	// Document->Close() outside any Begin/End pair. Same-frame compile+release keeps both
+	// entries, exactly like geometry.
+	GetPending().ReleasedFilters.Add(FVaCuusFilterHandle(Filter));
+}
+
+Rml::CompiledShaderHandle FVaCuusRecordingRenderInterface::CompileShader(const Rml::String& Name, const Rml::Dictionary& Parameters)
+{
+	CheckOwnerThread();
+
+	// One refusal shape for both an unregistered builtin key and an unrecognized
+	// CompileShader name, DECIDED against the mint-an-inert-handle alternative on what the
+	// zero actually does, opened rather than assumed: RenderManager::CompileShader wraps a
+	// zero into nothing (RenderManager.cpp:285-294), the decorator's GenerateElementData
+	// returns INVALID_DECORATORDATAHANDLE (DecoratorShader.cpp:36-37), and that suppresses
+	// rendering of exactly ONE decorator on exactly ONE element — RenderEffects guards each
+	// entry separately (ElementEffects.cpp:196-200) and only the failed entry's data is
+	// null (:138-142). The rest of the comma-list, the element and the document all render;
+	// the claim that a zero "kills the whole declaration" is true only at PARSE time for an
+	// unknown decorator TYPE (PropertyParserDecorator.cpp:101-106), which a registered
+	// "shader" with a bad VALUE never reaches. So the zero return IS the per-decorator
+	// refusal, identical in shape to the blur-only filter policy above — and unlike a
+	// minted-but-inert handle it records no desc, no draw and no resource traffic for a key
+	// that can never draw. RmlUi's own per-element warning ("Could not generate decorator
+	// element data", ElementEffects.cpp:150-151) names the element; the latched line below
+	// names the key and what would have worked.
+	const auto RefuseKey = [this](const TCHAR* What, const FString& Key) -> Rml::CompiledShaderHandle
+	{
+		bool bAlreadyRefused = false;
+		RefusedShaderKeys.Add(Key, &bAlreadyRefused);
+		if (!bAlreadyRefused)
+		{
+			// Both halves of what WOULD have worked (Task 5b's refusal contract): the
+			// builtin table and the registered style keys. Built at refusal rate, and
+			// latched, so the join is paid once per unknown key per recorder.
+			FString StyleKeys;
+			if (const TSharedPtr<const FVaCuusStyleSnapshot> Snapshot = FVaCuusStyleRegistry::GetInstalledSnapshot())
+			{
+				for (const TPair<FString, uint64>& Pair : Snapshot->KeyToId)
+				{
+					StyleKeys += StyleKeys.IsEmpty() ? Pair.Key : (TEXT(", ") + Pair.Key);
+				}
+			}
+			UE_LOG(LogVaCuus, Warning,
+				TEXT("CompileShader: %s '%s' is not registered — known builtin keys: %s; registered style keys: %s. ")
+				TEXT("The decorator is dropped per element"),
+				What, *Key, *VaCuusBuiltinShaders::KnownKeysForLog(),
+				StyleKeys.IsEmpty() ? TEXT("(none)") : *StyleKeys);
+		}
+		return Rml::CompiledShaderHandle(0);
+	};
+
+	FVaCuusShaderDesc Desc;
+
+	// The stop list, resolved by RmlUi before the call (all positions Unit::NUMBER,
+	// DecoratorGradient.cpp:119) and truncated to the reference backends' cap — see
+	// VaCuusMaxGradientStops for why 16 and why truncation is the reference behavior.
+	const auto RecordStops = [this, &Desc, &Parameters]()
+	{
+		const auto It = Parameters.find("color_stop_list");
+		if (!ensureMsgf(It != Parameters.end() && It->second.GetType() == Rml::Variant::COLORSTOPLIST,
+				TEXT("Gradient dictionary without a color_stop_list — DecoratorGradient always sends one")))
+		{
+			return;
+		}
+		const Rml::ColorStopList& Stops = It->second.GetReference<Rml::ColorStopList>();
+
+		const int32 NumStops = FMath::Min(int32(Stops.size()), VaCuusMaxGradientStops);
+		if (int32(Stops.size()) > NumStops && !bLoggedStopOverflow)
+		{
+			bLoggedStopOverflow = true;
+			UE_LOG(LogVaCuus, Warning,
+				TEXT("CompileShader: a gradient carries %d color stops; only the first %d are kept (the RmlUi reference ")
+				TEXT("backends' cap, RmlUi_Renderer_GL3.cpp:40,1635)"),
+				int32(Stops.size()), VaCuusMaxGradientStops);
+		}
+
+		Desc.Stops.Reserve(NumStops);
+		for (int32 Index = 0; Index < NumStops; ++Index)
+		{
+			const Rml::ColorStop& Stop = Stops[Index];
+			FVaCuusColorStop& Out = Desc.Stops.AddDefaulted_GetRef();
+			Out.Color = FVector4f(float(Stop.color.red), float(Stop.color.green), float(Stop.color.blue), float(Stop.color.alpha)) / 255.0f;
+			ensureMsgf(Stop.position.unit == Rml::Unit::NUMBER,
+				TEXT("Color stop arrived unresolved (unit %d) — ResolveColorStops guarantees NUMBER"), int32(Stop.position.unit));
+			Out.Position = Stop.position.number;
+		}
+	};
+
+	// The four names RmlUi 6 sends, each dictionary opened at its compile site
+	// (material-decorators.md §1's table): everything is recorded verbatim.
+	if (Name == "linear-gradient")
+	{
+		// DecoratorGradient.cpp:252-259.
+		Desc.Kind = EVaCuusShaderKind::LinearGradient;
+		const Rml::Vector2f P0 = Rml::Get(Parameters, "p0", Rml::Vector2f(0.f));
+		const Rml::Vector2f P1 = Rml::Get(Parameters, "p1", Rml::Vector2f(0.f));
+		Desc.P0 = FVector2f(P0.x, P0.y);
+		Desc.P1 = FVector2f(P1.x, P1.y);
+		Desc.Length = Rml::Get(Parameters, "length", 0.f);
+		Desc.bRepeating = Rml::Get(Parameters, "repeating", false) ? 1 : 0;
+		RecordStops();
+	}
+	else if (Name == "radial-gradient")
+	{
+		// DecoratorGradient.cpp:422-428.
+		Desc.Kind = EVaCuusShaderKind::RadialGradient;
+		const Rml::Vector2f Center = Rml::Get(Parameters, "center", Rml::Vector2f(0.f));
+		const Rml::Vector2f Radius = Rml::Get(Parameters, "radius", Rml::Vector2f(0.f));
+		Desc.Center = FVector2f(Center.x, Center.y);
+		Desc.Radius = FVector2f(Radius.x, Radius.y);
+		Desc.bRepeating = Rml::Get(Parameters, "repeating", false) ? 1 : 0;
+		RecordStops();
+	}
+	else if (Name == "conic-gradient")
+	{
+		// DecoratorGradient.cpp:619-625.
+		Desc.Kind = EVaCuusShaderKind::ConicGradient;
+		Desc.Angle = Rml::Get(Parameters, "angle", 0.f);
+		const Rml::Vector2f Center = Rml::Get(Parameters, "center", Rml::Vector2f(0.f));
+		Desc.Center = FVector2f(Center.x, Center.y);
+		Desc.bRepeating = Rml::Get(Parameters, "repeating", false) ? 1 : 0;
+		RecordStops();
+	}
+	else if (Name == "shader")
+	{
+		// DecoratorShader.cpp:35: the whole shorthand value arrives verbatim as one string.
+		const Rml::String Value = Rml::Get(Parameters, "value", Rml::String());
+		FString Key = UTF8_TO_TCHAR(Value.c_str());
+		const Rml::Vector2f Dimensions = Rml::Get(Parameters, "dimensions", Rml::Vector2f(0.f));
+
+		if (VaCuusBuiltinShaders::FindMode(Key) != INDEX_NONE)
+		{
+			// Builtins win — which is why registration refuses a style key that would
+			// shadow one (FVaCuusStyleRegistry's reserved-key refusal).
+			Desc.Kind = EVaCuusShaderKind::Builtin;
+		}
+		else if (VaCuusMaterialDraw::IsEnabled())
+		{
+			// THE STYLE-KEY RESOLUTION (M5 Task 5b): a pure lookup in the immutable
+			// snapshot the registry published over the command queue — no lock, no
+			// loads, no game-thread state touched. Unknown key => the Task 4 refusal,
+			// now listing both tables.
+			const TSharedPtr<const FVaCuusStyleSnapshot> Snapshot = FVaCuusStyleRegistry::GetInstalledSnapshot();
+			const uint64* StableId = Snapshot.IsValid() ? Snapshot->KeyToId.Find(Key) : nullptr;
+			if (!StableId)
+			{
+				return RefuseKey(TEXT("shader key"), Key);
+			}
+
+			Desc.Kind = EVaCuusShaderKind::Material;
+			Desc.MaterialId = *StableId;
+
+			// THE VIEW'S FORCED-REPUBLISH FLAG comes up with the first live material
+			// (see LiveMaterialShaders): the handle is minted below, after every
+			// refusal path is behind us, so record membership via the counter we are
+			// about to mint. NextShaderHandle is the handle this desc gets.
+			LiveMaterialShaders.Add(NextShaderHandle);
+		}
+		else
+		{
+			// The tier's kill-switch (vacuus.MaterialDecorators 0): style keys refuse
+			// like unknown ones. Builtins and gradients are stage-1 vocabulary and are
+			// deliberately not behind it.
+			return RefuseKey(TEXT("shader key (material tier disabled)"), Key);
+		}
+
+		Desc.BuiltinKey = MoveTemp(Key);
+		Desc.Dimensions = FVector2f(Dimensions.x, Dimensions.y);
+	}
+	else
+	{
+		// Unreachable from vendored RmlUi 6 (the four names above are the compile sites'
+		// complete set), so this is a version-bump tripwire, refused like an unknown key.
+		return RefuseKey(TEXT("shader name"), FString(UTF8_TO_TCHAR(Name.c_str())));
+	}
+
+	const FVaCuusShaderHandle Handle = NextShaderHandle++;
+	ensureMsgf(Handle != 0, TEXT("Shader handle counter wrapped to the invalid sentinel"));
+
+	GetPending().NewShaders.Add(Handle, MoveTemp(Desc));
+
+	return Rml::CompiledShaderHandle(Handle);
+}
+
+void FVaCuusRecordingRenderInterface::RenderShader(Rml::CompiledShaderHandle Shader, Rml::CompiledGeometryHandle Geometry,
+	Rml::Vector2f Translation, Rml::TextureHandle Texture)
+{
+	CheckOwnerThread();
+	if (!ensureMsgf(bInFrame, TEXT("RenderShader() outside BeginFrame/EndFrameAndPublish; call dropped")))
+	{
+		return;
+	}
+
+	// A zero shader handle cannot arrive: Geometry::Render dispatches here only when a
+	// live CompiledShader is attached (RenderManager::Render, RenderManager.cpp:234-237)
+	// and RenderManager::CompileShader never wraps a zero (:285-294) — a refused compile
+	// reaches the replayer as an ABSENT draw, not a zero one. Texture is part of the
+	// virtual's signature (RenderInterface.h:137) and recorded like RenderGeometry's; the
+	// decorators above never pass one, so 0 is the routine value.
+	FVaCuusCommand& Command = GetPending().Commands.AddDefaulted_GetRef();
+	Command.Type = EVaCuusCommandType::DrawShader;
+	Command.Geometry = FVaCuusGeometryHandle(Geometry);
+	Command.Shader = FVaCuusShaderHandle(Shader);
+	Command.Texture = FVaCuusTextureHandle(Texture);
+	Command.Translation = FVector2f(Translation.x, Translation.y);
+}
+
+void FVaCuusRecordingRenderInterface::ReleaseShader(Rml::CompiledShaderHandle Shader)
+{
+	CheckOwnerThread();
+
+	// Resource call, legal out of frame: compiled shaders die with their decorator's
+	// element data (ShaderElementData pools a CompiledShader whose destructor rides
+	// RenderManager::ReleaseResource -> ReleaseShader, DecoratorShader.cpp:49-58,
+	// RenderManager.cpp:364-368), and decorator data is released at document teardown.
+	// Same-frame compile+release keeps both entries, exactly like geometry.
+	GetPending().ReleasedShaders.Add(FVaCuusShaderHandle(Shader));
+
+	// The other edge of the view's forced-republish flag: the last live material
+	// released (document closed, decorator restyled away) puts the idle gate back in
+	// charge — a view that stopped drawing materials must be able to go idle again.
+	LiveMaterialShaders.Remove(FVaCuusShaderHandle(Shader));
+}
+
+Rml::LayerHandle FVaCuusRecordingRenderInterface::PushLayer()
+{
+	CheckOwnerThread();
+	if (!ensureMsgf(bInFrame, TEXT("PushLayer() outside BeginFrame/EndFrameAndPublish; call dropped")))
+	{
+		// 0 is the reserved base layer (RenderInterface.h:96) — a harmless answer for a
+		// call that cannot legitimately happen (RmlUi only renders inside Context::Render).
+		return Rml::LayerHandle(0);
+	}
+
+	const FVaCuusLayerHandle Handle = NextLayerHandle++;
+
+	FVaCuusCommand& Command = GetPending().Commands.AddDefaulted_GetRef();
+	Command.Type = EVaCuusCommandType::PushLayer;
+	Command.SourceLayer = Handle;
+
+	return Rml::LayerHandle(Handle);
+}
+
+void FVaCuusRecordingRenderInterface::CompositeLayers(Rml::LayerHandle Source, Rml::LayerHandle Destination, Rml::BlendMode BlendMode,
+	Rml::Span<const Rml::CompiledFilterHandle> Filters)
+{
+	CheckOwnerThread();
+	if (!ensureMsgf(bInFrame, TEXT("CompositeLayers() outside BeginFrame/EndFrameAndPublish; call dropped")))
+	{
+		return;
+	}
+	check(Filters.size() <= size_t(MAX_int32));
+
+	FVaCuusCommandBuffer& Buffer = GetPending();
+
+	// The filter list is recorded verbatim into the buffer-level side array — the
+	// variable-length record. Zero handles cannot arrive here: every list RmlUi builds
+	// goes through CompiledFilter::AddHandleTo, which skips the invalid handle
+	// (CompiledFilterShader.cpp:6-12; list assembly at ElementEffects.cpp:269-271), so a
+	// refused non-blur filter reaches this composite as an ABSENCE, not a zero.
+	//
+	// Appending to CompositeFilters cannot invalidate the Commands ref: two different
+	// arrays.
+	FVaCuusCommand& Command = Buffer.Commands.AddDefaulted_GetRef();
+	Command.Type = EVaCuusCommandType::CompositeLayers;
+	Command.SourceLayer = FVaCuusLayerHandle(Source);
+	Command.DestLayer = FVaCuusLayerHandle(Destination);
+	Command.Blend = EVaCuusBlendMode(BlendMode);
+	Command.FilterOffset = Buffer.CompositeFilters.Num();
+	Command.FilterCount = int32(Filters.size());
+	for (const Rml::CompiledFilterHandle FilterHandle : Filters)
+	{
+		Buffer.CompositeFilters.Add(FVaCuusFilterHandle(FilterHandle));
+	}
+}
+
+void FVaCuusRecordingRenderInterface::PopLayer()
+{
+	CheckOwnerThread();
+	if (!ensureMsgf(bInFrame, TEXT("PopLayer() outside BeginFrame/EndFrameAndPublish; call dropped")))
+	{
+		return;
+	}
+
+	FVaCuusCommand& Command = GetPending().Commands.AddDefaulted_GetRef();
+	Command.Type = EVaCuusCommandType::PopLayer;
+}
+
+void FVaCuusRecordingRenderInterface::EnableClipMask(bool bEnable)
+{
+	CheckOwnerThread();
+	if (!ensureMsgf(bInFrame, TEXT("EnableClipMask() outside BeginFrame/EndFrameAndPublish; call dropped")))
+	{
+		return;
+	}
+
+	// BOTH edges are recorded, unlike the scissor's (EnableScissorRegion above): RmlUi
+	// batches mask geometry through ApplyClipMask, whose enable call is the only signal
+	// that a NEW mask list replaces the old one (RenderManager.cpp:156-176) — and the
+	// disable edge is what delimits the mask's scope for Task 3's glass distiller.
+	FVaCuusCommand& Command = GetPending().Commands.AddDefaulted_GetRef();
+	Command.Type = EVaCuusCommandType::EnableClipMask;
+	Command.bClipMaskEnable = bEnable ? 1 : 0;
+}
+
+void FVaCuusRecordingRenderInterface::RenderToClipMask(Rml::ClipMaskOperation Operation, Rml::CompiledGeometryHandle Geometry, Rml::Vector2f Translation)
+{
+	CheckOwnerThread();
+	if (!ensureMsgf(bInFrame, TEXT("RenderToClipMask() outside BeginFrame/EndFrameAndPublish; call dropped")))
+	{
+		return;
+	}
+
+	// The mask geometry is ordinary compiled geometry — border-radius clip shapes arrive
+	// through CompileGeometry like everything else (RenderManager::GetCompiledGeometryHandle,
+	// RenderManager.cpp:197-212, reached from ApplyClipMask at :169-170) — so the handle
+	// resolves in NewGeometry/earlier buffers and Task 3's distiller can read the mask's
+	// vertices from the same place the replayer would.
+	FVaCuusCommand& Command = GetPending().Commands.AddDefaulted_GetRef();
+	Command.Type = EVaCuusCommandType::RenderToClipMask;
+	Command.ClipMaskOp = EVaCuusClipMaskOp(Operation);
+	Command.Geometry = FVaCuusGeometryHandle(Geometry);
+	Command.Translation = FVector2f(Translation.x, Translation.y);
+}
+
 void FVaCuusRecordingRenderInterface::BeginFrame(FIntPoint ViewSize)
 {
 	ensureMsgf(!bInFrame, TEXT("BeginFrame() called twice without EndFrameAndPublish()"));
@@ -759,6 +1154,10 @@ void FVaCuusRecordingRenderInterface::BeginFrame(FIntPoint ViewSize)
 	GetPending().ViewSize = ViewSize;
 	OwnerThreadId = FPlatformTLS::GetCurrentThreadId();
 	bInFrame = true;
+
+	// Layer handles restart every frame — see the declaration for why this is what keeps
+	// a static glass document idle-gated.
+	NextLayerHandle = 1;
 
 	// Top of the frame, before any RmlUi call: a payload installed here is part of
 	// this frame's resource delta, so it publishes with this frame.
@@ -940,7 +1339,28 @@ TUniquePtr<FVaCuusCommandBuffer> FVaCuusRecordingRenderInterface::EndFrameAndPub
 	// frame of a view always publishes and never compares against an unset hash.
 	// CVarVaCuusIdleGate is the kill switch; see its declaration.
 	const bool bGateEnabled = CVarVaCuusIdleGate.GetValueOnAnyThread() != 0;
-	if (bGateEnabled && Generation > 0 && ContentHash == LastPublishedContentHash && !bHasResourceTraffic)
+
+	// THE FREEZE REMEDY, PRODUCTION SHAPE (M5 Task 5b; the fact is spec §2(f)): a live
+	// material decorator is GPU-evaluated state the hash and the traffic predicate
+	// cannot see — the composite only samples the RT (VaCuusSlateElement.cpp:141-204)
+	// and the RT is written only in this publish-gated replay branch, so a time-animated
+	// or MID-driven material would freeze on whatever publish last ran. PER VIEW: the
+	// term is this recorder's own live-shader table (LiveMaterialShaders — compiled
+	// Material descs not yet released), so a material HUD in one view cannot reopen the
+	// idle row for every other view the way the spike's process-global did. CLAMPED TO
+	// ENGINE RATE: at most one forced publish per GFrameCounter tick — the composite
+	// samples the RT once per engine frame, so a second replay inside one engine frame
+	// is pure cost (the spike's own record prices exactly this and says clamp, spec
+	// §3.3). GFrameCounter is read cross-thread the way the engine itself reads it
+	// everywhere (a monotonic uint64 the game thread bumps once per engine loop);
+	// staleness by one tick costs one deferred publish, never a wrong one.
+	// vacuus.MaterialForcedRepublish is the kill-switch — off, the freeze is observable.
+	const uint64 EngineFrame = GFrameCounter;
+	const bool bMaterialLive = LiveMaterialShaders.Num() > 0;
+	const bool bMaterialForcedRepublish = bMaterialLive && VaCuusMaterialDraw::IsForcedRepublishEnabled() &&
+		EngineFrame != LastMaterialRepublishFrame;
+	if (bGateEnabled && Generation > 0 && ContentHash == LastPublishedContentHash && !bHasResourceTraffic &&
+		!bMaterialForcedRepublish)
 	{
 		// A skipped frame consumes NO generation: Generation is documented as a
 		// strictly increasing PUBLISH counter and ShouldConsume treats a repeat as
@@ -950,6 +1370,16 @@ TUniquePtr<FVaCuusCommandBuffer> FVaCuusRecordingRenderInterface::EndFrameAndPub
 		// on every frame, published or not.
 		++NumFramesSkipped;
 		return nullptr;
+	}
+
+	if (bMaterialLive)
+	{
+		// ANY publish re-evaluates the materials (the replay pass rebuilds the view UB
+		// with fresh time and re-reads every proxy), so the clamp latches on every
+		// publish while a material is live — not only on forced ones. Otherwise a
+		// content-change publish and a forced publish could land in the same engine
+		// frame, which is exactly the double replay the clamp exists to prevent.
+		LastMaterialRepublishFrame = EngineFrame;
 	}
 
 	LastPublishedContentHash = ContentHash;

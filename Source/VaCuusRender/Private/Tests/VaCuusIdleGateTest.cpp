@@ -596,13 +596,16 @@ bool FVaCuusIdleGateHashPaddingTest::RunTest(const FString& Parameters)
 
 	// Appending a command changes the hash. NOT relabelled idly: this used to claim "the
 	// command count is part of the frame hash", which it cannot show. A second command adds
-	// another sizeof(FVaCuusCommandHashImage) == 112 bytes to the stream, so the hash moves
+	// another sizeof(FVaCuusCommandHashImage) == 168 bytes to the stream, so the hash moves
 	// whether or not the header carries a count, and the assertion passes either way.
 	//
-	// The header's count field is therefore pinned by NOTHING here, and cannot be until the
-	// image gains a variable-length field -- which is exactly the reason the count is in the
-	// header at all (see VaCuusHashFrameContent). Said out loud rather than left as a label
-	// that overstates its evidence.
+	// The header's count field is therefore pinned by NOTHING here. The day this comment
+	// used to defer to has since come -- M5's CompositeLayers filter lists made records
+	// variable-length, so the count now earns its keep (see VaCuusHashFrameContent) -- but
+	// the commands THIS test builds carry no filter list, so the count remains unpinned
+	// here and the label above still claims only what it shows. The filter-list bytes have
+	// their own controls in VaCuusGlassRecorderTest.cpp; the M5 Shader field's control
+	// lives in VaCuusDecoratorTest.cpp.
 	FVaCuusCommandBuffer Longer = Clean;
 	FillCommand(Longer.Commands.AddDefaulted_GetRef());
 	TestTrue(TEXT("Appending a command changes the frame hash"), VaCuusHashFrameContent(Longer) != Baseline);

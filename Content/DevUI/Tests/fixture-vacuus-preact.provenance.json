@@ -1,0 +1,5 @@
+{
+  "preactVersion": "10.29.7",
+  "facadeManifestHash": "5b47461f54695d2a855b956ddba0ed569d4ad02f",
+  "buildCommand": "node Web/packages/cli/bin/vacuus.mjs build --app Web/apps/ep-fixture"
+}

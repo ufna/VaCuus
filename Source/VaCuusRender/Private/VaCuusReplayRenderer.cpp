@@ -3,6 +3,7 @@
 #include "VaCuusReplayRenderer.h"
 
 #include "VaCuusDefines.h"
+#include "VaCuusMaterialDraw.h"
 #include "VaCuusStats.h"
 #include "VaCuusUIShaders.h"
 
@@ -126,6 +127,10 @@ void FVaCuusReplayRenderer::RetireBufferResources(const FVaCuusCommandBuffer& Bu
 	{
 		Textures.Remove(Handle);
 	}
+	for (const FVaCuusShaderHandle Handle : Buffer.ReleasedShaders)
+	{
+		Shaders.Remove(Handle);
+	}
 
 	LastConsumedGeneration = Buffer.Generation;
 }
@@ -135,6 +140,7 @@ void FVaCuusReplayRenderer::ReleaseResources()
 	check(IsInRenderingThread());
 	Geometry.Empty();
 	Textures.Empty();
+	Shaders.Empty();
 	OutputRT.SafeRelease();
 
 	// Reset the guard: after teardown this replayer can only be paired with a fresh
@@ -216,6 +222,15 @@ void FVaCuusReplayRenderer::UploadNewResources(FRHICommandList& RHICmdList, cons
 
 		Textures.Add(Pair.Key, MoveTemp(Texture));
 	}
+
+	// Shaders: the "upload" is the map insert — see the member's declaration. Add on an
+	// existing key is the swap, same argument as NewTextures' re-Add (cannot actually
+	// happen for shaders — handles are never recycled and a desc is immutable once
+	// compiled — but the map does not need to care).
+	for (const TPair<FVaCuusShaderHandle, FVaCuusShaderDesc>& Pair : Buffer.NewShaders)
+	{
+		Shaders.Add(Pair.Key, Pair.Value);
+	}
 }
 
 void FVaCuusReplayRenderer::ReplayCommands(FRHICommandList& RHICmdList, const FVaCuusCommandBuffer& Buffer)
@@ -224,9 +239,24 @@ void FVaCuusReplayRenderer::ReplayCommands(FRHICommandList& RHICmdList, const FV
 	const FMatrix44f Projection = VaCuusReplay::MakePixelToClipMatrix(RTSize);
 	int32 NumDrawCalls = 0;
 
+	// TOptionalShaderMapRef, NOT TShaderMapRef: the hard ref checkf()s on a missing
+	// shader (GlobalShader.h:201) and under the automation suite's -nullrhi no global
+	// shader is ever compiled, so the first test that drove a replay took the whole
+	// suite down (the M5 Task 5 spike's recorded observation; it dodged the problem by
+	// driving its material draw below Replay -- the world sink cannot, its replay IS
+	// the arrival path). On any real RHI the guard is dead code: an incomplete global
+	// shader map is fatal at engine startup long before a frame records. The early
+	// return is BEFORE the RTV transition, so the SRVMask-outside-Replay invariant
+	// holds on the path that skips.
 	FGlobalShaderMap* ShaderMap = GetGlobalShaderMap(GMaxRHIFeatureLevel);
-	TShaderMapRef<FVaCuusUIVS> VertexShader(ShaderMap);
-	TShaderMapRef<FVaCuusUIPS> PixelShader(ShaderMap);
+	TOptionalShaderMapRef<FVaCuusUIVS> VertexShader(ShaderMap);
+	TOptionalShaderMapRef<FVaCuusUIPS> PixelShader(ShaderMap);
+	TOptionalShaderMapRef<FVaCuusGradientPS> GradientShader(ShaderMap);
+	if (!VertexShader.IsValid() || !PixelShader.IsValid() || !GradientShader.IsValid())
+	{
+		UE_LOG(LogVaCuus, Verbose, TEXT("Replay skipped draw pass: global shaders unavailable (null RHI)"));
+		return;
+	}
 
 	RHICmdList.Transition(FRHITransitionInfo(OutputRT, ERHIAccess::SRVMask, ERHIAccess::RTV));
 
@@ -245,9 +275,50 @@ void FVaCuusReplayRenderer::ReplayCommands(FRHICommandList& RHICmdList, const FV
 		GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<false, CF_Always>::GetRHI();
 		GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GVaCuusVertexDeclaration.VertexDeclarationRHI;
 		GraphicsPSOInit.BoundShaderState.VertexShaderRHI = VertexShader.GetVertexShader();
-		GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
 		GraphicsPSOInit.PrimitiveType = PT_TriangleList;
-		SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
+
+		// THE MID-PASS PSO SWITCH (M5 spec §2(e)) — DrawShader is the first command that
+		// changes pipelines inside this pass. Between UI and Gradient only the PIXEL
+		// SHADER differs: blend, rasterizer, depth-stencil, vertex declaration and VS are
+		// shared, so a switch is one PSO-cache hit, not a new state vector. Bound LAZILY
+		// on demand: a geometry-only buffer (every pre-M5 document) binds the UI pipeline
+		// once and never switches, and N consecutive DrawShaders cost one switch, not N.
+		// Scissor and viewport survive the switch — they are command-list state, not PSO
+		// state (the glass draw's own pattern: set once, draw through PSO binds,
+		// VaCuusSlateElement.cpp:522-536).
+		//
+		// Material (M5 Task 5b) is the odd one out: a material draw is a FULL pipeline
+		// (its VS differs too) bound inside DrawMaterial_RenderThread, so its enum value
+		// here means "something else is bound now" — it never binds through this lambda,
+		// it only forces the next UI/Gradient draw to rebind. Same-material runs are
+		// deduplicated by the material path's own memo (FPassState::BoundMaterialPS).
+		enum class EBoundPS : uint8
+		{
+			None,
+			UI,
+			Gradient,
+			Material
+		};
+		// The material path's per-pass state: one lazy view UB + the bound-material memo.
+		VaCuusMaterialDraw::FPassState MaterialPassState;
+
+		EBoundPS BoundPS = EBoundPS::None;
+		const auto BindPipeline = [&RHICmdList, &GraphicsPSOInit, &BoundPS, &PixelShader, &GradientShader, &MaterialPassState](EBoundPS Wanted)
+		{
+			check(Wanted != EBoundPS::Material); // material pipelines bind in DrawMaterial_RenderThread
+			if (BoundPS == Wanted)
+			{
+				return;
+			}
+			BoundPS = Wanted;
+			GraphicsPSOInit.BoundShaderState.PixelShaderRHI =
+				(Wanted == EBoundPS::Gradient) ? GradientShader.GetPixelShader() : PixelShader.GetPixelShader();
+			SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
+
+			// The two memos must invalidate each other: a material draw after this bind
+			// is under OUR pipeline now, whatever material was bound before it.
+			MaterialPassState.BoundMaterialPS = nullptr;
+		};
 
 		// SetTransform state, already in UE row-vector convention (the recorder
 		// memcpy's Rml's column-major matrix, which lands as the transpose).
@@ -268,6 +339,8 @@ void FVaCuusReplayRenderer::ReplayCommands(FRHICommandList& RHICmdList, const FV
 					{
 						break; // Empty/degenerate geometry: nothing to draw.
 					}
+
+					BindPipeline(EBoundPS::UI);
 
 					// Row-vector composition, left to right = application order:
 					// translate (pixels) -> Rml transform -> pixel-to-clip ortho.
@@ -325,6 +398,151 @@ void FVaCuusReplayRenderer::ReplayCommands(FRHICommandList& RHICmdList, const FV
 					break;
 				}
 
+				case EVaCuusCommandType::DrawShader:
+				{
+					// M5 decorators stage 1 (spec §2(e)): the recorded RenderShader — fill
+					// Command.Geometry with the compiled gradient/builtin in Command.Shader.
+					// Command.Texture is recorded but unused: no RmlUi shader decorator
+					// passes one (geometry.Render(offset, {}, shader),
+					// DecoratorShader.cpp:61-65 and the gradient equivalents), and the
+					// gradient PS samples nothing.
+					const FVaCuusShaderDesc* Desc = Shaders.Find(Command.Shader);
+					if (!ensureMsgf(Desc, TEXT("DrawShader references unknown shader handle %llu"), Command.Shader))
+					{
+						break;
+					}
+					const FGeometry* Geo = Geometry.Find(Command.Geometry);
+					if (!ensureMsgf(Geo, TEXT("DrawShader references unknown geometry handle %llu"), Command.Geometry))
+					{
+						break;
+					}
+					if (Geo->NumIndices < 3)
+					{
+						break;
+					}
+
+					// THE MATERIAL TIER (M5 Task 5b): recorded RmlUi geometry filled by an
+					// MD_UI material — the spike's mechanism as a recorded command instead
+					// of an injection, so recorded scissor state and z-order apply exactly
+					// like any other draw. Same matrix math as every case here. The
+					// material path binds its own full PSO (its VS differs too), so a
+					// DRAWN material moves the memo to Material — the next UI/gradient
+					// draw rebinds, and that rebind nulls the material path's own memo
+					// (the handshake in BindPipeline). A SKIPPED draw (unresolved id,
+					// pair-less walk) touched no pipeline and moves neither memo.
+					if (Desc->Kind == EVaCuusShaderKind::Material)
+					{
+						FMatrix44f Translate = FMatrix44f::Identity;
+						Translate.M[3][0] = Command.Translation.X;
+						Translate.M[3][1] = Command.Translation.Y;
+
+						const bool bDrawn = VaCuusMaterialDraw::DrawMaterial_RenderThread(RHICmdList, MaterialPassState,
+							RTSize, Translate * CurrentTransform * Projection, Desc->MaterialId, Desc->BuiltinKey,
+							Geo->VB, Geo->IB, Geo->NumVertices, Geo->NumIndices);
+						if (bDrawn)
+						{
+							BoundPS = EBoundPS::Material;
+							++NumDrawCalls;
+						}
+						break;
+					}
+
+					// The dictionary -> uniform conversion is the reference backend's
+					// (RmlUi_Renderer_GL3.cpp:1646-1674): P/V per kind, stops as resolved.
+					// The three Max/IsNearlyZero guards are ours — the reference divides by
+					// whatever arrives, and a degenerate paint box would put NaN in the RT.
+					// Memzero, not member-by-member: a shader parameter struct's default
+					// constructor is EMPTY (INTERNAL_SHADER_PARAMETER_STRUCT_BEGIN's `{}`
+					// suffix, ShaderParameterMacros.h:1330-1334, :1412), and the stop arrays
+					// beyond NumStops would otherwise upload stack garbage as uniforms.
+					FVaCuusGradientPS::FParameters PSParameters;
+					FMemory::Memzero(PSParameters);
+					PSParameters.bRepeating = Desc->bRepeating;
+					PSParameters.BuiltinDimensions = FVector2f(FMath::Max(Desc->Dimensions.X, 1.0f), FMath::Max(Desc->Dimensions.Y, 1.0f));
+
+					switch (Desc->Kind)
+					{
+						case EVaCuusShaderKind::LinearGradient:
+							PSParameters.GradientMode = 0;
+							PSParameters.GradientP = Desc->P0;
+							PSParameters.GradientV = Desc->P1 - Desc->P0;
+							if (PSParameters.GradientV.IsNearlyZero())
+							{
+								// Zero-length gradient line: dot(V,V) divides in the PS.
+								// Any direction paints the whole box with an edge stop.
+								PSParameters.GradientV = FVector2f(1.0f, 0.0f);
+							}
+							break;
+
+						case EVaCuusShaderKind::RadialGradient:
+							PSParameters.GradientMode = 1;
+							PSParameters.GradientP = Desc->Center;
+							// The reference's 2d curvature, 1/radius per axis.
+							PSParameters.GradientV = FVector2f(
+								1.0f / FMath::Max(Desc->Radius.X, 0.01f), 1.0f / FMath::Max(Desc->Radius.Y, 0.01f));
+							break;
+
+						case EVaCuusShaderKind::ConicGradient:
+							PSParameters.GradientMode = 2;
+							PSParameters.GradientP = Desc->Center;
+							PSParameters.GradientV = FVector2f(FMath::Cos(Desc->Angle), FMath::Sin(Desc->Angle));
+							break;
+
+						case EVaCuusShaderKind::Builtin:
+						{
+							// Known-valid by the recorder's registry check; INDEX_NONE here
+							// would mean the registry changed between record and replay,
+							// which a static map cannot do. Clamped to the glass-panel mode
+							// under the ensure so even that impossibility draws something
+							// deterministic rather than reading mode garbage.
+							const int32 Mode = VaCuusBuiltinShaders::FindMode(Desc->BuiltinKey);
+							ensureMsgf(Mode != INDEX_NONE, TEXT("DrawShader carries unregistered builtin '%s'"), *Desc->BuiltinKey);
+							PSParameters.GradientMode = uint32(FMath::Max(Mode, 3));
+							break;
+						}
+					}
+
+					const int32 NumStops = FMath::Min(Desc->Stops.Num(), VaCuusMaxGradientStops);
+					PSParameters.NumStops = NumStops;
+					for (int32 StopIndex = 0; StopIndex < NumStops; ++StopIndex)
+					{
+						PSParameters.StopColors[StopIndex] = Desc->Stops[StopIndex].Color;
+						// Four positions per register — the PS reads [i>>2][i&3].
+						PSParameters.StopPositions[StopIndex / 4][StopIndex % 4] = Desc->Stops[StopIndex].Position;
+					}
+
+					BindPipeline(EBoundPS::Gradient);
+
+					// Same VS, same matrix math as DrawGeometry above.
+					FMatrix44f Translate = FMatrix44f::Identity;
+					Translate.M[3][0] = Command.Translation.X;
+					Translate.M[3][1] = Command.Translation.Y;
+
+					FVaCuusUIShaderParameters VSParameters;
+					VSParameters.Projection = Translate * CurrentTransform * Projection;
+					VSParameters.UITexture = GWhiteTexture->TextureRHI;
+					VSParameters.UISampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+					VSParameters.bUseTexture = 0;
+
+					{
+						FRHIBatchedShaderParameters& BatchedParameters = RHICmdList.GetScratchShaderParameters();
+						SetShaderParameters(BatchedParameters, VertexShader, VSParameters);
+						RHICmdList.SetBatchedShaderParameters(VertexShader.GetVertexShader(), BatchedParameters);
+					}
+					{
+						FRHIBatchedShaderParameters& BatchedParameters = RHICmdList.GetScratchShaderParameters();
+						SetShaderParameters(BatchedParameters, GradientShader, PSParameters);
+						RHICmdList.SetBatchedShaderParameters(GradientShader.GetPixelShader(), BatchedParameters);
+					}
+
+					RHICmdList.SetStreamSource(0, Geo->VB, 0);
+					RHICmdList.DrawIndexedPrimitive(Geo->IB,
+						/*BaseVertexIndex=*/0, /*FirstInstance=*/0, uint32(Geo->NumVertices),
+						/*StartIndex=*/0, uint32(Geo->NumIndices / 3), /*NumInstances=*/1);
+					++NumDrawCalls;
+					break;
+				}
+
 				case EVaCuusCommandType::SetScissor:
 				{
 					// Rml scissor rects are y-down window pixels, same space as
@@ -350,8 +568,49 @@ void FVaCuusReplayRenderer::ReplayCommands(FRHICommandList& RHICmdList, const FV
 					CurrentTransform = Command.Transform;
 					break;
 				}
+
+				case EVaCuusCommandType::PushLayer:
+				case EVaCuusCommandType::PopLayer:
+				case EVaCuusCommandType::CompositeLayers:
+				{
+					// PASS-THROUGH IN v1, DELIBERATELY (M5 spec §2(d)) — glass is not a
+					// replay effect. Replay runs only on publish and the idle gate makes
+					// publishes ~never on a static HUD, so a backdrop baked here would
+					// freeze over the moving scene; the M5 Task 3 pipeline instead distills
+					// these commands from the BUFFER into a glass list the Slate element
+					// composites per engine frame (backdrop-glass.md §5, design A).
+					//
+					// Skipping cannot misplace any draw: a backdrop-only sequence issues no
+					// geometry between its PushLayer and PopLayer — only the two composites
+					// (ElementEffects.cpp:256-281). For element `filter:`/`mask-image:`
+					// content (the Exit-stage stack, ElementEffects.cpp:283-315), draws
+					// recorded "into" the pushed layer land directly in the base RT and the
+					// filtered composite is skipped, i.e. the element renders unfiltered —
+					// the pre-M5 behavior for those properties, kept for v1.
+					break;
+				}
+
+				case EVaCuusCommandType::EnableClipMask:
+				case EVaCuusCommandType::RenderToClipMask:
+				{
+					// SKIPPED IN v1 outside glass extraction (M5 spec §2(d)): applying the
+					// mask needs a stencil pass this RT does not carry yet. This preserves
+					// pre-M5 behavior for ordinary rounded-corner clipping exactly —
+					// before M5 these two virtuals sat at RmlUi's silent no-op defaults
+					// (RenderInterface.cpp:20-22) and no command was even recorded, so
+					// border-radius overflow has always been clipped by scissor alone here.
+					// Glass corners are Task 3's business: the distiller reads the mask
+					// geometry from the buffer (Command.Geometry resolves in NewGeometry)
+					// and masks the composite-time glass draw with it.
+					break;
+				}
 			}
 		}
+
+		// The spike's post-replay injection point stood here until Task 5b. Gone, not
+		// moved: materials are recorded DrawShader commands now (Kind=Material above),
+		// so they replay where the document put them — with recorded scissor and
+		// z-order — instead of always painting over the whole frame's content.
 	}
 	RHICmdList.EndRenderPass();
 

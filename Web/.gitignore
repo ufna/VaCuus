@@ -1,0 +1,13 @@
+# The Web/ workspace is SOURCE-ONLY (Fab marketplace rules: no node_modules, no
+# binaries, no build output committed). Everything below is reproducible from the
+# committed sources by `npm install` + `node Web/packages/cli/bin/vacuus.mjs build`.
+node_modules/
+dist/
+package-lock.json
+*.tsbuildinfo
+
+# The smoke script's create/build roundtrip scaffolds a throwaway app under
+# apps/ (it must sit inside the workspace so @vacuus/preact resolves) and
+# deletes it; a run that dies mid-way must not leave it committable.
+apps/smoketest/
+

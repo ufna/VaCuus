@@ -20,8 +20,13 @@ static Rml::String ToRmlString(const FString& Value)
 }
 }	 // namespace VaCuusBoundModelPrivate
 
-FVaCuusBoundModel::FVaCuusBoundModel(FName InModelName, const UScriptStruct* InStruct)
-	: ModelName(InModelName)
+FVaCuusBoundModel::FVaCuusBoundModel(const FString& InModelName, const UScriptStruct* InStruct)
+	: ModelNameStr(InModelName)
+	// The FName is DERIVED, never the source: it exists for the case-insensitive lookups
+	// (write-router registry, DumpModel matching). Deriving it may alias an unrelated
+	// registration's casing (see the constructor comment in the header), which is exactly
+	// why nothing below is allowed to stringify it.
+	, ModelName(*InModelName)
 	, Layout(InStruct)
 	, Sampler(Layout)
 	, Channel(Layout)
@@ -62,20 +67,24 @@ bool FVaCuusBoundModel::BindToContext(Rml::Context& Context)
 		// could only produce a second DataModel holding the same shadow pointer -- with the
 		// first one still live and still dirtying. Refused rather than tolerated.
 		UE_LOG(LogVaCuus, Error, TEXT("VaCuus model '%s' is already bound to a context; the second bind is ignored"),
-			*ModelName.ToString());
+			*ModelNameStr);
 		return false;
 	}
 
 	if (!IsValid())
 	{
 		UE_LOG(LogVaCuus, Error, TEXT("VaCuus model '%s' could not be built (type '%s'); nothing is bound"),
-			*ModelName.ToString(), Layout.GetStruct() != nullptr ? *Layout.GetStruct()->GetName() : TEXT("none"));
+			*ModelNameStr, Layout.GetStruct() != nullptr ? *Layout.GetStruct()->GetName() : TEXT("none"));
 		return false;
 	}
 
-	const FString NameString = ModelName.ToString();
-
-	Rml::DataModelConstructor Constructor = Context.CreateDataModel(VaCuusBoundModelPrivate::ToRmlString(NameString));
+	// ModelNameStr AND NEVER ModelName.ToString(): `data-model` is matched byte-for-byte
+	// (Context::GetDataModelPtr is a find() on a map keyed on std::string,
+	// Context.cpp:1522-1526 over Context.h:383), while an FName round-trip in a packaged game
+	// (WITH_CASE_PRESERVING_NAME=0, NameTypes.h:32-33) returns whatever casing was registered
+	// FIRST process-wide -- the engine's 'HUD' (class AHUD) turned FName("hud") into a model
+	// called 'HUD' that no document could address (VaCuus-akj.23).
+	Rml::DataModelConstructor Constructor = Context.CreateDataModel(VaCuusBoundModelPrivate::ToRmlString(ModelNameStr));
 	if (!Constructor)
 	{
 		// The one way this fails: the name is already taken in THIS context. RmlUi logs
@@ -91,7 +100,7 @@ bool FVaCuusBoundModel::BindToContext(Rml::Context& Context)
 		UE_LOG(LogVaCuus, Error,
 			TEXT("VaCuus model '%s': this view's context already has a data model of that name; nothing is bound, and the ")
 			TEXT("existing model still points at the OTHER model's shadow"),
-			*NameString);
+			*ModelNameStr);
 		return false;
 	}
 
@@ -116,7 +125,7 @@ bool FVaCuusBoundModel::BindToContext(Rml::Context& Context)
 	// name rule, or an unsupported kind) still gets an empty model, and the layout walk has
 	// already said why per property.
 	UE_LOG(LogVaCuus, Log, TEXT("VaCuus model '%s' bound on the UI thread: %d of %d top-level variable(s), %d field(s) of '%s'"),
-		*NameString, NumBound, Layout.GetTopLevelNames().Num(), Layout.GetFields().Num(),
+		*ModelNameStr, NumBound, Layout.GetTopLevelNames().Num(), Layout.GetFields().Num(),
 		Layout.GetStruct() != nullptr ? *Layout.GetStruct()->GetName() : TEXT("none"));
 
 	return true;
@@ -169,9 +178,9 @@ void FVaCuusBoundModel::ApplyUpdate(const FVaCuusModelUpdate& Update)
 	// buffers meet a shared offset table, and a mismatch reads whatever sits at those bytes.
 	checkf(Update.Values.GetStruct() == UIShadow.GetStruct(),
 		TEXT("VaCuus model '%s': the published slot is an instance of a different type from the UI shadow"),
-		*ModelName.ToString());
+		*ModelNameStr);
 	checkf(Update.DirtyFields.Num() == Layout.GetFields().Num(),
-		TEXT("VaCuus model '%s': the published dirty set has %d bits for a layout with %d fields"), *ModelName.ToString(),
+		TEXT("VaCuus model '%s': the published dirty set has %d bits for a layout with %d fields"), *ModelNameStr,
 		Update.DirtyFields.Num(), Layout.GetFields().Num());
 
 	const TConstArrayView<FVaCuusModelField> Fields = Layout.GetFields();
@@ -224,7 +233,7 @@ void FVaCuusBoundModel::DumpGameSide(uint32 ViewId)
 	// Display, not Log: this is the answer to a console command somebody just typed, and
 	// LogVaCuus's default verbosity would otherwise decide whether they see it.
 	UE_LOG(LogVaCuus, Display,
-		TEXT("DumpModel: view %u model '%s' over '%s' -- %d field(s), %d top-level name(s), %s"), ViewId, *ModelName.ToString(),
+		TEXT("DumpModel: view %u model '%s' over '%s' -- %d field(s), %d top-level name(s), %s"), ViewId, *ModelNameStr,
 		Layout.GetStruct() != nullptr ? *Layout.GetStruct()->GetName() : TEXT("none"), Fields.Num(), TopLevelNames.Num(),
 		IsValid() ? TEXT("valid") : TEXT("INVALID (a shadow or the layout could not be built)"));
 
@@ -264,7 +273,7 @@ void FVaCuusBoundModel::DumpUISide(uint32 ViewId)
 	UE_LOG(LogVaCuus, Display,
 		TEXT("DumpModel:   UI thread (view %u model '%s'): boundToContext=%s updatesApplied=%llu fieldsApplied=%llu ")
 		TEXT("appliedGeneration=%llu lastConsumedGeneration=%llu"),
-		ViewId, *ModelName.ToString(), bBoundToContext ? TEXT("yes") : TEXT("NO -- this model reached no document"),
+		ViewId, *ModelNameStr, bBoundToContext ? TEXT("yes") : TEXT("NO -- this model reached no document"),
 		GetNumUpdatesApplied(), GetNumFieldsApplied(), GetAppliedGeneration(), Channel.GetLastConsumedGeneration());
 
 	const FVaCuusModelUpdate& Published = Channel.GetLastConsumedUpdate();

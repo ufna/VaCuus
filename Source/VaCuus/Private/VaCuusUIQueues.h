@@ -13,6 +13,8 @@
 
 class FVaCuusBoundModel;
 class IVaCuusDocumentHost;
+struct FVaCuusStyleSnapshot;
+struct FVaCuusTranslationSnapshot;
 
 /** What a queued command asks the UI thread to do. */
 enum class EVaCuusCommandKind : uint8
@@ -104,6 +106,27 @@ enum class EVaCuusCommandKind : uint8
 	 */
 	ExecuteScript,
 
+	/**
+	 * Installs the material-decorator style snapshot (M5 Task 5b). Carries StyleSnapshot
+	 * and, like ClearAssetCaches, deliberately no ViewId: the snapshot is process-wide
+	 * state the recorder's CompileShader reads (there is one registry per process, like
+	 * the RmlUi library itself), so this is a THREAD-level command handled before the
+	 * per-view routing. FIFO from the single producer is the ordering guarantee the
+	 * registry documents: a snapshot enqueued before a LoadDocument* is installed before
+	 * that document's decorators compile.
+	 */
+	SetStyleSnapshot,
+
+	/**
+	 * Installs the localization snapshot (M5 Task 8, spec §2(l)). SetStyleSnapshot's
+	 * shape verbatim: carries TranslationSnapshot, deliberately no ViewId — the table
+	 * is process-wide state `vacuus.translate` and TranslateString read (one
+	 * SystemInterface per process, like the recorder contract), handled before the
+	 * per-view routing, and FIFO from the single producer means a table enqueued
+	 * before a LoadDocument* is installed before that document's text instances.
+	 */
+	SetTranslationSnapshot,
+
 	/** In-band graceful stop: close every document, then leave the frame loop. */
 	Shutdown
 };
@@ -170,6 +193,16 @@ struct FVaCuusUICommand
 	 * shadow.
 	 */
 	TSharedPtr<FVaCuusBoundModel> Model;
+
+	/**
+	 * SetStyleSnapshot only: the immutable style table (publish-by-replacement — the
+	 * game thread never mutates a published snapshot, it enqueues a fresh one; const in
+	 * the type so the drain cannot either).
+	 */
+	TSharedPtr<const FVaCuusStyleSnapshot> StyleSnapshot;
+
+	/** SetTranslationSnapshot only: the immutable translation table, same replacement rule as StyleSnapshot above. */
+	TSharedPtr<const FVaCuusTranslationSnapshot> TranslationSnapshot;
 };
 
 /**

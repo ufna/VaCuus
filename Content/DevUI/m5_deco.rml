@@ -1,0 +1,45 @@
+<rml>
+<head>
+	<title>VaCuus M5 Decorator Demo</title>
+	<link type="text/rcss" href="m5_deco.rcss"/>
+</head>
+
+<!-- DELIBERATELY STATIC, like the glass demo: after the settle the idle gate withholds
+     every frame — a decorated document that does not change publishes nothing (the
+     Task 4 idle claim; compiled shaders are pooled with the element data,
+     DecoratorShader.cpp:49-53, so nothing recompiles per frame). The plain twin
+     (m5_deco_plain.rml) is the PerfLog A/B control: same layout, decorators off. -->
+<body>
+	<div id="m5-title">VaCuus M5 // DECORATORS</div>
+
+	<div id="g-linear" class="deco panel">
+		<div class="panel-title">LINEAR 90&#176;</div>
+		<div class="note">red to blue, left to right</div>
+	</div>
+
+	<div id="g-stripes" class="deco panel">
+		<div class="panel-title">REPEATING LINEAR 45&#176;</div>
+		<div class="note">gold/black hazard stripes</div>
+	</div>
+
+	<div id="g-radial" class="deco panel">
+		<div class="panel-title">RADIAL &#183; CIRCLE</div>
+		<div class="note">white core into deep blue rim</div>
+	</div>
+
+	<div id="g-conic" class="deco panel">
+		<div class="panel-title">CONIC &#183; HUE WHEEL</div>
+		<div class="note">full hue circle about the center</div>
+	</div>
+
+	<div id="g-glass" class="deco panel">
+		<div class="panel-title">BUILTIN &#183; shader(glass-panel)</div>
+		<div class="note">translucent fill + border glow</div>
+	</div>
+
+	<div id="g-control" class="panel">
+		<div class="panel-title">CONTROL &#183; NO DECORATOR</div>
+		<div class="note">plain background-color fill</div>
+	</div>
+</body>
+</rml>

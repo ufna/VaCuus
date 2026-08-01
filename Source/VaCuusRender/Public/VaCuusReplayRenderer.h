@@ -10,6 +10,16 @@
 
 class FRHICommandList;
 
+namespace VaCuusReplay
+{
+/**
+ * Pixel-space -> clip-space ortho in UE row-vector convention (v' = v * M); defined with
+ * the replayer, shared with the M5 glass draw so the two paths cannot disagree about
+ * orientation. See the definition for the conventions.
+ */
+VACUUSRENDER_API FMatrix44f MakePixelToClipMatrix(FIntPoint ViewSize);
+} // namespace VaCuusReplay
+
 /**
  * Render-thread consumer of FVaCuusCommandBuffer: owns the RHI mirror of the
  * recorder's resources (vertex/index buffers, textures) and a persistent
@@ -110,6 +120,16 @@ private:
 
 	TMap<FVaCuusGeometryHandle, FGeometry> Geometry;
 	TMap<FVaCuusTextureHandle, FTextureRHIRef> Textures;
+
+	/**
+	 * Compiled shaders, beside Geometry/Textures with the same upload/retire lifecycle —
+	 * but the "upload" creates no RHI object: a compiled gradient IS its parameters
+	 * (FVaCuusShaderDesc), read at every DrawShader bind. The map entry is still a real
+	 * resource with the deferred-release discipline, because a desc retired early would
+	 * strand a later command's Shader handle exactly like a dropped texture.
+	 */
+	TMap<FVaCuusShaderHandle, FVaCuusShaderDesc> Shaders;
+
 	FTextureRHIRef OutputRT;
 
 	/** Newest buffer generation consumed so far (drawn via Replay or resource-only via ConsumeResources). */

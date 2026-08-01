@@ -6,6 +6,8 @@
 #include "VaCuusDefines.h"
 #include "VaCuusDocumentHost.h"
 #include "VaCuusStats.h"
+#include "VaCuusStyleSet.h"
+#include "VaCuusTranslation.h"
 #include "VaCuusUIThread.h"
 #include "VaCuusView.h"
 #include "VaCuusViewStatus.h"
@@ -94,6 +96,11 @@ void UVaCuusSubsystem::Tick(float DeltaTime)
 	// by ViewId, across subsystems), so in multi-PIE whichever subsystem ticks first
 	// drains everything and the rest find it empty -- one pass per frame either way.
 	FVaCuusWriteRouter::DrainGameThread();
+
+	// Unregistered style-set roots whose render fence completed drop here (M5 Task 5b).
+	// Process-wide like the write router's drain: whichever subsystem ticks first pays
+	// the (empty-check) branch for everyone.
+	FVaCuusStyleRegistry::TickDeferredReleases_GameThread();
 
 	FVaCuusUIThread* UIThread = GetUIThread();
 	if (!UIThread)
@@ -198,6 +205,24 @@ void UVaCuusSubsystem::DestroyView(UVaCuusView* View)
 
 	View->Invalidate();
 	Views.Remove(View);
+}
+
+int32 UVaCuusSubsystem::RegisterStyleSet(UVaCuusStyleSet* StyleSet)
+{
+	check(IsInGameThread());
+	return FVaCuusStyleRegistry::RegisterStyleSet(StyleSet);
+}
+
+void UVaCuusSubsystem::UnregisterStyleSet(UVaCuusStyleSet* StyleSet)
+{
+	check(IsInGameThread());
+	FVaCuusStyleRegistry::UnregisterStyleSet(StyleSet);
+}
+
+void UVaCuusSubsystem::SetTranslationTable(const TMap<FString, FString>& Table)
+{
+	check(IsInGameThread());
+	FVaCuusTranslationRegistry::SetTable(Table);
 }
 
 int32 UVaCuusSubsystem::ClearAssetCachesAndReloadAllViews(const TCHAR* Reason)

@@ -291,6 +291,15 @@ private:
 	/** vacuus.stats(): {updateMs, renderMs, fps} from the always-on last-sample store (FVaCuusPerfLog). */
 	static JSValue StatsThunk(JSContext* Ctx, JSValueConst This, int Argc, JSValueConst* Argv);
 
+	/**
+	 * vacuus.translate(key, params?) (M5 Task 8, spec §2(l)): synchronous lookup in
+	 * the installed FVaCuusTranslationRegistry snapshot — identity on any miss —
+	 * then `{name}` placeholder substitution from params' own enumerable string
+	 * properties (bool/number/string values, the emit conversion contract). The
+	 * no-table case logs ONE latched Verbose per context (bTranslateNoTableWarned).
+	 */
+	static JSValue TranslateThunk(JSContext* Ctx, JSValueConst This, int Argc, JSValueConst* Argv);
+
 	//~ ---- ES modules (M4 Task 7; implementation in VaCuusJsModules.cpp) ----
 
 	/**
@@ -336,8 +345,13 @@ private:
 	/** GetHandle + the dead-check: the live element, or null. EVERY method opens with this. */
 	Rml::Element* GetLiveElement(JSValueConst Value) const;
 
-	//~ Document prototype (createElement / getElementById / body).
-	static JSValue DocCreateElementThunk(JSContext* Ctx, JSValueConst This, int Argc, JSValueConst* Argv);
+	//~ Document prototype (createElement / createElementNS / createTextNode /
+	//~ getElementById / body). createElement and createElementNS share one
+	//~ magic-dispatched thunk: the NS spelling is the SAME operation with the tag
+	//~ one argument later -- preact 10.29.7 creates every element through it
+	//~ (src/diff/index.js:465-469), observed in E-P1 as the mount-blocking gap.
+	static JSValue DocCreateElementThunk(JSContext* Ctx, JSValueConst This, int Argc, JSValueConst* Argv, int Magic);
+	static JSValue DocCreateTextNodeThunk(JSContext* Ctx, JSValueConst This, int Argc, JSValueConst* Argv);
 	static JSValue DocGetElementByIdThunk(JSContext* Ctx, JSValueConst This, int Argc, JSValueConst* Argv);
 	static JSValue DocBodyGetterThunk(JSContext* Ctx, JSValueConst This);
 
@@ -354,9 +368,18 @@ private:
 	static JSValue StringGetterThunk(JSContext* Ctx, JSValueConst This, int Magic);
 	static JSValue StringSetterThunk(JSContext* Ctx, JSValueConst This, JSValueConst Value, int Magic);
 	static JSValue ParentNodeGetterThunk(JSContext* Ctx, JSValueConst This);
-	static JSValue ChildrenGetterThunk(JSContext* Ctx, JSValueConst This);
+	static JSValue ChildListGetterThunk(JSContext* Ctx, JSValueConst This, int Magic);
 	static JSValue ClassListGetterThunk(JSContext* Ctx, JSValueConst This);
 	static JSValue StyleGetterThunk(JSContext* Ctx, JSValueConst This);
+
+	//~ Element prototype: node discrimination and traversal (M5 Task 1, the
+	//~ preact gaps G2/G4): one magic family for the four sibling/child steps,
+	//~ plus nodeType, the attributes snapshot, and the text-node value pair.
+	static JSValue NodeStepGetterThunk(JSContext* Ctx, JSValueConst This, int Magic);
+	static JSValue NodeTypeGetterThunk(JSContext* Ctx, JSValueConst This);
+	static JSValue AttributesGetterThunk(JSContext* Ctx, JSValueConst This);
+	static JSValue TextDataGetterThunk(JSContext* Ctx, JSValueConst This);
+	static JSValue TextDataSetterThunk(JSContext* Ctx, JSValueConst This, JSValueConst Value);
 
 	//~ Bound helpers (JSCFunctionData, quickjs.h:453): FuncData[0] is the
 	//~ element wrapper the classList object / style proxy was minted from.
@@ -449,6 +472,16 @@ private:
 
 	/** Non-empty only inside PumpCallbacks' rAF phase (the swapped-out running list). */
 	TArray<FRafEntry> RafRunning;
+
+	/**
+	 * The `vacuus.translate` no-table refusal latch (spec §2(l)'s "one latched
+	 * Verbose line"). PER CONTEXT, not process-wide, deliberately: it dies with the
+	 * context (so every fresh session/test starts armed), and the line it gates
+	 * names this view. Never re-arms once a table exists — TranslateThunk checks
+	 * the snapshot first, so the latch is only ever consulted before the first
+	 * table of the process arrives.
+	 */
+	bool bTranslateNoTableWarned = false;
 
 	//~ Test-only knobs, forwarded from FVaCuusJsScriptHost::FParams (see there).
 	const bool bTestRelaxTimerCutoff;

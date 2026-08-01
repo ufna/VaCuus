@@ -5,6 +5,7 @@
 #include "VaCuusDefines.h"
 #include "VaCuusInputMap.h"
 #include "VaCuusInteractiveSnapshot.h"
+#include "VaCuusTranslation.h"
 #include "VaCuusUIThread.h"
 
 #include "HAL/PlatformTime.h"
@@ -113,6 +114,25 @@ bool FVaCuusSystemInterface::LogMessage(Rml::Log::Type Type, const Rml::String& 
 
 	// Continue execution (returning false asks RmlUi to break into the debugger).
 	return true;
+}
+
+int FVaCuusSystemInterface::TranslateString(Rml::String& Translated, const Rml::String& Input)
+{
+	// The header carries the contract; this body is one snapshot lookup. The
+	// FString round-trip runs per parsed text chunk at LOAD time only (never per
+	// frame — the header's call-site list), so the conversion cost sits beside the
+	// XML parse it is part of.
+	FString Result;
+	if (FVaCuusTranslationRegistry::TranslateKey(UTF8_TO_TCHAR(Input.c_str()), Result))
+	{
+		Translated = TCHAR_TO_UTF8(*Result);
+		return 1;
+	}
+
+	// Identity — the base contract (SystemInterface.cpp:46-50), spelled here rather
+	// than delegated so the miss path is visibly the same string.
+	Translated = Input;
+	return 0;
 }
 
 void FVaCuusSystemInterface::SetMouseCursor(const Rml::String& CursorName)

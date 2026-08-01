@@ -297,11 +297,24 @@ public:
 	 * struct with no bindable property still gets an empty model, because what `data-model`
 	 * needs to resolve is the MODEL.
 	 *
+	 * THE NAME IS AN FString, NOT AN FName, AND CHANGING IT BACK REINTRODUCES A PACKAGED-ONLY
+	 * BUG (VaCuus-akj.23). RmlUi matches `data-model` byte-for-byte (Element.cpp:2212 hands the
+	 * attribute string to Context::GetDataModelPtr, a find() on a map keyed on
+	 * std::string -- Context.h:383, Config.h:83), but an FName cannot carry an exact-case
+	 * identity in a cooked game: WITH_CASE_PRESERVING_NAME follows WITH_EDITORONLY_DATA
+	 * (NameTypes.h:32-33), so FName("hud") stringifies to the FIRST process-wide registration of
+	 * that name -- the engine's 'HUD' (class AHUD) -- and the model binds under a name the
+	 * document never wrote. The editor preserves per-instance casing, so only the packaged game
+	 * failed, and it failed with every stage individually logging success. The lookup-only
+	 * calls below (UpdateModel, HasModel, ...) keep FName: they ADDRESS a model already bound,
+	 * and the game-side map is deliberately keyed case-insensitively.
+	 *
 	 * @return false, with an Error or Warning saying why, for: a null Type, an unnamed model,
-	 *         a second model of the same name on this view, a type whose layout could not be
+	 *         a second model of the same name on this view (names are compared
+	 *         case-INSENSITIVELY here, FName semantics), a type whose layout could not be
 	 *         built, or a view that is no longer registered. Never partially succeeds.
 	 */
-	bool BindModel(FName ModelName, const UScriptStruct* Type);
+	bool BindModel(const FString& ModelName, const UScriptStruct* Type);
 
 	/**
 	 * Reads Data through ModelName's layout, marks whatever changed since the last call, and
@@ -389,10 +402,14 @@ public:
 	 * engine's placeholder for one, and execCreateModelFromStruct reads the real
 	 * FStructProperty off the script stack. The declared function below is never called; the
 	 * thunk replaces it.
+	 *
+	 * A STRING PIN, NOT A NAME PIN, for BindModel's reason: a Blueprint Name literal is an
+	 * FName and loses its casing in a cooked game the same way (NameTypes.h:32-33), and
+	 * `data-model` is matched byte-for-byte.
 	 */
 	UFUNCTION(BlueprintCallable, CustomThunk, Category = "VaCuus|Data",
 		meta = (CustomStructureParam = "Struct", DisplayName = "Create Model From Struct"))
-	bool CreateModelFromStruct(FName ModelName, const int32& Struct);
+	bool CreateModelFromStruct(const FString& ModelName, const int32& Struct);
 	DECLARE_FUNCTION(execCreateModelFromStruct);
 
 	/** Blueprint's UpdateModel; same wildcard pin, same type check. */
@@ -604,6 +621,12 @@ private:
 
 	/**
 	 * Data models bound to this view, by the name a document's `data-model` writes.
+	 *
+	 * KEYED BY FName ON PURPOSE, i.e. case-insensitively: this map only ADDRESSES models
+	 * (UpdateModel, HasModel, DumpModel), it never names one to RmlUi -- the exact-case
+	 * identity lives in FVaCuusBoundModel::GetModelNameString(), see BindModel() above. The
+	 * FName key is also what makes 'hud' vs 'Hud' a refused duplicate rather than two models
+	 * a cooked build could not tell apart.
 	 *
 	 * SHARED WITH THE UI THREAD, which holds its own reference per view and drops it in
 	 * RemoveView() -- after the context that points into each model's shadow is gone.

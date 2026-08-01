@@ -1,0 +1,72 @@
+/*
+ * vacuus-base.rcss — the CLI's base stylesheet (@vacuus/cli, spec §3.1).
+ *
+ * WHY IT EXISTS: RmlUi ships NO user-agent stylesheet (the arch spec's §13 risk
+ * row). In a browser `div` is display:block because the UA sheet says so; in
+ * RmlUi every element defaults to inline, margins are 0, and a web developer's
+ * first document collapses into one line. This sheet is the missing UA layer:
+ * link it FIRST, put your own sheet after it.
+ *
+ * Other §13 gotchas this file cannot fix but you must know:
+ *  - box-shadow is NOT animatable (RmlUi refuses the key at animation start,
+ *    ElementAnimation.cpp:640-648) — `vacuus lint` catches it at authoring time.
+ *  - Tween parsing is strict: `transition: opacity 0.3s ease-in-out;` works,
+ *    loose shorthand orderings that browsers forgive do not.
+ *  - position: absolute resolves against the nearest ancestor with
+ *    position: relative|absolute (RmlUi has no browser-style default-positioned
+ *    root chain past the document).
+ *  - There is no default font: register one with RmlUi and name it below or
+ *    text logs "No font face defined" per layout pass.
+ */
+
+/* The block layer of the missing UA sheet. */
+body,
+div,
+p,
+h1,
+h2,
+h3,
+h4,
+section,
+header,
+footer,
+nav,
+ul,
+ol,
+li,
+form {
+	display: block;
+}
+
+/* The inline layer. */
+span,
+a,
+b,
+i,
+em,
+strong,
+label,
+code {
+	display: inline;
+}
+
+body {
+	/* The document fills its context; without this, absolute children of body
+	   resolve percentages against a zero-sized box. */
+	width: 100%;
+	height: 100%;
+
+	/* LatoLatin is the face the VaCuus engine registers for its own demos
+	   (FVaCuusEngine::Initialize). Replace with your registered font. */
+	font-family: LatoLatin;
+	font-size: 16dp;
+	color: #ffffff;
+}
+
+h1 {
+	font-size: 28dp;
+}
+
+h2 {
+	font-size: 22dp;
+}

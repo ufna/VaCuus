@@ -1,0 +1,70 @@
+/* VaCuus M5 glass demo. Fills are deliberately NEAR-TRANSPARENT (~19% alpha): the demo's
+   subject is the blurred scene BEHIND the panels, and an opaque HUD fill would prove
+   nothing. The control panel shares fill and border exactly so the only difference
+   between it and the square glass panel is backdrop-filter itself.
+
+   RmlUi ships NO user-agent stylesheet ('display' defaults to "inline",
+   StyleSheetSpecification.cpp:306), so every tag that needs a box is told here. */
+div { display: block; }
+
+body
+{
+	display: block;
+	width: 100%;
+	height: 100%;
+	font-family: LatoLatin;
+	font-size: 16px;
+	color: #EAF6FB;
+}
+
+#m5-title
+{
+	position: absolute;
+	left: 48px;
+	top: 36px;
+	font-size: 26px;
+	color: #7FE3FF;
+}
+
+/* Laid out for the 1920x1080 headless run; absolute so nothing depends on flow. */
+#glass-round, #glass-square, #control
+{
+	position: absolute;
+	top: 320px;
+	width: 420px;
+	height: 300px;
+	padding: 16px 20px;
+	background-color: #10202430;
+	border: 1px #9FD8EA60;
+}
+
+#glass-round
+{
+	left: 120px;
+	border-radius: 28px;
+	backdrop-filter: blur(16px);
+}
+
+#glass-square
+{
+	left: 640px;
+	backdrop-filter: blur(16px);
+}
+
+#control
+{
+	left: 1160px;
+}
+
+.panel-title
+{
+	font-size: 15px;
+	color: #AEE9FF;
+	margin-bottom: 8px;
+}
+
+.note
+{
+	color: #D7EDF5;
+	margin-bottom: 4px;
+}

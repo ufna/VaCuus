@@ -1,0 +1,102 @@
+// Copyright 2026 Vladimir Alyamkin. All Rights Reserved.
+
+#include "/Engine/Public/Platform.ush"
+
+/**
+ * The M5 glass pair (spec §2(c)): the separable gaussian the backdrop blur runs at
+ * half-res, and the masked draw that puts the blurred scene back under the panel.
+ *
+ * MainBlurPS mirrors the engine's own Slate blur (GaussianBlurMain,
+ * Engine/Shaders/Private/SlatePostProcessPixelShader.usf:36-67) rather than the vendored
+ * GL3 RenderBlur (RmlUi_Renderer_GL3.cpp:1351-1423): same separable direction+texel-offset
+ * scheme, but with the engine's paired-weight packing, which halves the sample loop by
+ * leaning on bilinear filtering. Weights are CPU-computed per pass
+ * (VaCuusSlateElement.cpp), UNNORMALIZED like the engine's own Slate blur -- see
+ * FillBlurWeights: at a 3-sigma kernel the tail loss is under half a percent, and
+ * AddSlatePostProcessOldGaussianBlur packs raw weights the same way.
+ *
+ * Gamma: DELIBERATELY none anywhere in this file. The blur samples display-encoded LDR
+ * pixels and writes display-encoded LDR pixels — the same texture family in and out —
+ * exactly like the engine's own Slate blur, whose path contains no linearization either
+ * (SlatePostProcessor.cpp has none; backdrop-glass.md §6). DECIDED BY IMAGE, not
+ * argument (Exp-GLASS-GAMMA-BLUR, 2026-08-01): a temporary linearize-per-tap/re-encode
+ * variant photographed against this one over the M5 demo's sky-mountain contrast
+ * differed by 0.46% RMSE in the glass region — a third of the same interval's
+ * camera-drift baseline (1.56% in the blur-free control panel) — with mean brightness
+ * within 0.13%. Indistinguishable, so the cheaper path that matches the engine ships.
+ */
+
+// Paired as (Weight, Offset, Weight, Offset); 63 pairs cover a 125-tap kernel.
+#define VACUUS_MAX_BLUR_SAMPLES 63
+
+float4 WeightAndOffsets[VACUUS_MAX_BLUR_SAMPLES];
+int SampleCount;
+
+Texture2D BlurTexture;
+SamplerState BlurSampler;
+
+/** xy = 1/extent of the input texture, zw = blur direction (1,0) or (0,1). */
+float4 BufferSizeAndDirection;
+
+/** Bilinear-safe UV bounds of the input region, so taps never bleed outside it. */
+float4 UVBounds;
+
+float4 GetBlurSample(float Weight, float Offset, float2 UV)
+{
+	const float2 UVOffset = Offset * BufferSizeAndDirection.xy * BufferSizeAndDirection.zw;
+	return BlurTexture.Sample(BlurSampler, clamp(UV + UVOffset, UVBounds.xy, UVBounds.zw)) * Weight +
+		BlurTexture.Sample(BlurSampler, clamp(UV - UVOffset, UVBounds.xy, UVBounds.zw)) * Weight;
+}
+
+/** Paired with the engine's FScreenPassVS: UVAndScreenPos.xy spans the input viewport. */
+void MainBlurPS(
+	in noperspective float4 UVAndScreenPos : TEXCOORD0,
+	out float4 OutColor : SV_Target0)
+{
+	const float2 UV = clamp(UVAndScreenPos.xy, UVBounds.xy, UVBounds.zw);
+	OutColor = BlurTexture.Sample(BlurSampler, UV) * WeightAndOffsets[0].x;
+
+	// The first mirrored pair rides in zw of slot 0; the rest are two pairs per slot —
+	// the engine's packing, kept verbatim so the CPU fill is the engine's too.
+	OutColor += GetBlurSample(WeightAndOffsets[0].z, WeightAndOffsets[0].w, UV);
+
+	for (int i = 2; i < SampleCount; i += 2)
+	{
+		const int Index = i / 2;
+		OutColor += GetBlurSample(WeightAndOffsets[Index].x, WeightAndOffsets[Index].y, UV);
+		OutColor += GetBlurSample(WeightAndOffsets[Index].z, WeightAndOffsets[Index].w, UV);
+	}
+
+	// Alpha forced opaque: the source may be the window backbuffer, whose alpha channel
+	// is never meaningful (2 bits on the PF_A2B10G10R10 default — backdrop-glass.md §1).
+	OutColor.a = 1.0f;
+}
+
+Texture2D GlassTexture;
+SamplerState GlassSampler;
+
+/** SV_Position.xy (output pixels) -> blurred-RT UV: uv = pos * xy + zw. */
+float4 GlassUVTransform;
+
+/** Bilinear-safe UV bounds of this entry's half-res region within the pooled RT. */
+float4 GlassUVBounds;
+
+/**
+ * The glass draw: runs over the clip-mask geometry (rounded panels) or a generated quad
+ * (square ones), both arriving through the standard VaCuus vertex layout and MainVS's
+ * Projection. Samples the blurred half-res scene at the OUTPUT pixel's position, so the
+ * blur lands exactly under the panel wherever the mapping put it. The vertex COLOR alpha
+ * carries the mask's coverage (opaque white for RmlUi clip geometry —
+ * MeshUtilities::GenerateBackground with ColourbPremultiplied(255),
+ * ElementBackgroundBorder.cpp:72) and feeds the pipeline's SrcAlpha/InvSrcAlpha blend, so
+ * any future feathered mask lerps blurred-over-sharp — the correct edge.
+ */
+void MainGlassPS(
+	in float4 SvPosition : SV_POSITION,
+	in float4 Color : TEXCOORD1,
+	in float2 UnusedUV : TEXCOORD0,
+	out float4 OutColor : SV_Target0)
+{
+	const float2 UV = clamp(SvPosition.xy * GlassUVTransform.xy + GlassUVTransform.zw, GlassUVBounds.xy, GlassUVBounds.zw);
+	OutColor = float4(GlassTexture.Sample(GlassSampler, UV).rgb, Color.a);
+}

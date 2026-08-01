@@ -77,6 +77,12 @@ Dependency rule: `VaCuus` has no dependency on the other runtime modules.
 `VaCuusJs`/`VaCuusRender`/`VaCuusUMG` register implementations of core-defined interfaces
 at module startup (`IVaCuusScriptHost`, RenderInterface factory, input sink); frame-loop
 steps with no registered implementation are skipped (e.g., JS-off configuration).
+
+*(Amended 2026-08-01, M5 spec §10.4: the `VaCuusUMG` module was never created. The widget
+surface (`SVaCuusWidget`, `UVaCuusUMGWidget`), `UVaCuusWorldComponent`, the world input
+processor and the Slate/world composition all live in `VaCuusRender`; `VaCuusJs` registers
+the script host exactly as the dependency rule prescribes. Splitting a UMG module out
+remains a v1.x refactor option, not a shipped boundary.)*
 JS can be **disabled at runtime** in v1 (QuickJS never initialized via config flag);
 build-level stripping (removing the module) is documented as a manual `.uplugin` edit and
 formalized in v1.x.
@@ -160,6 +166,13 @@ are legal at any point of the game frame; the game thread's total cost is queue 
 **Replay (render thread):** UE global shaders ported from RmlUi's reference GL3 backend
 (color/texture, linear/radial/conic gradient, blur chain for filter/box-shadow/backdrop,
 mask). Premultiplied-alpha blend states throughout (`BF_One, BF_InverseSourceAlpha`).
+
+*(Amended 2026-08-01, M5 spec §10.1: "ported from the reference GL3 backend" overstated.
+As shipped: color/texture is `VaCuusUI.usf`; the gradients are `VaCuusGradient.usf` — the
+reference's math transliterated with three named guards it lacks (Task 4's commit); the
+blur chain was NEVER ported — `VaCuusBlur.usf` was built new in M5 for composite-time
+backdrop glass, and per-element filter/box-shadow blur remains out of v1 scope (M5 spec
+§11). One shader file per family, not a backend port.)*
 Formats: geometry textures `PF_B8G8R8A8`; per-view output RT and layer pool
 `PF_B8G8R8A8` in the display-gamma path, float/`RGB10A2`-class formats reserved for the
 deferred linear-HDR path (v1.x).
@@ -200,6 +213,16 @@ NOT readable from a custom Slate element's inputs — the engine's post-buffer m
 requires the `SPostBufferUpdate` widget pattern; we therefore use the OutputTexture-copy
 approach and do not depend on Slate post buffers. In-page backdrop between UI layers uses
 RmlUi's native layer compositing (proven in the demo).
+
+*(Amended 2026-08-01, M5 spec §10.2: as worded, the blurred backdrop was sampled by "panel
+background shaders" — i.e. baked into the panel draw at REPLAY time. That contradicts the
+M2 idle gate: replay runs only on publish, publishes are ~never on a static HUD, and the
+scene moves every frame — replay-baked glass freezes (observed both ways,
+Exp-GLASS-IDLE-FREEZE). As built, the recorded backdrop-filter commands are distilled into
+a glass LIST the Slate element holds across idle frames, and `Draw_RenderThread` runs
+downsample → blur → geometry-masked glass draw EVERY ENGINE FRAME before the UI composite,
+mapping the view-space regions through the live DestRect (PIE-safe). The
+OutputTexture-capture leg above held as designed.)*
 
 **Idle cost model:** UI publishes nothing → render thread reuses the per-view RT →
 per-frame cost is one composite of the RT. Dirty-region partial replay is a v1.x
@@ -257,6 +280,12 @@ reference HUD).
 - Error handling: exceptions → on-screen dev overlay (dev builds) + log with sourcemap
   resolution (Tier 2 supplies maps).
 
+  *(Amended 2026-08-01, M5 spec §10.5: rescoped, honestly — v1 ships inline sourcemaps in
+  every CLI bundle, RAW generated positions in the log and overlay, and offline resolution
+  via `vacuus symbolicate`; IN-ENGINE sourcemap resolution moves to v1.x. The original
+  wording promised Tier-1 resolution once Tier 2 supplied maps, and M5 v1 of the spec
+  dressed the rescope as a match — recorded in M5 spec §12.7.)*
+
 **Tier 2 — web-DX layer** (v1):
 - `@vacuus/preact`: patched Preact + `preact/compat` running against the DOM facade
   (undom contract; precedent: OneJS/Unity — Preact over a retained-mode UI toolkit on
@@ -294,6 +323,10 @@ reference HUD).
 - **Dev (editor/PIE):** loose files under `<Project>/Content/UI/**` (rml/rcss/js/ttf/png),
   directory watcher → live document reload (built in **M2**); `@vacuus/cli watch`
   rebuilds TSX bundles into the same tree (M5).
+
+  *(Amended 2026-08-01, M5 spec §10.3: `Content/UI/**` was never built. The loose tree —
+  and the M2 watcher's roots, and where `vacuus dev|build` writes bundles — is
+  `Content/DevUI/**`, plugin root first then project (D19).)*
 - **Shipping:** `UVaCuusBundle` asset — path-indexed archive (bulk data) built from the
   UI source tree at cook time by `VaCuusEditor`; VFS reads memory-mapped bundle entries.
   Built and gated in **M6** ("reference HUD runs from cooked bundle in a shipping

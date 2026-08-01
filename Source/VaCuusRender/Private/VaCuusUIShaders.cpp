@@ -9,6 +9,48 @@
 IMPLEMENT_GLOBAL_SHADER(FVaCuusUIVS, "/Plugin/VaCuus/Private/VaCuusUI.usf", "MainVS", SF_Vertex);
 IMPLEMENT_GLOBAL_SHADER(FVaCuusUIPS, "/Plugin/VaCuus/Private/VaCuusUI.usf", "MainPS", SF_Pixel);
 IMPLEMENT_GLOBAL_SHADER(FVaCuusCompositePS, "/Plugin/VaCuus/Private/VaCuusUI.usf", "MainCompositePS", SF_Pixel);
+IMPLEMENT_GLOBAL_SHADER(FVaCuusBlurPS, "/Plugin/VaCuus/Private/VaCuusBlur.usf", "MainBlurPS", SF_Pixel);
+IMPLEMENT_GLOBAL_SHADER(FVaCuusGlassPS, "/Plugin/VaCuus/Private/VaCuusBlur.usf", "MainGlassPS", SF_Pixel);
+IMPLEMENT_GLOBAL_SHADER(FVaCuusGradientPS, "/Plugin/VaCuus/Private/VaCuusGradient.usf", "MainGradientPS", SF_Pixel);
+
+namespace VaCuusBuiltinShaders
+{
+/**
+ * Key -> VaCuusGradient.usf mode. Modes 0-2 are reserved for the three gradient kinds
+ * (the .usf's own constants); builtin entries start at 3. Adding a builtin = one row
+ * here + one mode branch in the .usf.
+ */
+// TMap<FString,...> keys hash and compare CASE-INSENSITIVELY, so shader(GLASS-PANEL)
+// resolves too. Accepted: RCSS decorator values are author-controlled strings, and the
+// permissive match cannot alias two distinct builtins (the registry owns its namespace).
+// Documented so nobody reads exact-match semantics into it -- this project has been
+// bitten by assumed case rules before (see the fname-cooked memory).
+static const TMap<FString, int32>& GetRegistry()
+{
+	static const TMap<FString, int32> Registry = {
+		{TEXT("glass-panel"), 3},
+	};
+	return Registry;
+}
+
+int32 FindMode(const FString& Key)
+{
+	const int32* Mode = GetRegistry().Find(Key);
+	return Mode ? *Mode : INDEX_NONE;
+}
+
+const FString& KnownKeysForLog()
+{
+	static const FString Known = []
+	{
+		TArray<FString> Keys;
+		GetRegistry().GetKeys(Keys);
+		Keys.Sort();
+		return FString::Join(Keys, TEXT(", "));
+	}();
+	return Known;
+}
+} // namespace VaCuusBuiltinShaders
 
 TGlobalResource<FVaCuusVertexDeclaration> GVaCuusVertexDeclaration;
 

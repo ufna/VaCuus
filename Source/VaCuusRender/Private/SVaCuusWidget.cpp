@@ -277,10 +277,23 @@ int32 SVaCuusWidget::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGe
 	// (FDrawPassInputs::ElementsOffset), mirroring the Slate blur pass.
 	const FIntRect DestRect = ComputeWindowRect(AllottedGeometry);
 
+	// THE GAME-THREAD HDR MIRROR (M5 Exp-GLASS-HDR-DETECT's shipped answer). Under HDR
+	// composite the elements texture carries no scene at all and the render thread has no
+	// in-band way to know: bOutputIsHDRDisplay is reset false for the SDR elements pass
+	// (SlateRHIRenderer.cpp:1069 sets bElementsTextureIsHDRDisplay = false after the HDR
+	// batch). So the ONE fact glass needs — "is HDR output requested" — is read here,
+	// game-side, and pushed with the rect it travels with anyway. Conservative on
+	// purpose: the cvar being on disables glass even on an SDR display where composite
+	// mode never engages, because a blur of a maybe-sceneless texture is worse than no
+	// blur (spec §2(b): LDR-only).
+	static const IConsoleVariable* HDROutputCVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.HDR.EnableHDROutput"));
+	const bool bGlassAllowed = HDROutputCVar == nullptr || HDROutputCVar->GetInt() == 0;
+
 	ENQUEUE_RENDER_COMMAND(VaCuusSetDestRect)(
-		[LocalElement = Element, DestRect](FRHICommandListImmediate&)
+		[LocalElement = Element, DestRect, bGlassAllowed](FRHICommandListImmediate&)
 		{
 			LocalElement->SetDestRect_RenderThread(DestRect);
+			LocalElement->SetGlassAllowed_RenderThread(bGlassAllowed);
 		});
 
 	FSlateDrawElement::MakeCustom(OutDrawElements, LayerId, Element);

@@ -7,7 +7,7 @@
 #include "VaCuusDocumentHost.h"
 
 class FVaCuusRecordingRenderInterface;
-class FVaCuusSlateElement;
+class IVaCuusFrameSink;
 
 namespace Rml
 {
@@ -20,11 +20,12 @@ class ElementDocument;
  * interface, its Rml context and its current document (RmlUi headers stay in the
  * cpp).
  *
- * ONE CONTEXT, ONE RECORDER, ONE ELEMENT: Rml::CreateContext() takes a per-context
+ * ONE CONTEXT, ONE RECORDER, ONE SINK: Rml::CreateContext() takes a per-context
  * render interface and RmlUi gives each distinct interface its own RenderManager,
  * so N hosts on the shared UI thread record N independent command buffers and
- * publish each to its own Slate element. That is what makes several views (e.g.
- * one per PIE client) work on a single UI thread.
+ * publish each to its own frame sink (the Slate element for a screen view, the
+ * world sink for a quad -- IVaCuusFrameSink). That is what makes several views
+ * (e.g. one per PIE client) work on a single UI thread.
  *
  * THREAD AFFINITY: everything except the constructor runs on the VaCuus UI
  * thread, asserted per method. The UI thread calls Initialize() when it drains the
@@ -36,7 +37,7 @@ class ElementDocument;
  * game-thread hop:
  *  - the interactive-region snapshot, ONCE PER RECORDED FRAME, to the game thread through
  *    the shared FVaCuusViewStatus (see FVaCuusInteractiveSnapshot);
- *  - the recorded command buffer, ONCE PER CHANGE, to the Slate element via
+ *  - the recorded command buffer, ONCE PER CHANGE, to the frame sink via
  *    ENQUEUE_RENDER_COMMAND. Since the M2 Task 12 idle short-circuit a frame that draws
  *    what the render thread already has is recorded and then withheld, so on a static
  *    document this is a handful of publishes and then nothing.
@@ -48,7 +49,7 @@ class FVaCuusRmlDocumentHost final : public IVaCuusDocumentHost
 {
 public:
 	/** Built on the owner's thread and handed to UVaCuusSubsystem::CreateView(). */
-	explicit FVaCuusRmlDocumentHost(const TSharedRef<FVaCuusSlateElement>& InElement);
+	explicit FVaCuusRmlDocumentHost(const TSharedRef<IVaCuusFrameSink>& InSink);
 
 	/** Safety net only; normal teardown runs Shutdown() from the UI thread. */
 	virtual ~FVaCuusRmlDocumentHost() override;
@@ -90,8 +91,8 @@ private:
 	 */
 	void PublishEmptyInteractiveSnapshot();
 
-	/** Composite element the published buffers are enqueued to (thread-safe SP). Dropped by Shutdown(). */
-	TSharedPtr<FVaCuusSlateElement> Element;
+	/** Frame sink the published buffers are enqueued to (thread-safe SP). Dropped by Shutdown(). */
+	TSharedPtr<IVaCuusFrameSink> Sink;
 
 	/**
 	 * This view's Rml::RenderInterface, handed to Rml::CreateContext().

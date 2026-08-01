@@ -1,0 +1,77 @@
+/* The M5 TSX HUD's own sheet — vacuus-base.rcss supplies the UA layer. */
+#hud-root {
+	margin: 24dp;
+	width: 420dp;
+}
+
+#hud-title {
+	font-size: 22dp;
+	color: #9fd8ff;
+	margin-bottom: 12dp;
+	padding: 4dp 8dp;
+	/* A gradient decorator in plain sight (spec §8: "gradient + builtin decorators
+	   visible"): a title strip fading out to the right. */
+	decorator: linear-gradient(90deg, #10405cd0, #10101a00);
+}
+
+/* The spec §1 goal sheet, literally: the builtin glass-panel decorator over a real
+   backdrop blur. The fill is deliberately faint — the demo's subject is the moving
+   scene showing through BLURRED (composite-time glass, spec §2(a)); an opaque panel
+   would prove nothing. */
+.panel {
+	display: block;
+	background-color: #10101a55;
+	decorator: shader(glass-panel);
+	backdrop-filter: blur(12px);
+	border-width: 1dp;
+	border-color: #2a2a40;
+	padding: 10dp;
+	margin-bottom: 10dp;
+}
+
+.row {
+	display: block;
+	margin-bottom: 6dp;
+}
+
+.key {
+	color: #8a8aa8;
+}
+
+.val {
+	color: #ffffff;
+	margin-left: 8dp;
+}
+
+#health-bar {
+	display: block;
+	width: 100%;
+	height: 10dp;
+	background-color: #22222f;
+}
+
+#health-bar-fill {
+	display: block;
+	height: 100%;
+	/* A second gradient decorator, doing HUD work: the ramp spans the fill's own
+	   box (decorators paint the element's box, not the track's), red at the left
+	   edge whatever the value — visibly a gradient at any width. */
+	decorator: linear-gradient(90deg, #e8402a, #4fc36f);
+}
+
+#sim-btn {
+	display: inline-block;
+	margin-left: 12dp;
+	padding: 2dp 10dp;
+	background-color: #2a2a40;
+}
+
+#sim-btn:hover {
+	background-color: #3a3a58;
+}
+
+.kill-row {
+	display: block;
+	color: #d8d8e8;
+	margin-bottom: 2dp;
+}

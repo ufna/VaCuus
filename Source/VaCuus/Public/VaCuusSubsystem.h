@@ -10,6 +10,7 @@
 
 class FVaCuusUIThread;
 class IVaCuusDocumentHost;
+class UVaCuusStyleSet;
 class UVaCuusView;
 
 /**
@@ -139,6 +140,52 @@ public:
 	 * by the loop reloading the same view a second time.
 	 */
 	FOnVaCuusDocumentsReloadRequested OnDocumentsReloadRequested;
+
+	/**
+	 * Registers a material-decorator style set (M5 Task 5b): its keys become resolvable
+	 * from RCSS as `decorator: shader(<key>)`. Game thread. Returns how many entries were
+	 * accepted; each refusal — wrong domain, scene-texture/VT sampling, key collision —
+	 * has logged its own named Error (see FVaCuusStyleRegistry::RegisterStyleSet).
+	 *
+	 * A THIN DOOR TO PROCESS-WIDE STATE, like the UI thread itself: the registry is one
+	 * per process (there is one RmlUi and one recorder contract), so registering here
+	 * makes the keys visible to every view of every game instance. The subsystem carries
+	 * the API because game code and Blueprint reach the plugin through it.
+	 *
+	 * Register BEFORE loading documents that use the keys: a `shader(<key>)` compiled
+	 * before its key was registered is refused per element and stays refused until the
+	 * element restyles or the document reloads (RmlUi caches decorator failure).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "VaCuus")
+	int32 RegisterStyleSet(UVaCuusStyleSet* StyleSet);
+
+	/**
+	 * Unregisters a style set. Live draws naming its keys skip with a latched log; the
+	 * materials stay rooted until the render thread provably stopped resolving them
+	 * (the deferred-release fence, drained by Tick). Game thread.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "VaCuus")
+	void UnregisterStyleSet(UVaCuusStyleSet* StyleSet);
+
+	/**
+	 * Publishes a localization table (M5 Task 8, spec §2(l)): its entries answer
+	 * `vacuus.translate(key)` in every view's JS and the RML-text TranslateString
+	 * path (FVaCuusSystemInterface). Whole-table replacement with a monotonic
+	 * version — the "handler" a game registers for localization IS this push, not a
+	 * per-call callback, because translate() answers synchronously on the UI thread
+	 * and game code must not run there (FVaCuusTranslationRegistry has the whole
+	 * argument). Game thread.
+	 *
+	 * A THIN DOOR TO PROCESS-WIDE STATE like RegisterStyleSet: one RmlUi, one
+	 * SystemInterface, so the table serves every view of every game instance.
+	 *
+	 * Push BEFORE loading documents whose RML text should translate — RmlUi runs
+	 * TranslateString once, at text instancing; `vacuus.translate` calls always see
+	 * the newest table. After a language change: push the new table, then reload
+	 * (ClearAssetCachesAndReloadAllViews) for the RML half.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "VaCuus")
+	void SetTranslationTable(const TMap<FString, FString>& Table);
 
 	/** The process-wide UI thread, or null if none is running. Does not start one. */
 	FVaCuusUIThread* GetUIThread() const;

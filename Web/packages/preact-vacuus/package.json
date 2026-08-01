@@ -1,0 +1,13 @@
+{
+  "name": "@vacuus/preact",
+  "version": "0.1.0",
+  "description": "Preact adapted to the VaCuus DOM facade: stock preact (fetched from npm at install time, never committed) plus an options-based adapter that pins the three observed divergences (ep-observations.md). Import this instead of 'preact'; re-exports everything from preact and preact/hooks.",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "dependencies": {
+    "preact": "10.29.7"
+  }
+}

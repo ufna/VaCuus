@@ -9,7 +9,9 @@
 #include "VaCuusEngine.h"
 #include "VaCuusInputMap.h"
 #include "VaCuusStats.h"
+#include "VaCuusStyleSet.h"
 #include "VaCuusTextInput.h"
+#include "VaCuusTranslation.h"
 #include "VaCuusUIQueues.h"
 #include "VaCuusWriteRouter.h"
 
@@ -674,6 +676,40 @@ void FVaCuusUIThread::EnqueueClearAssetCaches()
 	Enqueue(MoveTemp(Command));
 }
 
+void FVaCuusUIThread::EnqueueSetStyleSnapshot(const TSharedPtr<const FVaCuusStyleSnapshot>& Snapshot)
+{
+	if (!Snapshot.IsValid())
+	{
+		// The registry never publishes a null; refusing here keeps the drain's
+		// InstallSnapshot checkf about versions, not about producer slips.
+		UE_LOG(LogVaCuus, Error, TEXT("EnqueueSetStyleSnapshot(null) dropped"));
+		return;
+	}
+
+	// No ViewId: the style registry is process-wide, applied before per-view routing.
+	FVaCuusUICommand Command;
+	Command.Kind = EVaCuusCommandKind::SetStyleSnapshot;
+	Command.StyleSnapshot = Snapshot;
+	Enqueue(MoveTemp(Command));
+}
+
+void FVaCuusUIThread::EnqueueSetTranslationSnapshot(const TSharedPtr<const FVaCuusTranslationSnapshot>& Snapshot)
+{
+	if (!Snapshot.IsValid())
+	{
+		// Same refusal as the style twin: the registry never publishes a null, and the
+		// drain's InstallSnapshot checkf should stay about versions, not producer slips.
+		UE_LOG(LogVaCuus, Error, TEXT("EnqueueSetTranslationSnapshot(null) dropped"));
+		return;
+	}
+
+	// No ViewId: the translation table is process-wide, applied before per-view routing.
+	FVaCuusUICommand Command;
+	Command.Kind = EVaCuusCommandKind::SetTranslationSnapshot;
+	Command.TranslationSnapshot = Snapshot;
+	Enqueue(MoveTemp(Command));
+}
+
 void FVaCuusUIThread::EnqueueInput(uint32 ViewId, FVaCuusInputEvent Event)
 {
 	// Same rule as commands: once a stop is requested the queues are closed, so
@@ -699,7 +735,21 @@ void FVaCuusUIThread::Enqueue(FVaCuusUICommand&& Command)
 	// the close in Exit()).
 	if (bStopRequested.load(std::memory_order_acquire))
 	{
-		UE_LOG(LogVaCuus, Verbose, TEXT("UI command dropped: the UI thread is stopping"));
+		// A BindModel is the one command whose loss has no second symptom -- the model never
+		// binds, every UpdateModel writes into a channel nothing consumes, and the idle gate
+		// correctly publishes nothing (the drain's unknown-view branch makes the same
+		// argument at the same level). Everything else lost here is a frame of work during
+		// teardown, which Verbose is for.
+		if (Command.Kind == EVaCuusCommandKind::BindModel)
+		{
+			UE_LOG(LogVaCuus, Error,
+				TEXT("BindModel('%s') for view %u dropped: the UI thread is stopping. The model will never bind"),
+				Command.Model.IsValid() ? *Command.Model->GetModelNameString() : TEXT("<none>"), Command.ViewId);
+		}
+		else
+		{
+			UE_LOG(LogVaCuus, Verbose, TEXT("UI command dropped: the UI thread is stopping"));
+		}
 		return;
 	}
 
@@ -1176,6 +1226,27 @@ void FVaCuusUIThread::DrainCommands()
 			continue;
 		}
 
+		if (Command->Kind == EVaCuusCommandKind::SetStyleSnapshot)
+		{
+			// THREAD-level like ClearAssetCaches: the style registry is process-wide, and
+			// a snapshot that rode on a per-view command would be lost exactly when no
+			// view is live to carry it. Installed before any load queued behind it drains
+			// (FIFO), so that document's CompileShader sees it.
+			FVaCuusStyleRegistry::InstallSnapshot(Command->StyleSnapshot);
+			continue;
+		}
+
+		if (Command->Kind == EVaCuusCommandKind::SetTranslationSnapshot)
+		{
+			// THREAD-level like SetStyleSnapshot, and for the same reason: the table is
+			// process-wide (`vacuus.translate` and TranslateString read it with no view
+			// identity), and one that rode on a per-view command would be lost exactly
+			// when no view is live to carry it. Installed before any load queued behind
+			// it drains (FIFO), so that document's text runs through the new table.
+			FVaCuusTranslationRegistry::InstallSnapshot(Command->TranslationSnapshot);
+			continue;
+		}
+
 		if (Command->Kind == EVaCuusCommandKind::ExecuteScript)
 		{
 			// AHEAD OF THE HOST LOOKUP, like DumpModel: the target is the SCRIPT
@@ -1230,7 +1301,7 @@ void FVaCuusUIThread::DrainCommands()
 				UE_LOG(LogVaCuus, Error,
 					TEXT("BindModel('%s') dropped: view %u is not registered on the UI thread. The model will never bind, and every ")
 					TEXT("UpdateModel for it goes nowhere"),
-					Command->Model.IsValid() ? *Command->Model->GetModelName().ToString() : TEXT("<none>"), Command->ViewId);
+					Command->Model.IsValid() ? *Command->Model->GetModelNameString() : TEXT("<none>"), Command->ViewId);
 				continue;
 			}
 
@@ -1436,7 +1507,7 @@ void FVaCuusUIThread::BindModel(uint32 ViewId, IVaCuusDocumentHost& Host, const 
 		// nothing to create the model on and no way to tell the game thread -- a BindModel
 		// carries no serial -- so this line is the only trace.
 		UE_LOG(LogVaCuus, Error, TEXT("View %u has no Rml context; the data model '%s' is not bound and its updates go nowhere"),
-			ViewId, *Model->GetModelName().ToString());
+			ViewId, *Model->GetModelNameString());
 		return;
 	}
 

@@ -1,0 +1,12 @@
+{
+  "name": "@vacuus/cli",
+  "version": "0.1.0",
+  "description": "The VaCuus web toolchain: create/dev/build/symbolicate/lint/manifest. Source-only; esbuild is the one runtime dependency (exact-pinned, dependency-free).",
+  "type": "module",
+  "bin": {
+    "vacuus": "bin/vacuus.mjs"
+  },
+  "dependencies": {
+    "esbuild": "0.28.1"
+  }
+}

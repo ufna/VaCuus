@@ -29,6 +29,15 @@ public class VaCuus : ModuleRules
 			// Runtime module, so a packaged game resolves the same root.
 			"Projects",
 
+			// The M5 style registry (VaCuusStyleSet.cpp) pushes its render-thread proxy
+			// mirror via ENQUEUE_RENDER_COMMAND and fences unregistration on
+			// FRenderCommandFence -- RenderCore -- with FRHICommandListImmediate in the
+			// command signatures -- RHI. Engine happens to re-export both, but the
+			// dependency is ours, so it is declared rather than inherited (the InputCore
+			// rule above).
+			"RenderCore",
+			"RHI",
+
 			"VaCuusRml"
 		});
 
@@ -98,8 +107,15 @@ public class VaCuus : ModuleRules
 		// (TargetDescriptor.cs:132 -> BuildMode.cs:196-201 -> CleanMode.cs:181). A commit that
 		// also adds or removes a .cpp/.h happens to do it for free, which is the likeliest
 		// reason this has not bitten yet.
+		// *.js / *.mjs joined 2026-08-01: the M4 demo's hud logic and every CLI bundle are
+		// loose scripts the VFS reads exactly like documents -- the first packaged-game gate
+		// run shipped a pak with every .rml staged and m4_hud_logic.js missing, a document
+		// that boots with dead JS and one Error naming the path. (The M4 live-reload watcher
+		// gained these extensions; this list is the staging twin and MUST track it.)
+		// Known cosmetic caveat: Content/DevUI/Tests/*.js fixtures ride along -- the clean
+		// shipping story is M6's UVaCuusBundle, which replaces this whole mechanism.
 		string DevUIDir = "$(PluginDir)/Content/DevUI";
-		foreach (string Pattern in new string[] { "*.rml", "*.rcss", "*.png", "*.jpg", "*.jpeg", "*.ttf", "*.otf" })
+		foreach (string Pattern in new string[] { "*.rml", "*.rcss", "*.js", "*.mjs", "*.png", "*.jpg", "*.jpeg", "*.ttf", "*.otf" })
 		{
 			// `.../` before the pattern so subdirectories are included -- img/ and fonts/
 			// today, and whatever a document references tomorrow. FileFilter resolves `...`

@@ -5,6 +5,8 @@
 #include "VaCuusContentPaths.h"
 #include "VaCuusDefines.h"
 #include "VaCuusEngine.h"
+#include "VaCuusStyleSet.h"
+#include "VaCuusTranslation.h"
 #include "VaCuusUIThread.h"
 
 #include "HAL/PlatformProcess.h"
@@ -45,6 +47,11 @@ void FVaCuusModule::ShutdownModule()
 	// it runs the paired Shutdown() on the owner thread while VaCuusRml is still
 	// loaded and every document host is still alive.
 	StopUIThread();
+
+	// After the thread (nothing can be recording), before the engine: drops the style
+	// registry's roots and its render-thread proxy mirror while the render thread is
+	// still around to flush against.
+	FVaCuusStyleRegistry::Shutdown_GameThread();
 
 	// The engine dies here rather than at static destruction time: by then
 	// FModuleManager has already unloaded VaCuusRml, and any RmlUi call made
@@ -92,6 +99,14 @@ FVaCuusUIThread* FVaCuusModule::GetOrStartUIThread()
 	if (NewThread->Start())
 	{
 		UIThread = MoveTemp(NewThread);
+
+		// The register-before-boot half of the style registry (M5 Task 5b): a style set
+		// registered before the first view exists must reach the first document's
+		// CompileShader. First command in, ahead of any AddView/Load the caller enqueues
+		// after this returns — the queue is FIFO from this one producer. The translation
+		// table (M5 Task 8) rides the identical argument one line down.
+		FVaCuusStyleRegistry::PublishToUIThread(*UIThread);
+		FVaCuusTranslationRegistry::PublishToUIThread(*UIThread);
 		return UIThread.Get();
 	}
 
@@ -102,6 +117,8 @@ FVaCuusUIThread* FVaCuusModule::GetOrStartUIThread()
 	if (!FPlatformProcess::SupportsMultithreading() && NewThread->StartInline())
 	{
 		UIThread = MoveTemp(NewThread);
+		FVaCuusStyleRegistry::PublishToUIThread(*UIThread);
+		FVaCuusTranslationRegistry::PublishToUIThread(*UIThread);
 		return UIThread.Get();
 	}
 
