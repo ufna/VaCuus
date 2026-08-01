@@ -239,10 +239,24 @@ void FVaCuusReplayRenderer::ReplayCommands(FRHICommandList& RHICmdList, const FV
 	const FMatrix44f Projection = VaCuusReplay::MakePixelToClipMatrix(RTSize);
 	int32 NumDrawCalls = 0;
 
+	// TOptionalShaderMapRef, NOT TShaderMapRef: the hard ref checkf()s on a missing
+	// shader (GlobalShader.h:201) and under the automation suite's -nullrhi no global
+	// shader is ever compiled, so the first test that drove a replay took the whole
+	// suite down (the M5 Task 5 spike's recorded observation; it dodged the problem by
+	// driving its material draw below Replay -- the world sink cannot, its replay IS
+	// the arrival path). On any real RHI the guard is dead code: an incomplete global
+	// shader map is fatal at engine startup long before a frame records. The early
+	// return is BEFORE the RTV transition, so the SRVMask-outside-Replay invariant
+	// holds on the path that skips.
 	FGlobalShaderMap* ShaderMap = GetGlobalShaderMap(GMaxRHIFeatureLevel);
-	TShaderMapRef<FVaCuusUIVS> VertexShader(ShaderMap);
-	TShaderMapRef<FVaCuusUIPS> PixelShader(ShaderMap);
-	TShaderMapRef<FVaCuusGradientPS> GradientShader(ShaderMap);
+	TOptionalShaderMapRef<FVaCuusUIVS> VertexShader(ShaderMap);
+	TOptionalShaderMapRef<FVaCuusUIPS> PixelShader(ShaderMap);
+	TOptionalShaderMapRef<FVaCuusGradientPS> GradientShader(ShaderMap);
+	if (!VertexShader.IsValid() || !PixelShader.IsValid() || !GradientShader.IsValid())
+	{
+		UE_LOG(LogVaCuus, Verbose, TEXT("Replay skipped draw pass: global shaders unavailable (null RHI)"));
+		return;
+	}
 
 	RHICmdList.Transition(FRHITransitionInfo(OutputRT, ERHIAccess::SRVMask, ERHIAccess::RTV));
 

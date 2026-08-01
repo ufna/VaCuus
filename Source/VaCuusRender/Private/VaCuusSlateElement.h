@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 
+#include "VaCuusFrameSink.h"
 #include "VaCuusGlassDistiller.h"
 #include "VaCuusReplayRenderer.h"
 
@@ -17,6 +18,11 @@ struct FVaCuusCommandBuffer;
  * passes against the live scene, then composites that RT into the Slate
  * elements texture at DestRect with premultiplied-over blending.
  *
+ * Also the screen-path IVaCuusFrameSink (M5 Task 6): the document host publishes
+ * through that interface, and this class's two sink methods predate it -- the
+ * extraction changed their declarations, not a line of their bodies, which is what
+ * keeps the glass and material suites' behavior identical by construction.
+ *
  * THREAD AFFINITY: all mutable state belongs to the render thread. The game
  * thread talks to the element exclusively through ENQUEUE_RENDER_COMMAND'd
  * setters (Noesis pattern); Draw_RenderThread runs on the render thread at
@@ -26,7 +32,7 @@ struct FVaCuusCommandBuffer;
  * ptr; Slate keeps the ref alive across the frame's render commands. Teardown
  * enqueues ReleaseResources_RenderThread, after which Draw is a no-op.
  */
-class FVaCuusSlateElement : public ICustomSlateElement
+class FVaCuusSlateElement : public ICustomSlateElement, public IVaCuusFrameSink
 {
 public:
 	/**
@@ -45,7 +51,7 @@ public:
 	 * glass list wholesale, so parsing rides the publish rate (~zero when
 	 * idle) and never the engine frame rate. See FVaCuusGlassDistiller.
 	 */
-	void SetPendingBuffer_RenderThread(FRHICommandList& RHICmdList, TUniquePtr<FVaCuusCommandBuffer> InBuffer);
+	virtual void SetPendingBuffer_RenderThread(FRHICommandList& RHICmdList, TUniquePtr<FVaCuusCommandBuffer> InBuffer) override;
 
 	/** Window-space pixel rect the UI RT is composited into (pre-ElementsOffset). */
 	void SetDestRect_RenderThread(const FIntRect& InDestRect);
@@ -61,7 +67,7 @@ public:
 	void SetGlassAllowed_RenderThread(bool bInAllowed);
 
 	/** Drops the replayer's RHI resources and any queued buffers; Draw becomes a no-op. */
-	void ReleaseResources_RenderThread();
+	virtual void ReleaseResources_RenderThread() override;
 
 	//~ Begin ICustomSlateElement
 	virtual void Draw_RenderThread(FRDGBuilder& GraphBuilder, const FDrawPassInputs& Inputs) override;

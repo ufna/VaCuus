@@ -3,10 +3,10 @@
 #include "VaCuusRmlDocumentHost.h"
 
 #include "VaCuusDefines.h"
+#include "VaCuusFrameSink.h"
 #include "VaCuusInteractiveSnapshot.h"
 #include "VaCuusRecordingRenderInterface.h"
 #include "VaCuusScriptHost.h"
-#include "VaCuusSlateElement.h"
 #include "VaCuusStats.h"
 #include "VaCuusUIThread.h"
 #include "VaCuusViewStatus.h"
@@ -31,8 +31,8 @@ static const char* GMemorySourceName = "vacuus://memory.rml";
 static constexpr uint64 GSnapshotLogInterval = 600;
 }	 // namespace VaCuusRmlDocumentHost
 
-FVaCuusRmlDocumentHost::FVaCuusRmlDocumentHost(const TSharedRef<FVaCuusSlateElement>& InElement)
-	: Element(InElement)
+FVaCuusRmlDocumentHost::FVaCuusRmlDocumentHost(const TSharedRef<IVaCuusFrameSink>& InSink)
+	: Sink(InSink)
 {
 	// Runs on the owner's thread (the UI thread may not even exist yet). Nothing
 	// RmlUi-affine may happen here -- that is Initialize()'s job.
@@ -123,17 +123,17 @@ void FVaCuusRmlDocumentHost::Shutdown()
 		Context = nullptr;
 	}
 
-	if (Element.IsValid())
+	if (Sink.IsValid())
 	{
 		// Render-side teardown from THIS thread, so it is ordered after our own last
-		// publish (same-thread enqueues keep their order); the element ref rides
+		// publish (same-thread enqueues keep their order); the sink ref rides
 		// along in the lambda and dies with it, after the release has run.
 		ENQUEUE_RENDER_COMMAND(VaCuusReleaseView)(
-			[LocalElement = MoveTemp(Element)](FRHICommandListImmediate&)
+			[LocalSink = MoveTemp(Sink)](FRHICommandListImmediate&)
 			{
-				LocalElement->ReleaseResources_RenderThread();
+				LocalSink->ReleaseResources_RenderThread();
 			});
-		Element.Reset();
+		Sink.Reset();
 	}
 }
 
@@ -478,20 +478,22 @@ void FVaCuusRmlDocumentHost::RecordAndPublishFrame()
 
 	// Null == the idle gate withheld this frame because it draws what the render
 	// thread already has (FVaCuusRecordingRenderInterface::EndFrameAndPublish). The
-	// right response is to enqueue NOTHING: the element re-composites its persistent
-	// render target every frame regardless of whether a buffer arrived
-	// (VaCuusSlateElement.cpp:91-140), which is the whole idle model.
+	// right response is to enqueue NOTHING: the Slate element re-composites its
+	// persistent render target every frame regardless of whether a buffer arrived
+	// (VaCuusSlateElement.cpp:106-146 -- the composite sits outside the
+	// PendingBuffers branch), and the world sink's copy destination keeps its last
+	// copy the same way -- which is the whole idle model.
 	const bool bPublished = Buffer.IsValid();
 	if (bPublished)
 	{
 		// Straight from the UI thread to the render thread: FRenderThreadCommandPipe
-		// has no game-thread requirement, and the element is a thread-safe shared ptr
+		// has no game-thread requirement, and the sink is a thread-safe shared ptr
 		// captured by value, so it outlives the enqueue no matter what the game thread
 		// is doing with its own reference.
 		ENQUEUE_RENDER_COMMAND(VaCuusPublishUIFrame)(
-			[LocalElement = Element, Buf = MoveTemp(Buffer)](FRHICommandListImmediate& RHICmdList) mutable
+			[LocalSink = Sink, Buf = MoveTemp(Buffer)](FRHICommandListImmediate& RHICmdList) mutable
 			{
-				LocalElement->SetPendingBuffer_RenderThread(RHICmdList, MoveTemp(Buf));
+				LocalSink->SetPendingBuffer_RenderThread(RHICmdList, MoveTemp(Buf));
 			});
 	}
 

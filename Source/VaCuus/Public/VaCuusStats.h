@@ -58,6 +58,7 @@ DECLARE_CYCLE_STAT_EXTERN(TEXT("VaCuus JsGC (UI)"), STAT_VaCuusJsGC, STATGROUP_V
 DECLARE_CYCLE_STAT_EXTERN(TEXT("VaCuus Replay (RT)"), STAT_VaCuusReplay, STATGROUP_VaCuus, VACUUS_API);
 DECLARE_CYCLE_STAT_EXTERN(TEXT("VaCuus Glass (RT)"), STAT_VaCuusGlass, STATGROUP_VaCuus, VACUUS_API);
 DECLARE_CYCLE_STAT_EXTERN(TEXT("VaCuus Composite (RT)"), STAT_VaCuusComposite, STATGROUP_VaCuus, VACUUS_API);
+DECLARE_CYCLE_STAT_EXTERN(TEXT("VaCuus WorldCopy (RT)"), STAT_VaCuusWorldCopy, STATGROUP_VaCuus, VACUUS_API);
 
 // (GT) == the game thread, i.e. the spec's own budget line. Three scopes rather than one
 // because they have three different rates and only the sum is the per-frame figure:
@@ -110,10 +111,14 @@ public:
 		// M5 glass passes (EVERY engine frame while a glass list is live — engine-frame
 		// work by design, spec §2(a); its per-window sample count against published=N is
 		// what makes Exp-GLASS-IDLE-FREEZE's live half observable in a PerfLog line),
-		// then the UI composite.
+		// then the UI composite. WorldCopy (M5 Task 6) is the world sink's
+		// copy-on-publish — WS-COPY-COST's observable: its per-window sample count IS
+		// the copy count, so "~0 when idle" and "per engine frame with a live material
+		// decorator" are both readable from one PerfLog line next to published=N.
 		Replay,
 		Glass,
 		Composite,
+		WorldCopy,
 
 		/**
 		 * The three GAME-thread scopes, added for the Task 14 budget gate ("input + snapshot
