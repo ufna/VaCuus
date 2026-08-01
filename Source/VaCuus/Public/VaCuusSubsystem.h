@@ -10,6 +10,7 @@
 
 class FVaCuusUIThread;
 class IVaCuusDocumentHost;
+class UScriptStruct;
 class UVaCuusStyleSet;
 class UVaCuusView;
 
@@ -107,6 +108,36 @@ public:
 	 * change", "vacuus.ReloadUI", ...).
 	 */
 	static int32 ClearAssetCachesAndReloadAllViews(const TCHAR* Reason);
+
+	/**
+	 * The Blueprint-struct-recompile refusal (VaCuus-akj.16, spec M6 2(j)), and the runtime
+	 * target the editor module's FVaCuusStructRecompileGuard forwards to from the struct
+	 * editor's PreChange -- which fires BEFORE the compile, with the OLD property chain still
+	 * alive (BroadcastPreChange at UserDefinedStructureCompilerUtils.cpp:599 precedes the
+	 * compile at :622). That window is the entire design: it is the last moment any buffer
+	 * laid out by the old properties can be destroyed THROUGH the type.
+	 *
+	 * WHAT IT DOES, in order:
+	 *  1. Enqueues the definition-registry stale mark for ChangedStruct (matched models or
+	 *     none -- the type may be cached purely as an element type).
+	 *  2. Walks every view of every game instance (the DumpModels walk, for the same reasons
+	 *     it has) and condemns every model whose root or array-element struct is
+	 *     ChangedStruct: one Error each, dead flag, game-side shadow destroyed NOW.
+	 *  3. Enqueues one UI-side drop per condemned model, then FENCES: Trigger +
+	 *     WaitForFrameCount (documented any-thread-safe; RunFrameInline in inline mode) with
+	 *     a ~100 ms budget, so the drops' normal DestroyStruct teardown runs while this
+	 *     thread provably holds the old chain alive inside PreChange.
+	 *  4. ONLY on timeout: each undelivered model flips to abandon-on-arrival and one Error
+	 *     reports its estimated leaked bytes -- the residual leak is loud, rare and measured,
+	 *     not a design principle.
+	 *
+	 * STATIC AND HERE for the reason DumpModels is: Views is private and stays private.
+	 * Game thread (PreChange broadcasts there, and steps 2-3 are game-thread state and the
+	 * SPSC queue's single producer). Returns the number of models condemned. Type-agnostic on
+	 * purpose -- the editor guard only ever passes UUserDefinedStructs, but the machinery
+	 * cares about pointer identity, which is what lets a native-struct test drive it.
+	 */
+	static int32 NotifyStructPreRecompile(const UScriptStruct* ChangedStruct);
 
 	/**
 	 * `vacuus.DumpModel`'s walk: prints the model diagnostic (spec 8) for every view of every

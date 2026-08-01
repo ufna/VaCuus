@@ -17,6 +17,7 @@ class FRunnableThread;
 class FVaCuusBoundModel;
 class FVaCuusEngine;
 class IVaCuusDocumentHost;
+class UScriptStruct;
 struct FVaCuusInputEvent;
 struct FVaCuusUICommand;
 struct FVaCuusUIQueues;
@@ -173,6 +174,25 @@ public:
 	 * load has already been asked for.
 	 */
 	void EnqueueBindModel(uint32 ViewId, const TSharedRef<FVaCuusBoundModel>& Model);
+
+	/**
+	 * Queues the UI-side half of one model's recompile refusal (VaCuus-akj.16, spec M6 2(j)):
+	 * drop it from this thread's registries, remove its data model from the view's context,
+	 * and tear its UI-side buffers down through the model's drop-state machine. Enqueued by
+	 * UVaCuusSubsystem::NotifyStructPreRecompile AFTER CondemnForStructRecompile armed the
+	 * model, and then FENCED: the caller triggers and waits (~100 ms) for the drain, because
+	 * the teardown's normal DestroyStruct path is only legal while the struct editor's
+	 * PreChange holds the old property chain alive. Owner's thread, like every Enqueue*.
+	 */
+	void EnqueueDropModelForRecompile(uint32 ViewId, const TSharedRef<FVaCuusBoundModel>& Model);
+
+	/**
+	 * Queues FVaCuusDefinitionRegistry::MarkStale for one recompiled struct. THREAD-level
+	 * (the registry is process-wide); FIFO from the single producer, so it lands before any
+	 * re-bind enqueued after the recompile -- which is the ordering that makes the registry's
+	 * evict-on-next-use safe to rely on. Owner's thread.
+	 */
+	void EnqueueMarkDefinitionsStale(const UScriptStruct* RecompiledStruct, const FString& StructName);
 
 	/**
 	 * Asks the UI thread to print its half of `vacuus.DumpModel` (spec 8) for ModelName on this
@@ -349,6 +369,9 @@ private:
 
 	/** BindModel handler: creates the model on the view's context and keeps it. UI thread. */
 	void BindModel(uint32 ViewId, IVaCuusDocumentHost& Host, const TSharedPtr<FVaCuusBoundModel>& Model);
+
+	/** DropModelForRecompile handler; see the command kind for the steps and their order. UI thread. */
+	void DropModelForRecompile(uint32 ViewId, const TSharedPtr<FVaCuusBoundModel>& Model);
 
 	/** DumpModel handler: prints the UI-side half of every matching model, or says there is none. UI thread. */
 	void DumpModel(uint32 ViewId, FName ModelName);

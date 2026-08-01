@@ -353,6 +353,28 @@ public:
 	bool HasModel(FName ModelName) const;
 
 	/**
+	 * The recompile refusal's per-view walk (VaCuus-akj.16, spec M6 2(j)), called from
+	 * UVaCuusSubsystem::NotifyStructPreRecompile inside the struct editor's PreChange window.
+	 * A model MATCHES when its root struct, or the element struct of any of its array fields
+	 * (FVaCuusModelArrayDesc::ElementLayout -- the surface M3b doubled), is ChangedStruct.
+	 *
+	 * THE WALK IS GAME-THREAD STATE END TO END, and that is the design rather than luck: this
+	 * map is written only by BindModel on the game thread, and a model's layout is immutable
+	 * from construction (its header's threading note), so matching here needs no fence and no
+	 * lock. Each match is condemned (dead flag, game shadow destroyed NOW while the old chain
+	 * is provably alive), logged as one Error naming view + model + struct, and appended to
+	 * OutCondemned for the caller's UI-side drop + fence. Already-condemned models are
+	 * skipped, which is what keeps a transaction's second broadcast at zero extra Errors.
+	 *
+	 * The dead entry STAYS in the map: HasModel keeps answering true, UpdateModel reaches the
+	 * latched Sample refusal instead of an anonymous "nothing bound" Warning, and BindModel
+	 * replaces it on the recovery re-bind. Appends (ViewId, model) pairs -- the id is what
+	 * the caller's per-model drop command routes by. Returns the number of models condemned.
+	 */
+	int32 RefuseModelsForStructRecompile(
+		const UScriptStruct* ChangedStruct, TArray<TPair<uint32, TSharedRef<FVaCuusBoundModel>>>& OutCondemned);
+
+	/**
 	 * Fields of ModelName the UI thread has not confirmed applying, or INDEX_NONE when no such
 	 * model is bound.
 	 *

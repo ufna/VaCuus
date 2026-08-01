@@ -13,6 +13,7 @@
 
 class FVaCuusBoundModel;
 class IVaCuusDocumentHost;
+class UScriptStruct;
 struct FVaCuusStyleSnapshot;
 struct FVaCuusTranslationSnapshot;
 
@@ -127,6 +128,32 @@ enum class EVaCuusCommandKind : uint8
 	 */
 	SetTranslationSnapshot,
 
+	/**
+	 * Drops ONE model condemned by a Blueprint struct recompile (VaCuus-akj.16, spec M6
+	 * 2(j)): out of this thread's registry and the write router, its data model out of the
+	 * view's context (Context::RemoveDataModel, Context.cpp:1097-1114 -- which is also what
+	 * frees the name for a later re-bind), then the UI-side buffers down through the model's
+	 * drop-state machine. Carries ViewId + Model.
+	 *
+	 * HANDLED BEFORE THE PER-VIEW HOST LOOKUP, like DumpModel: the teardown must run even
+	 * when the view has already been retired -- the buffers are the model's, not the host's,
+	 * and the game thread is WAITING on this command inside the struct editor's PreChange
+	 * (the fence in UVaCuusSubsystem::NotifyStructPreRecompile). A missing host only means
+	 * there is no context to remove the data model from.
+	 */
+	DropModelForRecompile,
+
+	/**
+	 * Marks the definition registry's cached set for one recompiled struct stale
+	 * (FVaCuusDefinitionRegistry::MarkStale), so the NEXT bind over that type rebuilds it
+	 * instead of handing out definitions whose FProperty* members the compile deleted.
+	 * THREAD-level like ClearAssetCaches (the registry is process-wide), and enqueued for
+	 * EVERY broadcast struct, matched models or none: a type can sit in the registry purely
+	 * as another model's array-element type. Carries RecompiledStruct (compared, never
+	 * dereferenced) and the type's name in Payload for the log line.
+	 */
+	MarkDefinitionsStale,
+
 	/** In-band graceful stop: close every document, then leave the frame loop. */
 	Shutdown
 };
@@ -184,7 +211,15 @@ struct FVaCuusUICommand
 	TSharedPtr<FVaCuusViewStatus> Status;
 
 	/**
-	 * BindModel only: the model both threads share.
+	 * MarkDefinitionsStale only: the recompiled type, AS A KEY. Never dereferenced by the
+	 * drain -- it is compared against the registry's (equally raw, equally pinned-elsewhere)
+	 * keys, and Payload carries the name for logging -- so a type collected between enqueue
+	 * and drain degrades to a lookup miss, not a dangling read.
+	 */
+	const UScriptStruct* RecompiledStruct = nullptr;
+
+	/**
+	 * BindModel and DropModelForRecompile: the model both threads share.
 	 *
 	 * SHARED, NOT HANDED OVER (unlike Host above), because the game thread keeps sampling and
 	 * publishing into it for the rest of the view's life. The UI thread takes its own

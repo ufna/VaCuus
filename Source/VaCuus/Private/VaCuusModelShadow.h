@@ -114,6 +114,22 @@ public:
 	/** Destroys the instance and frees the buffer, leaving an empty shadow. */
 	void Reset();
 
+	/**
+	 * Frees the buffer WITHOUT DestroyStruct, leaving an empty shadow. Every allocation the
+	 * struct's members own -- FString buffers, array blocks -- is deliberately leaked.
+	 *
+	 * THE ONE CALLER CLASS IS THE RECOMPILE TIMEOUT PATH (VaCuus-akj.16, spec M6 2(j)): after
+	 * a Blueprint struct recompile the type's old FProperty chain has been `delete`d
+	 * (CleanAndSanitizeStruct -> DestroyChildPropertiesAndResetPropertyLinks,
+	 * UserDefinedStructureCompilerUtils.cpp:225, Class.cpp DestroyPropertyLinkedList), so
+	 * Reset()'s DestroyStruct would walk the NEW DestructorLink over a buffer laid out by the
+	 * OLD properties -- a free of a pointer read from the wrong offset, i.e. heap corruption.
+	 * A bounded, editor-only, once-per-incident leak beats that, and the caller logs it as an
+	 * Error with the estimated size. Everywhere the old chain is still alive, Reset() is the
+	 * correct call and this one is not.
+	 */
+	void Abandon();
+
 private:
 	/**
 	 * Strong for the same reason FVaCuusModelLayout's is: a native UScriptStruct is

@@ -318,19 +318,36 @@ bool UVaCuusView::BindModel(const FString& ModelName, const UScriptStruct* Type)
 		return false;
 	}
 
-	if (Models.Contains(ModelKey))
+	if (const TSharedPtr<FVaCuusBoundModel>* ExistingModel = Models.Find(ModelKey))
 	{
-		// Refused here rather than left to RmlUi, which would also refuse it -- one
-		// Log::LT_ERROR from Context::CreateDataModel (Context.cpp:1075), and that one does
-		// reach LogVaCuus (see FVaCuusSystemInterface::LogMessage). What it does NOT say is
-		// the part that matters: the second model's values then go nowhere while the FIRST
-		// model's shadow stays on screen, so the UI keeps looking plausible. Refusing on this
-		// side also keeps the game-thread map single-valued, which nothing downstream rechecks.
-		UE_LOG(LogVaCuus, Error,
-			TEXT("View %u already has a model called '%s'; the second BindModel is ignored (there is no unbind in RmlUi, so a ")
-			TEXT("name cannot be reused on one view; names are compared case-insensitively here)"),
+		if (!(*ExistingModel)->IsCondemned())
+		{
+			// Refused here rather than left to RmlUi, which would also refuse it -- one
+			// Log::LT_ERROR from Context::CreateDataModel (Context.cpp:1075), and that one does
+			// reach LogVaCuus (see FVaCuusSystemInterface::LogMessage). What it does NOT say is
+			// the part that matters: the second model's values then go nowhere while the FIRST
+			// model's shadow stays on screen, so the UI keeps looking plausible. Refusing on this
+			// side also keeps the game-thread map single-valued, which nothing downstream rechecks.
+			UE_LOG(LogVaCuus, Error,
+				TEXT("View %u already has a model called '%s'; the second BindModel is ignored (there is no unbind in RmlUi, so a ")
+				TEXT("name cannot be reused on one view; names are compared case-insensitively here)"),
+				ViewId, *ModelName);
+			return false;
+		}
+
+		// THE RECOVERY RE-BIND (VaCuus-akj.16): the entry is a corpse -- torn down when its
+		// struct was recompiled -- and refusing to replace it would leave the name dead for
+		// the life of the view. The no-unbind rule above is not violated: the recompile drop
+		// already ran Context::RemoveDataModel (which erases the name, Context.cpp:1109), so
+		// RmlUi will accept the re-creation. Replacing the map entry drops the last game-side
+		// reference; the UI side let go in the drop, so the corpse is destroyed here, with
+		// its drop state at TornDown and its buffers already empty. The caller still owes a
+		// document reload: the detach RemoveDataModel did to a LOADED document is one-way.
+		UE_LOG(LogVaCuus, Log,
+			TEXT("View %u: model '%s' replaces the one torn down by the struct recompile; reload the document so the new model ")
+			TEXT("attaches"),
 			ViewId, *ModelName);
-		return false;
+		Models.Remove(ModelKey);
 	}
 
 	if (NextLoadSerial > 1)
@@ -448,6 +465,64 @@ bool UVaCuusView::HasModel(FName ModelName) const
 {
 	check(IsInGameThread());
 	return Models.Contains(ModelName);
+}
+
+int32 UVaCuusView::RefuseModelsForStructRecompile(
+	const UScriptStruct* ChangedStruct, TArray<TPair<uint32, TSharedRef<FVaCuusBoundModel>>>& OutCondemned)
+{
+	check(IsInGameThread());
+
+	if (ChangedStruct == nullptr)
+	{
+		return 0;
+	}
+
+	// The match rule, both halves (the header's contract): the model's own root, or any
+	// array field's ELEMENT type. Element layouts cannot nest further arrays (the desc build
+	// refuses nested containers, VaCuusModelLayout.h's ElementLayout comment), so one level
+	// of descent is the whole surface. Nested-by-value structs need no clause of their own:
+	// their leaves belong to the CONTAINING type's compile set, and the engine broadcasts a
+	// PreChange for every dependent struct it recompiles in the same transaction
+	// (UserDefinedStructureCompilerUtils.cpp:585-616 loops the growing ChangedStructs array),
+	// so the containing root matches on its own broadcast.
+	int32 NumCondemned = 0;
+	for (const TPair<FName, TSharedPtr<FVaCuusBoundModel>>& Pair : Models)
+	{
+		FVaCuusBoundModel& Model = *Pair.Value;
+
+		bool bMatches = Model.GetLayout().GetStruct() == ChangedStruct;
+		if (!bMatches)
+		{
+			for (const FVaCuusModelField& Field : Model.GetLayout().GetFields())
+			{
+				if (Field.ArrayDesc != nullptr && Field.ArrayDesc->ElementLayout.IsValid() &&
+					Field.ArrayDesc->ElementLayout->GetStruct() == ChangedStruct)
+				{
+					bMatches = true;
+					break;
+				}
+			}
+		}
+
+		// CondemnForStructRecompile answers false for a model already condemned (the same
+		// transaction's second broadcast), which is what holds this at ONE Error and ONE
+		// drop command per model per incident.
+		if (!bMatches || !Model.CondemnForStructRecompile())
+		{
+			continue;
+		}
+
+		UE_LOG(LogVaCuus, Error,
+			TEXT("View %u: model '%s' is torn down -- its struct '%s' is being recompiled and every FProperty the model resolved ")
+			TEXT("dies with the old layout. Sample/UpdateModel are refused from now on; re-bind the model and reload the ")
+			TEXT("document to recover"),
+			ViewId, *Model.GetModelNameString(), *ChangedStruct->GetName());
+
+		OutCondemned.Emplace(ViewId, Pair.Value.ToSharedRef());
+		++NumCondemned;
+	}
+
+	return NumCondemned;
 }
 
 int32 UVaCuusView::NumOutstandingModelFields(FName ModelName)

@@ -637,6 +637,25 @@ void FVaCuusUIThread::EnqueueBindModel(uint32 ViewId, const TSharedRef<FVaCuusBo
 	Enqueue(MoveTemp(Command));
 }
 
+void FVaCuusUIThread::EnqueueDropModelForRecompile(uint32 ViewId, const TSharedRef<FVaCuusBoundModel>& Model)
+{
+	FVaCuusUICommand Command;
+	Command.Kind = EVaCuusCommandKind::DropModelForRecompile;
+	Command.ViewId = ViewId;
+	Command.Model = Model;
+	Enqueue(MoveTemp(Command));
+}
+
+void FVaCuusUIThread::EnqueueMarkDefinitionsStale(const UScriptStruct* RecompiledStruct, const FString& StructName)
+{
+	// No ViewId: the definition registry is process-wide, applied before per-view routing.
+	FVaCuusUICommand Command;
+	Command.Kind = EVaCuusCommandKind::MarkDefinitionsStale;
+	Command.RecompiledStruct = RecompiledStruct;
+	Command.Payload = StructName;
+	Enqueue(MoveTemp(Command));
+}
+
 void FVaCuusUIThread::EnqueueDumpModel(uint32 ViewId, FName ModelName)
 {
 	FVaCuusUICommand Command;
@@ -1270,6 +1289,23 @@ void FVaCuusUIThread::DrainCommands()
 			continue;
 		}
 
+		if (Command->Kind == EVaCuusCommandKind::MarkDefinitionsStale)
+		{
+			// THREAD-level like ClearAssetCaches; the registry is process-wide. Applied before
+			// the per-view routing so it lands whether or not any view is live.
+			FVaCuusDefinitionRegistry::MarkStale(Command->RecompiledStruct, Command->Payload);
+			continue;
+		}
+
+		if (Command->Kind == EVaCuusCommandKind::DropModelForRecompile)
+		{
+			// AHEAD OF THE HOST LOOKUP, for the reason the command kind states: the game
+			// thread is WAITING on this teardown inside PreChange, and a retired view must
+			// not turn it into a Verbose drop and a 100 ms timeout-leak.
+			DropModelForRecompile(Command->ViewId, Command->Model);
+			continue;
+		}
+
 		if (Command->Kind == EVaCuusCommandKind::DumpModel)
 		{
 			// AHEAD OF THE HOST LOOKUP, deliberately: the models are keyed on the view in
@@ -1544,6 +1580,73 @@ void FVaCuusUIThread::BindModel(uint32 ViewId, IVaCuusDocumentHost& Host, const 
 	// attributes to it (FVaCuusWriteRouter's span-walk comment), and JS can read it
 	// through vacuus.model(name). Unregistered in RemoveView, before the ref drop.
 	FVaCuusWriteRouter::RegisterModel(ViewId, Model->GetModelName(), Model.ToSharedRef());
+}
+
+void FVaCuusUIThread::DropModelForRecompile(uint32 ViewId, const TSharedPtr<FVaCuusBoundModel>& Model)
+{
+	check(IsInUIThread());
+
+	if (!Model.IsValid())
+	{
+		UE_LOG(LogVaCuus, Error, TEXT("DropModelForRecompile for view %u carried no model"), ViewId);
+		return;
+	}
+
+	// ORDER IS THE POINT, and it is the REVERSE of the bind's:
+	//
+	//  1. Out of this thread's registry, so this frame's ApplyModelUpdates and any later
+	//     DumpModel no longer reach the model.
+	//  2. Out of the write router, purging its pending reverts -- a revert flushed later this
+	//     frame must not DirtyVariable into the data model step 3 removes.
+	//  3. Context::RemoveDataModel, while the element tree is still up: it detaches every
+	//     root (SetDataModel(nullptr), Context.cpp:1102-1106) and destroys the DataModel
+	//     holding the raw void* into the UI shadow -- which is what makes step 4 legal at
+	//     all. It also erases the NAME (data_models.erase, :1109), so a recovery re-bind
+	//     under the same name is not refused by CreateDataModel.
+	//  4. The buffers, through the model's drop-state machine (Reset within the fence
+	//     window, Abandon past it).
+	if (TArray<TSharedRef<FVaCuusBoundModel>>* ViewModels = Models.Find(ViewId))
+	{
+		if (ViewModels->Remove(Model.ToSharedRef()) > 0)
+		{
+			NumBoundModels.fetch_sub(1, std::memory_order_release);
+		}
+		if (ViewModels->IsEmpty())
+		{
+			Models.Remove(ViewId);
+		}
+	}
+
+	FVaCuusWriteRouter::UnregisterModel(&*Model);
+
+	const bool bWasBound = Model->IsBoundToContext();
+	if (bWasBound)
+	{
+		IVaCuusDocumentHost* Host = FindHost(ViewId);
+		Rml::Context* Context = Host != nullptr ? Host->GetContext() : nullptr;
+		if (Context != nullptr)
+		{
+			// The exact-case string, converted the way BindToContext converted it -- RmlUi's
+			// data_models map is keyed on the UTF-8 form byte-for-byte.
+			Context->RemoveDataModel(Rml::String(TCHAR_TO_UTF8(*Model->GetModelNameString())));
+		}
+		else
+		{
+			// A bound model whose context is already gone can only mean the view was retired
+			// between the condemnation and this drain -- RemoveView has then already run
+			// Rml::RemoveContext, taking every data model with it. Nothing left to remove.
+			UE_LOG(LogVaCuus, Verbose,
+				TEXT("DropModelForRecompile: view %u has no context; its data models died with it"), ViewId);
+		}
+	}
+
+	Model->TearDownUISideForRecompile();
+
+	UE_LOG(LogVaCuus, Log,
+		TEXT("VaCuus model '%s' (view %u) dropped after a struct recompile (%s; data model %s)"),
+		*Model->GetModelNameString(), ViewId,
+		Model->GetDropState() == EVaCuusModelDropState::TornDown ? TEXT("buffers torn down") : TEXT("buffers NOT torn down"),
+		bWasBound ? TEXT("removed from the context") : TEXT("was never bound to a context"));
 }
 
 void FVaCuusUIThread::DumpModel(uint32 ViewId, FName ModelName)

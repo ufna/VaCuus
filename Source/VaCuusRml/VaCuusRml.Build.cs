@@ -19,6 +19,29 @@ public class VaCuusRml : ModuleRules
 		PublicIncludePaths.Add(Path.Combine(RmlRoot, "Include"));
 		PublicDefinitions.Add("RMLUI_CUSTOM_RTTI=1");
 
+		// RMLUI_DEBUG: DELIBERATELY NOT DEFINED HERE, IN ANY CONFIGURATION -- this comment is
+		// the decision record (bead VaCuus-akj.11). The vendored default chain is
+		// Include/RmlUi/Core/Platform.h:20-21 (`#if !defined NDEBUG && !defined RMLUI_DEBUG`
+		// -> define it), and UBT compiles every configuration this plugin ships with NDEBUG
+		// set, so RMLUI_DEBUG is off everywhere and RMLUI_ASSERT / RMLUI_ASSERTMSG /
+		// RMLUI_ERROR(MSG) expand to nothing (Debug.h:45-52).
+		//
+		// Why that is acceptable -- the M2-corrected premise, decided rather than drifted
+		// into: what the asserts guard is NOT RmlUi's only diagnostic. Rml::Log::Message is an
+		// ordinary unconditional function and every LT_ERROR/LT_WARNING in the library reaches
+		// LogVaCuus through FVaCuusSystemInterface::LogMessage (VaCuusSystemInterface.cpp
+		// carries the whole argument, :68-90). Only the ASSERT family is gone, so the standing
+		// rule is: an RmlUi API whose sole failure signal is an assert is silent here, and
+		// VaCuus checks that precondition itself at the call site.
+		//
+		// Local-debug recipe, when chasing a bug inside the vendored library: add
+		//     PublicDefinitions.Add("RMLUI_DEBUG=1");
+		// beside this comment (Public, because the assert macros appear in RmlUi HEADERS that
+		// every dependent module compiles -- a Private define would build this module's TUs
+		// with asserts and everyone else's without). Rml::Assert then logs LT_ASSERT through
+		// the system interface and RMLUI_BREAK traps. Do not ship it: the assert bodies cost
+		// real work on hot paths, which is why the shipped answer stays OFF.
+
 		// itlib (vendored inside RmlUi) throws in a few container paths; monolithic/non-editor
 		// targets compile with exceptions disabled and UBT only lets a module turn exceptions ON
 		// (bEnableExceptions |= ...), so the library's no-throw mode is the only option.

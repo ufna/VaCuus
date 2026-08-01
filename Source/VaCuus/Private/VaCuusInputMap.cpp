@@ -141,6 +141,14 @@ TMap<FKey, KeyIdentifier> BuildKeyMap()
 		// these keys (RmlUi does no key repeat of its own). Mapping them here rather
 		// than mapping the axes means the widget speaks FKeys throughout and this file
 		// stays the only place that knows what an arrow is.
+		//
+		// THE GATE FOR THESE NAMES IS NOT HERE, AND MUST NOT BE (bead VaCuus-akj.6.35).
+		// The decision -- engine-DIGITIZED left-stick presses do not enter the nav grid
+		// by default, cvar vacuus.NavStickPress opts in -- is enforced in
+		// SVaCuusWidget::OnKeyDown/OnKeyUp, where the engine's events and the widget's
+		// own synthesized repeats are still distinguishable: both arrive at THIS map as
+		// the same four FKeys, so a gate here would starve the tuned analog repeat clock
+		// along with the raw presses it exists to replace.
 		Map.Add(LeftStick[Index], Arrows[Index]);
 	}
 

@@ -94,3 +94,17 @@ void FVaCuusModelShadow::Reset()
 
 	Struct.Reset();
 }
+
+void FVaCuusModelShadow::Abandon()
+{
+	// No DestroyStruct, on purpose -- see the header. The buffer itself is returned to the
+	// allocator (it is plain FMemory::Malloc'd bytes and safe to free whatever the type's
+	// property chain looks like now); only what the members OWN leaks.
+	if (Data != nullptr)
+	{
+		FMemory::Free(Data);
+		Data = nullptr;
+	}
+
+	Struct.Reset();
+}

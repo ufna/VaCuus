@@ -130,6 +130,22 @@ public:
 	uint64 GetNumSamples() const { return NumSamples; }
 	uint64 GetNumFieldsMarked() const { return NumFieldsMarked; }
 
+	/**
+	 * Destroys the shadow NOW, through the normal DestroyStruct path, leaving this sampler
+	 * permanently invalid (IsValid() false). The recompile refusal's game-side half
+	 * (VaCuus-akj.16): called from FVaCuusBoundModel::CondemnForStructRecompile inside the
+	 * struct-editor PreChange window, the one moment the OLD FProperty chain is provably
+	 * still alive (BroadcastPreChange at UserDefinedStructureCompilerUtils.cpp:599 precedes
+	 * the compile at :622) -- waiting for the destructor would run the NEW DestructorLink
+	 * over this OLD-layout buffer. Game thread, like every other entry point here; the
+	 * caller's dead flag is what guarantees Sample() never runs afterwards.
+	 */
+	void DropShadowForStructTeardown()
+	{
+		check(IsInGameThread());
+		Shadow.Reset();
+	}
+
 private:
 	/** Borrowed; see the constructor. */
 	const FVaCuusModelLayout& Layout;

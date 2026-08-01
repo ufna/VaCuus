@@ -27,6 +27,41 @@ static TAutoConsoleVariable<int32> CVarVaCuusM1HUDAutoShot(
 	0,
 	TEXT("If > 0, request a screenshot (with UI) once the view has recorded this many UI frames."));
 
+/**
+ * THE akj.6.35 DECISION, DECIDED: engine-digitized left-stick presses do NOT enter the UI
+ * navigation grid by default; this cvar is the opt-in.
+ *
+ * What "digitized" means and why the default is off: platforms synthesize DIGITAL key events
+ * from the analog left stick -- FLinuxApplication raises OnControllerButtonPressed for
+ * FGamepadKeyNames::LeftStickUp when the axis crosses its own dead zone
+ * (Linux/LinuxApplication.cpp:626-632, released at :634-638), and XInput maps Buttons[16..19]
+ * onto the same four names (XInputInterface.cpp:100-103). Those events arrive in OnKeyDown
+ * exactly like a DPad press, and VaCuusInputMap maps the LeftStick_* names onto
+ * KI_UP/DOWN/LEFT/RIGHT -- so before this gate, a held MOVEMENT stick stepped the focus grid
+ * of any UI that owned the keyboard, DOUBLED by the widget's own analog repeat clock
+ * (TickAnalogNavigation), which synthesizes the same four keys with a deliberate dead zone
+ * and repeat cadence. Two clocks, one grid, and only one of them tuned.
+ *
+ * The gate drops the ENGINE's digitized events only -- neither consumed nor queued, the D12
+ * pass-through shape -- and cannot starve pad navigation: the widget's own synthesis calls
+ * SendInput directly (SendAnalogNavKey) and never passes through OnKeyDown, so stick
+ * navigation still works through the one tuned clock, and the DPad is untouched. Opting in
+ * (1) restores the raw events for a game that wants the platform's digitization instead.
+ */
+static TAutoConsoleVariable<int32> CVarVaCuusNavStickPress(
+	TEXT("vacuus.NavStickPress"),
+	0,
+	TEXT("If 0 (default), engine-digitized left-stick key events (Gamepad_LeftStick_*) are neither consumed nor forwarded ")
+	TEXT("to the UI -- stick navigation goes through the widget's tuned analog repeat clock instead. Set 1 to let the raw ")
+	TEXT("digitized presses drive the navigation grid too."));
+
+/** The four digitized-stick names the gate above filters. */
+static bool IsDigitalLeftStickKey(const FKey& Key)
+{
+	return Key == EKeys::Gamepad_LeftStick_Up || Key == EKeys::Gamepad_LeftStick_Down ||
+		   Key == EKeys::Gamepad_LeftStick_Left || Key == EKeys::Gamepad_LeftStick_Right;
+}
+
 void SVaCuusWidget::Construct(const FArguments& InArgs,
 	UVaCuusView* InView,
 	const TSharedRef<FVaCuusSlateElement>& InElement)
@@ -742,6 +777,16 @@ FReply SVaCuusWidget::OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& In
 		return FReply::Unhandled();
 	}
 
+	// The digitized-stick gate (bead VaCuus-akj.6.35; the cvar's comment is the decision
+	// record): by default the engine's synthesized LeftStick_* key events take the D12
+	// pass-through shape, so a walking player's stick cannot double-drive the nav grid the
+	// analog repeat clock already drives. The widget's own synthesized repeats do not pass
+	// through here (SendAnalogNavKey calls SendInput directly) and are unaffected.
+	if (IsDigitalLeftStickKey(Key) && CVarVaCuusNavStickPress.GetValueOnGameThread() == 0)
+	{
+		return FReply::Unhandled();
+	}
+
 	// Answered from the snapshot exactly like pointer events are: keys are consumed
 	// only while a real focusable element holds RmlUi focus, OR while this key is the one
 	// that would give it focus (Task 14 decision A1, see DoesKeyEnterUIFocus). Otherwise
@@ -781,6 +826,15 @@ FReply SVaCuusWidget::OnKeyUp(const FGeometry& MyGeometry, const FKeyEvent& InKe
 	const FKey Key = InKeyEvent.GetKey();
 
 	if (PassThroughKeys.Contains(Key))
+	{
+		return FReply::Unhandled();
+	}
+
+	// The digitized-stick gate, mirrored from OnKeyDown so both halves of one press get one
+	// verdict. (A cvar flipped mid-hold can still split a pair; RmlUi keeps no key state of
+	// its own -- the SendAnalogNavKey comment -- so the cost is one unmatched down or up to a
+	// LISTENER, the same exposure Remove/AddPassThroughKey mid-hold already has.)
+	if (IsDigitalLeftStickKey(Key) && CVarVaCuusNavStickPress.GetValueOnGameThread() == 0)
 	{
 		return FReply::Unhandled();
 	}

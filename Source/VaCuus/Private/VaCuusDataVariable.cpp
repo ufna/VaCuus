@@ -17,6 +17,8 @@
 
 #include <RmlUi/Core/DataModelHandle.h>
 
+#include <atomic>
+
 namespace
 {
 /**
@@ -29,6 +31,16 @@ namespace
  */
 TMap<const UScriptStruct*, TUniquePtr<FVaCuusModelDefinitions>> GDefinitionsByStruct;
 int32 GNumRefusedSets = 0;
+
+/**
+ * Stale definition sets evicted and rebuilt after a struct recompile (VaCuus-akj.16).
+ * ATOMIC, unlike its neighbours, on the write-router counters' pattern (GNumRoutedWrites):
+ * written on the UI thread inside GetOrCreate's evict branch, read by tests from the game
+ * thread -- and it exists BECAUSE of the invariant-needs-an-observable rule: without it,
+ * "the rebuild happened instead of the corpse being handed out" is only a Log line the
+ * automation framework cannot count (its expected-message filter sees Warning/Error only).
+ */
+std::atomic<uint64> GNumStaleEvictions{0};
 
 /**
  * The evaluation counters (spec 3.5), same UI-thread-only plain-static rule as above:
@@ -777,7 +789,25 @@ const FVaCuusModelDefinitions* FVaCuusDefinitionRegistry::GetOrCreate(const FVaC
 	const UScriptStruct* Key = Layout.GetStruct();
 	if (TUniquePtr<FVaCuusModelDefinitions>* Existing = GDefinitionsByStruct.Find(Key))
 	{
-		return Existing->Get();
+		if (!(*Existing)->bStaleFromRecompile)
+		{
+			return Existing->Get();
+		}
+
+		// EVICT-ON-NEXT-USE, the second half of MarkStale's contract (VaCuus-akj.16): every
+		// FProperty* in this set was deleted by the recompile, and the caller is holding a
+		// layout freshly resolved against the NEW chain -- exactly the input a rebuild needs.
+		// Freeing here is legal because nothing can still reach the old set: every model
+		// whose evaluation went through it (as root or as a borrowed element definition) was
+		// condemned and dropped in the same PreChange transaction that marked it, and the
+		// mark command FIFO-precedes any re-bind. The destructor frees only what this set
+		// OWNS -- a borrowed element-definition pointer in another (equally stale, equally
+		// unreachable) set is not chased.
+		UE_LOG(LogVaCuus, Log,
+			TEXT("VaCuus definitions for '%s' were stale after a Blueprint struct recompile; rebuilt over the new property chain"),
+			*Key->GetName());
+		GDefinitionsByStruct.Remove(Key);
+		GNumStaleEvictions.fetch_add(1, std::memory_order_relaxed);
 	}
 
 	// `new` rather than MakeUnique: the constructor is private with this class as its only
@@ -791,6 +821,27 @@ int32 FVaCuusDefinitionRegistry::Num()
 {
 	check(FVaCuusUIThread::IsInUIThread());
 	return GDefinitionsByStruct.Num();
+}
+
+uint64 FVaCuusDefinitionRegistry::GetNumStaleEvictions()
+{
+	// Any thread, relaxed: a test comparing before/after counts across its own fence.
+	return GNumStaleEvictions.load(std::memory_order_relaxed);
+}
+
+void FVaCuusDefinitionRegistry::MarkStale(const UScriptStruct* RecompiledStruct, const FString& StructName)
+{
+	check(FVaCuusUIThread::IsInUIThread());
+
+	// A raw-pointer KEY comparison and a flag write -- RecompiledStruct is never dereferenced,
+	// so a type that was collected between enqueue and drain is simply a miss.
+	if (TUniquePtr<FVaCuusModelDefinitions>* Existing = GDefinitionsByStruct.Find(RecompiledStruct))
+	{
+		(*Existing)->bStaleFromRecompile = true;
+		UE_LOG(LogVaCuus, Log,
+			TEXT("VaCuus definitions for '%s' marked stale (Blueprint struct recompile); the next bind over the type rebuilds them"),
+			*StructName);
+	}
 }
 
 int32 FVaCuusDefinitionRegistry::ReleaseAll()

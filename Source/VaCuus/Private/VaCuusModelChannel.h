@@ -229,6 +229,14 @@ public:
 	uint64 GetNumPublishes() const { return NumPublishes; }
 	uint64 GetNumFieldsPublished() const { return NumFieldsPublished; }
 
+	/**
+	 * Slot buffers Publish() has lazily allocated (0..3). Game thread -- the producer is the
+	 * only writer. Exists for one caller: the recompile timeout's leaked-bytes estimate
+	 * (FVaCuusBoundModel::EstimateAbandonedBytes), which runs on the game thread and must not
+	 * touch the slots themselves to count them.
+	 */
+	int32 GetNumSlotBuffersAllocated() const { return NumSlotBuffersAllocated; }
+
 	//~ ------------------------------------------------------------------ Consumer thread
 
 	/**
@@ -272,6 +280,27 @@ public:
 	/** The generation the consumer last echoed back; 0 before the first. Any thread. */
 	uint64 GetAppliedGeneration() const { return AppliedGeneration.load(std::memory_order_acquire); }
 
+	//~ ------------------------------------------------------------------ Recompile teardown
+
+	/**
+	 * Tears down all THREE slot buffers at once: Reset() (DestroyStruct) when
+	 * bStructChainAlive, Abandon() (free, no destructors, contents leak) when not. The dirty
+	 * bit sets are left alone -- they are plain bits and mean nothing once the buffers are
+	 * empty. VaCuus-akj.16 / spec M6 2(j); FVaCuusBoundModel's drop-state machine is the only
+	 * caller and says which of the two applies.
+	 *
+	 * LEGAL ONLY UNDER MUTUAL QUIESCENCE, WHICH THE CALLER'S PROTOCOL ESTABLISHES AND THIS
+	 * CLASS CANNOT CHECK. TTripleBuffer gives the producer the write slot and the consumer the
+	 * read slot; nothing may name all three unless BOTH roles are provably parked. They are,
+	 * at every call site: the game-side producer set the model's dead flag BEFORE the teardown
+	 * was queued (program order on the game thread; Publish is unreachable past the flag), and
+	 * the caller runs either ON the consumer thread (the UI-side drop, inside DrainCommands,
+	 * after the model left FVaCuusUIThread::Models -- so this frame's ApplyModelUpdates no
+	 * longer reaches ConsumeUpdate for it) or after BOTH sides dropped their references
+	 * (~FVaCuusBoundModel's safety net, where no other toucher can exist by definition).
+	 */
+	void TeardownSlotsForRecompile(bool bStructChainAlive);
+
 private:
 	/** Clears Unacked when the echo confirms the LAST publish. Game thread. */
 	void ReapAcknowledgement();
@@ -280,15 +309,28 @@ private:
 	const FVaCuusModelLayout& Layout;
 
 	/**
-	 * ENoInit, not the default constructor: that one does
-	 * `Buffers[0] = Buffers[1] = Buffers[2] = BufferType()` (TripleBuffer.h:69-73), i.e. a
-	 * COPY assignment from an lvalue, which FVaCuusModelUpdate cannot offer -- it owns a
-	 * UScriptStruct instance and FVaCuusModelShadow is deliberately non-copyable. ENoInit runs
-	 * `new BufferType[3]` and nothing else (:76-79), which default-constructs all three:
-	 * generation 0, no bits, no buffer. Each slot's buffer is allocated the first time that
-	 * slot is written, i.e. at most three times ever.
+	 * CALLER-OWNED SLOT STORAGE, handed to the buffer through its third constructor
+	 * (TripleBuffer.h:103-108: takes `BufferType (&)[3]`, sets OwnsMemory=false). The default
+	 * constructor is unusable anyway -- it does `Buffers[0] = Buffers[1] = Buffers[2] =
+	 * BufferType()` (TripleBuffer.h:69-73), a COPY assignment FVaCuusModelUpdate cannot offer,
+	 * since it owns a UScriptStruct instance and FVaCuusModelShadow is deliberately
+	 * non-copyable -- but the previous form here was `Slots{NoInit}` (new BufferType[3],
+	 * :76-79), and the switch to named storage is FOR TeardownSlotsForRecompile: the API hands
+	 * out only the write slot (producer) and the read slot (consumer), so a teardown that must
+	 * visit all THREE buffers has to own them by name. Same default-constructed start
+	 * (generation 0, no bits, no buffer); each slot's buffer is still allocated the first time
+	 * it becomes the write slot, i.e. at most three times ever.
+	 *
+	 * THE ONE BEHAVIOURAL DIFFERENCE, CHECKED AGAINST THE CONSUMER: this constructor starts
+	 * with the Dirty flag SET (TripleBuffer.h:106: `Initial | Dirty`), so the first
+	 * SwapAndRead swaps once with nothing published. Harmless by the generation gate:
+	 * ConsumeUpdate reads generation 0, which is <= LastConsumedGeneration's initial 0, and
+	 * applies nothing.
+	 *
+	 * DECLARED BEFORE Slots -- the buffer's constructor takes the array by reference.
 	 */
-	TTripleBuffer<FVaCuusModelUpdate> Slots{NoInit};
+	FVaCuusModelUpdate SlotStorage[3];
+	TTripleBuffer<FVaCuusModelUpdate> Slots{SlotStorage};
 
 	/** Marked by the differ since the last publish. Game thread only. */
 	TBitArray<> Pending;
@@ -304,6 +346,9 @@ private:
 	uint64 LastPublishedGeneration = 0;
 	uint64 NumPublishes = 0;
 	uint64 NumFieldsPublished = 0;
+
+	/** Slot buffers Publish() has allocated so far (0..3). Game thread; see the getter. */
+	int32 NumSlotBuffersAllocated = 0;
 
 	/**
 	 * The echo. Written by the consumer with release AFTER its apply, read by the producer
