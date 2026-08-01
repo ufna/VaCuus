@@ -6,6 +6,7 @@
 #include "VaCuusRmlDocumentHost.h"
 #include "VaCuusSubsystem.h"
 #include "VaCuusView.h"
+#include "VaCuusWorldInputProcessor.h"
 #include "VaCuusWorldSink.h"
 #include "VaCuusWorldSubsystem.h"
 
@@ -202,11 +203,17 @@ void UVaCuusWorldComponent::OnRegister()
 	UpdateRenderTarget();
 	UpdateMaterialInstance();
 
-	// The Task 7 seam: the input processor's roster (and its refcounted install).
+	// The Task 7 pair: the roster the input processor resolves trace hits against,
+	// and the processor's refcounted install -- first panel anywhere installs it,
+	// last one out uninstalls (the UWidgetComponent hit-tester idiom,
+	// WidgetComponent.cpp:1097-1138). Both tied to the SUCCESS path only: a refused
+	// size or a view-less registration joined nothing and must release nothing.
 	if (UVaCuusWorldSubsystem* WorldSubsystem = GetWorld()->GetSubsystem<UVaCuusWorldSubsystem>())
 	{
 		WorldSubsystem->RegisterWorldComponent(this);
 	}
+	FVaCuusWorldInputProcessor::AddInstallRef();
+	bHoldsInputProcessorRef = true;
 
 	if (bAutoLoadDocument && !DocumentPath.IsEmpty() && DocumentPath != AppliedDocumentPath)
 	{
@@ -217,6 +224,12 @@ void UVaCuusWorldComponent::OnRegister()
 
 void UVaCuusWorldComponent::OnUnregister()
 {
+	if (bHoldsInputProcessorRef)
+	{
+		bHoldsInputProcessorRef = false;
+		FVaCuusWorldInputProcessor::ReleaseInstallRef();
+	}
+
 	if (UWorld* World = GetWorld())
 	{
 		if (UVaCuusWorldSubsystem* WorldSubsystem = World->GetSubsystem<UVaCuusWorldSubsystem>())

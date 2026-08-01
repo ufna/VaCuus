@@ -50,9 +50,12 @@ class UVaCuusView;
  * "layout has not arrived yet", a world panel's means the component is misconfigured
  * and waiting would hide it.
  *
- * INPUT lands in M5 Task 7 (the raycast processor on UVaCuusWorldSubsystem's
- * roster, which OnRegister/OnUnregister maintain). Until then the panel renders and
- * collides (profile "UI") but hears nothing.
+ * INPUT (M5 Task 7): OnRegister/OnUnregister maintain UVaCuusWorldSubsystem's
+ * roster AND refcount the process-wide FVaCuusWorldInputProcessor -- the first
+ * panel anywhere installs it, the last one out uninstalls it (the processor's
+ * header carries the whole design: the occlusion rule, the trace, the latch).
+ * The panel hears pointer events only; keys and IME stay with the screen path
+ * (decision D17).
  */
 UCLASS(Blueprintable, ClassGroup = "UserInterface", meta = (BlueprintSpawnableComponent, DisplayName = "VaCuus World Panel"),
 	hidecategories = (Object, Activation, "Components|Activation", Sockets, Base, Lighting, LOD, Mesh))
@@ -200,6 +203,13 @@ private:
 
 	/** DrawSize as actually applied (registration snapshots it, SetDrawSize moves it). */
 	FIntPoint CurrentDrawSize = FIntPoint::ZeroValue;
+
+	/**
+	 * True between AddInstallRef and ReleaseInstallRef, so the pair cannot go
+	 * unbalanced across the refusal paths: a refused or view-less registration never
+	 * takes the ref and must never release one.
+	 */
+	bool bHoldsInputProcessorRef = false;
 
 	/** Guards the auto-load against double delivery, same idea as the UMG widget's. */
 	FString AppliedDocumentPath;

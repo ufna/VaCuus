@@ -155,12 +155,24 @@ public:
 	/** Installed by StartModelDriver, cleared by TearDown; never called after either. */
 	TFunction<void(FName, const FString&, const FVaCuusJsValue&)> OnWrite;
 
+	/** The `vacuus.emit` twin (UVaCuusView::OnJsEvent) -- the M5 world demo's hover probe rides it. */
+	TFunction<void(FName, const TArray<FVaCuusJsKeyValue>&)> OnEvent;
+
 	UFUNCTION()
 	void HandleModelWrite(FName Model, const FString& Path, const FVaCuusJsValue& Value)
 	{
 		if (OnWrite)
 		{
 			OnWrite(Model, Path, Value);
+		}
+	}
+
+	UFUNCTION()
+	void HandleJsEvent(FName Name, const TArray<FVaCuusJsKeyValue>& Payload)
+	{
+		if (OnEvent)
+		{
+			OnEvent(Name, Payload);
 		}
 	}
 };
