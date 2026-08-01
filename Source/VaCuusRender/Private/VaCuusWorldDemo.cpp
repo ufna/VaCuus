@@ -73,6 +73,13 @@ struct FState
 	/** True when the panel shows m4_demo.rml with the model driver and write ear armed. */
 	bool bInteractiveDemo = false;
 
+	/**
+	 * True when THIS panel was spawned by vacuus.M5Demo (Task 9.1). The flag exists so
+	 * the acceptance demo's teardown retires only its own quad: TearDownM5HudQuad on a
+	 * user-launched vacuus.WorldDemo/vacuus.M5World panel must be a no-op.
+	 */
+	bool bM5DemoQuad = false;
+
 	/** The live struct the pump publishes; Ammo is written ONLY by the OnModelWrite handler (I3: the UI never writes the shadow, the game applies and echoes). */
 	FVaCuusDemoModel Model;
 
@@ -403,6 +410,60 @@ static void ToggleInteractive(const TArray<FString>& Args)
 
 	ScheduleAfter(DelaySeconds,
 		[Size, Scale] { SpawnPanel(Size, Scale, GInteractiveDocumentVfsPath, /*bInteractive=*/true); });
+}
+
+/**
+ * The M5 acceptance demo's quad (plan Task 9.1, spec §8: "the same HUD on a world
+ * quad"): the SAME document vacuus.M5Demo composites on screen, on an interactive
+ * world panel — model 'hud' bound before the load and pumped (the quad's health
+ * bar is the model-fed one), the raycast path live so its Simulate button clicks.
+ * Placed a few degrees RIGHT of the camera's initial heading so vacuus.M5Demo's
+ * oscillating pan sweeps the scene under the screen HUD's glass while the quad
+ * stays in frame. Reuses vacuus.M5World's whole lifetime (SpawnPanel/TearDown);
+ * bM5DemoQuad scopes the acceptance demo's teardown to its own panel.
+ */
+void SpawnM5HudQuad(const TCHAR* DocumentVfsPath, float DelaySeconds)
+{
+	const FString Document(DocumentVfsPath);
+	ScheduleAfter(DelaySeconds,
+		[Document]
+		{
+			if (GState)
+			{
+				UE_LOG(LogVaCuus, Warning,
+					TEXT("vacuus.M5Demo: a world panel is already up; the demo quad is not spawned"));
+				return;
+			}
+
+			SpawnPanel(FIntPoint(512, 512), /*Scale=*/0.22f, Document, /*bInteractive=*/true);
+			if (!GState)
+			{
+				return;	   // SpawnPanel already logged why
+			}
+			GState->bM5DemoQuad = true;
+
+			// Re-place off-center: 16 degrees right at 300 units, still facing the camera.
+			UWorld* World = GEngine->GameViewport->GetWorld();
+			APlayerController* PC = World ? World->GetFirstPlayerController() : nullptr;
+			AActor* Actor = GState->Actor.Get();
+			if (PC != nullptr && Actor != nullptr)
+			{
+				FVector CamLoc;
+				FRotator CamRot;
+				PC->GetPlayerViewPoint(CamLoc, CamRot);
+				const FVector Direction = CamRot.Vector().RotateAngleAxis(16.0f, FVector::UpVector);
+				Actor->SetActorLocationAndRotation(CamLoc + Direction * 300.0f, (-Direction).Rotation());
+			}
+		});
+}
+
+/** vacuus.M5Demo's teardown half: retire the demo quad IF it is the one up (see bM5DemoQuad). */
+void TearDownM5HudQuad()
+{
+	if (GState && GState->bM5DemoQuad)
+	{
+		TearDown();
+	}
 }
 
 // ---------------------------------------------------------------------------

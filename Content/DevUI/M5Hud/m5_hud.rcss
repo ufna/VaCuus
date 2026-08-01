@@ -8,11 +8,21 @@
 	font-size: 22dp;
 	color: #9fd8ff;
 	margin-bottom: 12dp;
+	padding: 4dp 8dp;
+	/* A gradient decorator in plain sight (spec §8: "gradient + builtin decorators
+	   visible"): a title strip fading out to the right. */
+	decorator: linear-gradient(90deg, #10405cd0, #10101a00);
 }
 
+/* The spec §1 goal sheet, literally: the builtin glass-panel decorator over a real
+   backdrop blur. The fill is deliberately faint — the demo's subject is the moving
+   scene showing through BLURRED (composite-time glass, spec §2(a)); an opaque panel
+   would prove nothing. */
 .panel {
 	display: block;
-	background-color: #10101acc;
+	background-color: #10101a55;
+	decorator: shader(glass-panel);
+	backdrop-filter: blur(12px);
 	border-width: 1dp;
 	border-color: #2a2a40;
 	padding: 10dp;
@@ -43,7 +53,10 @@
 #health-bar-fill {
 	display: block;
 	height: 100%;
-	background-color: #4fc36f;
+	/* A second gradient decorator, doing HUD work: the ramp spans the fill's own
+	   box (decorators paint the element's box, not the track's), red at the left
+	   edge whatever the value — visibly a gradient at any width. */
+	decorator: linear-gradient(90deg, #e8402a, #4fc36f);
 }
 
 #sim-btn {

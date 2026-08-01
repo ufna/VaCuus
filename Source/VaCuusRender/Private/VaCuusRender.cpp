@@ -24,14 +24,24 @@
 #include "Input/Events.h"
 #include "Interfaces/IPluginManager.h"
 #include "Materials/MaterialInterface.h"
+#include "Misc/CommandLine.h"
 #include "Misc/CoreDelegates.h"
+#include "Misc/Parse.h"
 #include "Misc/Paths.h"
 #include "Modules/ModuleManager.h"
 #include "UObject/StrongObjectPtr.h"
+#include "UObject/UObjectGlobals.h"
 #include "RenderingThread.h"
 #include "ShaderCore.h"
 #include "UnrealClient.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
+
+/** The M5 acceptance demo's world-quad half (plan Task 9.1), defined in VaCuusWorldDemo.cpp (same module). */
+namespace VaCuusWorldDemo
+{
+void SpawnM5HudQuad(const TCHAR* DocumentVfsPath, float DelaySeconds);
+void TearDownM5HudQuad();
+}	 // namespace VaCuusWorldDemo
 
 namespace VaCuusM1HUD
 {
@@ -47,6 +57,7 @@ static const TCHAR* GM5GlassVfsPath = TEXT("m5_glass.rml");
 static const TCHAR* GM5DecoVfsPath = TEXT("m5_deco.rml");
 static const TCHAR* GM5DecoPlainVfsPath = TEXT("m5_deco_plain.rml");
 static const TCHAR* GM5MatSpikeVfsPath = TEXT("m5_matspike.rml");
+static const TCHAR* GM5HudVfsPath = TEXT("M5Hud/m5_hud.rml");
 
 /**
  * The name m3_demo.rml's `data-model` attribute writes, and the name `vacuus.DumpModel hud`
@@ -270,6 +281,16 @@ struct FState
 	double CameraPanStartSeconds = 0.0;
 	float CameraPanBaseYaw = 0.0f;
 
+	//~ ------------------------------------------------------- M5 acceptance demo (plan Task 9.1)
+
+	/**
+	 * True while the M5 acceptance demo (vacuus.M5Demo) is the document up. It changes two
+	 * behaviors: PumpCameraPan OSCILLATES (±10°) instead of panning linearly — the scene
+	 * still moves every frame under the glass, but the world quad SpawnM5HudQuad placed
+	 * 16° right stays in frame for both screenshot beats — and TearDown retires that quad.
+	 */
+	bool bM5Demo = false;
+
 	//~ ------------------------------------------------------- M5 material demo (plan Task 5b)
 
 	/**
@@ -307,6 +328,13 @@ static void TearDown()
 	{
 		FCoreDelegates::OnBeginFrame.Remove(State->CameraPanHandle);
 		State->CameraPanHandle.Reset();
+	}
+
+	// The M5 acceptance demo's world quad leaves with the screen half that spawned it.
+	// A no-op for every other panel: bM5DemoQuad scopes the call to the demo's own.
+	if (State->bM5Demo)
+	{
+		VaCuusWorldDemo::TearDownM5HudQuad();
 	}
 
 	// The M4 write ear goes with the driver it fed: unbind before the view is retired so a
@@ -654,8 +682,14 @@ static void PumpCameraPan()
 
 	// 12 deg/s: slow enough that a 10-frame AutoShot is not motion-smeared, fast enough
 	// that two beats a few seconds apart photograph visibly different backdrops.
+	// The M5 acceptance demo OSCILLATES instead (±10° at 0.5 rad/s): the scene still
+	// moves every frame — two beats still photograph different backdrops through the
+	// glass — but the world quad placed 16° right of the base heading stays in frame
+	// for the whole session, which a linear pan would sweep away in seconds.
 	FRotator Rotation = PlayerController->GetControlRotation();
-	Rotation.Yaw = GState->CameraPanBaseYaw + float(Elapsed) * 12.0f;
+	Rotation.Yaw = GState->bM5Demo
+					   ? GState->CameraPanBaseYaw + 10.0f * float(FMath::Sin(Elapsed * 0.5))
+					   : GState->CameraPanBaseYaw + float(Elapsed) * 12.0f;
 	PlayerController->SetControlRotation(Rotation);
 }
 
@@ -890,6 +924,52 @@ static void Toggle(const TCHAR* DocumentVfsPath)
 
 		GState->DemoStyleSet = TStrongObjectPtr<UVaCuusStyleSet>(StyleSet);
 		Subsystem->RegisterStyleSet(StyleSet);
+	}
+
+	// The M5 acceptance demo (plan Task 9.1, spec §8): the committed TSX bundle's
+	// document on screen over glass + gradient + builtin decorators, model 'hud' fed
+	// by the game, a sample translation table, the scene oscillating under the blur,
+	// and the SAME document on a raycast-clickable world quad. ORDER IS THE CONTRACT
+	// twice over: BindModel before LoadDocument (StartModelDriver's RmlUi argument),
+	// and SetTranslationTable before it too — document parse translates RML text
+	// against the INSTALLED snapshot (FVaCuusSystemInterface::TranslateString), and
+	// the JS half reads the same snapshot; the drain is FIFO from this one producer,
+	// which is what carries both ahead of the load below.
+	if (FCString::Strcmp(GDocumentVfsPath, GM5HudVfsPath) == 0)
+	{
+		GState->bM5Demo = true;
+
+		// Display, not Log, deliberately (the packaged-Shipping gate, plan 9.3b): the
+		// demo's boot must stay observable in the most stripped configuration a buyer
+		// ships — Display outranks every compile- and runtime-verbosity floor short of
+		// logging-off entirely. One line, naming the milestone; everything else stays Log.
+		UE_LOG(LogVaCuus, Display,
+			TEXT("VaCuus M5 acceptance demo: TSX HUD + glass + decorators + world quad coming up (M5Hud/m5_hud.rml)"));
+
+		// The localized string of spec §8: the killfeed pattern is a translate() KEY
+		// whose params are user data. A screenshot row reading "Vex » Kilo" (not
+		// "Vex downed Kilo") proves table hit + single-pass substitution end to end;
+		// "Kill Feed" proves the RML-independent JS path on a plain string.
+		TMap<FString, FString> Table;
+		Table.Add(TEXT("{killer} downed {victim}"), TEXT("{killer} » {victim}"));
+		Table.Add(TEXT("Killfeed"), TEXT("Kill Feed"));
+		Subsystem->SetTranslationTable(Table);
+
+		// Binds 'hud' — the bare lowercase string, the akj.23 FName-casing watch —
+		// and pumps Health every frame; the TSX HUD reads it per rAF, change-gated.
+		StartModelDriver(View);
+
+		// The moving scene under the glass panels (the M5Glass shape, oscillating
+		// per PumpCameraPan's M5 branch), and the world-quad half at +0.5 s so the
+		// player controller and camera exist even in a -ExecCmds frame-0 run.
+		GState->CameraPanStartSeconds = FPlatformTime::Seconds();
+		if (APlayerController* PlayerController = World ? World->GetFirstPlayerController() : nullptr)
+		{
+			GState->CameraPanBaseYaw = float(PlayerController->GetControlRotation().Yaw);
+		}
+		GState->CameraPanHandle = FCoreDelegates::OnBeginFrame.AddStatic(&PumpCameraPan);
+
+		VaCuusWorldDemo::SpawnM5HudQuad(GM5HudVfsPath, /*DelaySeconds=*/0.5f);
 	}
 
 	// Asynchronous by design: the document is loaded by the UI thread on its first
@@ -1888,6 +1968,45 @@ static FAutoConsoleCommand GM5MatSpikeCommand(
 	TEXT("end (registry -> recorder -> replay), incl. the Time-driven cell the forced-republish remedy keeps ")
 	TEXT("animating. Shares every vacuus.M1HUD.* sub-command."),
 	FConsoleCommandDelegate::CreateLambda([] { Toggle(GM5MatSpikeVfsPath); }));
+
+static FAutoConsoleCommand GM5DemoCommand(
+	TEXT("vacuus.M5Demo"),
+	TEXT("Toggle the M5 acceptance demo (DevUI/M5Hud/m5_hud.rml — the committed TSX bundle, spec §8): the Preact HUD ")
+	TEXT("over glass (backdrop-filter) + gradient + shader(glass-panel) decorators, model 'hud' fed by the game every ")
+	TEXT("frame, a sample translation table ('{killer} downed {victim}' -> '{killer} » {victim}'), an oscillating ")
+	TEXT("camera so the scene moves under the blur, and the SAME document on a raycast-clickable world quad 16° ")
+	TEXT("right. Shares every vacuus.M1HUD.* sub-command; vacuus.M5Glass.Shot works for the second beat."),
+	FConsoleCommandDelegate::CreateLambda([] { Toggle(GM5HudVfsPath); }));
+
+/**
+ * THE SHIPPING IGNITION (plan 9.3b, found at the packaged gate): `-ExecCmds` is
+ * COMPILED OUT of Shipping builds — UnrealEngine.cpp:2543 wraps the :2552
+ * QueueDeferredCommands in `#if !(UE_BUILD_SHIPPING) || ENABLE_PGO_PROFILE` — so a
+ * packaged Shipping binary cannot launch any demo from the command line, and the
+ * Shipping acceptance gate would be unrunnable. `-VaCuusM5Demo` is the explicit
+ * opt-in that survives: plain FParse over FCommandLine (unfiltered in Shipping
+ * unless a project opts into the arg allow-list), armed on the first map load so
+ * the viewport and player controller exist, self-removing so map changes cannot
+ * re-toggle. It also requests ONE screenshot at t+8 s — FScreenshotRequest is
+ * Shipping-clean — so the gate has visual evidence where AutoShot's cvar cannot
+ * be set. Works in every configuration; in Dev builds -ExecCmds stays the tool.
+ */
+static FDelegateHandle GM5DemoLaunchFlagHandle = FCoreUObjectDelegates::PostLoadMapWithWorld.AddLambda(
+	[](UWorld* /*World*/)
+	{
+		if (!FParse::Param(FCommandLine::Get(), TEXT("VaCuusM5Demo")))
+		{
+			return;
+		}
+		FCoreUObjectDelegates::PostLoadMapWithWorld.Remove(GM5DemoLaunchFlagHandle);
+		Toggle(GM5HudVfsPath);
+		ScheduleAfter(8.0f,
+			[]
+			{
+				UE_LOG(LogVaCuus, Display, TEXT("VaCuus M5 demo (-VaCuusM5Demo): requesting the gate screenshot"));
+				FScreenshotRequest::RequestScreenshot(/*bInShowUI=*/true);
+			});
+	});
 
 static FAutoConsoleCommand GM5GlassCommand(
 	TEXT("vacuus.M5Glass"),

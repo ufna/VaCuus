@@ -143,10 +143,13 @@ struct FVaCuusWorldHitMath
  * locally -- a consumed press latches the panel, and every move/up keeps being
  * consumed and forwarded (moves via the unbounded plane projection once the ray
  * leaves the quad) until the LAST button releases: GetPressedButtons().IsEmpty()
- * on the up, the post-release set (FSlateApplication removes the released button
- * before preprocessors run, SlateApplication.cpp:6144-6147), exactly the widget's
- * rule and for the widget's reason (SVaCuusWidget.cpp:514-525 -- `<= 1` would drop
- * a two-button drag).
+ * on the up, the post-release set -- established by the CALLERS, which remove the
+ * button from PressedMouseButtons BEFORE constructing the value-copy event
+ * (OnMouseUp, SlateApplication.cpp:6098-6118; the drag-drop synthesized up,
+ * :7565-7581); the Remove inside ProcessMouseButtonUpEvent runs after the event
+ * copy exists and cannot affect what a preprocessor sees -- exactly the widget's
+ * rule and for the widget's reason (SVaCuusWidget.cpp:514-523 -- `<= 1` would
+ * drop a two-button drag).
  *
  * MOUSE LEAVE IS MANDATORY: when the ray leaves a hovered panel (trace miss, a
  * different panel, or the occlusion rule disengaging), MouseLeave is sent or
@@ -154,6 +157,12 @@ struct FVaCuusWorldHitMath
  * Event-driven only: Slate's synthesized moves skip preprocessors
  * (SlateApplication.cpp:6399 gates on !bIsSynthetic), so a panel occluded UNDER a
  * motionless cursor un-hovers on the next real pointer event, not the same frame.
+ * The stickiness runs the other way too, honestly: a CONSUMED engaged move
+ * returns from ProcessMouseMoveEvent before RoutePointerMoveEvent ever runs, so
+ * Slate's own enter/leave diff is skipped for that event and a Slate/UMG widget
+ * the cursor left FOR the panel keeps ITS :hover until the next real move the
+ * processor does not consume -- Slate cannot synthesize one past us, by the same
+ * :6399 gate.
  *
  * Pointer-only, IME-less by decision D17; keys stay with the screen path -- a
  * preprocessor has no char hook anyway (slate-input.md:619, IInputProcessor.h has

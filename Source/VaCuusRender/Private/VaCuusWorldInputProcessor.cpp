@@ -507,11 +507,15 @@ bool FVaCuusWorldInputProcessor::HandleMouseButtonUpEvent(FSlateApplication& Sla
 			}
 		}
 
-		// GetPressedButtons() is the POST-release set: FSlateApplication removes the
-		// released button before preprocessors run (SlateApplication.cpp:6144-6147),
-		// so IsEmpty() -- not Num() <= 1 -- is "the last button just came up". The
-		// widget's exact rule and reason (SVaCuusWidget.cpp:514-525): `<= 1` would
-		// drop the latch with a second button still held mid-drag.
+		// GetPressedButtons() is the POST-release set: the CALLERS remove the released
+		// button from PressedMouseButtons BEFORE constructing the value-copy event --
+		// OnMouseUp (SlateApplication.cpp:6098-6118) and the drag-drop synthesized up
+		// (:7565-7581); the Remove inside ProcessMouseButtonUpEvent runs after the
+		// event copy exists (a no-op for the OnMouseUp path, kept for touch) and
+		// cannot affect what this handler sees. So IsEmpty() -- not Num() <= 1 -- is
+		// "the last button just came up". The widget's exact rule and reason
+		// (SVaCuusWidget.cpp:514-523): `<= 1` would drop the latch with a second
+		// button still held mid-drag.
 		if (MouseEvent.GetPressedButtons().IsEmpty())
 		{
 			ClearLatch();

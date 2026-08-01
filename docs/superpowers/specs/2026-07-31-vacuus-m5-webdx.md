@@ -279,14 +279,17 @@ skip-warning (l); the localization no-handler line (l).
 
 ## 6. Budgets
 
-| | Target | Machinery |
-|---|---|---|
-| Glass per engine frame, per glass-bearing view (1 panel, half-res, 1080p) | ≤0.15 ms RT | GlassMs scope; N views = N× stated |
-| Gradient/builtin decorator cost | no regression in Record (UI) / Replay (RT) | **the headless demo-session PerfLog windows** (the M2/M4 soak method), decorators present vs absent — the probe harness structurally cannot see Record/Replay |
-| Material draw (GO only; FALLBACK vacates this row and the gradient row is the shipped tier's entire budget) | remedy + draw ≤0.10 ms/material/frame | the spike's numbers |
-| World copy per published frame (1024²) | ≤0.05 ms RT, ~0 idle | WS-COPY-COST |
-| Preact HUD steady state | JsPump ≤0.30 ms holds | the M4 row re-measured on the port |
-| Idle, all tracks | the M3b/M4 exact-zero gates hold; glass composite excepted by design (engine-frame work, not publish work) | the existing suites + a glass-bearing idle run |
+Measured 2026-08-01 (Task 9), 1920×1080 Vulkan SM6 headless `-game` unless a row says
+otherwise; PerfLog method (5 s windows, avg/p50/p99/max wall-clock).
+
+| | Target | Machinery | Measured |
+|---|---|---|---|
+| Glass per engine frame, per glass-bearing view (1 panel, half-res, 1080p) | ≤0.15 ms RT | GlassMs scope; N views = N× stated | **avg 0.011 / p50 0.010 / p99 0.032 / max 0.127 ms** per engine frame — the `vacuus.M5Demo` acceptance session ([all], ~15k samples, TWO blur panels on the screen view, so the 1-panel row holds a fortiori); the `vacuus.M5Glass` idle run reads the same (avg 0.011, p99 0.025–0.030, max 0.118). ~5× p99 headroom |
+| Gradient/builtin decorator cost | no regression in Record (UI) / Replay (RT) | **the headless demo-session PerfLog windows** (the M2/M4 soak method), decorators present vs absent — the probe harness structurally cannot see Record/Replay | **Task 4's A/B (m5_deco vs plain twin, 240 fps UI):** Record (UI) avg 0.008 vs 0.007 ms (p99 0.021 vs 0.017) — a delta at measurement resolution; Replay (RT) 0.451 vs 0.473 ms (ONE settle publish each, first-use PSO creation included) — indistinguishable; both documents then run 100% idle |
+| Material draw (GO only; FALLBACK vacates this row and the gradient row is the shipped tier's entire budget) | remedy + draw ≤0.10 ms/material/frame | the spike's numbers | **Task 5 (GO):** Record (UI) 0.007 ms/frame — unchanged from idle baseline; Replay (RT) 0.024 ms/frame over FIVE live materials (≈0.005 ms/material) incl. the per-pass view UB and `UpdateUniformExpressionCacheIfNeeded`; the forced-republish remedy ≈1.7 ms/s UI + 5.7 ms/s RT at 237 fps recorded. ~20× headroom per material |
+| World copy per published frame (1024²) | ≤0.05 ms RT at **p99**, ~0 idle | WS-COPY-COST | **Task 6:** avg 0.001 / p50 0.001 / **p99 0.017** / max 0.064 ms over 7,616 copies — the bound is stated at p99 (the 0.064 max hit ONCE); idle = exactly **0** copies after the initial publish (counter-asserted headlessly). The acceptance demo's quad: 2,445 arrivals = 2,445 copies, 0 extent skips |
+| Preact HUD steady state | JsPump ≤0.30 ms holds | the M4 row re-measured on the port | **Task 8 (VaCuus.Js.Cost.PumpSteadyTsx, 2000-frame steady window):** mean **0.051** / p99 **0.228** ms; the Task 9 suite rerun read 0.056/0.327 (the p99 straddles the budget under suite-load nullrhi variance; the mean holds ~6×). The acceptance demo pumping TWO TSX HUD contexts in one scope: avg 0.078 / p99 0.53 for both together |
+| Idle, all tracks | the M3b/M4 exact-zero gates hold; glass composite excepted by design (engine-frame work, not publish work) | the existing suites + a glass-bearing idle run | **the 168-test suite green** (the M3b/M4 idle gates included) + the `vacuus.M5Glass` idle session: **published=0, skipped=4,592 (100.0% idle)** across every window while Glass sampled EVERY engine frame (avg 0.011 ms) and WorldCopy sampled 0 — the by-design exception readable in one PerfLog line |
 
 ## 7. Testing
 
@@ -316,6 +319,31 @@ Restore-the-bug where marked; M3a/M3b/M4 suites green throughout.
 gradient + builtin decorators visible, the same HUD on a world quad clicked by raycast, a
 localized string routed through the hook. AutoShot screenshots; the material gate outcome
 recorded here.
+
+> **Landed (2026-08-01, Task 9).** `vacuus.M5Demo` = `M5Hud/m5_hud.rml` + the committed
+> `hud_bundle.js` on the screen composite (model `hud` bound before load, fed by the demo
+> driver; sample translation table pushed before load) with the panels carrying
+> `decorator: shader(glass-panel)` + `backdrop-filter: blur(12px)` and two gradient
+> decorators, an oscillating camera moving the scene under the blur, and the SAME document
+> on an interactive `UVaCuusWorldComponent` quad 16° right. Two screenshot beats read by
+> eye (`docs/research/proofs/m5-t9-acceptance/m5demo_beat{1,2}.png`): TSX rows render, the
+> killfeed rows read "Vex » Kilo" — the TABLE's arrow, not the identity string's "downed",
+> through user-data params — the panels blur a visibly DIFFERENT backdrop in each beat, the
+> health bar's gradient tracks the model-fed sweep (97 → 59), and beat 2 shows the world
+> quad running the same HUD. **The material gate: GO** — recorded with numbers and
+> screenshots in §3.3's outcome note; the material tier demos separately as
+> `vacuus.M5MatSpike` (its style-set keys are not part of this document by design — the
+> demo's decorators are the guaranteed tier).
+>
+> **The packaged gates (plan 9.3) both PASS** — Development and Shipping
+> `BuildCookRun` staged the DevUI tree (the `VaCuus.Build.cs` receipt mechanism, its
+> stale-receipt trap honored by touching the file) and the demo ran headless from
+> cooked paks in both configs, SIGTERM-clean, zero JS errors. Shipping's findings —
+> `-ExecCmds` compiled out (UnrealEngine.cpp:2543→2552; answered by the plugin's
+> `-VaCuusM5Demo` ignition flag), host-side `bUseLoggingInShipping` as the gate's
+> precondition, Log-verbosity survival, the user-dir Saved tree, watchdog=50 ms live
+> — are recorded with the screenshots in
+> `docs/research/proofs/m5-t9-acceptance/README.md`.
 
 ## 9. Risks
 

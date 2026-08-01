@@ -10,9 +10,12 @@
 	     test VaCuus.Js.Preact.BundleMount asserts the provenance still matches the
 	     current facade manifest and skips-with-a-named-warning on mismatch (spec
 	     §2(l) — a facade change gives a rebuild instruction, not a red).
-	     Captured at load, executed at OnDocumentReady; src resolves through the
-	     ordered DevUI roots. -->
-	<script src="M5Hud/hud_bundle.js"></script>
+	     Captured at load, executed at OnDocumentReady. DOCUMENT-RELATIVE, like the
+	     rcss links: the head handler joins src against this document's own URL
+	     (SystemInterface::JoinPath via XMLNodeHandlerHead), so from M5Hud/ the bare
+	     name is the correct spelling — "M5Hud/hud_bundle.js" would double the
+	     directory and skip the script with one named Error. -->
+	<script src="hud_bundle.js"></script>
 </head>
 <body>
 	<!-- The dedicated EMPTY mount element (E-P1): mounting into body is
