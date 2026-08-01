@@ -686,6 +686,30 @@ void UVaCuusView::PollStatus()
 		return;
 	}
 
+	// A view whose host never booted admits it here (bead VaCuus-akj.13). Before the
+	// snapshot refresh because there is nothing to refresh: the host was dropped on the UI
+	// thread, so no snapshot, frame or load result will ever be published for this view.
+	// Acquire pairs with the release store in FVaCuusUIThread::AddView's failure branches.
+	if (!bBootFailureReported &&
+		static_cast<EVaCuusViewBootState>(Status->BootState.load(std::memory_order_acquire)) ==
+			EVaCuusViewBootState::Failed)
+	{
+		bBootFailureReported = true;
+
+		// One Error naming the view; the UI thread already logged WHY it failed to boot.
+		UE_LOG(LogVaCuus, Error,
+			TEXT("View %u never booted: its document host failed to initialize on the UI thread (see the Error ")
+			TEXT("logged there). The handle is now invalid; OnLoadCompleted fires once with bSuccess=false."),
+			ViewId);
+
+		// Invalidate BEFORE the broadcast, so a listener that reacts by querying the view
+		// sees IsViewValid() == false -- the honest answer, and the one every later call
+		// site (LoadDocument, SendInput, ...) already handles as a logged no-op.
+		Invalidate();
+		OnLoadCompleted.Broadcast(this, /*bSuccess=*/false);
+		return;
+	}
+
 	// First, and unconditionally: the snapshot is refreshed every frame whether or
 	// not a load completed, and the load-result path below returns early most frames.
 	RefreshSnapshot();

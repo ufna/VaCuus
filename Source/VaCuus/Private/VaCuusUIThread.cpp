@@ -1397,6 +1397,14 @@ void FVaCuusUIThread::AddView(FVaCuusUICommand& Command)
 	if (!Command.Host.IsValid() || !Command.Status.IsValid())
 	{
 		UE_LOG(LogVaCuus, Error, TEXT("AddView for view %u carried no host"), Command.ViewId);
+
+		// Same eternal-pending hole as the Initialize() failure below: if there IS a status,
+		// its game-thread handle is waiting on this boot and must be told it will never come.
+		if (Command.Status.IsValid())
+		{
+			Command.Status->BootState.store(
+				static_cast<uint8>(EVaCuusViewBootState::Failed), std::memory_order_release);
+		}
 		return;
 	}
 
@@ -1412,6 +1420,11 @@ void FVaCuusUIThread::AddView(FVaCuusUICommand& Command)
 		// Contract: a host whose Initialize() failed has rolled itself back, so it
 		// can simply be dropped here (on this thread) with no Shutdown().
 		UE_LOG(LogVaCuus, Error, TEXT("View %u failed to boot; it will produce no frames"), Command.ViewId);
+
+		// The one channel back to the game thread (bead VaCuus-akj.13): without this stamp
+		// the handle CreateView already returned stays valid-looking forever -- see
+		// FVaCuusViewStatus::BootState for the full failure chain this line cuts.
+		Command.Status->BootState.store(static_cast<uint8>(EVaCuusViewBootState::Failed), std::memory_order_release);
 		return;
 	}
 
@@ -1422,6 +1435,9 @@ void FVaCuusUIThread::AddView(FVaCuusUICommand& Command)
 
 	Hosts.Add(Command.ViewId, MoveTemp(Host));
 	NumViews.store(Hosts.Num(), std::memory_order_release);
+
+	// Registered and reachable by every per-view command from here on: the boot is real.
+	Command.Status->BootState.store(static_cast<uint8>(EVaCuusViewBootState::Booted), std::memory_order_release);
 
 	// After the host is booted and registered: a script host that reacted by touching
 	// the view would find it in every map a frame can reach it through.

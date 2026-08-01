@@ -19,6 +19,19 @@ enum class EVaCuusLoadResult : uint8
 	Failed
 };
 
+/** Whether this view's document host ever came up on the UI thread. See FVaCuusViewStatus::BootState. */
+enum class EVaCuusViewBootState : uint8
+{
+	/** The AddView command has not been drained yet. */
+	Pending = 0,
+
+	/** The host initialized and the view is registered on the UI thread. */
+	Booted,
+
+	/** The host's Initialize() failed (or the AddView carried no host); this view will never produce anything. */
+	Failed
+};
+
 /**
  * The state a view shares between the game thread and the UI thread: "what
  * happened to the work I asked for", plus "where is this view interactive".
@@ -68,6 +81,25 @@ struct FVaCuusViewStatus
 
 	/** Result of the load identified by LoadCompletedSerial. Written before it. */
 	std::atomic<uint8> LoadResult{static_cast<uint8>(EVaCuusLoadResult::None)};
+
+	/**
+	 * Did this view's host actually boot? (M6 sweep, bead VaCuus-akj.13.)
+	 *
+	 * WHY IT EXISTS: CreateView() constructs and returns the game-thread handle BEFORE the
+	 * UI thread drains the AddView command (VaCuusSubsystem.cpp -- the enqueue-then-register
+	 * order is the design, not a bug: nothing RmlUi-affine may run on the game thread). When
+	 * the host's Initialize() then fails, the UI thread used to log one Error and drop the
+	 * host -- with no channel back, so the handle stayed "valid" FOREVER: IsViewValid() true,
+	 * every LoadDocument enqueued and dropped at Verbose for the unknown view, IsLoadPending()
+	 * stuck true, OnLoadCompleted never firing. This field is that missing channel.
+	 *
+	 * PROTOCOL, same as FramesRecorded above: the UI thread stores with release ordering
+	 * (Failed in AddView's failure branches, Booted right after the host registers), the game
+	 * thread loads with acquire from UVaCuusView::PollStatus(), which on the FIRST Failed it
+	 * observes logs one Error naming the view, invalidates the handle and broadcasts
+	 * OnLoadCompleted(this, false) so load-waiters unblock. Values are EVaCuusViewBootState.
+	 */
+	std::atomic<uint8> BootState{static_cast<uint8>(EVaCuusViewBootState::Pending)};
 
 	/**
 	 * Frames this view has RECORDED. Per-view rather than the UI thread's frame

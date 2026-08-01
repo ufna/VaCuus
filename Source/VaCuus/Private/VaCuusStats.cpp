@@ -5,6 +5,7 @@
 #include "VaCuusDefines.h"
 
 #include "HAL/IConsoleManager.h"
+#include "Math/RandomStream.h"
 #include "Misc/ScopeLock.h"
 
 DEFINE_STAT(STAT_VaCuusDrainCommands);
@@ -34,6 +35,28 @@ namespace VaCuusPerfLogPrivate
 {
 static constexpr double WindowSeconds = 5.0;
 
+/**
+ * THE [all] STORE IS BOUNDED, AND EVERY SORT RUNS OUTSIDE THE LOCK (M6 sweep, bead
+ * VaCuus-akj.6.39). Before this cap, Cumulative[] grew without bound and TickLog() -- the
+ * game thread -- copied and SORTED every scope's whole history INSIDE State.Lock every 5
+ * seconds. The cost, in terms a reader can check: the UI thread records ~13,000 frames to
+ * 1 published on a static HUD (CLAUDE.md's own number, i.e. hundreds of samples/s/scope),
+ * so one soak hour is ~10^5..10^6 doubles PER SCOPE; a copy+sort of that is tens of
+ * milliseconds per scope, times 15 scopes, growing linearly for as long as the soak runs
+ * -- all while holding the SAME lock AddSample()/AddDraws()/AddUIFrame() take at every
+ * scope exit on the UI and render threads. The 5-second print therefore periodically
+ * stalled the very threads being measured, in the very runs (the M6 passport soaks) whose
+ * numbers the log exists to produce.
+ *
+ * THE BOUND: a uniform reservoir (Algorithm R) of this many samples per scope. Count, Avg
+ * and Max stay EXACT (running aggregates below); p50/p99 are exact until a scope exceeds
+ * the cap and a 16,384-point uniform estimate after (at p99 that is ~164 tail samples --
+ * plenty for a ms-resolution log line). Worst-case work under the lock is now the fold
+ * plus bounded copies (16,384 x 8 B x 15 scopes ~= 2 MB memcpy); the sorts happen on
+ * private copies after the lock is released.
+ */
+static constexpr int32 CumulativeSampleCap = 16384;
+
 // POSITIONAL: indexed by EScope, so this list must stay in the enum's order, not just at
 // its length. Padded to a common width so a window's ten lines read as a column.
 static const TCHAR* GScopeNames[FVaCuusPerfLog::Num] = {
@@ -60,9 +83,24 @@ struct FState
 {
 	FCriticalSection Lock;
 
-	/** Samples in ms since the last window print / since enable. */
+	/** Samples in ms since the last window print. Naturally bounded by the window's length. */
 	TArray<double> Window[FVaCuusPerfLog::Num];
+
+	/**
+	 * Since-enable samples as a CumulativeSampleCap-bounded uniform reservoir per scope
+	 * (see the cap's comment). Complete below the cap; a uniform subsample above it.
+	 * Order within the array carries no meaning -- Algorithm R replaces uniformly random
+	 * slots, so the reservoir stays a uniform sample whatever order it is read in.
+	 */
 	TArray<double> Cumulative[FVaCuusPerfLog::Num];
+
+	/** Exact since-enable aggregates; what keeps the [all] Count/Avg/Max honest past the cap. */
+	uint64 CumulativeCount[FVaCuusPerfLog::Num] = {};
+	double CumulativeSum[FVaCuusPerfLog::Num] = {};
+	double CumulativeMax[FVaCuusPerfLog::Num] = {};
+
+	/** Drives the reservoir's slot choice. Deterministically seeded per capture. */
+	FRandomStream ReservoirRand;
 
 	uint64 WindowDraws = 0;
 	uint64 WindowReplays = 0;
@@ -105,7 +143,11 @@ struct FSummary
 	int32 Count = 0;
 };
 
-/** Nearest-rank percentiles over a sorted copy; fine at soak sample counts. */
+/**
+ * Nearest-rank percentiles over a sorted copy. Every caller hands it a BOUNDED array (a
+ * 5-second window, or a CumulativeSampleCap reservoir) on a private copy OUTSIDE
+ * State.Lock -- both halves of that sentence are akj.6.39's fix; do not regress either.
+ */
 static FSummary Summarize(const TArray<double>& Samples)
 {
 	FSummary Out;
@@ -267,65 +309,155 @@ void FVaCuusPerfLog::TickLog()
 	const bool bWantEnabled = IsEnabled();
 	const double NowSeconds = FPlatformTime::Seconds();
 
-	FScopeLock ScopeLock(&State.Lock);
+	// EVERYTHING PRINTABLE IS COPIED OUT UNDER THE LOCK AND PRINTED AFTER IT IS RELEASED
+	// (bead VaCuus-akj.6.39): the sorts inside Summarize() are the expensive half of a
+	// print, and holding State.Lock through them stalls every AddSample() at scope exit on
+	// the UI and render threads -- the threads whose numbers this log exists to report.
+	// The locked section below is the fold plus bounded copies; see CumulativeSampleCap.
+	double WindowElapsed = 0.0;
+	double TotalElapsed = 0.0;
+	uint64 WindowFrames = 0, WindowDraws = 0, WindowReplays = 0;
+	uint64 TotalFrames = 0, TotalDraws = 0, TotalReplays = 0;
+	uint64 WindowUIPublished = 0, WindowUISkipped = 0, TotalUIPublished = 0, TotalUISkipped = 0;
+	uint64 WindowJsGCs = 0, TotalJsGCs = 0, LastJsHeapBytes = 0;
+	double WindowJsGCMaxPauseMs = 0.0;
+	TArray<double> WindowCopy[Num];
+	TArray<double> CumulativeCopy[Num];
+	uint64 CumulativeCount[Num] = {};
+	double CumulativeSum[Num] = {};
+	double CumulativeMax[Num] = {};
 
-	if (bWantEnabled != State.bEnabled)
 	{
-		// Fresh capture on every enable; drop everything on disable.
+		FScopeLock ScopeLock(&State.Lock);
+
+		if (bWantEnabled != State.bEnabled)
+		{
+			// Fresh capture on every enable; drop everything on disable.
+			for (int32 Scope = 0; Scope < Num; ++Scope)
+			{
+				State.Window[Scope].Reset();
+				State.Cumulative[Scope].Reset();
+				State.CumulativeCount[Scope] = 0;
+				State.CumulativeSum[Scope] = 0.0;
+				State.CumulativeMax[Scope] = 0.0;
+			}
+			State.ReservoirRand.Initialize(0x5EED);
+			State.WindowDraws = State.TotalDraws = 0;
+			State.WindowReplays = State.TotalReplays = 0;
+			State.WindowFrames = State.TotalFrames = 0;
+			State.WindowUIPublished = State.TotalUIPublished = 0;
+			State.WindowUISkipped = State.TotalUISkipped = 0;
+			State.WindowJsGCs = State.TotalJsGCs = 0;
+			State.WindowJsGCMaxPauseMs = 0.0;
+			State.LastJsHeapBytes = 0;
+			State.WindowStartSeconds = State.EnableSeconds = NowSeconds;
+			State.bEnabled = bWantEnabled;
+			if (bWantEnabled)
+			{
+				UE_LOG(LogVaCuus, Log, TEXT("PerfLog capture started (window %.0fs)"), WindowSeconds);
+			}
+			return;
+		}
+
+		if (!State.bEnabled)
+		{
+			return;
+		}
+
+		++State.WindowFrames;
+
+		WindowElapsed = NowSeconds - State.WindowStartSeconds;
+		if (WindowElapsed < WindowSeconds)
+		{
+			return;
+		}
+
+		// Fold the window into the cumulative store: exact aggregates always, the sample
+		// itself into the bounded reservoir (Algorithm R -- sample j, 0-based, takes a
+		// uniformly chosen slot in [0, j] and lands only when that slot is inside the
+		// reservoir, which keeps every sample's survival probability at Cap/(j+1)).
+		State.TotalFrames += State.WindowFrames;
+		State.TotalDraws += State.WindowDraws;
+		State.TotalReplays += State.WindowReplays;
+		State.TotalUIPublished += State.WindowUIPublished;
+		State.TotalUISkipped += State.WindowUISkipped;
+		State.TotalJsGCs += State.WindowJsGCs;
+		for (int32 Scope = 0; Scope < Num; ++Scope)
+		{
+			TArray<double>& Reservoir = State.Cumulative[Scope];
+			for (const double Sample : State.Window[Scope])
+			{
+				State.CumulativeSum[Scope] += Sample;
+				State.CumulativeMax[Scope] = FMath::Max(State.CumulativeMax[Scope], Sample);
+
+				const uint64 SampleIndex = State.CumulativeCount[Scope]++;
+				if (Reservoir.Num() < CumulativeSampleCap)
+				{
+					Reservoir.Add(Sample);
+				}
+				else
+				{
+					const uint64 Slot = uint64(State.ReservoirRand.GetUnsignedInt()) % (SampleIndex + 1);
+					if (Slot < uint64(CumulativeSampleCap))
+					{
+						Reservoir[int32(Slot)] = Sample;
+					}
+				}
+			}
+		}
+
+		TotalElapsed = NowSeconds - State.EnableSeconds;
+
+		// The print's inputs, copied while consistent. Every array is bounded: the window
+		// by its own 5 seconds, the reservoirs by the cap.
+		WindowFrames = State.WindowFrames;
+		WindowDraws = State.WindowDraws;
+		WindowReplays = State.WindowReplays;
+		TotalFrames = State.TotalFrames;
+		TotalDraws = State.TotalDraws;
+		TotalReplays = State.TotalReplays;
+		WindowUIPublished = State.WindowUIPublished;
+		WindowUISkipped = State.WindowUISkipped;
+		TotalUIPublished = State.TotalUIPublished;
+		TotalUISkipped = State.TotalUISkipped;
+		WindowJsGCs = State.WindowJsGCs;
+		TotalJsGCs = State.TotalJsGCs;
+		WindowJsGCMaxPauseMs = State.WindowJsGCMaxPauseMs;
+		LastJsHeapBytes = State.LastJsHeapBytes;
+		for (int32 Scope = 0; Scope < Num; ++Scope)
+		{
+			WindowCopy[Scope] = State.Window[Scope];
+			CumulativeCopy[Scope] = State.Cumulative[Scope];
+			CumulativeCount[Scope] = State.CumulativeCount[Scope];
+			CumulativeSum[Scope] = State.CumulativeSum[Scope];
+			CumulativeMax[Scope] = State.CumulativeMax[Scope];
+		}
+
+		// The window resets under the same hold, so no sample can fall between the copy
+		// and the reset. Reset() keeps each array's capacity -- the steady state stays
+		// allocation-free on the sampling side.
 		for (int32 Scope = 0; Scope < Num; ++Scope)
 		{
 			State.Window[Scope].Reset();
-			State.Cumulative[Scope].Reset();
 		}
-		State.WindowDraws = State.TotalDraws = 0;
-		State.WindowReplays = State.TotalReplays = 0;
-		State.WindowFrames = State.TotalFrames = 0;
-		State.WindowUIPublished = State.TotalUIPublished = 0;
-		State.WindowUISkipped = State.TotalUISkipped = 0;
-		State.WindowJsGCs = State.TotalJsGCs = 0;
+		State.WindowDraws = 0;
+		State.WindowReplays = 0;
+		State.WindowFrames = 0;
+		State.WindowUIPublished = 0;
+		State.WindowUISkipped = 0;
+		State.WindowJsGCs = 0;
 		State.WindowJsGCMaxPauseMs = 0.0;
-		State.LastJsHeapBytes = 0;
-		State.WindowStartSeconds = State.EnableSeconds = NowSeconds;
-		State.bEnabled = bWantEnabled;
-		if (bWantEnabled)
-		{
-			UE_LOG(LogVaCuus, Log, TEXT("PerfLog capture started (window %.0fs)"), WindowSeconds);
-		}
-		return;
+		State.WindowStartSeconds = NowSeconds;
 	}
 
-	if (!State.bEnabled)
-	{
-		return;
-	}
+	//~ Off the lock from here on: sorts and log lines run on the private copies above.
 
-	++State.WindowFrames;
-
-	const double WindowElapsed = NowSeconds - State.WindowStartSeconds;
-	if (WindowElapsed < WindowSeconds)
-	{
-		return;
-	}
-
-	// Fold the window into the cumulative store, then print both views.
-	State.TotalFrames += State.WindowFrames;
-	State.TotalDraws += State.WindowDraws;
-	State.TotalReplays += State.WindowReplays;
-	State.TotalUIPublished += State.WindowUIPublished;
-	State.TotalUISkipped += State.WindowUISkipped;
-	State.TotalJsGCs += State.WindowJsGCs;
-	for (int32 Scope = 0; Scope < Num; ++Scope)
-	{
-		State.Cumulative[Scope].Append(State.Window[Scope]);
-	}
-
-	const double TotalElapsed = NowSeconds - State.EnableSeconds;
 	UE_LOG(LogVaCuus, Log,
 		TEXT("PerfLog window %.1fs frames=%llu fps=%.1f draws/frame=%.1f | total %.1fs frames=%llu fps=%.1f draws/frame=%.1f"),
-		WindowElapsed, State.WindowFrames, double(State.WindowFrames) / WindowElapsed,
-		State.WindowReplays > 0 ? double(State.WindowDraws) / double(State.WindowReplays) : 0.0,
-		TotalElapsed, State.TotalFrames, double(State.TotalFrames) / TotalElapsed,
-		State.TotalReplays > 0 ? double(State.TotalDraws) / double(State.TotalReplays) : 0.0);
+		WindowElapsed, WindowFrames, double(WindowFrames) / WindowElapsed,
+		WindowReplays > 0 ? double(WindowDraws) / double(WindowReplays) : 0.0,
+		TotalElapsed, TotalFrames, double(TotalFrames) / TotalElapsed,
+		TotalReplays > 0 ? double(TotalDraws) / double(TotalReplays) : 0.0);
 
 	// The idle short-circuit, in one line: UI frames recorded, and how many of them the gate
 	// let through.
@@ -346,38 +478,32 @@ void FVaCuusPerfLog::TickLog()
 	};
 	UE_LOG(LogVaCuus, Log,
 		TEXT("PerfLog window UI frames published=%llu skipped=%llu (%.1f%% idle) | total published=%llu skipped=%llu (%.1f%% idle)"),
-		State.WindowUIPublished, State.WindowUISkipped,
-		IdlePercent(State.WindowUIPublished, State.WindowUISkipped),
-		State.TotalUIPublished, State.TotalUISkipped,
-		IdlePercent(State.TotalUIPublished, State.TotalUISkipped));
+		WindowUIPublished, WindowUISkipped,
+		IdlePercent(WindowUIPublished, WindowUISkipped),
+		TotalUIPublished, TotalUISkipped,
+		IdlePercent(TotalUIPublished, TotalUISkipped));
 
 	// The M4 GC line (AddJsGC). `heap` is the AT-COLLECTION sample -- 0.0 KB with GCs=0
 	// means "never sampled", not "empty heap"; the JsGC SCOPE line above still shows the
 	// per-frame trigger-check cost, which is almost entirely declines.
 	UE_LOG(LogVaCuus, Log,
 		TEXT("PerfLog window JsGC runs=%llu maxpause=%.3f ms | total runs=%llu | heap=%.1f KB (at last collection)"),
-		State.WindowJsGCs, State.WindowJsGCMaxPauseMs, State.TotalJsGCs,
-		double(State.LastJsHeapBytes) / 1024.0);
+		WindowJsGCs, WindowJsGCMaxPauseMs, TotalJsGCs,
+		double(LastJsHeapBytes) / 1024.0);
 
 	for (int32 Scope = 0; Scope < Num; ++Scope)
 	{
-		LogScopeLine(TEXT("[win]"), Scope, Summarize(State.Window[Scope]));
+		LogScopeLine(TEXT("[win]"), Scope, Summarize(WindowCopy[Scope]));
 	}
 	for (int32 Scope = 0; Scope < Num; ++Scope)
 	{
-		LogScopeLine(TEXT("[all]"), Scope, Summarize(State.Cumulative[Scope]));
+		// The [all] line past the reservoir's cap: p50/p99 estimated from the uniform
+		// reservoir; Count, Avg and Max overridden from the EXACT running aggregates, so
+		// the three numbers a budget gate would key on never degrade at all.
+		FSummary All = Summarize(CumulativeCopy[Scope]);
+		All.Count = int32(FMath::Min<uint64>(CumulativeCount[Scope], uint64(MAX_int32)));
+		All.Avg = CumulativeCount[Scope] > 0 ? CumulativeSum[Scope] / double(CumulativeCount[Scope]) : 0.0;
+		All.Max = CumulativeMax[Scope];
+		LogScopeLine(TEXT("[all]"), Scope, All);
 	}
-
-	for (int32 Scope = 0; Scope < Num; ++Scope)
-	{
-		State.Window[Scope].Reset();
-	}
-	State.WindowDraws = 0;
-	State.WindowReplays = 0;
-	State.WindowFrames = 0;
-	State.WindowUIPublished = 0;
-	State.WindowUISkipped = 0;
-	State.WindowJsGCs = 0;
-	State.WindowJsGCMaxPauseMs = 0.0;
-	State.WindowStartSeconds = NowSeconds;
 }

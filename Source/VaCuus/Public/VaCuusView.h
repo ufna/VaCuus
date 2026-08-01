@@ -683,6 +683,13 @@ private:
 	/** Cleared by Invalidate(); gates every enqueue. */
 	bool bRegistered = false;
 
+	/**
+	 * True once PollStatus() has answered a BootState of Failed (bead VaCuus-akj.13):
+	 * the Error, the Invalidate() and the OnLoadCompleted(this, false) fire exactly once,
+	 * and the latch is what makes later polls of the still-Failed status a no-op.
+	 */
+	bool bBootFailureReported = false;
+
 	/** Backs GetNumInputEventsQueued(); game thread only, like everything else here. */
 	uint64 NumInputEventsQueued = 0;
 

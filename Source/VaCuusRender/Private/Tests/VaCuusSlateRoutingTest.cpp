@@ -7,6 +7,7 @@
 #include "VaCuusDocumentHost.h"
 #include "VaCuusEngine.h"
 #include "VaCuusInteractiveSnapshot.h"
+#include "VaCuusRmlCasts.h"
 #include "VaCuusSlateElement.h"
 #include "VaCuusSubsystem.h"
 #include "Engine/GameInstance.h"
@@ -170,7 +171,10 @@ public:
 		{
 			if (Rml::Element* Field = RmlDocument->GetElementById("field"))
 			{
-				if (Rml::ElementFormControl* Control = rmlui_dynamic_cast<Rml::ElementFormControl*>(Field))
+				// VaCuusRml's exported helper, not rmlui_dynamic_cast: the id compare only
+				// resolves under every load order inside VaCuusRml.so (VaCuusRmlCasts.h,
+				// bead VaCuus-akj.22).
+				if (Rml::ElementFormControl* Control = VaCuusCastFormControl(*Field))
 				{
 					const Rml::String Value = Control->GetValue();
 					for (const char Byte : Value)
