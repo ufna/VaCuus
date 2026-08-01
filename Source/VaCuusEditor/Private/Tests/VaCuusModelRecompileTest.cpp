@@ -287,10 +287,14 @@ static bool RunFrames(FVaCuusUIThread& UIThread, int32 NumFrames)
  * TWO MODELS, TWO MATCH RULES. The scalar model matches as the ROOT of its own recompiled
  * struct. The rows model matches through FVaCuusModelArrayDesc::ElementLayout -- its ROOT
  * struct is untouched; what recompiles is the ELEMENT type of its array field, the surface M3b
- * doubled and the reason the match rule has a second clause at all. (The engine then also
- * recompiles the outer struct as a dependent and broadcasts for it too; the walk's
- * already-condemned skip is what keeps that second broadcast at zero extra Errors, and the
- * expected-message counts below would catch it double-firing.)
+ * doubled and the reason the match rule has a second clause at all. (The outer struct is NOT
+ * recompiled as a dependent here, so each struct broadcasts exactly once: the dependent
+ * discovery skips any owner UDS whose outermost is the transient package --
+ * ReplaceStructWithTempDuplicate's bValidStruct, UserDefinedStructureCompilerUtils.cpp:140-146
+ * -- and every struct this test creates lives in GetTransientPackage(). A real asset-package
+ * outer WOULD be re-added to ChangedStructs and broadcast in the same transaction; the walk's
+ * already-condemned skip is what would keep that second broadcast at zero extra Errors, and
+ * the exact expected-message counts below would catch any double-firing either way.)
  *
  * THE RESTORE-THE-BUG QUESTION, answered rather than skipped: the unguarded form of this bug is
  * heap corruption inside DestroyStruct, which no test may deliberately run to completion. The
@@ -421,8 +425,10 @@ bool FVaCuusModelRecompileRefusalTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("the untouched rows model is not condemned yet"), View->HasModel(FName(TEXT("recomp_rows"))));
 
 	// ---- Recompile 2: the ELEMENT match. The ROW type recompiles; the rows model's own root
-	// ---- does not (until the engine recompiles it as a dependent a broadcast later), so the
-	// ---- Error counted above can only have come from the ElementLayout clause.
+	// ---- does not -- and never will here: a transient-package owner is excluded from the
+	// ---- dependent set (UserDefinedStructureCompilerUtils.cpp:140-146), so this broadcast is
+	// ---- the only one the rows model ever hears and the Error counted above can only have
+	// ---- come from the ElementLayout clause.
 
 	const FGuid RowVarGuid = FStructureEditorUtils::GetVarDesc(RowStruct.Get())[0].VarGuid;
 	if (!TestTrue(TEXT("the row struct recompiled"),

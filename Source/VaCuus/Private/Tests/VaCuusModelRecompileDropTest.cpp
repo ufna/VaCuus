@@ -212,7 +212,7 @@ bool FVaCuusModelRecompileDropTest::RunTest(const FString& Parameters)
 	// BindModel returning TRUE on a taken name is itself the replacement assertion: for a
 	// LIVE duplicate it returns false with an Error (VaCuus.Model.Api asserts that side), so
 	// true here can only be the dead-entry replacement branch. It then passes RmlUi's
-	// CreateDataModel because the drop's RemoveDataModel freed the name (Context.cpp:1109),
+	// CreateDataModel because the drop's RemoveDataModel freed the name (Context.cpp:1111),
 	// and rebuilds the definition set through the stale-mark eviction (the counter below) --
 	// with a NATIVE struct the properties happen to still be alive, which is exactly what
 	// lets this path run to a green screen instead of a crash.
@@ -239,6 +239,143 @@ bool FVaCuusModelRecompileDropTest::RunTest(const FString& Parameters)
 	// rather than handing the (with a real recompile: dangling) corpse back out.
 	TestEqual(TEXT("the stale definition set was evicted and rebuilt exactly once"),
 		FVaCuusDefinitionRegistry::GetNumStaleEvictions(), EvictionsBefore + 1);
+
+	return true;
+}
+
+/**
+ * RETIREMENT RELEASES ITS MODELS (M6 review, the recompile refusal's back door): a view that
+ * leaves the subsystem -- DestroyView mid-session, Deinitialize at session end -- is invisible
+ * to NotifyStructPreRecompile's walk from that moment (it iterates the subsystem's Views
+ * array), so any game-side model reference surviving retirement is a model no recompile can
+ * ever condemn: its shadows and layout would be destroyed at GC time through an FProperty
+ * chain a later recompile may have freed -- exactly the dangle akj.16 closed, reopened for
+ * retired views. The contract under test: UVaCuusView::Invalidate() empties the game-side
+ * model map, and the UI thread's own references (FVaCuusUIThread::Models) carry each model to
+ * RemoveView's ordered drain -- context destroyed first, references dropped after -- so the
+ * release costs nothing early and the buffers still die through live property chains.
+ *
+ * THE RED STATE (revert Invalidate()'s Models.Empty() and run this): HasModel answers true on
+ * the retired handle and NumOutstandingModelFields answers a count -- the model provably
+ * survives retirement, unreachable by the walk and uncondemned. The DANGLING ACCESS itself is
+ * deliberately not constructed, and that is argued rather than skipped: this module can only
+ * name a NATIVE struct, whose chain never dies, and constructing it with a real
+ * UUserDefinedStruct makes the red run heap corruption inside DestroyStruct at GC -- the same
+ * "cannot be run to completion deliberately" argument VaCuus.Model.BlueprintRecompileRefusal's
+ * header records. So the red evidence here is the survival itself, and
+ * VaCuus.Model.BlueprintRecompile (VaCuusEditor) keeps standing as the proof of what a real
+ * recompile does to properties a surviving layout holds.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusModelRetiredViewRecompileTest, "VaCuus.Model.RecompileRetiredView",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusModelRetiredViewRecompileTest::RunTest(const FString& Parameters)
+{
+	using namespace VaCuusModelRecompileDropTest;
+
+	if (!FPlatformProcess::SupportsMultithreading())
+	{
+		AddInfo(TEXT("Skipped: no multithreading support, so there is no worker thread to drive"));
+		return true;
+	}
+	if (GEngine == nullptr)
+	{
+		AddInfo(TEXT("Skipped: no GEngine, so there is no world-context walk to drive"));
+		return true;
+	}
+	if (!TestFalse(TEXT("RmlUi is down before the test"), FVaCuusEngine::Get().IsInitialized()))
+	{
+		return false;
+	}
+
+	FVaCuusModule& Module = FVaCuusModule::Get();
+	FVaCuusUIThread* UIThread = Module.GetOrStartUIThread();
+	if (!TestNotNull(TEXT("UI thread"), UIThread))
+	{
+		return false;
+	}
+
+	// Declared first so it runs LAST: the instance teardown below still enqueues its view
+	// removal into the thread.
+	ON_SCOPE_EXIT
+	{
+		Module.StopUIThread();
+	};
+
+	FStandaloneInstance Instance;
+	if (!TestNotNull(TEXT("UVaCuusSubsystem on the standalone game instance"), Instance.Subsystem))
+	{
+		return false;
+	}
+
+	UVaCuusView* View = Instance.Subsystem->CreateView(
+		MakeUnique<FProbeHost>(TEXT("vacuus_retired_recompile")), FIntPoint(400, 300));
+	if (!TestNotNull(TEXT("the subsystem created a view"), View))
+	{
+		return false;
+	}
+
+	// Held strongly across DestroyView: the subsystem's Views array is the handle's only
+	// engine reference, and everything below pokes the RETIRED handle.
+	TStrongObjectPtr<UVaCuusView> RetiredHandle(View);
+
+	const UScriptStruct* Type = FVaCuusSamplerDefaultsModel::StaticStruct();
+	const FName ModelKey(TEXT("hud"));
+
+	// ---- A live, attached model, so retirement has something real to release. ----
+
+	if (!TestTrue(TEXT("BindModel succeeded"), View->BindModel(TEXT("hud"), Type)))
+	{
+		return false;
+	}
+	View->LoadDocumentFromMemory(GDocument);
+
+	FVaCuusSamplerDefaultsModel Live;
+	Live.Title = TEXT("Alpha");
+	View->UpdateModel(ModelKey, Type, &Live);
+	Instance.Subsystem->Tick(0.016f);
+	if (!TestTrue(TEXT("frames ran"), RunFrames(*UIThread, 3)))
+	{
+		return false;
+	}
+	if (!TestEqual(TEXT("one model is bound on the UI thread"), UIThread->GetNumBoundModels(), 1))
+	{
+		return false;
+	}
+
+	// ---- Retirement. The RemoveView is queued and NOT yet drained -- the widest window. ----
+
+	Instance.Subsystem->DestroyView(View);
+	TestFalse(TEXT("the view is invalid after DestroyView"), View->IsViewValid());
+
+	// THE FIX'S OBSERVABLE, and the restore-the-bug red: with Invalidate()'s Models.Empty()
+	// reverted, both of these fail (HasModel true, a 0 count instead of INDEX_NONE) -- the
+	// model surviving retirement is precisely the reopened dangle the header argues.
+	TestFalse(TEXT("retirement released the game side of the model"), View->HasModel(ModelKey));
+	TestEqual(TEXT("and the retired handle answers INDEX_NONE for its fields"),
+		View->NumOutstandingModelFields(ModelKey), int32(INDEX_NONE));
+
+	// ---- The recompile broadcast inside that window: the walk finds nothing -- and nothing
+	// ---- NEEDED finding, because retirement already released. With no model condemned there
+	// ---- is no fence to wait out, so this returns immediately and deterministically.
+
+	TestEqual(TEXT("the recompile walk condemns nothing for the retired view"),
+		UVaCuusSubsystem::NotifyStructPreRecompile(Type), 0);
+
+	// The dead handle stays a no-op under the calls a straggling driver would still make
+	// (Verbose, not Warning -- VaCuus.Model.Api's exact expected-message count holds that).
+	View->UpdateModel(ModelKey, Type, &Live);
+
+	// ---- The ordered drain: RemoveView destroys the context first, then drops the UI
+	// ---- thread's references -- now the LAST ones, so this is where the model is destroyed,
+	// ---- on the UI thread, with the (native, and in any real recompile: still-PreChange-live)
+	// ---- property chains intact. No crash and a clean count are the observable.
+
+	if (!TestTrue(TEXT("frames ran after the recompile broadcast"), RunFrames(*UIThread, 2)))
+	{
+		return false;
+	}
+	TestEqual(TEXT("the RemoveView drain dropped the last references"), UIThread->GetNumBoundModels(), 0);
 
 	return true;
 }

@@ -634,8 +634,16 @@ static FAutoConsoleCommand GDumpModelCommand(
  * a call to the runtime static above it, but the FAutoConsoleCommand lived next to the editor
  * file watcher, so the one MANUAL reload door did not exist in `-game` or in a packaged
  * Development build -- exactly the venues that have no watcher and need the door most. Moved,
- * not copied: a second registration under the same name is the trap (IConsoleManager keeps
- * the first and complains), so the editor module now registers nothing.
+ * not copied: a second registration under the same name is the trap, and NOT the way an
+ * earlier version of this comment told it. For a console COMMAND the manager does not keep
+ * the first -- AddConsoleObject warns (ConsoleManager.cpp:3308) and then the ExistingCmd
+ * branch REPLACES it (:3389-3396, "Replace console command with the new one and release the
+ * existing one"): the name maps to the SECOND registration and the first one's
+ * IConsoleCommand is Release()d out from under its still-live FAutoConsoleCommand, which
+ * keeps a raw Target pointer to it (IConsoleManager.h:1532) for the UnregisterConsoleObject
+ * its destructor will run. A twin in the editor module would mean module load order decides
+ * which body serves the name, with the loser holding a freed pointer until its own teardown
+ * -- so the editor module now registers nothing.
  *
  * Manual-only by design out here: the WATCHER stays editor-only (nothing pumps
  * DirectoryWatcher outside UEditorEngine::Tick, and it is lossless nowhere -- the Linux

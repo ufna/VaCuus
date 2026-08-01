@@ -297,7 +297,18 @@ public:
 	 */
 	uint64 GetNumAssetCacheClears() const;
 
-	/** Blocks until GetFrameCount() >= Target. Returns false on timeout. Test helper. */
+	/**
+	 * Blocks (1 ms polls on the atomic frame counter) until GetFrameCount() >= Target;
+	 * false on timeout. Safe from any thread EXCEPT the UI thread itself, where waiting on
+	 * your own next frame is a guaranteed timeout; useless in inline mode for the same
+	 * reason (no one else runs frames -- the caller must RunFrameInline() instead).
+	 *
+	 * NOT ONLY A TEST HELPER ANY MORE (VaCuus-akj.16): it is the wait half of the recompile
+	 * fence -- UVaCuusSubsystem::NotifyStructPreRecompile parks the game thread on it,
+	 * inside the struct editor's PreChange window, until the drain has run the condemned
+	 * models' UI-side drops (Trigger-and-wait per round; the drop state, not the frame
+	 * count, is what ends that loop).
+	 */
 	bool WaitForFrameCount(uint64 Target, double TimeoutSeconds);
 
 	/**
@@ -434,9 +445,11 @@ private:
 	 *
 	 * A model's entry is dropped in RemoveView(), AFTER the host's Shutdown() has destroyed
 	 * the context: RmlUi retains a raw void* into each model's UI shadow and revalidates it
-	 * never, so the buffer must outlive the context that points at it. The game thread holds
-	 * its own reference to the same object, so this drop is a refcount decrement rather than a
-	 * destruction in the common case.
+	 * never, so the buffer must outlive the context that points at it. This drop is normally
+	 * the DESTRUCTION: the game thread releases its reference when the view retires
+	 * (UVaCuusView::Invalidate() empties its map, always before this drains -- the M6
+	 * recompile contract explained there), so the reference held here is what carries each
+	 * model to this ordered teardown point.
 	 */
 	TMap<uint32, TArray<TSharedRef<FVaCuusBoundModel>>> Models;
 

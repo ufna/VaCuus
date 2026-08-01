@@ -206,6 +206,11 @@ bool FVaCuusBootFailureTest::RunTest(const FString& Parameters)
 	View->PollStatus();
 
 	TestFalse(TEXT("The handle is invalid after the poll that observed the boot failure"), View->IsViewValid());
+	// The admission also gates IsLoadPending (M6 review note): the completed serial will
+	// never advance for a dead view, so without the gate this answers true forever. Before
+	// the poll it still answered true (asserted above) -- the flip lands AT the admission,
+	// like every other observable on the handle.
+	TestFalse(TEXT("Nothing is pending on the dead view once the failure is admitted"), View->IsLoadPending());
 	TestEqual(TEXT("OnLoadCompleted fired exactly once"), NumLoadCallbacks, 1);
 	TestFalse(TEXT("...with bSuccess=false"), bLastCallbackSuccess);
 	TestFalse(TEXT("...after the handle was already invalidated (listeners see the honest state)"),

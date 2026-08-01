@@ -47,6 +47,21 @@ void UVaCuusView::Invalidate()
 	// dropping ours would only make a late PollStatus() crash instead of no-op.
 	bRegistered = false;
 
+	// RETIREMENT RELEASES THE GAME SIDE OF EVERY BOUND MODEL (M6 review). From here this
+	// view is unreachable to NotifyStructPreRecompile's walk (it iterates the subsystem's
+	// Views array), so an entry kept in this map would be a model no recompile can ever
+	// condemn -- destroyed at GC time through an FProperty chain a later recompile may
+	// have freed, the exact dangle the refusal exists to prevent. Dropping the references
+	// is safe on the UI side's ownership: the UI thread holds its own TSharedRef per model
+	// (FVaCuusUIThread::Models after the BindModel drain, the queued command before it),
+	// released in RemoveView() only AFTER the host's Shutdown() destroyed the context that
+	// pointed into the shadows -- so the last reference dies in that ordered drain and the
+	// buffers are destroyed through still-live property chains. (With no UI thread left to
+	// drain anything, the release here is already the destruction -- equally inside a
+	// window where the chains are alive.) UpdateModel() answers a retired view at Verbose
+	// through its registration gate, which runs BEFORE the map lookup for this reason.
+	Models.Empty();
+
 	// After this, a routed item still in flight for this view drops at Verbose in the
 	// drain -- the same fate as input for a dead view, one rule for both directions.
 	FVaCuusWriteRouter::UnregisterGameView(ViewId);
@@ -338,7 +353,7 @@ bool UVaCuusView::BindModel(const FString& ModelName, const UScriptStruct* Type)
 		// THE RECOVERY RE-BIND (VaCuus-akj.16): the entry is a corpse -- torn down when its
 		// struct was recompiled -- and refusing to replace it would leave the name dead for
 		// the life of the view. The no-unbind rule above is not violated: the recompile drop
-		// already ran Context::RemoveDataModel (which erases the name, Context.cpp:1109), so
+		// already ran Context::RemoveDataModel (which erases the name, Context.cpp:1111), so
 		// RmlUi will accept the re-creation. Replacing the map entry drops the last game-side
 		// reference; the UI side let go in the drop, so the corpse is destroyed here, with
 		// its drop state at TornDown and its buffers already empty. The caller still owes a
@@ -408,6 +423,18 @@ void UVaCuusView::UpdateModel(FName ModelName, const UScriptStruct* Type, const 
 	// gameplay memory, which has no engine synchronisation of any kind.
 	check(IsInGameThread());
 
+	// The registration gate FIRST, because Invalidate() empties the model map: on a retired
+	// view "nothing bound" is not the caller's mistake, and this runs at frame rate -- a
+	// view can outlive the thing driving it by a frame during teardown, so it drops at
+	// Verbose for the reason SendInput() gives. (VaCuus.Model.Api holds this line: its
+	// post-DestroyView UpdateModel would push the "before anything was bound" Warning past
+	// the exact count the test expects.)
+	if (GetUIThread() == nullptr)
+	{
+		UE_LOG(LogVaCuus, Verbose, TEXT("UpdateModel('%s') on an invalid view is ignored"), *ModelName.ToString());
+		return;
+	}
+
 	const TSharedPtr<FVaCuusBoundModel>* Found = Models.Find(ModelName);
 	if (Found == nullptr)
 	{
@@ -436,14 +463,6 @@ void UVaCuusView::UpdateModel(FName ModelName, const UScriptStruct* Type, const 
 	{
 		UE_LOG(LogVaCuus, Warning, TEXT("View %u: UpdateModel('%s') was given a null pointer; nothing was read"), ViewId,
 			*ModelName.ToString());
-		return;
-	}
-
-	if (GetUIThread() == nullptr)
-	{
-		// The registration gate, at Verbose for the reason SendInput() gives: this runs at
-		// frame rate, and a view can outlive the thing driving it by a frame during teardown.
-		UE_LOG(LogVaCuus, Verbose, TEXT("UpdateModel('%s') on an invalid view is ignored"), *ModelName.ToString());
 		return;
 	}
 
@@ -705,6 +724,21 @@ uint64 UVaCuusView::GetLastCompletedLoadSerial() const
 
 bool UVaCuusView::IsLoadPending() const
 {
+	// A dead view has nothing pending (M6 review): after the boot-failure admission --
+	// PollStatus's latch, which also invalidated the handle and broadcast the one
+	// OnLoadCompleted(false) -- the completed serial can never advance (the UI thread
+	// dropped the host, so no result will ever be published), and the serial comparison
+	// alone would answer "pending" forever. Gated on the game-side LATCH rather than on
+	// BootState directly, deliberately: the raw flag is stamped whenever the UI thread's
+	// drain happens to run (Enqueue() triggers a frame, so that races the very next game
+	// statement), while every observable on this handle changes at the POLL -- a mid-frame
+	// flip here would be the one exception, and VaCuus.View.BootFailure's "pending before
+	// the drain" assertion is what catches it.
+	if (bBootFailureReported)
+	{
+		return false;
+	}
+
 	return GetLastCompletedLoadSerial() < GetLastRequestedLoadSerial();
 }
 

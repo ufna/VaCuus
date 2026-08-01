@@ -1255,6 +1255,15 @@ bool FVaCuusNavEntryTest::RunTest(const FString& Parameters)
 		}
 		NavStickPress->Set(1);
 
+		// The gate must be restored on EVERY exit from this window, not only the straight-line
+		// one: the RunFrames early-return below used to leak =1 into whatever test ran next,
+		// which would then assert the DEFAULT path against the opted-in behavior. Scope guard,
+		// so no future early-return can reopen the leak either.
+		ON_SCOPE_EXIT
+		{
+			NavStickPress->Set(0);
+		};
+
 		const uint64 QueuedBeforeOptIn = View->GetNumInputEventsQueued();
 		const FReply OptInStick = Widget->OnKeyDown(Geometry, MakeKeyEvent(EKeys::Gamepad_LeftStick_Right));
 		TestFalse(TEXT("Opted in, the stick key is still not consumed as an entry key (D13 holds)"),
@@ -1269,7 +1278,8 @@ bool FVaCuusNavEntryTest::RunTest(const FString& Parameters)
 		}
 		TestEqual(TEXT("An opted-in stick key enters the grid"), Host->FocusId, FString(TEXT("btn")));
 
-		NavStickPress->Set(0);
+		// (The cvar is restored by the scope guard above -- the NavigateBack below does not go
+		// through the gated key handlers, so restoring at scope end is equivalent.)
 
 		// Put focus back on the document for the next state, so the loads below start where the
 		// other two states do.

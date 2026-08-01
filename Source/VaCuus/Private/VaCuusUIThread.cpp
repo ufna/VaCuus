@@ -1529,9 +1529,11 @@ void FVaCuusUIThread::RemoveView(uint32 ViewId)
 	// references first could destroy a shadow the context is about to read while it tears down
 	// its element tree.
 	//
-	// The game thread normally holds the other reference (UVaCuusView's model map), so this is
-	// usually a refcount decrement rather than a destruction -- and either way the buffer is
-	// only reachable from VaCuus code by then.
+	// The game thread has normally let go already (UVaCuusView::Invalidate() empties its map,
+	// and every RemoveView is enqueued from a path that also invalidates), so this drop is
+	// usually the DESTRUCTION -- on this thread, with the property chains alive, which is the
+	// point of releasing game-side at retirement (the M6 recompile contract, Invalidate()'s
+	// comment). Either way the buffer is only reachable from VaCuus code by then.
 	TArray<TSharedRef<FVaCuusBoundModel>> RemovedModels;
 	if (Models.RemoveAndCopyValue(ViewId, RemovedModels))
 	{
@@ -1599,9 +1601,9 @@ void FVaCuusUIThread::DropModelForRecompile(uint32 ViewId, const TSharedPtr<FVaC
 	//  2. Out of the write router, purging its pending reverts -- a revert flushed later this
 	//     frame must not DirtyVariable into the data model step 3 removes.
 	//  3. Context::RemoveDataModel, while the element tree is still up: it detaches every
-	//     root (SetDataModel(nullptr), Context.cpp:1102-1106) and destroys the DataModel
+	//     root (SetDataModel(nullptr), Context.cpp:1106-1107) and destroys the DataModel
 	//     holding the raw void* into the UI shadow -- which is what makes step 4 legal at
-	//     all. It also erases the NAME (data_models.erase, :1109), so a recovery re-bind
+	//     all. It also erases the NAME (data_models.erase, :1111), so a recovery re-bind
 	//     under the same name is not refused by CreateDataModel.
 	//  4. The buffers, through the model's drop-state machine (Reset within the fence
 	//     window, Abandon past it).

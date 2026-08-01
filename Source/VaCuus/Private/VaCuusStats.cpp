@@ -172,10 +172,17 @@ static FSummary Summarize(const TArray<double>& Samples)
 	return Out;
 }
 
-static void LogScopeLine(const TCHAR* Bucket, int32 Scope, const FSummary& Summary)
+static void LogScopeLine(const TCHAR* Bucket, int32 Scope, const FSummary& Summary, bool bPercentilesEstimated = false)
 {
-	UE_LOG(LogVaCuus, Log, TEXT("PerfLog %s %s avg=%.3f p50=%.3f p99=%.3f max=%.3f ms (%d)"),
-		Bucket, GScopeNames[Scope], Summary.Avg, Summary.P50, Summary.P99, Summary.Max, Summary.Count);
+	// `p50~=`/`p99~=` marks a reservoir ESTIMATE (see CumulativeSampleCap): once a scope's
+	// exact Count exceeds the cap, the percentiles come from the 16,384-sample uniform
+	// reservoir while Count/Avg/Max stay exact -- without the marker the [all] line prints
+	// estimated and exact numbers side by side as if they were the same kind of number.
+	UE_LOG(LogVaCuus, Log, TEXT("PerfLog %s %s avg=%.3f p50%s=%.3f p99%s=%.3f max=%.3f ms (%d)"),
+		Bucket, GScopeNames[Scope], Summary.Avg,
+		bPercentilesEstimated ? TEXT("~") : TEXT(""), Summary.P50,
+		bPercentilesEstimated ? TEXT("~") : TEXT(""), Summary.P99,
+		Summary.Max, Summary.Count);
 }
 
 /**
@@ -498,12 +505,15 @@ void FVaCuusPerfLog::TickLog()
 	for (int32 Scope = 0; Scope < Num; ++Scope)
 	{
 		// The [all] line past the reservoir's cap: p50/p99 estimated from the uniform
-		// reservoir; Count, Avg and Max overridden from the EXACT running aggregates, so
-		// the three numbers a budget gate would key on never degrade at all.
+		// reservoir (and MARKED as such -- LogScopeLine's `~`); Count, Avg and Max
+		// overridden from the EXACT running aggregates, so the three numbers a budget gate
+		// would key on never degrade at all. At Count == cap the reservoir still holds
+		// every sample, so the percentiles are exact up to and including it.
 		FSummary All = Summarize(CumulativeCopy[Scope]);
 		All.Count = int32(FMath::Min<uint64>(CumulativeCount[Scope], uint64(MAX_int32)));
 		All.Avg = CumulativeCount[Scope] > 0 ? CumulativeSum[Scope] / double(CumulativeCount[Scope]) : 0.0;
 		All.Max = CumulativeMax[Scope];
-		LogScopeLine(TEXT("[all]"), Scope, All);
+		LogScopeLine(TEXT("[all]"), Scope, All,
+			/*bPercentilesEstimated=*/CumulativeCount[Scope] > uint64(CumulativeSampleCap));
 	}
 }

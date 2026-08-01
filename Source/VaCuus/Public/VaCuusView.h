@@ -264,11 +264,11 @@ public:
 	//~
 	//~ 2. THERE IS NO UNBIND, AND THERE WILL NOT BE. RmlUi has no API for it: the only
 	//~    teardown is Context::RemoveDataModel, and that is a one-way door -- it calls
-	//~    Element::SetDataModel(nullptr) on every attached root (Context.cpp:1097-1111), and
+	//~    Element::SetDataModel(nullptr) on every attached root (Context.cpp:1106-1107), and
 	//~    SetDataModel is PRIVATE (Element.h:662, and SetParent is the only caller), so a
 	//~    document that is still loaded is permanently detached with no way to re-attach it.
 	//~    Re-binding the same name instead is refused: Context::CreateDataModel returns a
-	//~    falsy constructor (Context.cpp:1074-1075) and the existing model keeps pointing at
+	//~    falsy constructor (Context.cpp:1075-1076) and the existing model keeps pointing at
 	//~    the OLD shadow. A model therefore lives as long as its view, and dies with the
 	//~    context.
 	//~
@@ -502,7 +502,13 @@ public:
 	uint64 GetLastRequestedLoadSerial() const;
 	uint64 GetLastCompletedLoadSerial() const;
 
-	/** True while a queued load has not been answered yet. */
+	/**
+	 * True while a queued load has not been answered yet. False once a boot failure has been
+	 * ADMITTED (PollStatus observed BootState Failed and latched): nothing is pending on a
+	 * dead view -- no result will ever be published for it, and the failure itself was
+	 * already answered by OnLoadCompleted(this, false). Like every observable here, the flip
+	 * lands at the poll, not whenever the UI thread happens to stamp the status.
+	 */
 	UFUNCTION(BlueprintCallable, Category = "VaCuus")
 	bool IsLoadPending() const;
 
@@ -653,10 +659,15 @@ private:
 	 * SHARED WITH THE UI THREAD, which holds its own reference per view and drops it in
 	 * RemoveView() -- after the context that points into each model's shadow is gone.
 	 *
-	 * NOT CLEARED BY Invalidate(), deliberately: it is what lets UpdateModel() tell "this view
-	 * is dead" from "you never bound that model", which are different mistakes with different
-	 * fixes. Nothing publishes through it once the view is unregistered
-	 * (PublishModelUpdates() returns early), and the entries die with this object.
+	 * EMPTIED BY Invalidate(), and that is the recompile contract rather than tidiness (M6
+	 * review): a retired view is invisible to NotifyStructPreRecompile's walk, so an entry
+	 * surviving retirement is a model no recompile can condemn -- its shadows and layout
+	 * would be destroyed at GC time through an FProperty chain the compile may long since
+	 * have freed. The UI thread's own references carry each model to RemoveView()'s ordered
+	 * drain, so the release costs nothing early (see Invalidate()'s comment for the whole
+	 * ownership argument). UpdateModel() tells "this view is dead" (Verbose, via its
+	 * registration gate, checked before this map) from "you never bound that model"
+	 * (Warning) without needing the corpse entries the old design kept here.
 	 */
 	TMap<FName, TSharedPtr<FVaCuusBoundModel>> Models;
 

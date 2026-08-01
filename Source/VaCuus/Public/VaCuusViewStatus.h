@@ -97,7 +97,11 @@ struct FVaCuusViewStatus
 	 * (Failed in AddView's failure branches, Booted right after the host registers), the game
 	 * thread loads with acquire from UVaCuusView::PollStatus(), which on the FIRST Failed it
 	 * observes logs one Error naming the view, invalidates the handle and broadcasts
-	 * OnLoadCompleted(this, false) so load-waiters unblock. Values are EVaCuusViewBootState.
+	 * OnLoadCompleted(this, false) so load-waiters unblock. UVaCuusView::IsLoadPending()
+	 * answers false once that admission has run (gated on the view's game-side latch, so the
+	 * flip lands at the poll like every other observable there) -- the serial comparison
+	 * alone would say "pending" forever, since no completion will ever be published for a
+	 * dead view. Values are EVaCuusViewBootState.
 	 */
 	std::atomic<uint8> BootState{static_cast<uint8>(EVaCuusViewBootState::Pending)};
 

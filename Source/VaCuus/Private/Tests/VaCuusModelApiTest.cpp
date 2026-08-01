@@ -277,13 +277,19 @@ bool FVaCuusModelApiTest::RunTest(const FString& Parameters)
 	Fixture.Destroy();
 	TestFalse(TEXT("the view is invalid after DestroyView"), Fixture.View->IsViewValid());
 
-	// The model is still REGISTERED -- Invalidate() deliberately keeps the map -- so this
-	// takes the dead-view branch rather than the "you never bound that" one. Verbose, because
-	// UpdateModel runs at frame rate and a view can outlive its driver by a frame.
+	// RETIREMENT RELEASED THE MODELS (M6 review): Invalidate() empties the game-side map,
+	// because an entry surviving it would be invisible to NotifyStructPreRecompile's walk
+	// and dangle on a later recompile -- VaCuus.Model.RecompileRetiredView drives that end
+	// to end. The dead-view answer therefore comes from UpdateModel's registration gate,
+	// BEFORE the map lookup, at Verbose (frame rate; a view can outlive its driver by a
+	// frame). The exact Occurrences=1 on the "before anything was bound" Warning above is
+	// the assertion that this call does NOT take the unbound-name branch: a regression to
+	// the map lookup first would count 2 and fail this test.
 	Live.Title = TEXT("AfterDeath");
 	Fixture.View->UpdateModel(GModelName, Type, &Live);
-	TestTrue(TEXT("a dead view still knows about its models"), Fixture.View->HasModel(GModelName));
-	TestEqual(TEXT("but reads nothing"), Fixture.View->NumOutstandingModelFields(GModelName), 0);
+	TestFalse(TEXT("a retired view has released its models"), Fixture.View->HasModel(GModelName));
+	TestEqual(TEXT("and answers INDEX_NONE for their fields, like any unbound name"),
+		Fixture.View->NumOutstandingModelFields(GModelName), int32(INDEX_NONE));
 
 	RunFrames(*UIThread, 1);
 	TestEqual(TEXT("removing the view dropped both models on the UI thread"), UIThread->GetNumBoundModels(), 0);

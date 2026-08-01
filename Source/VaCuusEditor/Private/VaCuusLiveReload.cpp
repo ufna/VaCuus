@@ -530,9 +530,14 @@ int32 FVaCuusLiveReload::ReloadAllLiveViews(const TCHAR* Reason)
 // `vacuus.ReloadUI` IS NO LONGER REGISTERED HERE (bead VaCuus-akj.6.18): the command MOVED to
 // the runtime module (VaCuusSubsystem.cpp, beside vacuus.DumpModel), because an editor-only
 // registration left `-game` and packaged Development builds -- the venues with no watcher at
-// all -- without the one manual reload door. Moved rather than copied: IConsoleManager keeps
-// the FIRST registration of a name and complains about the second, so a same-name twin here
-// would silently shadow or be shadowed depending on module load order.
+// all -- without the one manual reload door. Moved rather than copied: for a console COMMAND,
+// IConsoleManager warns about a same-name re-registration (ConsoleManager.cpp:3308) and then
+// REPLACES it -- the ExistingCmd branch (:3389-3396) hands the name to the NEW command and
+// Release()s the first, out from under the still-live FAutoConsoleCommand that owns it
+// (IConsoleManager.h:1532 keeps the raw Target its destructor will try to unregister). A twin
+// here would mean whichever module registered LAST serves the name -- load order, i.e. this
+// editor module's body winning in the editor and not existing anywhere else -- with the losing
+// registration left holding a freed pointer.
 //
 // The escape-hatch argument that used to justify the command travels with it and still names
 // this watcher: the Linux backend skips IN_Q_OVERFLOW events outright instead of turning them
