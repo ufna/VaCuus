@@ -307,12 +307,15 @@ int32 SVaCuusWidget::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGe
 	const FSlateRect& MyCullingRect, FSlateWindowElementList& OutDrawElements, int32 LayerId,
 	const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const
 {
-	// The widget's LAST unscoped game-thread entry point gains its scope (M6 Task 4,
+	// The widget's last unscoped PER-PAINT entry point gains its scope (M6 Task 4,
 	// bead VaCuus-akj.6.38): the arch spec's game-thread budget row is a SUM of the GT
 	// scopes, and OnPaint -- the rect/HDR read, the render-command enqueue, MakeCustom
 	// -- ran outside it every paint pass, so the row could not honestly be tightened
 	// or passported (arch spec section 11's own precondition). Once per paint pass per
-	// hosted view; read beside GameTick/SlateTick/Input as one frame's sum.
+	// hosted view; read beside GameTick/SlateTick/Input as one frame's sum. The five
+	// rare-EVENT handlers (OnMouseEnter/Leave/CaptureLost, OnFocusReceived/Lost)
+	// still carry no scope -- arch:369's stated unmeasured remainder of rare-event
+	// cost, not part of any per-frame sum.
 	VACUUS_PERF_SCOPE(OnPaint);
 
 	// Window-space pixel rect of the widget (shared with Tick's frame size).

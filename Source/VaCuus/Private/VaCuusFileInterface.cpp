@@ -100,7 +100,10 @@ FVaCuusFileInterface::~FVaCuusFileInterface()
 		VaCuusScriptServing::GetNumBundleScriptServes(), VaCuusScriptServing::GetNumLooseScriptServes());
 
 	// Per-bundle ServedOpens counts document opens AND script reads (both serving paths
-	// bump it), so these lines reconcile against the SUM of the two totals above.
+	// bump it), so these lines reconcile against the SUM of the two totals above -- in a
+	// single-RmlUi-session (packaged) process, the reconciliation's venue: the automation
+	// suite runs many sessions, and there the per-interface totals reset per session
+	// while the script-serving statics are process-monotonic.
 	for (const TSharedRef<FVaCuusBundleMount>& Record : FVaCuusBundleMountTable::GetAllRecords())
 	{
 		UE_LOG(LogVaCuus, Log, TEXT("  bundle '%s' served %llu open(s)"), *Record->BundleName,

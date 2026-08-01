@@ -135,13 +135,16 @@ public:
 		 *                sample in every window it printed.
 		 *   OnPaint   -- SVaCuusWidget::OnPaint (M6, bead VaCuus-akj.6.38): the rect/HDR
 		 *                push and the MakeCustom enqueue, once per paint pass per hosted
-		 *                view. Until M6 this was the ONE game-thread entry point of the
-		 *                widget with no scope, so the budget's sum silently excluded it --
-		 *                and the arch spec's game-thread row (arch:369) refuses to be
-		 *                tightened or passported before the scope exists. The declare-first
-		 *                playbook (DataApply above): the scope lands in the same change that
-		 *                needs it, never after, so its cost was never folded into a
-		 *                neighbour.
+		 *                view. Until M6 this was the one PER-PAINT entry point of the
+		 *                widget with no scope, so the budget's per-frame sum silently
+		 *                excluded it -- and the arch spec's game-thread row (arch:369)
+		 *                refuses to be tightened or passported before the scope exists.
+		 *                The five rare-EVENT handlers (OnMouseEnter/Leave/CaptureLost,
+		 *                OnFocusReceived/Lost) remain unscoped: arch:369's stated
+		 *                unmeasured remainder of rare-event cost, outside every
+		 *                per-frame sum. The declare-first playbook (DataApply above):
+		 *                the scope lands in the same change that needs it, never after,
+		 *                so its cost was never folded into a neighbour.
 		 *   Input     -- one sample per input EVENT, covering the whole handler: the
 		 *                screen-to-view transform, the snapshot scan that produces the FReply,
 		 *                and the enqueue. The "input" half of the budget.

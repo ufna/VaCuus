@@ -44,7 +44,8 @@
 	                 span/text + pill) [JS]                      2 + 52*8      418
 	                 (12 rows in the clip window, 40 scrolled history
 	                 clipped above it -- overflow: hidden)
-	player plate     plate + frame + portrait(glyph, badge) + name
+	player plate     plate + frame + portrait(glyph, badge) + right
+	                 container + name
 	                 + 2 bar rows x (row+label/text+track+fill+value/text)      24
 	ability bar      #abilitybar + 4 x (slot + icon + cd + keycap
 	                 span/text + charge pip)                     1 + 4*6        25

@@ -459,9 +459,11 @@ private:
 	 * the context: RmlUi retains a raw void* into each model's UI shadow and revalidates it
 	 * never, so the buffer must outlive the context that points at it. This drop is normally
 	 * the DESTRUCTION: the game thread releases its reference when the view retires
-	 * (UVaCuusView::Invalidate() empties its map, always before this drains -- the M6
-	 * recompile contract explained there), so the reference held here is what carries each
-	 * model to this ordered teardown point.
+	 * (UVaCuusView::Invalidate() empties its map, normally before this drains -- both
+	 * retirement paths enqueue the removal BEFORE Invalidate() runs, and the enqueue's
+	 * triggered UI frame races the next game-thread statement, the same race the
+	 * IsLoadPending comment documents -- the M6 recompile contract explained there), so
+	 * the reference held here is what carries each model to this ordered teardown point.
 	 */
 	TMap<uint32, TArray<TSharedRef<FVaCuusBoundModel>>> Models;
 
