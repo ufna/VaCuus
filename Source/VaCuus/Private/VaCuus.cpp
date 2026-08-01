@@ -2,6 +2,7 @@
 
 #include "VaCuus.h"
 
+#include "VaCuusBundleMount.h"
 #include "VaCuusContentPaths.h"
 #include "VaCuusDefines.h"
 #include "VaCuusEngine.h"
@@ -52,6 +53,12 @@ void FVaCuusModule::ShutdownModule()
 	// registry's roots and its render-thread proxy mirror while the render thread is
 	// still around to flush against.
 	FVaCuusStyleRegistry::Shutdown_GameThread();
+
+	// The bundle regions die HERE and nowhere earlier (spec M6 section 4's release
+	// rule): StopUIThread() above joined the thread whose file interface held the
+	// only open span handles, so no read can be in flight -- and a steal-backed
+	// record destroyed any sooner could never be rebuilt (the steal is once-only).
+	FVaCuusBundleMountTable::DestroyRecords();
 
 	// The engine dies here rather than at static destruction time: by then
 	// FModuleManager has already unloaded VaCuusRml, and any RmlUi call made

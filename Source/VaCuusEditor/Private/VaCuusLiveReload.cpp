@@ -2,6 +2,7 @@
 
 #include "VaCuusLiveReload.h"
 
+#include "VaCuusBundleMount.h"
 #include "VaCuusContentPaths.h"
 #include "VaCuusDefines.h"
 #include "VaCuusSubsystem.h"
@@ -467,6 +468,34 @@ int32 FVaCuusLiveReload::FlushAt(double Now)
 	TArray<FString> Changed = PendingChanges.Array();
 	Changed.Sort();
 	PendingChanges.Empty();
+
+	// THE BUNDLE SHADOW TRAP MADE LOUD (M6, spec 2(d)): with a bundle mounted --
+	// `vacuus.Bundle.Enable 1` in PIE -- the VFS serves the PACKED copy of anything
+	// the bundle contains, so the reload below will re-read the edited file and then
+	// show the stale bundled bytes anyway, with no error anywhere. Live reload never
+	// applies to bundle-served content (the watcher watches loose roots only; that is
+	// documented, not "fixed"), so the one honest thing this flush can do is name the
+	// shadow per changed file.
+	for (const FString& ChangedPath : Changed)
+	{
+		for (const FString& Root : WatchedRoots)
+		{
+			if (!ChangedPath.StartsWith(Root + TEXT("/")))
+			{
+				continue;
+			}
+			FString BundleName;
+			if (FVaCuusBundleMountTable::ContainsPath(ChangedPath.Mid(Root.Len() + 1), &BundleName))
+			{
+				UE_LOG(LogVaCuus, Warning,
+					TEXT("Live reload: '%s' is SHADOWED by mounted bundle '%s' -- the reload will show the bundle's ")
+					TEXT("packed copy, not this edit. `vacuus.Bundle.Enable 0` unmounts (loose files serve again); ")
+					TEXT("`1` re-packs the tree with the edit in it"),
+					*ChangedPath, *BundleName);
+			}
+			break;
+		}
+	}
 
 	const double WaitedMs = (Now - FirstChangeSeconds) * 1000.0;
 

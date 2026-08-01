@@ -41,6 +41,18 @@ public class VaCuus : ModuleRules
 			"VaCuusRml"
 		});
 
+		if (Target.bBuildEditor)
+		{
+			// ITargetPlatform::SupportsFeature, for the per-platform bulk-data flag
+			// decision inside UVaCuusBundle::Serialize's cook branch -- editor targets
+			// only, which is the only place a cook save can run. The pack/cook code
+			// itself is WITH_EDITOR in this Runtime module (bundle-cook.md section 1):
+			// the class a cooked game deserializes must live here, and the cooker runs
+			// an editor target, so the packing code is present exactly where PreSave
+			// needs it. VaCuusEditor contributes only the asset factory.
+			PrivateDependencyModuleNames.Add("TargetPlatform");
+		}
+
 		// ------------------------------------------------------------------
 		// PACKAGING THE UI DOCUMENTS (Task 14, item A).
 		//
@@ -111,16 +123,28 @@ public class VaCuus : ModuleRules
 		// loose scripts the VFS reads exactly like documents -- the first packaged-game gate
 		// run shipped a pak with every .rml staged and m4_hud_logic.js missing, a document
 		// that boots with dead JS and one Error naming the path. (The M4 live-reload watcher
-		// gained these extensions; this list is the staging twin and MUST track it.)
-		// Known cosmetic caveat: Content/DevUI/Tests/*.js fixtures ride along -- the clean
-		// shipping story is M6's UVaCuusBundle, which replaces this whole mechanism.
-		string DevUIDir = "$(PluginDir)/Content/DevUI";
-		foreach (string Pattern in new string[] { "*.rml", "*.rcss", "*.js", "*.mjs", "*.png", "*.jpg", "*.jpeg", "*.ttf", "*.otf" })
+		// gained these extensions; this list is the staging twin and MUST track it -- as must
+		// VaCuusBundleFormat::GetPackedExtensions(), the bundle pack's copy of this list.)
+		//
+		// GATED OUT OF SHIPPING (M6, spec 2(d)): Shipping ships the cooked UVaCuusBundle
+		// ONLY -- no loose files, no Tests/ fixtures riding along (the pack also excludes
+		// them, so the old cosmetic caveat is retired twice over). Non-Shipping packaged
+		// builds stage BOTH: the bundle mounts first, so behavior matches Shipping, while
+		// the loose files stay available for `vacuus.Bundle.Enable 0` A/B debugging -- and
+		// the M==0 serving assertion in the packaged gate is what proves the bundle, not
+		// the loose copies, actually served. Target.Configuration is readable here because
+		// rules code runs per-target-per-configuration (ReadOnlyTargetRules.Configuration
+		// => Inner.Configuration, ReadOnlyTargetRules.cs).
+		if (Target.Configuration != UnrealTargetConfiguration.Shipping)
 		{
-			// `.../` before the pattern so subdirectories are included -- img/ and fonts/
-			// today, and whatever a document references tomorrow. FileFilter resolves `...`
-			// as "any depth" (EpicGames.Core/FileFilter.cs).
-			RuntimeDependencies.Add(DevUIDir + "/.../" + Pattern, StagedFileType.UFS);
+			string DevUIDir = "$(PluginDir)/Content/DevUI";
+			foreach (string Pattern in new string[] { "*.rml", "*.rcss", "*.js", "*.mjs", "*.png", "*.jpg", "*.jpeg", "*.ttf", "*.otf" })
+			{
+				// `.../` before the pattern so subdirectories are included -- img/ and fonts/
+				// today, and whatever a document references tomorrow. FileFilter resolves `...`
+				// as "any depth" (EpicGames.Core/FileFilter.cs).
+				RuntimeDependencies.Add(DevUIDir + "/.../" + Pattern, StagedFileType.UFS);
+			}
 		}
 	}
 }

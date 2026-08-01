@@ -11,6 +11,7 @@
 class FVaCuusUIThread;
 class IVaCuusDocumentHost;
 class UScriptStruct;
+class UVaCuusBundle;
 class UVaCuusStyleSet;
 class UVaCuusView;
 
@@ -217,6 +218,29 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "VaCuus")
 	void SetTranslationTable(const TMap<FString, FString>& Table);
+
+	/**
+	 * Mounts a UI bundle (M6): its packed files then serve every VFS open ahead of the
+	 * loose roots, for every view of every game instance -- the mount table is one per
+	 * process, like the UI thread and the VFS it feeds, so this is a thin door to
+	 * FVaCuusBundleMountTable exactly as RegisterStyleSet is to the style registry.
+	 * Idempotent per asset; multiple bundles stack in mount order, first hit wins.
+	 * Mounting STEALS the asset's payload region (once-only -- the mount record
+	 * retains it across unmounts), after which the asset object may be GC'd freely.
+	 * Games that manage their own bundle loading call this; the config-listed bundle
+	 * ([VaCuus] BundleAssetPath) mounts itself in cooked builds. Game thread.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "VaCuus")
+	bool MountBundle(UVaCuusBundle* Bundle);
+
+	/**
+	 * Unmounts a bundle: removes it from the lookup, so new opens fall through to the
+	 * loose roots. Reads already in flight keep their bytes (the record outlives the
+	 * lookup entry), and a later MountBundle of the same asset reuses the retained
+	 * record. Game thread.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "VaCuus")
+	bool UnmountBundle(UVaCuusBundle* Bundle);
 
 	/** The process-wide UI thread, or null if none is running. Does not start one. */
 	FVaCuusUIThread* GetUIThread() const;

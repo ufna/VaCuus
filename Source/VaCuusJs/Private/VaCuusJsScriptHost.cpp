@@ -358,8 +358,12 @@ void FVaCuusJsScriptHost::RunCapturedScripts(FVaCuusJsViewContext& View, const F
 			{
 				SrcPath.RightChopInline(SchemeEnd + 3);
 			}
-			const FString Resolved = VaCuusContentPaths::ResolveExistingDocument(SrcPath);
-			if (Resolved.IsEmpty() || !VaCuusJsScriptSource::ReadScriptFile(Resolved, Source))
+			// ReadScriptByVfsPath (M6): bundle-first, then the ordered roots -- the
+			// document that referenced this script came from the same precedence, so
+			// the pair cannot split across a stale loose copy and a packed one. In
+			// bundle-only Shipping this is the ONLY read that can succeed at all.
+			FString ServedFrom;
+			if (!VaCuusJsScriptSource::ReadScriptByVfsPath(SrcPath, Source, &ServedFrom))
 			{
 				UE_LOG(LogVaCuusJS, Error,
 					TEXT("View %u: <script src=\"%s\"> in %s did not resolve to a readable file; the script is skipped ")
@@ -375,11 +379,11 @@ void FVaCuusJsScriptHost::RunCapturedScripts(FVaCuusJsViewContext& View, const F
 			// scheme-stripped -- the block above), and the vfs name is what the
 			// module's own relative imports resolve against and what the
 			// per-context cache keys on (VaCuusJsModules.h). SourceName for the
-			// classic branch stays the RESOLVED path -- a classic script has no
-			// module identity, and naming the actual file read is the better
-			// backtrace.
+			// classic branch stays whatever ACTUALLY answered -- the disk path or
+			// the bundle pseudo-path -- because a classic script has no module
+			// identity, and naming the real source is the better backtrace.
 			bIsModule = Script.bIsModule;
-			SourceName = bIsModule ? VaCuusJsModules::MakeModuleName(SrcPath) : Resolved;
+			SourceName = bIsModule ? VaCuusJsModules::MakeModuleName(SrcPath) : ServedFrom;
 		}
 
 		// The watchdog observable: a trip's uncatchable error is consumed inside

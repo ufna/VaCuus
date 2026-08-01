@@ -4,6 +4,8 @@
 
 #include "VaCuus.h"
 #include "VaCuusBoundModel.h"
+#include "VaCuusBundle.h"
+#include "VaCuusBundleMount.h"
 #include "VaCuusDefines.h"
 #include "VaCuusDocumentHost.h"
 #include "VaCuusStats.h"
@@ -18,6 +20,7 @@
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
 #include "HAL/IConsoleManager.h"
+#include "HAL/PlatformProperties.h"
 #include "HAL/PlatformTime.h"
 
 UVaCuusSubsystem::UVaCuusSubsystem()
@@ -31,6 +34,47 @@ UVaCuusSubsystem::UVaCuusSubsystem()
 void UVaCuusSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
 	Super::Initialize(Collection);
+
+	// THE MOUNT PREDICATE (spec M6 2(d)): cooked builds mount the config-listed
+	// bundle; the editor and uncooked -game mount nothing (loose-first, live reload
+	// intact -- `vacuus.Bundle.Enable 1` is the PIE pack-on-demand door). Compile-time
+	// per target: the editor binary answers false here even during PIE, the staged
+	// monolithic game answers true. Idempotent across game instances -- the table is
+	// process-wide and MountBundle no-ops on an already-mounted asset. The explicit
+	// `vacuus.Bundle.Enable 0` (-dpcvars) suppresses this for loose A/B runs.
+	if (FPlatformProperties::RequiresCookedData())
+	{
+		static const auto* BundleEnableCVar = IConsoleManager::Get().FindConsoleVariable(TEXT("vacuus.Bundle.Enable"));
+		if (BundleEnableCVar == nullptr || BundleEnableCVar->GetInt() != 0)
+		{
+			const FString ConfiguredPath = VaCuusBundleConfig::GetConfiguredBundleAssetPath();
+			if (ConfiguredPath.IsEmpty())
+			{
+				UE_LOG(LogVaCuus, Log,
+					TEXT("No [VaCuus] BundleAssetPath configured; UI files serve from the loose staged roots ")
+					TEXT("(none are staged in Shipping -- configure a bundle for Shipping builds)"));
+			}
+			else if (UVaCuusBundle* Bundle = LoadObject<UVaCuusBundle>(nullptr, *ConfiguredPath))
+			{
+				FVaCuusBundleMountTable::MountBundle(Bundle);
+			}
+			else
+			{
+				// The cook-inclusion rule made loud (spec M6 2(d)): a config-soft-path-only
+				// bundle is INVISIBLE to the cooker -- nothing references it, so nothing
+				// cooked it, and this LoadObject is the first place that can notice.
+				UE_LOG(LogVaCuus, Error,
+					TEXT("[VaCuus] BundleAssetPath '%s' resolves to NO asset in this cooked build. The cooker only cooks ")
+					TEXT("referenced or listed packages: add the bundle's directory to DirectoriesToAlwaysCook (or ")
+					TEXT("hard-reference the asset) in the project settings"),
+					*ConfiguredPath);
+			}
+		}
+		else
+		{
+			UE_LOG(LogVaCuus, Log, TEXT("vacuus.Bundle.Enable 0: the cooked auto-mount is suppressed; loose roots serve"));
+		}
+	}
 
 	bInitialized = true;
 	SetTickableTickType(GetTickableTickType());
@@ -225,6 +269,22 @@ void UVaCuusSubsystem::SetTranslationTable(const TMap<FString, FString>& Table)
 {
 	check(IsInGameThread());
 	FVaCuusTranslationRegistry::SetTable(Table);
+}
+
+bool UVaCuusSubsystem::MountBundle(UVaCuusBundle* Bundle)
+{
+	check(IsInGameThread());
+	return FVaCuusBundleMountTable::MountBundle(Bundle);
+}
+
+bool UVaCuusSubsystem::UnmountBundle(UVaCuusBundle* Bundle)
+{
+	check(IsInGameThread());
+	if (Bundle == nullptr)
+	{
+		return false;
+	}
+	return FVaCuusBundleMountTable::UnmountBundle(Bundle->GetPathName());
 }
 
 int32 UVaCuusSubsystem::ClearAssetCachesAndReloadAllViews(const TCHAR* Reason)
