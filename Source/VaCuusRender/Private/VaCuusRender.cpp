@@ -4,11 +4,13 @@
 #include "VaCuusContentPaths.h"
 #include "VaCuusDefines.h"
 #include "VaCuusDemoModel.h"
-#include "VaCuusMaterialSpike.h"
+#include "VaCuusMaterialDraw.h"
 #include "VaCuusRecordingRenderInterface.h"
 #include "VaCuusRmlDocumentHost.h"
 #include "VaCuusSlateElement.h"
+#include "VaCuusStyleSet.h"
 #include "VaCuusSubsystem.h"
+#include "VaCuusUIShaders.h"
 #include "VaCuusView.h"
 
 #include "Containers/Ticker.h"
@@ -21,6 +23,7 @@
 #include "HAL/IConsoleManager.h"
 #include "Input/Events.h"
 #include "Interfaces/IPluginManager.h"
+#include "Materials/MaterialInterface.h"
 #include "Misc/CoreDelegates.h"
 #include "Misc/Paths.h"
 #include "Modules/ModuleManager.h"
@@ -266,6 +269,17 @@ struct FState
 	FDelegateHandle CameraPanHandle;
 	double CameraPanStartSeconds = 0.0;
 	float CameraPanBaseYaw = 0.0f;
+
+	//~ ------------------------------------------------------- M5 material demo (plan Task 5b)
+
+	/**
+	 * The transient style set the material demo registers on the way up and unregisters
+	 * on the way down — the production registration path, driven exactly as a game would
+	 * drive it (an asset of keys -> the committed spike materials; the spike's
+	 * vacuus.MatSpike.* console registry is retired). Strong-pointed because the
+	 * registry roots only the MATERIALS, not the set object naming them.
+	 */
+	TStrongObjectPtr<UVaCuusStyleSet> DemoStyleSet;
 };
 
 static TUniquePtr<FState> GState;
@@ -367,6 +381,16 @@ static void TearDown()
 	// happens to drop the last reference destroys it, and the render-side release is
 	// ordered after the view's last publish because the UI thread enqueues both.
 	State->Element.Reset();
+
+	// 4. The material demo's style set. After the view retirement above on purpose: the
+	// view's teardown frames may still carry material draws, and unregistering first
+	// would turn them into (harmless, but noisy) unresolved-id skips. The registry's
+	// deferred-release fence handles whatever is still in flight.
+	if (State->DemoStyleSet.IsValid())
+	{
+		FVaCuusStyleRegistry::UnregisterStyleSet(State->DemoStyleSet.Get());
+		State->DemoStyleSet.Reset();
+	}
 
 	UE_LOG(LogVaCuus, Log, TEXT("VaCuus demo off"));
 }
@@ -834,6 +858,38 @@ static void Toggle(const TCHAR* DocumentVfsPath)
 			GState->CameraPanBaseYaw = float(PlayerController->GetControlRotation().Yaw);
 		}
 		GState->CameraPanHandle = FCoreDelegates::OnBeginFrame.AddStatic(&PumpCameraPan);
+	}
+
+	// The M5 material demo (Task 5b, the production path end to end): register a style
+	// set over the committed spike materials BEFORE the load below — the snapshot then
+	// drains ahead of the document (FIFO from this one producer), so the document's
+	// `decorator: shader(spike-*)` keys resolve on their very first compile. The
+	// document is otherwise static: after the settle, every publish it makes is the
+	// forced-republish remedy keeping the anim cell's Time-driven material moving.
+	if (FCString::Strcmp(GDocumentVfsPath, GM5MatSpikeVfsPath) == 0)
+	{
+		static const TPair<const TCHAR*, const TCHAR*> DemoMaterials[] = {
+			{TEXT("spike-translucent"), TEXT("/VaCuus/Spike/M_VaCuusSpike_Translucent.M_VaCuusSpike_Translucent")},
+			{TEXT("spike-additive"), TEXT("/VaCuus/Spike/M_VaCuusSpike_Additive.M_VaCuusSpike_Additive")},
+			{TEXT("spike-opaque"), TEXT("/VaCuus/Spike/M_VaCuusSpike_Opaque.M_VaCuusSpike_Opaque")},
+			{TEXT("spike-mid"), TEXT("/VaCuus/Spike/M_VaCuusSpike_MID.M_VaCuusSpike_MID")},
+			{TEXT("spike-anim"), TEXT("/VaCuus/Spike/M_VaCuusSpike_Anim.M_VaCuusSpike_Anim")}};
+
+		UVaCuusStyleSet* StyleSet = NewObject<UVaCuusStyleSet>(GetTransientPackage(), TEXT("VaCuusM5MatDemoStyleSet"));
+		for (const TPair<const TCHAR*, const TCHAR*>& Pair : DemoMaterials)
+		{
+			if (UMaterialInterface* Material = LoadObject<UMaterialInterface>(nullptr, Pair.Value))
+			{
+				StyleSet->Materials.Add(Pair.Key, Material);
+			}
+			else
+			{
+				UE_LOG(LogVaCuus, Warning, TEXT("vacuus.M5MatSpike: '%s' did not load; its cell will refuse"), Pair.Value);
+			}
+		}
+
+		GState->DemoStyleSet = TStrongObjectPtr<UVaCuusStyleSet>(StyleSet);
+		Subsystem->RegisterStyleSet(StyleSet);
 	}
 
 	// Asynchronous by design: the document is loaded by the UI thread on its first
@@ -1827,9 +1883,10 @@ static FAutoConsoleCommand GM5DecoCommand(
 
 static FAutoConsoleCommand GM5MatSpikeCommand(
 	TEXT("vacuus.M5MatSpike"),
-	TEXT("Toggle the M5 material-SPIKE canvas (DevUI/m5_matspike.rml): four labeled text columns at the rects the ")
-	TEXT("vacuus.MatSpike.Add/.MID defaults target — the blend-matrix and freeze-remedy screenshots are taken over ")
-	TEXT("this document. Needs vacuus.MaterialDecorators 1. Shares every vacuus.M1HUD.* sub-command."),
+	TEXT("Toggle the M5 material-decorator demo (DevUI/m5_matspike.rml): registers a style set over the committed ")
+	TEXT("spike materials and shows text cells carrying `decorator: shader(spike-*)` — the production tier end to ")
+	TEXT("end (registry -> recorder -> replay), incl. the Time-driven cell the forced-republish remedy keeps ")
+	TEXT("animating. Shares every vacuus.M1HUD.* sub-command."),
 	FConsoleCommandDelegate::CreateLambda([] { Toggle(GM5MatSpikeVfsPath); }));
 
 static FAutoConsoleCommand GM5GlassCommand(
@@ -1942,6 +1999,16 @@ public:
 		// module manager at all: LoadTexture runs on the UI thread, where loading a
 		// module is refused outright. See CacheImageWrapperModule.
 		FVaCuusRecordingRenderInterface::CacheImageWrapperModule();
+
+		// The style registry's two render-module seams (M5 Task 5b), installed
+		// register-before-boot (the FVaCuusEngine::SetRenderInterface shape): the
+		// TryGetShaders pre-warm walk and the builtin-key collision check both need
+		// types this module owns (FVaCuusMaterialVS/PS; the builtin table) that VaCuus
+		// must not know. VaCuus loads before this module (module dependency), so the
+		// registry exists; nothing can have registered yet at PostConfigInit.
+		FVaCuusStyleRegistry::InstallRenderHooks(
+			&VaCuusMaterialDraw::PreWarmProxy_RenderThread,
+			[](const FString& Key) { return VaCuusBuiltinShaders::FindMode(Key) != INDEX_NONE; });
 	}
 
 	virtual void ShutdownModule() override
@@ -1949,12 +2016,11 @@ public:
 		// Engine shutdown with the HUD still on: drop the widget and our own
 		// references. The view itself is normally already gone (the game instance's
 		// subsystem deinitializes before modules unload), and the UI thread was
-		// stopped by VaCuus::ShutdownModule() ahead of this one.
+		// stopped by VaCuus::ShutdownModule() ahead of this one — which also ran
+		// FVaCuusStyleRegistry::Shutdown_GameThread(), clearing the hooks installed
+		// above before this module's code can unload. (The spike's static RHI buffer
+		// refs retired with the spike; the production material path holds none.)
 		VaCuusM1HUD::TearDown();
-
-		// The material spike's render-side mirror holds RHI buffer refs in static
-		// storage; drop them while the render thread still exists.
-		VaCuusMaterialSpike::ReleaseRenderResources();
 	}
 	//~ End IModuleInterface
 };

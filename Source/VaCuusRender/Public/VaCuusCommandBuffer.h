@@ -252,10 +252,11 @@ struct FVaCuusFilterData
  * Which of the four CompileShader names a desc records (M5 spec §2(e)). RmlUi 6 sends
  * exactly four: "linear-gradient" (DecoratorGradient.cpp:252-259), "radial-gradient"
  * (:422-428), "conic-gradient" (:619-625) and "shader" (DecoratorShader.cpp:35). The
- * recorder refuses any other name — and any "shader" whose value is not a registered
- * builtin — with handle 0, which suppresses exactly ONE decorator on ONE element
- * (Decorator.h:42-44; the per-entry guard in ElementEffects.cpp:196-200), so there is
- * no Unknown kind here: an unknown key never mints a desc at all.
+ * recorder refuses any other name — and any "shader" whose value is neither a builtin
+ * nor a registered style-set key — with handle 0, which suppresses exactly ONE
+ * decorator on ONE element (Decorator.h:42-44; the per-entry guard in
+ * ElementEffects.cpp:196-200), so there is no Unknown kind here: an unknown key never
+ * mints a desc at all.
  */
 enum class EVaCuusShaderKind : uint8
 {
@@ -264,7 +265,16 @@ enum class EVaCuusShaderKind : uint8
 	ConicGradient,
 
 	/** decorator: shader(<key>): a VaCuus builtin pixel shader; BuiltinKey names it. */
-	Builtin
+	Builtin,
+
+	/**
+	 * decorator: shader(<key>) where key resolved in the UVaCuusStyleSet snapshot
+	 * (M5 Task 5b): an MD_UI material drawn by the FVaCuusMaterialVS/PS pair.
+	 * MaterialId carries the resolved stable id; BuiltinKey carries the key for
+	 * diagnostics. Kind is fixed at compile time: builtins win over style keys, so a
+	 * key can never mean both.
+	 */
+	Material
 };
 
 /**
@@ -333,11 +343,29 @@ struct FVaCuusShaderDesc
 	/** Gradients: the resolved stop list ("color_stop_list"), truncated to VaCuusMaxGradientStops. */
 	TArray<FVaCuusColorStop> Stops;
 
-	/** Builtin: the shader(<key>) registry key ("value"), known-valid — unknown keys never mint a desc. */
+	/** Builtin + Material: the shader(<key>) registry key ("value"), known-valid — unknown keys never mint a desc. */
 	FString BuiltinKey;
 
-	/** Builtin: paint-box size in px ("dimensions") — the tex_coord normalization factor. */
+	/** Builtin + Material: paint-box size in px ("dimensions") — the tex_coord normalization factor. */
 	FVector2f Dimensions = FVector2f::ZeroVector;
+
+	/**
+	 * Material: the style registry's stable id, resolved from the UI-thread snapshot at
+	 * compile time and resolved again to an FMaterialRenderProxy on the render thread
+	 * (FVaCuusStyleRegistry::ResolveProxy_RenderThread). An id the mirror no longer
+	 * carries (the key was unregistered under a live draw) skips with a latched log —
+	 * the named refusal, never a stale pointer: the mirror drops the proxy BEFORE the
+	 * game-side root can (the fence in FVaCuusStyleRegistry::UnregisterStyleSet).
+	 *
+	 * DELIBERATELY NOT A TRIPWIRE CHANGE, checked rather than assumed: FVaCuusShaderDesc
+	 * is not one of the two layout-guarded types (FVaCuusCommand / FVaCuusCommandBuffer
+	 * — see VaCuusLayout), because a desc is resource PAYLOAD: it rides NewShaders,
+	 * which HasResourceTraffic() already names, and payloads are covered by the traffic
+	 * leg, not the hash (the NewGeometry/NewTextures argument in VaCuusHashFrameContent
+	 * applies verbatim — a desc is immutable once compiled, RmlUi has no mutate call, so
+	 * a changed material decorator is always a new handle: hash leg AND traffic leg).
+	 */
+	uint64 MaterialId = 0;
 };
 
 /**

@@ -211,6 +211,16 @@ public:
 	void EnqueueClearAssetCaches();
 
 	/**
+	 * Installs the material-decorator style snapshot on the UI thread (M5 Task 5b) —
+	 * how a FVaCuusStyleRegistry change reaches the recorder's CompileShader. THREAD-
+	 * level like EnqueueClearAssetCaches (the registry is process-wide); FIFO from the
+	 * single producer, so a snapshot enqueued before a LoadDocument* is installed
+	 * before that document's decorators compile — the same ordering argument
+	 * BindModel-before-load rests on.
+	 */
+	void EnqueueSetStyleSnapshot(const TSharedPtr<const struct FVaCuusStyleSnapshot>& Snapshot);
+
+	/**
 	 * Queues one input event for a view. Stamps ViewId, so the caller only fills in
 	 * what the event is (see FVaCuusInputEvent's factories).
 	 *

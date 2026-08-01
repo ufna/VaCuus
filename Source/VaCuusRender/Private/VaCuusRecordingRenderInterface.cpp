@@ -3,8 +3,9 @@
 #include "VaCuusRecordingRenderInterface.h"
 
 #include "VaCuusDefines.h"
-#include "VaCuusMaterialSpike.h" // WantsForcedRepublish: the M5 material spike's freeze remedy at the idle gate
-#include "VaCuusUIShaders.h"	 // VaCuusBuiltinShaders: the shader(<key>) registry CompileShader validates against
+#include "VaCuusMaterialDraw.h" // IsEnabled/IsForcedRepublishEnabled: the M5 material tier's switches at CompileShader and the idle gate
+#include "VaCuusStyleSet.h"		// FVaCuusStyleRegistry::GetInstalledSnapshot: the shader(<stylekey>) resolution table
+#include "VaCuusUIShaders.h"	// VaCuusBuiltinShaders: the shader(<key>) registry CompileShader validates against
 
 #include "HAL/IConsoleManager.h"
 #include "HAL/PlatformTLS.h"
@@ -850,9 +851,22 @@ Rml::CompiledShaderHandle FVaCuusRecordingRenderInterface::CompileShader(const R
 		RefusedShaderKeys.Add(Key, &bAlreadyRefused);
 		if (!bAlreadyRefused)
 		{
+			// Both halves of what WOULD have worked (Task 5b's refusal contract): the
+			// builtin table and the registered style keys. Built at refusal rate, and
+			// latched, so the join is paid once per unknown key per recorder.
+			FString StyleKeys;
+			if (const TSharedPtr<const FVaCuusStyleSnapshot> Snapshot = FVaCuusStyleRegistry::GetInstalledSnapshot())
+			{
+				for (const TPair<FString, uint64>& Pair : Snapshot->KeyToId)
+				{
+					StyleKeys += StyleKeys.IsEmpty() ? Pair.Key : (TEXT(", ") + Pair.Key);
+				}
+			}
 			UE_LOG(LogVaCuus, Warning,
-				TEXT("CompileShader: %s '%s' is not registered — known builtin keys: %s. The decorator is dropped per element"),
-				What, *Key, *VaCuusBuiltinShaders::KnownKeysForLog());
+				TEXT("CompileShader: %s '%s' is not registered — known builtin keys: %s; registered style keys: %s. ")
+				TEXT("The decorator is dropped per element"),
+				What, *Key, *VaCuusBuiltinShaders::KnownKeysForLog(),
+				StyleKeys.IsEmpty() ? TEXT("(none)") : *StyleKeys);
 		}
 		return Rml::CompiledShaderHandle(0);
 	};
@@ -934,14 +948,45 @@ Rml::CompiledShaderHandle FVaCuusRecordingRenderInterface::CompileShader(const R
 		// DecoratorShader.cpp:35: the whole shorthand value arrives verbatim as one string.
 		const Rml::String Value = Rml::Get(Parameters, "value", Rml::String());
 		FString Key = UTF8_TO_TCHAR(Value.c_str());
-		if (VaCuusBuiltinShaders::FindMode(Key) == INDEX_NONE)
+		const Rml::Vector2f Dimensions = Rml::Get(Parameters, "dimensions", Rml::Vector2f(0.f));
+
+		if (VaCuusBuiltinShaders::FindMode(Key) != INDEX_NONE)
 		{
-			return RefuseKey(TEXT("shader builtin key"), Key);
+			// Builtins win — which is why registration refuses a style key that would
+			// shadow one (FVaCuusStyleRegistry's reserved-key refusal).
+			Desc.Kind = EVaCuusShaderKind::Builtin;
+		}
+		else if (VaCuusMaterialDraw::IsEnabled())
+		{
+			// THE STYLE-KEY RESOLUTION (M5 Task 5b): a pure lookup in the immutable
+			// snapshot the registry published over the command queue — no lock, no
+			// loads, no game-thread state touched. Unknown key => the Task 4 refusal,
+			// now listing both tables.
+			const TSharedPtr<const FVaCuusStyleSnapshot> Snapshot = FVaCuusStyleRegistry::GetInstalledSnapshot();
+			const uint64* StableId = Snapshot.IsValid() ? Snapshot->KeyToId.Find(Key) : nullptr;
+			if (!StableId)
+			{
+				return RefuseKey(TEXT("shader key"), Key);
+			}
+
+			Desc.Kind = EVaCuusShaderKind::Material;
+			Desc.MaterialId = *StableId;
+
+			// THE VIEW'S FORCED-REPUBLISH FLAG comes up with the first live material
+			// (see LiveMaterialShaders): the handle is minted below, after every
+			// refusal path is behind us, so record membership via the counter we are
+			// about to mint. NextShaderHandle is the handle this desc gets.
+			LiveMaterialShaders.Add(NextShaderHandle);
+		}
+		else
+		{
+			// The tier's kill-switch (vacuus.MaterialDecorators 0): style keys refuse
+			// like unknown ones. Builtins and gradients are stage-1 vocabulary and are
+			// deliberately not behind it.
+			return RefuseKey(TEXT("shader key (material tier disabled)"), Key);
 		}
 
-		Desc.Kind = EVaCuusShaderKind::Builtin;
 		Desc.BuiltinKey = MoveTemp(Key);
-		const Rml::Vector2f Dimensions = Rml::Get(Parameters, "dimensions", Rml::Vector2f(0.f));
 		Desc.Dimensions = FVector2f(Dimensions.x, Dimensions.y);
 	}
 	else
@@ -992,6 +1037,11 @@ void FVaCuusRecordingRenderInterface::ReleaseShader(Rml::CompiledShaderHandle Sh
 	// RenderManager.cpp:364-368), and decorator data is released at document teardown.
 	// Same-frame compile+release keeps both entries, exactly like geometry.
 	GetPending().ReleasedShaders.Add(FVaCuusShaderHandle(Shader));
+
+	// The other edge of the view's forced-republish flag: the last live material
+	// released (document closed, decorator restyled away) puts the idle gate back in
+	// charge — a view that stopped drawing materials must be able to go idle again.
+	LiveMaterialShaders.Remove(FVaCuusShaderHandle(Shader));
 }
 
 Rml::LayerHandle FVaCuusRecordingRenderInterface::PushLayer()
@@ -1290,15 +1340,25 @@ TUniquePtr<FVaCuusCommandBuffer> FVaCuusRecordingRenderInterface::EndFrameAndPub
 	// CVarVaCuusIdleGate is the kill switch; see its declaration.
 	const bool bGateEnabled = CVarVaCuusIdleGate.GetValueOnAnyThread() != 0;
 
-	// THE M5 MATERIAL SPIKE'S FREEZE REMEDY (spec §2(f)): a live material decorator is
-	// GPU-evaluated state the hash and the traffic predicate cannot see — the composite
-	// only samples the RT (VaCuusSlateElement.cpp:141-204) and the RT is written only in
-	// this publish-gated replay branch, so a time-animated or MID-driven material would
-	// freeze on whatever publish last ran. While a spike material is live (and the
-	// remedy cvar is on), every recorded frame publishes; the cost of that is one of the
-	// numbers the gate decision must record. Production shape: per-view, driven by the
-	// recorder's own compiled-shader table, not a process-global — spike scope only.
-	const bool bMaterialForcedRepublish = VaCuusMaterialSpike::WantsForcedRepublish();
+	// THE FREEZE REMEDY, PRODUCTION SHAPE (M5 Task 5b; the fact is spec §2(f)): a live
+	// material decorator is GPU-evaluated state the hash and the traffic predicate
+	// cannot see — the composite only samples the RT (VaCuusSlateElement.cpp:141-204)
+	// and the RT is written only in this publish-gated replay branch, so a time-animated
+	// or MID-driven material would freeze on whatever publish last ran. PER VIEW: the
+	// term is this recorder's own live-shader table (LiveMaterialShaders — compiled
+	// Material descs not yet released), so a material HUD in one view cannot reopen the
+	// idle row for every other view the way the spike's process-global did. CLAMPED TO
+	// ENGINE RATE: at most one forced publish per GFrameCounter tick — the composite
+	// samples the RT once per engine frame, so a second replay inside one engine frame
+	// is pure cost (the spike's own record prices exactly this and says clamp, spec
+	// §3.3). GFrameCounter is read cross-thread the way the engine itself reads it
+	// everywhere (a monotonic uint64 the game thread bumps once per engine loop);
+	// staleness by one tick costs one deferred publish, never a wrong one.
+	// vacuus.MaterialForcedRepublish is the kill-switch — off, the freeze is observable.
+	const uint64 EngineFrame = GFrameCounter;
+	const bool bMaterialLive = LiveMaterialShaders.Num() > 0;
+	const bool bMaterialForcedRepublish = bMaterialLive && VaCuusMaterialDraw::IsForcedRepublishEnabled() &&
+		EngineFrame != LastMaterialRepublishFrame;
 	if (bGateEnabled && Generation > 0 && ContentHash == LastPublishedContentHash && !bHasResourceTraffic &&
 		!bMaterialForcedRepublish)
 	{
@@ -1310,6 +1370,16 @@ TUniquePtr<FVaCuusCommandBuffer> FVaCuusRecordingRenderInterface::EndFrameAndPub
 		// on every frame, published or not.
 		++NumFramesSkipped;
 		return nullptr;
+	}
+
+	if (bMaterialLive)
+	{
+		// ANY publish re-evaluates the materials (the replay pass rebuilds the view UB
+		// with fresh time and re-reads every proxy), so the clamp latches on every
+		// publish while a material is live — not only on forced ones. Otherwise a
+		// content-change publish and a forced publish could land in the same engine
+		// frame, which is exactly the double replay the clamp exists to prevent.
+		LastMaterialRepublishFrame = EngineFrame;
 	}
 
 	LastPublishedContentHash = ContentHash;

@@ -10,6 +10,7 @@
 
 class FVaCuusUIThread;
 class IVaCuusDocumentHost;
+class UVaCuusStyleSet;
 class UVaCuusView;
 
 /**
@@ -139,6 +140,32 @@ public:
 	 * by the loop reloading the same view a second time.
 	 */
 	FOnVaCuusDocumentsReloadRequested OnDocumentsReloadRequested;
+
+	/**
+	 * Registers a material-decorator style set (M5 Task 5b): its keys become resolvable
+	 * from RCSS as `decorator: shader(<key>)`. Game thread. Returns how many entries were
+	 * accepted; each refusal — wrong domain, scene-texture/VT sampling, key collision —
+	 * has logged its own named Error (see FVaCuusStyleRegistry::RegisterStyleSet).
+	 *
+	 * A THIN DOOR TO PROCESS-WIDE STATE, like the UI thread itself: the registry is one
+	 * per process (there is one RmlUi and one recorder contract), so registering here
+	 * makes the keys visible to every view of every game instance. The subsystem carries
+	 * the API because game code and Blueprint reach the plugin through it.
+	 *
+	 * Register BEFORE loading documents that use the keys: a `shader(<key>)` compiled
+	 * before its key was registered is refused per element and stays refused until the
+	 * element restyles or the document reloads (RmlUi caches decorator failure).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "VaCuus")
+	int32 RegisterStyleSet(UVaCuusStyleSet* StyleSet);
+
+	/**
+	 * Unregisters a style set. Live draws naming its keys skip with a latched log; the
+	 * materials stay rooted until the render thread provably stopped resolving them
+	 * (the deferred-release fence, drained by Tick). Game thread.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "VaCuus")
+	void UnregisterStyleSet(UVaCuusStyleSet* StyleSet);
 
 	/** The process-wide UI thread, or null if none is running. Does not start one. */
 	FVaCuusUIThread* GetUIThread() const;

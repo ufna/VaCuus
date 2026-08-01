@@ -9,6 +9,7 @@
 #include "VaCuusEngine.h"
 #include "VaCuusInputMap.h"
 #include "VaCuusStats.h"
+#include "VaCuusStyleSet.h"
 #include "VaCuusTextInput.h"
 #include "VaCuusUIQueues.h"
 #include "VaCuusWriteRouter.h"
@@ -674,6 +675,23 @@ void FVaCuusUIThread::EnqueueClearAssetCaches()
 	Enqueue(MoveTemp(Command));
 }
 
+void FVaCuusUIThread::EnqueueSetStyleSnapshot(const TSharedPtr<const FVaCuusStyleSnapshot>& Snapshot)
+{
+	if (!Snapshot.IsValid())
+	{
+		// The registry never publishes a null; refusing here keeps the drain's
+		// InstallSnapshot checkf about versions, not about producer slips.
+		UE_LOG(LogVaCuus, Error, TEXT("EnqueueSetStyleSnapshot(null) dropped"));
+		return;
+	}
+
+	// No ViewId: the style registry is process-wide, applied before per-view routing.
+	FVaCuusUICommand Command;
+	Command.Kind = EVaCuusCommandKind::SetStyleSnapshot;
+	Command.StyleSnapshot = Snapshot;
+	Enqueue(MoveTemp(Command));
+}
+
 void FVaCuusUIThread::EnqueueInput(uint32 ViewId, FVaCuusInputEvent Event)
 {
 	// Same rule as commands: once a stop is requested the queues are closed, so
@@ -1187,6 +1205,16 @@ void FVaCuusUIThread::DrainCommands()
 		if (Command->Kind == EVaCuusCommandKind::ClearAssetCaches)
 		{
 			ClearAssetCaches();
+			continue;
+		}
+
+		if (Command->Kind == EVaCuusCommandKind::SetStyleSnapshot)
+		{
+			// THREAD-level like ClearAssetCaches: the style registry is process-wide, and
+			// a snapshot that rode on a per-view command would be lost exactly when no
+			// view is live to carry it. Installed before any load queued behind it drains
+			// (FIFO), so that document's CompileShader sees it.
+			FVaCuusStyleRegistry::InstallSnapshot(Command->StyleSnapshot);
 			continue;
 		}
 

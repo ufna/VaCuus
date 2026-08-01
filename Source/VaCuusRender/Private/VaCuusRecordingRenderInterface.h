@@ -285,6 +285,27 @@ private:
 	bool bLoggedStopOverflow = false;
 
 	/**
+	 * THE RECORDER'S LIVE MATERIAL TABLE (M5 Task 5b) — handles of compiled
+	 * Kind=Material shaders not yet released. Non-empty is this view's forced-republish
+	 * flag: a live material decorator is GPU-evaluated state neither the content hash
+	 * nor the traffic predicate can see (spec §2(f) — the composite only samples the
+	 * RT), so while this set is non-empty the idle gate republishes, clamped to engine
+	 * rate (see EndFrameAndPublish). PER RECORDER, therefore per view — one view's
+	 * material HUD cannot force another view's publishes, which is what retires the
+	 * spike's process-global gate term.
+	 */
+	TSet<FVaCuusShaderHandle> LiveMaterialShaders;
+
+	/**
+	 * GFrameCounter value at the last publish that a live material was re-evaluated by —
+	 * the forced-republish CLAMP's memory. The UI thread can outrun the engine (a
+	 * multi-view frame, a triggered catch-up), and publishing twice inside one engine
+	 * frame buys a second replay no composite ever samples; the spike's own record
+	 * says to clamp rather than adopt composite-time draws (spec §3.3's remedy pricing).
+	 */
+	uint64 LastMaterialRepublishFrame = 0;
+
+	/**
 	 * VaCuusHashFrameContent() of the last buffer this recorder PUBLISHED, and the
 	 * only state the idle gate keeps.
 	 *

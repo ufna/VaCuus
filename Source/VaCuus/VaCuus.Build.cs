@@ -29,6 +29,15 @@ public class VaCuus : ModuleRules
 			// Runtime module, so a packaged game resolves the same root.
 			"Projects",
 
+			// The M5 style registry (VaCuusStyleSet.cpp) pushes its render-thread proxy
+			// mirror via ENQUEUE_RENDER_COMMAND and fences unregistration on
+			// FRenderCommandFence -- RenderCore -- with FRHICommandListImmediate in the
+			// command signatures -- RHI. Engine happens to re-export both, but the
+			// dependency is ours, so it is declared rather than inherited (the InputCore
+			// rule above).
+			"RenderCore",
+			"RHI",
+
 			"VaCuusRml"
 		});
 

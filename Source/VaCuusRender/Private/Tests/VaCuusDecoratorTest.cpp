@@ -569,8 +569,11 @@ bool FVaCuusDecoratorUnknownKeyTest::RunTest(const FString& Parameters)
 	};
 
 	// TWO elements with the same unknown key: the VaCuus line must appear ONCE (latched
-	// per key), while RmlUi's own warning names each element.
-	AddExpectedMessagePlain(TEXT("shader builtin key 'no-such-builtin' is not registered"), ELogVerbosity::Warning,
+	// per key), while RmlUi's own warning names each element. Since Task 5b the refusal
+	// checks the style-set snapshot after the builtin table, so the message says
+	// "shader key" and lists both tables — none of which changes the shape asserted
+	// here (VaCuus.Render.Decorator.Material covers the style half).
+	AddExpectedMessagePlain(TEXT("shader key 'no-such-builtin' is not registered"), ELogVerbosity::Warning,
 		EAutomationExpectedMessageFlags::Contains, 1);
 	AddExpectedMessagePlain(TEXT("Could not generate decorator element data"), ELogVerbosity::Warning,
 		EAutomationExpectedMessageFlags::Contains, 2);

@@ -3,7 +3,7 @@
 #include "VaCuusReplayRenderer.h"
 
 #include "VaCuusDefines.h"
-#include "VaCuusMaterialSpike.h"
+#include "VaCuusMaterialDraw.h"
 #include "VaCuusStats.h"
 #include "VaCuusUIShaders.h"
 
@@ -264,22 +264,34 @@ void FVaCuusReplayRenderer::ReplayCommands(FRHICommandList& RHICmdList, const FV
 		GraphicsPSOInit.PrimitiveType = PT_TriangleList;
 
 		// THE MID-PASS PSO SWITCH (M5 spec §2(e)) — DrawShader is the first command that
-		// changes pipelines inside this pass, and only the PIXEL SHADER differs: blend,
-		// rasterizer, depth-stencil, vertex declaration and VS are shared, so a switch is
-		// one PSO-cache hit, not a new state vector. Bound LAZILY on demand: a geometry-only
-		// buffer (every pre-M5 document) binds the UI pipeline once and never switches, and
-		// N consecutive DrawShaders cost one switch, not N. Scissor and viewport survive the
-		// switch — they are command-list state, not PSO state (the glass draw's own pattern:
-		// set once, draw through PSO binds, VaCuusSlateElement.cpp:522-536).
+		// changes pipelines inside this pass. Between UI and Gradient only the PIXEL
+		// SHADER differs: blend, rasterizer, depth-stencil, vertex declaration and VS are
+		// shared, so a switch is one PSO-cache hit, not a new state vector. Bound LAZILY
+		// on demand: a geometry-only buffer (every pre-M5 document) binds the UI pipeline
+		// once and never switches, and N consecutive DrawShaders cost one switch, not N.
+		// Scissor and viewport survive the switch — they are command-list state, not PSO
+		// state (the glass draw's own pattern: set once, draw through PSO binds,
+		// VaCuusSlateElement.cpp:522-536).
+		//
+		// Material (M5 Task 5b) is the odd one out: a material draw is a FULL pipeline
+		// (its VS differs too) bound inside DrawMaterial_RenderThread, so its enum value
+		// here means "something else is bound now" — it never binds through this lambda,
+		// it only forces the next UI/Gradient draw to rebind. Same-material runs are
+		// deduplicated by the material path's own memo (FPassState::BoundMaterialPS).
 		enum class EBoundPS : uint8
 		{
 			None,
 			UI,
-			Gradient
+			Gradient,
+			Material
 		};
+		// The material path's per-pass state: one lazy view UB + the bound-material memo.
+		VaCuusMaterialDraw::FPassState MaterialPassState;
+
 		EBoundPS BoundPS = EBoundPS::None;
-		const auto BindPipeline = [&RHICmdList, &GraphicsPSOInit, &BoundPS, &PixelShader, &GradientShader](EBoundPS Wanted)
+		const auto BindPipeline = [&RHICmdList, &GraphicsPSOInit, &BoundPS, &PixelShader, &GradientShader, &MaterialPassState](EBoundPS Wanted)
 		{
+			check(Wanted != EBoundPS::Material); // material pipelines bind in DrawMaterial_RenderThread
 			if (BoundPS == Wanted)
 			{
 				return;
@@ -288,6 +300,10 @@ void FVaCuusReplayRenderer::ReplayCommands(FRHICommandList& RHICmdList, const FV
 			GraphicsPSOInit.BoundShaderState.PixelShaderRHI =
 				(Wanted == EBoundPS::Gradient) ? GradientShader.GetPixelShader() : PixelShader.GetPixelShader();
 			SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
+
+			// The two memos must invalidate each other: a material draw after this bind
+			// is under OUR pipeline now, whatever material was bound before it.
+			MaterialPassState.BoundMaterialPS = nullptr;
 		};
 
 		// SetTransform state, already in UE row-vector convention (the recorder
@@ -388,6 +404,32 @@ void FVaCuusReplayRenderer::ReplayCommands(FRHICommandList& RHICmdList, const FV
 					}
 					if (Geo->NumIndices < 3)
 					{
+						break;
+					}
+
+					// THE MATERIAL TIER (M5 Task 5b): recorded RmlUi geometry filled by an
+					// MD_UI material — the spike's mechanism as a recorded command instead
+					// of an injection, so recorded scissor state and z-order apply exactly
+					// like any other draw. Same matrix math as every case here. The
+					// material path binds its own full PSO (its VS differs too), so a
+					// DRAWN material moves the memo to Material — the next UI/gradient
+					// draw rebinds, and that rebind nulls the material path's own memo
+					// (the handshake in BindPipeline). A SKIPPED draw (unresolved id,
+					// pair-less walk) touched no pipeline and moves neither memo.
+					if (Desc->Kind == EVaCuusShaderKind::Material)
+					{
+						FMatrix44f Translate = FMatrix44f::Identity;
+						Translate.M[3][0] = Command.Translation.X;
+						Translate.M[3][1] = Command.Translation.Y;
+
+						const bool bDrawn = VaCuusMaterialDraw::DrawMaterial_RenderThread(RHICmdList, MaterialPassState,
+							RTSize, Translate * CurrentTransform * Projection, Desc->MaterialId, Desc->BuiltinKey,
+							Geo->VB, Geo->IB, Geo->NumVertices, Geo->NumIndices);
+						if (bDrawn)
+						{
+							BoundPS = EBoundPS::Material;
+							++NumDrawCalls;
+						}
 						break;
 					}
 
@@ -551,15 +593,10 @@ void FVaCuusReplayRenderer::ReplayCommands(FRHICommandList& RHICmdList, const FV
 			}
 		}
 
-		// THE M5 MATERIAL SPIKE (spec §3.3 stage 2, behind vacuus.MaterialDecorators,
-		// default off): registered MD_UI materials drawn AFTER the recorded commands —
-		// a synthetic DrawShader injected without the recorder, which Task 4 already
-		// proved out format-wise (the desc/draw shapes carry everything a material
-		// needs; no format break either way the gate decides). Runs inside this same
-		// render pass so the material composites onto the frame's premultiplied
-		// content; re-evaluation across publishes is the forced-republish remedy's
-		// business (VaCuusMaterialSpike.h).
-		NumDrawCalls += VaCuusMaterialSpike::DrawInjected_RenderThread(RHICmdList, RTSize, Projection);
+		// The spike's post-replay injection point stood here until Task 5b. Gone, not
+		// moved: materials are recorded DrawShader commands now (Kind=Material above),
+		// so they replay where the document put them — with recorded scissor and
+		// z-order — instead of always painting over the whole frame's content.
 	}
 	RHICmdList.EndRenderPass();
 

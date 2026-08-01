@@ -1,6 +1,6 @@
 <rml>
 <head>
-	<title>VaCuus M5 Material Spike</title>
+	<title>VaCuus M5 Material Decorators</title>
 	<style>
 		body
 		{
@@ -21,48 +21,56 @@
 			padding: 10px;
 			line-height: 30px;
 		}
+		#translucent { decorator: shader( spike-translucent ); }
+		#additive    { decorator: shader( spike-additive ); }
+		#opaque      { decorator: shader( spike-opaque ); }
+		#mid         { decorator: shader( spike-mid ); }
+		#anim        { decorator: shader( spike-anim ); }
 	</style>
 </head>
 
-<!-- THE MATERIAL-SPIKE CANVAS. Deliberately STATIC, like m5_deco.rml: after the settle
-     the idle gate withholds everything, so whatever changes on screen after that is the
-     injected material path — the blend matrix draws over these text cells (the material
-     rects are the vacuus.MatSpike.Add rect arguments, matched to the .cell boxes below),
-     and with vacuus.MaterialForcedRepublish 0 a time-animated material FREEZES over the
-     bottom cell, which is exactly the spec §2(f) fact the spike photographs. -->
+<!-- THE MATERIAL-DECORATOR CANVAS (Task 5b, the production tier; the spike's injection
+     surface is retired). Each cell's material is a `decorator: shader(spike-*)` key the
+     vacuus.M5MatSpike toggle registers through a real UVaCuusStyleSet before this
+     document loads, so the keys resolve on their first compile. Decorators paint the
+     cell's box UNDER its text (RmlUi paints decoration before content) — the recorded
+     z-order, where the spike injected over everything. The document is deliberately
+     STATIC: after the settle, every publish it makes is the forced-republish remedy
+     keeping the Time-driven #anim cell moving, and with vacuus.MaterialForcedRepublish
+     0 that cell FREEZES between publishes — the spec §2(f) fact, still observable. -->
 <body>
-	<div style="left: 60px; top: 40px;" class="head">VaCuus M5 // MATERIAL SPIKE</div>
+	<div style="left: 60px; top: 40px;" class="head">VaCuus M5 // MATERIAL DECORATORS</div>
 
-	<div style="left: 60px; top: 96px;">TRANSLUCENT over text</div>
-	<div style="left: 60px; top: 130px;" class="cell">
+	<div style="left: 60px; top: 96px;">TRANSLUCENT under text</div>
+	<div style="left: 60px; top: 130px;" class="cell" id="translucent">
 		The quick brown fox jumps over the lazy dog 0123456789.
 		The quick brown fox jumps over the lazy dog 0123456789.
 		The quick brown fox jumps over the lazy dog 0123456789.
 	</div>
 
-	<div style="left: 520px; top: 96px;">ADDITIVE over text</div>
-	<div style="left: 520px; top: 130px;" class="cell">
+	<div style="left: 520px; top: 96px;">ADDITIVE under text</div>
+	<div style="left: 520px; top: 130px;" class="cell" id="additive">
 		The quick brown fox jumps over the lazy dog 0123456789.
 		The quick brown fox jumps over the lazy dog 0123456789.
 		The quick brown fox jumps over the lazy dog 0123456789.
 	</div>
 
-	<div style="left: 980px; top: 96px;">OPAQUE over text</div>
-	<div style="left: 980px; top: 130px;" class="cell">
+	<div style="left: 980px; top: 96px;">OPAQUE (replaces the cell box)</div>
+	<div style="left: 980px; top: 130px;" class="cell" id="opaque">
 		The quick brown fox jumps over the lazy dog 0123456789.
 		The quick brown fox jumps over the lazy dog 0123456789.
 		The quick brown fox jumps over the lazy dog 0123456789.
 	</div>
 
-	<div style="left: 1440px; top: 96px;">MID scalar+texture, per frame</div>
-	<div style="left: 1440px; top: 130px;" class="cell">
+	<div style="left: 1440px; top: 96px;">MID base (params are game-side, UE-native)</div>
+	<div style="left: 1440px; top: 130px;" class="cell" id="mid">
 		The quick brown fox jumps over the lazy dog 0123456789.
 		The quick brown fox jumps over the lazy dog 0123456789.
 		The quick brown fox jumps over the lazy dog 0123456789.
 	</div>
 
-	<div style="left: 60px; top: 426px;">TIME-ANIMATED (the freeze subject)</div>
-	<div style="left: 60px; top: 460px; width: 740px;" class="cell">
+	<div style="left: 60px; top: 426px;">TIME-ANIMATED (the freeze subject; the remedy keeps it moving)</div>
+	<div style="left: 60px; top: 460px; width: 740px;" class="cell" id="anim">
 		The quick brown fox jumps over the lazy dog 0123456789.
 		The quick brown fox jumps over the lazy dog 0123456789.
 		The quick brown fox jumps over the lazy dog 0123456789.
