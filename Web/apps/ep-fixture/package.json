@@ -1,0 +1,12 @@
+{
+	"name": "ep-fixture",
+	"private": true,
+	"vacuus": {
+		"entry": "src/fixture.tsx",
+		"outDir": "Tests",
+		"bundleName": "fixture-vacuus-preact.js"
+	},
+	"dependencies": {
+		"@vacuus/preact": "*"
+	}
+}

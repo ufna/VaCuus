@@ -1,0 +1,11 @@
+/* Known-bad fixture for the box-shadow-animation rule: box-shadow in a
+   transition AND keyed in @keyframes. Web/smoke.mjs asserts this file FIRES. */
+.card {
+	box-shadow: #00000080 2px 2px 6px 0px;
+	transition: box-shadow 0.3s ease-in-out;
+}
+
+@keyframes pulse {
+	from { box-shadow: #00000000 0px 0px 0px 0px; }
+	to { box-shadow: #00000080 2px 2px 6px 0px; }
+}

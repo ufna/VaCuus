@@ -291,6 +291,15 @@ private:
 	/** vacuus.stats(): {updateMs, renderMs, fps} from the always-on last-sample store (FVaCuusPerfLog). */
 	static JSValue StatsThunk(JSContext* Ctx, JSValueConst This, int Argc, JSValueConst* Argv);
 
+	/**
+	 * vacuus.translate(key, params?) (M5 Task 8, spec §2(l)): synchronous lookup in
+	 * the installed FVaCuusTranslationRegistry snapshot — identity on any miss —
+	 * then `{name}` placeholder substitution from params' own enumerable string
+	 * properties (bool/number/string values, the emit conversion contract). The
+	 * no-table case logs ONE latched Verbose per context (bTranslateNoTableWarned).
+	 */
+	static JSValue TranslateThunk(JSContext* Ctx, JSValueConst This, int Argc, JSValueConst* Argv);
+
 	//~ ---- ES modules (M4 Task 7; implementation in VaCuusJsModules.cpp) ----
 
 	/**
@@ -463,6 +472,16 @@ private:
 
 	/** Non-empty only inside PumpCallbacks' rAF phase (the swapped-out running list). */
 	TArray<FRafEntry> RafRunning;
+
+	/**
+	 * The `vacuus.translate` no-table refusal latch (spec §2(l)'s "one latched
+	 * Verbose line"). PER CONTEXT, not process-wide, deliberately: it dies with the
+	 * context (so every fresh session/test starts armed), and the line it gates
+	 * names this view. Never re-arms once a table exists — TranslateThunk checks
+	 * the snapshot first, so the latch is only ever consulted before the first
+	 * table of the process arrives.
+	 */
+	bool bTranslateNoTableWarned = false;
 
 	//~ Test-only knobs, forwarded from FVaCuusJsScriptHost::FParams (see there).
 	const bool bTestRelaxTimerCutoff;

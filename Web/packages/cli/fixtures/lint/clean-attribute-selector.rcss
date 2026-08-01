@@ -1,0 +1,13 @@
+/* Clean fixture for the bare-attribute-selector rule: every attribute selector
+   is anchored. Web/smoke.mjs asserts this file stays SILENT. */
+button[disabled] {
+	color: #888888;
+}
+
+.panel div[data-state] {
+	opacity: 0.5;
+}
+
+.plain, #title {
+	color: #ffffff;
+}

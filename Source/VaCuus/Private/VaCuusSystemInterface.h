@@ -20,6 +20,28 @@ public:
 	virtual bool LogMessage(Rml::Log::Type Type, const Rml::String& Message) override;
 
 	/**
+	 * The RML-text half of localization (M5 Task 8, spec §2(l)): whole-string
+	 * lookup through the same immutable snapshot `vacuus.translate` reads
+	 * (FVaCuusTranslationRegistry). RmlUi calls this at TEXT INSTANCING — every
+	 * parsed text chunk (Factory.cpp:336), data-bound text re-evaluation
+	 * (DataViewDefault.cpp:369), textarea/title (XMLNodeHandlerTextArea.cpp:43,
+	 * XMLNodeHandlerHead.cpp:123) — never again for text already in the tree, so a
+	 * new table reaches loaded documents only through a reload (the header of
+	 * UVaCuusSubsystem::SetTranslationTable carries the workflow).
+	 *
+	 * KEYS ARE THE WHOLE STRING, verbatim: RmlUi hands the entire text run here,
+	 * so the table's keys are the authored strings ("HUD_TITLE" if that is what
+	 * the RML says). A miss is identity, silent by design — this runs for every
+	 * text chunk of every document, translation intended or not, so any per-miss
+	 * log would be noise the moment one table exists; the named no-table refusal
+	 * lives on the JS hook, whose caller asked for localization by name.
+	 *
+	 * Called from inside RmlUi on the UI thread by construction (the
+	 * ActivateKeyboard argument above), which is the snapshot's owner thread.
+	 */
+	virtual int TranslateString(Rml::String& Translated, const Rml::String& Input) override;
+
+	/**
 	 * Cursor shape is PUSH-based, and this is the only place it can be caught.
 	 * RmlUi calls this from inside Context::Update's hover-chain pass and ONLY when
 	 * the name changed (Context.cpp:1315-1327); there is no "what cursor do you want"

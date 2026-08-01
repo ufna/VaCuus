@@ -7,6 +7,7 @@
 #include "VaCuusDocumentHost.h"
 #include "VaCuusStats.h"
 #include "VaCuusStyleSet.h"
+#include "VaCuusTranslation.h"
 #include "VaCuusUIThread.h"
 #include "VaCuusView.h"
 #include "VaCuusViewStatus.h"
@@ -216,6 +217,12 @@ void UVaCuusSubsystem::UnregisterStyleSet(UVaCuusStyleSet* StyleSet)
 {
 	check(IsInGameThread());
 	FVaCuusStyleRegistry::UnregisterStyleSet(StyleSet);
+}
+
+void UVaCuusSubsystem::SetTranslationTable(const TMap<FString, FString>& Table)
+{
+	check(IsInGameThread());
+	FVaCuusTranslationRegistry::SetTable(Table);
 }
 
 int32 UVaCuusSubsystem::ClearAssetCachesAndReloadAllViews(const TCHAR* Reason)

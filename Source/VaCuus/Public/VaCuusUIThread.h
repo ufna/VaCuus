@@ -221,6 +221,14 @@ public:
 	void EnqueueSetStyleSnapshot(const TSharedPtr<const struct FVaCuusStyleSnapshot>& Snapshot);
 
 	/**
+	 * Installs the localization snapshot on the UI thread (M5 Task 8, spec §2(l)) —
+	 * how a FVaCuusTranslationRegistry table reaches `vacuus.translate` and the
+	 * system interface's TranslateString. EnqueueSetStyleSnapshot's contract
+	 * verbatim: THREAD-level, FIFO before any load queued behind it.
+	 */
+	void EnqueueSetTranslationSnapshot(const TSharedPtr<const struct FVaCuusTranslationSnapshot>& Snapshot);
+
+	/**
 	 * Queues one input event for a view. Stamps ViewId, so the caller only fills in
 	 * what the event is (see FVaCuusInputEvent's factories).
 	 *

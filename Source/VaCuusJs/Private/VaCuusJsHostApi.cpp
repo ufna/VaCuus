@@ -3,10 +3,12 @@
 /*
  * The `vacuus.*` host API (M4 Task 9, spec 3.11): emit, model().get(), the view
  * getter and stats() -- the Tier 1 surface the spec's §3.11 lists, installed onto
- * the `vacuus` object at context birth by InstallGlobals. Reads come from the UI
- * shadow through VaCuusGameBridge (core owns the registry and the layouts);
- * writes do not exist here at all -- a two-way control's write is the router's
- * (spec 3.10), and vacuus.model deliberately mints no `set`.
+ * the `vacuus` object at context birth by InstallGlobals -- plus translate()
+ * (M5 Task 8, spec §2(l)), the localization hook M4 deferred. Reads come from
+ * the UI shadow through VaCuusGameBridge (core owns the registry and the
+ * layouts) or, for translate, from the installed FVaCuusTranslationRegistry
+ * snapshot; writes do not exist here at all -- a two-way control's write is the
+ * router's (spec 3.10), and vacuus.model deliberately mints no `set`.
  */
 
 #include "VaCuusGameBridge.h"
@@ -14,6 +16,7 @@
 #include "VaCuusJsValue.h"
 #include "VaCuusJsViewContext.h"
 #include "VaCuusStats.h"
+#include "VaCuusTranslation.h"
 
 #include <RmlUi/Core/Context.h>
 #include <RmlUi/Core/ElementDocument.h>
@@ -95,6 +98,8 @@ void FVaCuusJsViewContext::InstallHostApi(JSValue Vacuus)
 	JS_SetPropertyStr(Ctx, Vacuus, "emit", JS_NewCFunction(Ctx, &FVaCuusJsViewContext::EmitThunk, "emit", 2));
 	JS_SetPropertyStr(Ctx, Vacuus, "model", JS_NewCFunction(Ctx, &FVaCuusJsViewContext::ModelThunk, "model", 1));
 	JS_SetPropertyStr(Ctx, Vacuus, "stats", JS_NewCFunction(Ctx, &FVaCuusJsViewContext::StatsThunk, "stats", 0));
+	JS_SetPropertyStr(
+		Ctx, Vacuus, "translate", JS_NewCFunction(Ctx, &FVaCuusJsViewContext::TranslateThunk, "translate", 2));
 
 	// `view` is a GETTER, not a snapshot: id never changes, but width/height track the
 	// context through resizes, and a property stamped at install time would lie after
@@ -234,6 +239,114 @@ JSValue FVaCuusJsViewContext::ModelGetThunk(
 		return JS_NULL;
 	}
 	return FromHostValue(Ctx, Value);
+}
+
+JSValue FVaCuusJsViewContext::TranslateThunk(JSContext* Ctx, JSValueConst /*This*/, int Argc, JSValueConst* Argv)
+{
+	using namespace VaCuusJsHostApiInternal;
+
+	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	if (Self == nullptr)
+	{
+		return JS_NULL;	   // dead context: the null-shaped no-op, the house rule
+	}
+
+	if (Argc < 1 || !JS_IsString(Argv[0]))
+	{
+		return JS_ThrowTypeError(Ctx, "vacuus.translate(key, params?) needs a string key");
+	}
+
+	FString Key;
+	if (!ToFString(Ctx, Argv[0], Key))
+	{
+		return JS_EXCEPTION;
+	}
+
+	// THE SNAPSHOT LOOKUP (spec §2(l)): the game's "handler" is the table it pushed
+	// (UVaCuusSubsystem::SetTranslationTable -> the drain's InstallSnapshot); this
+	// call never leaves the UI thread and never blocks. Identity on a key miss with
+	// a table present is quiet — the table is the contract. The one NAMED refusal
+	// is no table at all: identity plus one latched Verbose per context, because a
+	// script asking for localization in a game that never pushed a table is a
+	// wiring gap that is otherwise perfectly silent (the string still shows).
+	FString Resolved;
+	if (!FVaCuusTranslationRegistry::TranslateKey(Key, Resolved))
+	{
+		Resolved = Key;
+		if (!FVaCuusTranslationRegistry::GetInstalledSnapshot().IsValid() && !Self->bTranslateNoTableWarned)
+		{
+			Self->bTranslateNoTableWarned = true;
+			UE_LOG(LogVaCuusJS, Verbose,
+				TEXT("vacuus.translate('%s') on view %u: no translation table has been published ")
+				TEXT("(UVaCuusSubsystem::SetTranslationTable); keys pass through as identity. Reported once per context"),
+				*Key, Self->ViewId);
+		}
+	}
+
+	// PARAMS SUBSTITUTION, documented format: every own enumerable string property
+	// {name: value} of params replaces the literal token `{name}` in the resolved
+	// string; values cross by the emit contract (bool/number/string; the rest are
+	// skipped, not stringified). SINGLE braces on purpose: RmlUi's data-binding
+	// scanner arms on `{{` only (XMLParseTools.cpp:152-155, driven per character
+	// from Factory.cpp:352), so a translated string carrying an unsubstituted
+	// `{name}` renders literally instead of becoming an expression. Substitution
+	// runs on the identity string too — a params-bearing key works before any
+	// table exists.
+	if (Argc >= 2 && JS_IsObject(Argv[1]))
+	{
+		JSPropertyEnum* Properties = nullptr;
+		uint32_t NumProperties = 0;
+		if (JS_GetOwnPropertyNames(Ctx, &Properties, &NumProperties, Argv[1], JS_GPN_STRING_MASK | JS_GPN_ENUM_ONLY) < 0)
+		{
+			return JS_EXCEPTION;
+		}
+		for (uint32_t Index = 0; Index < NumProperties; ++Index)
+		{
+			JSValue Value = JS_GetProperty(Ctx, Argv[1], Properties[Index].atom);
+			if (JS_IsException(Value))
+			{
+				JS_FreePropertyEnum(Ctx, Properties, NumProperties);
+				return JS_EXCEPTION;
+			}
+
+			FVaCuusJsValue Converted;
+			if (ToHostValue(Ctx, Value, Converted))
+			{
+				if (const char* Name = JS_AtomToCString(Ctx, Properties[Index].atom))
+				{
+					FString Text;
+					switch (Converted.Kind)
+					{
+						case EVaCuusJsValueKind::Bool:
+							Text = Converted.bBool ? TEXT("true") : TEXT("false");
+							break;
+						case EVaCuusJsValueKind::Number:
+							// Integral numbers print without a decimal tail ("5", not
+							// "5.000000") — the value a translator's "{count} kills"
+							// expects; everything else takes %g's compact form.
+							Text = FMath::IsFinite(Converted.Number) &&
+										   Converted.Number == FMath::FloorToDouble(Converted.Number) &&
+										   FMath::Abs(Converted.Number) < 9.0e15
+									   ? FString::Printf(TEXT("%lld"), static_cast<int64>(Converted.Number))
+									   : FString::Printf(TEXT("%g"), Converted.Number);
+							break;
+						case EVaCuusJsValueKind::String:
+							Text = Converted.String;
+							break;
+						case EVaCuusJsValueKind::Null:
+							break;
+					}
+					Resolved.ReplaceInline(
+						*FString::Printf(TEXT("{%s}"), UTF8_TO_TCHAR(Name)), *Text, ESearchCase::CaseSensitive);
+					JS_FreeCString(Ctx, Name);
+				}
+			}
+			JS_FreeValue(Ctx, Value);
+		}
+		JS_FreePropertyEnum(Ctx, Properties, NumProperties);
+	}
+
+	return JS_NewString(Ctx, TCHAR_TO_UTF8(*Resolved));
 }
 
 JSValue FVaCuusJsViewContext::ViewGetterThunk(JSContext* Ctx, JSValueConst /*This*/)

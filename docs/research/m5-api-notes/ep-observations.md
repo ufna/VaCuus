@@ -195,10 +195,78 @@ after reversal: row4,row3,row2,row1
   minimal moves and the order is correct. This is the keyed test's
   seen-to-fail evidence; `VaCuus.Js.Preact.DomContract` pins the green half permanently.
 
-## E-P6 / E-P7
+## The Task 8 decision: `@vacuus/preact` is an OPTIONS ADAPTER, not a fork
 
-Not run in Task 1 — they gate fork/CLI behavior (desync observability, reload re-mount) and
-run in Task 8 against `@vacuus/preact` per the plan (8.2).
+The spec's §3.1 wording was "Fork: event-name case + pinned options"; what shipped is
+stock `preact@10.29.7` (npm-fetched, never committed) plus an adapter over preact's
+public `options` hooks (`Web/packages/preact-vacuus/src/index.js`, the header carries
+each patch's mechanism with cites). Every needed patch proved expressible there — no
+dist source was touched:
+
+1. **event case (E-P2/G9)**: `options.vnode` lowercases `on*` prop KEYS on DOM vnodes,
+   so preact's own `slice(2)` (src/diff/props.js:84-87) yields the lowercase type RmlUi
+   fires; the Capture-suffix regex is case-insensitive (props.js:81), so capture
+   still parses.
+2. **className→class (E-P2, invalidation item #3)**: `options.vnode` renames on DOM
+   vnodes; component vnodes keep their props verbatim. RmlUi has no SVG namespace, and
+   preact's SVG-branch rename never sees an already-renamed prop, so the universal
+   rename cannot double-apply.
+3. **scheduling pinned**: `options.debounceRendering = Promise.resolve().then` (the M4
+   job-drain contract) and `options.requestAnimationFrame = facade rAF` (effects flush
+   at next pump top, no setTimeout(35) race).
+4. plus an `innerHTML` accessor aliased onto `innerRML` on the element prototype, so
+   `dangerouslySetInnerHTML` reaches RmlUi instead of dying as an inert expando — with
+   the brace hazard documented at the alias (innerRML IS an RML re-parse).
+
+Both adapter fixes are pinned end to end by `VaCuus.Js.Preact.AdapterContract` against
+the committed `Content/DevUI/Tests/fixture-vacuus-preact.js` (built from
+`Web/apps/ep-fixture` through the CLI): a dispatched lowercase `click` reaches the TSX
+`onClick` and commits in the same frame's job drain (`n:0` → `n:1`), and
+`className="via-class-name"` reads back `getAttribute('class') = "via-class-name"`,
+`getAttribute('className') = null`, `classList.contains = true` — the exact inversions
+of E-P2's stock observations above.
+
+## E-P6 — desync observability (run 2026-08-01, Task 8, against `@vacuus/preact`)
+
+`VaCuus.Js.Preact.DesyncObservability`: mount the fixture, then C++
+`SetInnerRML("")` on the mount (killing the preact-owned subtree — every wrapper in it
+goes dead), then `bump()` (a text-path setState) and `pushRow('r2')` (a keyed-list
+append). Observed, pinned by the test's own assertions:
+
+- `mount.innerRML === ''` after the render committed — **nothing re-appears**. The
+  text write lands as `.data =` on a dead wrapper (no-op), the new row's
+  `insertBefore` refuses on its dead parent (null), and the fresh nodes preact
+  created leak detached until GC.
+- `getElementById('probe-root')` and `('probe-btn')` answer **null** — the vdom's
+  `_dom` pointers all reference dead wrappers preact happily keeps diffing against.
+- **JS error count unchanged: zero.** No log line anywhere. The G15 never-throw
+  contract makes the divergence perfectly silent — the app's state machine keeps
+  advancing invisibly while the screen shows nothing.
+
+Verdict for G15's priced question: the refused-op counter + overlay line is the ONLY
+possible observable for this class and remains unbuilt (not in Task 8's scope); this
+test is the recorded evidence for pricing it into a later milestone. Until then the
+rule is documentation: C++ tree surgery under a preact mount is a contract violation
+nothing will diagnose.
+
+## E-P7 — reload re-mount (run 2026-08-01, Task 8, against `@vacuus/preact`)
+
+`VaCuus.Js.Preact.ReloadRemount`, through the production seam order
+(FJsDocProbeHost = AdoptDocument/CloseDocument line for line), the bundle arriving via
+the REAL captured `<script src>` path resolved through the DevUI roots:
+
+- First load: `RUNS === 1`, button `n:0`, `GetNumListenerRefs() > 0` (the onClick
+  registration holds refs into the context's heap).
+- Interact (`click` → `n:1`), then reload the SAME document: **`RUNS === 1` again and
+  `n:0` again** — the whole JSContext died and the module re-ran from top level
+  against the fresh document; hook state and the interaction are gone by design
+  (the §5 argument, now observed).
+- Replace with a script-less document: **`GetNumListenerRefs() === 0`** — every
+  listener ref freed by the context destructor's neuter walk, nothing re-registered,
+  zero JS errors across the whole sequence. No wrapper leaks across context death.
+
+Consequence confirmed for the CLI template: `render(...)` at module scope IS the
+re-mount path — anything else does not survive live reload.
 
 ## Invalidation summary (spec §2(j) errata needed)
 

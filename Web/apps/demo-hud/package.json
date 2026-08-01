@@ -1,0 +1,12 @@
+{
+	"name": "demo-hud",
+	"private": true,
+	"vacuus": {
+		"entry": "src/hud.tsx",
+		"outDir": "M5Hud",
+		"bundleName": "hud_bundle.js"
+	},
+	"dependencies": {
+		"@vacuus/preact": "*"
+	}
+}

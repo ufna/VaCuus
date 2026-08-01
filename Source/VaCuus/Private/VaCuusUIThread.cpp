@@ -11,6 +11,7 @@
 #include "VaCuusStats.h"
 #include "VaCuusStyleSet.h"
 #include "VaCuusTextInput.h"
+#include "VaCuusTranslation.h"
 #include "VaCuusUIQueues.h"
 #include "VaCuusWriteRouter.h"
 
@@ -692,6 +693,23 @@ void FVaCuusUIThread::EnqueueSetStyleSnapshot(const TSharedPtr<const FVaCuusStyl
 	Enqueue(MoveTemp(Command));
 }
 
+void FVaCuusUIThread::EnqueueSetTranslationSnapshot(const TSharedPtr<const FVaCuusTranslationSnapshot>& Snapshot)
+{
+	if (!Snapshot.IsValid())
+	{
+		// Same refusal as the style twin: the registry never publishes a null, and the
+		// drain's InstallSnapshot checkf should stay about versions, not producer slips.
+		UE_LOG(LogVaCuus, Error, TEXT("EnqueueSetTranslationSnapshot(null) dropped"));
+		return;
+	}
+
+	// No ViewId: the translation table is process-wide, applied before per-view routing.
+	FVaCuusUICommand Command;
+	Command.Kind = EVaCuusCommandKind::SetTranslationSnapshot;
+	Command.TranslationSnapshot = Snapshot;
+	Enqueue(MoveTemp(Command));
+}
+
 void FVaCuusUIThread::EnqueueInput(uint32 ViewId, FVaCuusInputEvent Event)
 {
 	// Same rule as commands: once a stop is requested the queues are closed, so
@@ -1215,6 +1233,17 @@ void FVaCuusUIThread::DrainCommands()
 			// view is live to carry it. Installed before any load queued behind it drains
 			// (FIFO), so that document's CompileShader sees it.
 			FVaCuusStyleRegistry::InstallSnapshot(Command->StyleSnapshot);
+			continue;
+		}
+
+		if (Command->Kind == EVaCuusCommandKind::SetTranslationSnapshot)
+		{
+			// THREAD-level like SetStyleSnapshot, and for the same reason: the table is
+			// process-wide (`vacuus.translate` and TranslateString read it with no view
+			// identity), and one that rode on a per-view command would be lost exactly
+			// when no view is live to carry it. Installed before any load queued behind
+			// it drains (FIFO), so that document's text runs through the new table.
+			FVaCuusTranslationRegistry::InstallSnapshot(Command->TranslationSnapshot);
 			continue;
 		}
 

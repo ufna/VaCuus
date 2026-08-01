@@ -6,6 +6,7 @@
 #include "VaCuusDefines.h"
 #include "VaCuusEngine.h"
 #include "VaCuusStyleSet.h"
+#include "VaCuusTranslation.h"
 #include "VaCuusUIThread.h"
 
 #include "HAL/PlatformProcess.h"
@@ -102,8 +103,10 @@ FVaCuusUIThread* FVaCuusModule::GetOrStartUIThread()
 		// The register-before-boot half of the style registry (M5 Task 5b): a style set
 		// registered before the first view exists must reach the first document's
 		// CompileShader. First command in, ahead of any AddView/Load the caller enqueues
-		// after this returns — the queue is FIFO from this one producer.
+		// after this returns — the queue is FIFO from this one producer. The translation
+		// table (M5 Task 8) rides the identical argument one line down.
 		FVaCuusStyleRegistry::PublishToUIThread(*UIThread);
+		FVaCuusTranslationRegistry::PublishToUIThread(*UIThread);
 		return UIThread.Get();
 	}
 
@@ -115,6 +118,7 @@ FVaCuusUIThread* FVaCuusModule::GetOrStartUIThread()
 	{
 		UIThread = MoveTemp(NewThread);
 		FVaCuusStyleRegistry::PublishToUIThread(*UIThread);
+		FVaCuusTranslationRegistry::PublishToUIThread(*UIThread);
 		return UIThread.Get();
 	}
 

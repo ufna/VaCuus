@@ -1,0 +1,12 @@
+{
+  "name": "vacuus-web-workspace",
+  "private": true,
+  "description": "VaCuus web-DX workspace: @vacuus/preact (options-adapted preact over the VaCuus DOM facade) and @vacuus/cli. Source-only; `npm install` here fetches the exact-pinned dependencies (preact 10.29.7, esbuild 0.28.1 - both dependency-free, so the pins alone make the install reproducible and no lockfile is committed).",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "smoke": "node smoke.mjs"
+  }
+}

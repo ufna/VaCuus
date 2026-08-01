@@ -167,6 +167,26 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "VaCuus")
 	void UnregisterStyleSet(UVaCuusStyleSet* StyleSet);
 
+	/**
+	 * Publishes a localization table (M5 Task 8, spec §2(l)): its entries answer
+	 * `vacuus.translate(key)` in every view's JS and the RML-text TranslateString
+	 * path (FVaCuusSystemInterface). Whole-table replacement with a monotonic
+	 * version — the "handler" a game registers for localization IS this push, not a
+	 * per-call callback, because translate() answers synchronously on the UI thread
+	 * and game code must not run there (FVaCuusTranslationRegistry has the whole
+	 * argument). Game thread.
+	 *
+	 * A THIN DOOR TO PROCESS-WIDE STATE like RegisterStyleSet: one RmlUi, one
+	 * SystemInterface, so the table serves every view of every game instance.
+	 *
+	 * Push BEFORE loading documents whose RML text should translate — RmlUi runs
+	 * TranslateString once, at text instancing; `vacuus.translate` calls always see
+	 * the newest table. After a language change: push the new table, then reload
+	 * (ClearAssetCachesAndReloadAllViews) for the RML half.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "VaCuus")
+	void SetTranslationTable(const TMap<FString, FString>& Table);
+
 	/** The process-wide UI thread, or null if none is running. Does not start one. */
 	FVaCuusUIThread* GetUIThread() const;
 
