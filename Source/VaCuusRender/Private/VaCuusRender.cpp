@@ -4,6 +4,7 @@
 #include "VaCuusContentPaths.h"
 #include "VaCuusDefines.h"
 #include "VaCuusDemoModel.h"
+#include "VaCuusMaterialSpike.h"
 #include "VaCuusRecordingRenderInterface.h"
 #include "VaCuusRmlDocumentHost.h"
 #include "VaCuusSlateElement.h"
@@ -42,6 +43,7 @@ static const TCHAR* GM4DemoVfsPath = TEXT("m4_demo.rml");
 static const TCHAR* GM5GlassVfsPath = TEXT("m5_glass.rml");
 static const TCHAR* GM5DecoVfsPath = TEXT("m5_deco.rml");
 static const TCHAR* GM5DecoPlainVfsPath = TEXT("m5_deco_plain.rml");
+static const TCHAR* GM5MatSpikeVfsPath = TEXT("m5_matspike.rml");
 
 /**
  * The name m3_demo.rml's `data-model` attribute writes, and the name `vacuus.DumpModel hud`
@@ -1823,6 +1825,13 @@ static FAutoConsoleCommand GM5DecoCommand(
 	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
 		{ Toggle(Args.Num() > 0 && Args[0] == TEXT("plain") ? GM5DecoPlainVfsPath : GM5DecoVfsPath); }));
 
+static FAutoConsoleCommand GM5MatSpikeCommand(
+	TEXT("vacuus.M5MatSpike"),
+	TEXT("Toggle the M5 material-SPIKE canvas (DevUI/m5_matspike.rml): four labeled text columns at the rects the ")
+	TEXT("vacuus.MatSpike.Add/.MID defaults target — the blend-matrix and freeze-remedy screenshots are taken over ")
+	TEXT("this document. Needs vacuus.MaterialDecorators 1. Shares every vacuus.M1HUD.* sub-command."),
+	FConsoleCommandDelegate::CreateLambda([] { Toggle(GM5MatSpikeVfsPath); }));
+
 static FAutoConsoleCommand GM5GlassCommand(
 	TEXT("vacuus.M5Glass"),
 	TEXT("Toggle the M5 glass demo (DevUI/m5_glass.rml): a static document with a rounded and a square ")
@@ -1942,6 +1951,10 @@ public:
 		// subsystem deinitializes before modules unload), and the UI thread was
 		// stopped by VaCuus::ShutdownModule() ahead of this one.
 		VaCuusM1HUD::TearDown();
+
+		// The material spike's render-side mirror holds RHI buffer refs in static
+		// storage; drop them while the render thread still exists.
+		VaCuusMaterialSpike::ReleaseRenderResources();
 	}
 	//~ End IModuleInterface
 };

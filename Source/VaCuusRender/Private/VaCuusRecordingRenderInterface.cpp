@@ -3,7 +3,8 @@
 #include "VaCuusRecordingRenderInterface.h"
 
 #include "VaCuusDefines.h"
-#include "VaCuusUIShaders.h" // VaCuusBuiltinShaders: the shader(<key>) registry CompileShader validates against
+#include "VaCuusMaterialSpike.h" // WantsForcedRepublish: the M5 material spike's freeze remedy at the idle gate
+#include "VaCuusUIShaders.h"	 // VaCuusBuiltinShaders: the shader(<key>) registry CompileShader validates against
 
 #include "HAL/IConsoleManager.h"
 #include "HAL/PlatformTLS.h"
@@ -1288,7 +1289,18 @@ TUniquePtr<FVaCuusCommandBuffer> FVaCuusRecordingRenderInterface::EndFrameAndPub
 	// frame of a view always publishes and never compares against an unset hash.
 	// CVarVaCuusIdleGate is the kill switch; see its declaration.
 	const bool bGateEnabled = CVarVaCuusIdleGate.GetValueOnAnyThread() != 0;
-	if (bGateEnabled && Generation > 0 && ContentHash == LastPublishedContentHash && !bHasResourceTraffic)
+
+	// THE M5 MATERIAL SPIKE'S FREEZE REMEDY (spec §2(f)): a live material decorator is
+	// GPU-evaluated state the hash and the traffic predicate cannot see — the composite
+	// only samples the RT (VaCuusSlateElement.cpp:141-204) and the RT is written only in
+	// this publish-gated replay branch, so a time-animated or MID-driven material would
+	// freeze on whatever publish last ran. While a spike material is live (and the
+	// remedy cvar is on), every recorded frame publishes; the cost of that is one of the
+	// numbers the gate decision must record. Production shape: per-view, driven by the
+	// recorder's own compiled-shader table, not a process-global — spike scope only.
+	const bool bMaterialForcedRepublish = VaCuusMaterialSpike::WantsForcedRepublish();
+	if (bGateEnabled && Generation > 0 && ContentHash == LastPublishedContentHash && !bHasResourceTraffic &&
+		!bMaterialForcedRepublish)
 	{
 		// A skipped frame consumes NO generation: Generation is documented as a
 		// strictly increasing PUBLISH counter and ShouldConsume treats a repeat as

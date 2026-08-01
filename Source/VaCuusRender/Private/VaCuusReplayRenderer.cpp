@@ -3,6 +3,7 @@
 #include "VaCuusReplayRenderer.h"
 
 #include "VaCuusDefines.h"
+#include "VaCuusMaterialSpike.h"
 #include "VaCuusStats.h"
 #include "VaCuusUIShaders.h"
 
@@ -549,6 +550,16 @@ void FVaCuusReplayRenderer::ReplayCommands(FRHICommandList& RHICmdList, const FV
 				}
 			}
 		}
+
+		// THE M5 MATERIAL SPIKE (spec §3.3 stage 2, behind vacuus.MaterialDecorators,
+		// default off): registered MD_UI materials drawn AFTER the recorded commands —
+		// a synthetic DrawShader injected without the recorder, which Task 4 already
+		// proved out format-wise (the desc/draw shapes carry everything a material
+		// needs; no format break either way the gate decides). Runs inside this same
+		// render pass so the material composites onto the frame's premultiplied
+		// content; re-evaluation across publishes is the forced-republish remedy's
+		// business (VaCuusMaterialSpike.h).
+		NumDrawCalls += VaCuusMaterialSpike::DrawInjected_RenderThread(RHICmdList, RTSize, Projection);
 	}
 	RHICmdList.EndRenderPass();
 

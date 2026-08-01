@@ -1,0 +1,105 @@
+// Copyright 2026 Vladimir Alyamkin. All Rights Reserved.
+
+/**
+ * THE M5 MATERIAL-DECORATOR SPIKE (spec §2(f), §3.3 stage 2): evaluates an arbitrary
+ * MD_UI UMaterial over recorded-style RmlUi geometry inside the replay pass.
+ *
+ * Modeled on the engine's two precedents, and different from each on purpose:
+ *  - TextureGraphMaterialShader.usf:8-10,44-74 is the plugin-declared-FMaterialShader
+ *    recipe this file follows (Material.ush include, MakeInitializedMaterialPixelParameters,
+ *    CalcMaterialParameters*, GetMaterialEmissive/Opacity) — but its C++ permutation is
+ *    editor-only; ours is not (see FVaCuusMaterialVS/PS::ShouldCompilePermutation).
+ *  - SlateElementPixelShader.usf:245-252 is what an MD_UI material MEANS at the shader
+ *    level (Emissive = colour, Opacity = alpha, additive premultiplies-with-zero-alpha) —
+ *    but Slate outputs straight alpha and picks a blend state per material blend mode
+ *    (SlateRHIRenderingPolicy.cpp:1202); we PREMULTIPLY IN THE SHADER instead and map
+ *    every blend mode onto the RT's single One/InvSrcAlpha state (the Task 7 contract,
+ *    VaCuusReplayRenderer.cpp) so a material draw needs no blend-state switch at all.
+ */
+
+// No scene behind this pass, ever — same hard-off as TextureGraphMaterialShader.usf:2-3.
+// Scene-texture UI materials are refused at the registry (material-decorators.md §3).
+#undef SCENE_TEXTURES_DISABLED
+#define SCENE_TEXTURES_DISABLED 1
+
+#include "/Engine/Public/Platform.ush"
+#include "/Engine/Private/Common.ush"
+#include "/Engine/Generated/Material.ush"
+#include "/Engine/Private/GammaCorrectionCommon.ush"
+
+/** Same pixel->clip matrix the recorded draws use (VaCuusReplay::MakePixelToClipMatrix). */
+float4x4 VaCuusProjection;
+
+/**
+ * Vertex layout is GVaCuusVertexDeclaration exactly (position px, RGBA premultiplied
+ * colour, UV). The spike feeds a generated quad with UV 0..1 over the paint rect, which
+ * is also what DecoratorShader.cpp:44-46 normalizes tex_coord to — so the recorded-path
+ * geometry and the injected spike quad mean the same thing to the material.
+ */
+void MainVS(
+	in float2 InPosition : ATTRIBUTE0,
+	in float4 InColor : ATTRIBUTE1,
+	in float2 InUV : ATTRIBUTE2,
+	out float4 OutColor : COLOR0,
+	out float2 OutUV : TEXCOORD0,
+	out float4 OutPosition : SV_POSITION)
+{
+	OutPosition = mul(float4(InPosition, 0.0f, 1.0f), VaCuusProjection);
+	OutColor = InColor;
+	OutUV = InUV;
+}
+
+void MainPS(
+	in float4 InColor : COLOR0,
+	in float2 InUV : TEXCOORD0,
+	in float4 SvPosition : SV_Position,
+	out float4 OutColor : SV_Target0)
+{
+	ResolvedView = ResolveView();
+
+	FMaterialPixelParameters MaterialParameters = MakeInitializedMaterialPixelParameters();
+#if NUM_MATERIAL_TEXCOORDS
+	UNROLL
+	for (int CoordinateIndex = 0; CoordinateIndex < NUM_MATERIAL_TEXCOORDS; CoordinateIndex++)
+	{
+		MaterialParameters.TexCoords[CoordinateIndex] = InUV;
+	}
+#endif
+	MaterialParameters.VertexColor = InColor;
+
+	// The 4-arg CalcMaterialParameters, not the Post variant: our SvPosition IS the view
+	// SvPosition (the synthetic view rect is the whole RT), which is Slate's own situation
+	// and its own call (SlateElementPixelShader.usf:200).
+	FPixelMaterialInputs PixelMaterialInputs;
+	CalcMaterialParameters(MaterialParameters, PixelMaterialInputs, SvPosition, true);
+
+	// Masked materials clip here; a no-op for every other blend mode.
+	GetMaterialCoverageAndClipping(MaterialParameters, PixelMaterialInputs);
+
+	half Opacity = GetMaterialOpacity(PixelMaterialInputs);
+	half3 Emissive = GetMaterialEmissive(PixelMaterialInputs);
+
+	// The RT holds DISPLAY-REFERRED bytes (RmlUi colours pass through unconverted, M1
+	// contract), while material Emissive is linear — encode before blending so a material
+	// colour matches the same colour authored in RCSS. LinearToSrgb is the branchless
+	// engine encode (GammaCorrectionCommon.ush); Slate's own UI-material path applies the
+	// equivalent display-gamma encode via GammaCorrect (SlateElementPixelShader.usf:653).
+	half3 Encoded = LinearToSrgb(Emissive);
+
+	// THE BLEND CONTRACT (spec §2(f)): one premultiplied One/InvSrcAlpha RT state, every
+	// material blend mode mapped in the shader:
+	//  - Additive: colour lands at full strength, alpha 0 => dest survives => pure add
+	//    (Slate's own additive trick, SlateElementPixelShader.usf:249-250).
+	//  - Opaque/Masked: coverage 1 — replaces dest where drawn (masked already clipped).
+	//  - AlphaComposite: the material CONTRACT is premultiplied-already; pass through.
+	//  - Translucent (default): premultiply — the standard over.
+#if MATERIALBLENDING_ADDITIVE
+	OutColor = float4(Encoded * Opacity, 0.0f);
+#elif MATERIALBLENDING_SOLID || MATERIALBLENDING_MASKED
+	OutColor = float4(Encoded, 1.0f);
+#elif MATERIALBLENDING_ALPHACOMPOSITE
+	OutColor = float4(Encoded, Opacity);
+#else
+	OutColor = float4(Encoded * Opacity, Opacity);
+#endif
+}

@@ -1,0 +1,76 @@
+<rml>
+<head>
+	<title>VaCuus M5 Material Spike</title>
+	<style>
+		body
+		{
+			display: block;
+			font-family: LatoLatin;
+			font-size: 20px;
+			width: 100%;
+			height: 100%;
+			color: #E8E8E8;
+		}
+		div { display: block; position: absolute; }
+		.head { font-size: 24px; color: #FFD24A; }
+		.cell
+		{
+			width: 380px;
+			height: 240px;
+			background-color: #10141AC0;
+			padding: 10px;
+			line-height: 30px;
+		}
+	</style>
+</head>
+
+<!-- THE MATERIAL-SPIKE CANVAS. Deliberately STATIC, like m5_deco.rml: after the settle
+     the idle gate withholds everything, so whatever changes on screen after that is the
+     injected material path — the blend matrix draws over these text cells (the material
+     rects are the vacuus.MatSpike.Add rect arguments, matched to the .cell boxes below),
+     and with vacuus.MaterialForcedRepublish 0 a time-animated material FREEZES over the
+     bottom cell, which is exactly the spec §2(f) fact the spike photographs. -->
+<body>
+	<div style="left: 60px; top: 40px;" class="head">VaCuus M5 // MATERIAL SPIKE</div>
+
+	<div style="left: 60px; top: 96px;">TRANSLUCENT over text</div>
+	<div style="left: 60px; top: 130px;" class="cell">
+		The quick brown fox jumps over the lazy dog 0123456789.
+		The quick brown fox jumps over the lazy dog 0123456789.
+		The quick brown fox jumps over the lazy dog 0123456789.
+	</div>
+
+	<div style="left: 520px; top: 96px;">ADDITIVE over text</div>
+	<div style="left: 520px; top: 130px;" class="cell">
+		The quick brown fox jumps over the lazy dog 0123456789.
+		The quick brown fox jumps over the lazy dog 0123456789.
+		The quick brown fox jumps over the lazy dog 0123456789.
+	</div>
+
+	<div style="left: 980px; top: 96px;">OPAQUE over text</div>
+	<div style="left: 980px; top: 130px;" class="cell">
+		The quick brown fox jumps over the lazy dog 0123456789.
+		The quick brown fox jumps over the lazy dog 0123456789.
+		The quick brown fox jumps over the lazy dog 0123456789.
+	</div>
+
+	<div style="left: 1440px; top: 96px;">MID scalar+texture, per frame</div>
+	<div style="left: 1440px; top: 130px;" class="cell">
+		The quick brown fox jumps over the lazy dog 0123456789.
+		The quick brown fox jumps over the lazy dog 0123456789.
+		The quick brown fox jumps over the lazy dog 0123456789.
+	</div>
+
+	<div style="left: 60px; top: 426px;">TIME-ANIMATED (the freeze subject)</div>
+	<div style="left: 60px; top: 460px; width: 740px;" class="cell">
+		The quick brown fox jumps over the lazy dog 0123456789.
+		The quick brown fox jumps over the lazy dog 0123456789.
+		The quick brown fox jumps over the lazy dog 0123456789.
+	</div>
+
+	<div style="left: 60px; top: 760px; width: 740px;" class="cell" id="control">
+		CONTROL CELL - no material is ever drawn here; if this text changes between
+		two screenshots, the diff is not the material path.
+	</div>
+</body>
+</rml>

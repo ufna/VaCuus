@@ -202,6 +202,57 @@ monotonic** (immutability made observable); FALLBACK ⇒ builtin tier only + mar
 plumbing kept. Decision recorded with the blend screenshots, the freeze-remedy cost, and the
 uniform-expression measurement.
 
+> **Stage-2 outcome (2026-08-01, the Task 5 spike): GO.** Every material-decorators.md §6
+> criterion met, the remedy implemented and priced. Mechanism as designed: plugin
+> `FVaCuusMaterialVS/PS : FMaterialShader` against `Shaders/Private/VaCuusMaterial.usf`,
+> `ShouldCompilePermutation = (MaterialDomain == MD_UI)` with **no editor-only flag**; one
+> synthetic view UB per replay pass (the Slate recipe + its noise/scene-scale patches);
+> the Slate proxy walk; one additional PSO per material shader map; draws injected after
+> the replayed commands — **no recorder or buffer-format change**, as Task 4 predicted.
+> Spike surface: `vacuus.MaterialDecorators` (default 0), `vacuus.MaterialForcedRepublish`
+> (the remedy, default 1), `vacuus.MatSpike.Add/.MID/.Clear`, demo `vacuus.M5MatSpike`,
+> test `VaCuus.Render.Decorator.MaterialSpike`. Criteria, measured (1920×1080 Vulkan SM6,
+> headless, screenshots in `docs/research/proofs/m5-t5-material-spike/`):
+>
+> - **Blend matrix over text** — Translucent/Additive/Opaque MD_UI materials over RmlUi
+>   text; every mode mapped IN the PS onto the RT's single premultiplied One/InvSrcAlpha
+>   state (additive = alpha-0 output, Slate's own trick; emissive sRGB-encoded so material
+>   colours match RCSS colours on the display-referred RT): `runA_blend_matrix_beat1.png` —
+>   text legible through translucent/additive, replaced under opaque, no fringes.
+> - **MID params, per game frame** — scalar+texture through an MID picked up in our pass
+>   with no Slate draw anywhere; game-thread cost **avg 3.5 µs, max 47 µs/frame**; region
+>   RMSE 11.5% between beats vs 0.13% control (`runA_mid_beat*.png`).
+> - **The freeze, observed then remedied** — remedy off: a Time-driven material is pixel-
+>   frozen across 5 s (anim-region RMSE **0.18% = the control floor**, `runB_frozen_*`);
+>   remedy on: **17.9%**, animating (`runA_anim_beat*.png`). Confirms §2(f) exactly.
+> - **The remedy, priced** — forced republish while a material is live: published goes
+>   0% → 100% of recorded frames (~237/s in the soak, scales with UI-thread rate);
+>   Record (UI) **0.007 ms/frame, unchanged from the idle baseline**; Replay (RT)
+>   **0.024 ms/frame** including the per-pass view UB and
+>   `UpdateUniformExpressionCacheIfNeeded` over five live materials — ≈1.7 ms/s UI +
+>   5.7 ms/s RT at 237 fps. The un-implemented alternative (composite-time material draw)
+>   would run one glass-shaped pass per engine frame (composite scope measured 0.003 ms)
+>   but is z-order-correct only for stack-end decorators — rejected for v1; the production
+>   task should clamp republish to engine-frame rate, not adopt it.
+> - **Monolithic `-game`, the load-bearing check** — `BuildCookRun` Linux Development:
+>   the five spike materials compiled shader maps for `VULKAN_SM6 … Game` (no
+>   `HasEditorOnlyData`), and the packaged binary loaded them from cooked paks and
+>   rendered the same matrix + animation (staged anim-beat RMSE 18.0%), **zero shader
+>   misses** (`runS_staged_*`). The TextureGraph editor-only caveat does not apply to our
+>   permutation.
+>
+> Findings the production task inherits: (1) while a material's shader map is still
+> async-compiling, the whole proxy chain (default UI material included) can be
+> pair-less for the first frames — observed at frame 2, self-healed; the registry should
+> pre-warm or accept the named-log transient. (2) Runtime-constructed `UMaterial`s cannot
+> compile outside the editor — the spike's `.uasset`s are authored once by an editor
+> python script (Task 5 report) and committed under `Content/Spike/`; cooking them needs
+> the host project's `DirectoriesToAlwaysCook=/VaCuus/Spike` (they are referenced by
+> nothing). (3) Scene-texture/VT refusal remains registry-validation work — the spike
+> hard-disables scene textures in the `.usf` only. The production shape (`UVaCuusStyleSet`,
+> monotonic snapshots, per-view republish flag driven by the recorder's compiled-shader
+> table) is the follow-up task, deliberately not built here.
+
 ### 3.4 Track W — world-space
 
 As v1 (component in VaCuusRender, quad proxy + body setup cloned, `IVaCuusFrameSink` refactor,
