@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "GlobalShader.h"
+#include "PixelFormat.h" // EPixelFormat + IsFloatFormat for VaCuusCompositeWantsLinearOutput
 #include "RenderResource.h"
 #include "ShaderParameterStruct.h"
 
@@ -46,10 +47,29 @@ public:
  * texture. Paired with the engine's FScreenPassVS via AddDrawScreenPass and a
  * premultiplied One/InvSrcAlpha blend state — none of the AddDrawTexturePass
  * variants take a blend state (they copy/overwrite), hence this trivial PS.
+ *
+ * THE PF_FloatRGBA PERMUTATION (M6 Task 5, spec §3.2 — M5's explicit assignment,
+ * arch spec :193-194 "the PF_FloatRGBA editor/PIE composition permutation (gamma
+ * 1.0)"). The M1 contract writes the UI RT's sRGB-encoded premultiplied pixels RAW
+ * into the Slate elements texture — correct exactly because an LDR elements texture
+ * holds display-encoded pixels. A FLOAT elements texture does not: with
+ * r.DefaultBackBufferPixelFormat=3 the backbuffer is PF_FloatRGBA
+ * (RendererSettings.cpp:37-43 via GetViewportPixelFormat, SlateRHIRenderer.cpp:779-781),
+ * the engine pins DisplayGamma to 1.0 (UnrealEngine.cpp:2501-2504 via
+ * IsDefaultBackBufferLinearSDR, RenderCore.cpp:464-473), and Slate's own element
+ * batches skip their LinearToSrgb encode (SlateRHIRenderingPolicy.cpp:1508-1509 —
+ * DisplayGamma 1.0 makes GammaCorrect a no-op, SlateElementPixelShader.usf:87-99).
+ * Every neighbouring pixel in that target is LINEAR; raw sRGB bytes composited into
+ * it read ~2.2-gamma too bright. LinearOutput=1 decodes at composite time:
+ * un-premultiply, sRGBToLinear (the exact inverse of the LinearToSrgb Slate would
+ * have applied, GammaCorrectionCommon.ush:45-60), re-premultiply.
  */
 class FVaCuusCompositePS : public FGlobalShader
 {
 public:
+	class FLinearOutput : SHADER_PERMUTATION_BOOL("VACUUS_LINEAR_OUTPUT");
+	using FPermutationDomain = TShaderPermutationDomain<FLinearOutput>;
+
 	DECLARE_GLOBAL_SHADER(FVaCuusCompositePS);
 	SHADER_USE_PARAMETER_STRUCT(FVaCuusCompositePS, FGlobalShader);
 
@@ -59,6 +79,27 @@ public:
 		RENDER_TARGET_BINDING_SLOTS()
 	END_SHADER_PARAMETER_STRUCT()
 };
+
+/**
+ * Whether compositing into OutputFormat needs FVaCuusCompositePS's LinearOutput
+ * permutation — i.e. whether the target holds LINEAR (gamma 1.0) pixels.
+ *
+ * The predicate is the pixel format, not a mirrored engine setting, because the
+ * format is the one fact the render thread holds that is true in EVERY route to a
+ * float target: linear-SDR (r.DefaultBackBufferPixelFormat=3 — the editor/PIE case
+ * the arch spec names) and scRGB HDR (GRHIHDRDisplayOutputFormat = PF_FloatRGBA,
+ * SlateRHIRenderer.cpp:763-766) are both gamma-1.0 targets by engine contract
+ * (UnrealEngine.cpp:2501-2504; SlateRHIRenderingPolicy.cpp:1508-1509 pins 1.0
+ * whenever the elements texture is an HDR display target). IsFloatFormat is
+ * PixelFormat.h:382-399. The one target this deliberately does NOT correct is
+ * HDR10 (PF_A2B10G10R10 under PQ): not a float format, needs an ST2084 encode this
+ * plugin does not ship — the LDR-only scope M5 confirmed (backdrop-glass.md §6),
+ * where glass is disabled by the same discriminator family.
+ *
+ * Free function, not a lambda at the call site, so the decision has a unit test
+ * (VaCuus.Render.Composite.LinearOutputSelection) that runs under NullRHI.
+ */
+bool VaCuusCompositeWantsLinearOutput(EPixelFormat OutputFormat);
 
 /**
  * One direction of the M5 glass blur (spec §2(c)): separable gaussian at half-res,

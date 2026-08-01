@@ -1,6 +1,7 @@
 // Copyright 2026 Vladimir Alyamkin. All Rights Reserved.
 
 #include "/Engine/Public/Platform.ush"
+#include "/Engine/Private/GammaCorrectionCommon.ush" // sRGBToLinear for the LinearOutput composite permutation
 
 /** Pixel-space -> clip-space, UE row-vector convention (v' = v * M). */
 float4x4 Projection;
@@ -39,10 +40,29 @@ SamplerState CompositeSampler;
  * noperspective float4 UVAndScreenPos, .xy = input-viewport UV). Passes the
  * premultiplied UI RT through untouched; the premultiplied-over blend state
  * on the pipeline does the actual compositing.
+ *
+ * VACUUS_LINEAR_OUTPUT (M6, spec §3.2 — the PF_FloatRGBA editor/PIE permutation):
+ * the UI RT holds sRGB-encoded premultiplied pixels (the M1 contract), and a float
+ * elements texture holds LINEAR pixels (the engine pins DisplayGamma to 1.0 for a
+ * FloatRGBA backbuffer, UnrealEngine.cpp:2501-2504, so Slate's own batches skip
+ * their LinearToSrgb — SlateElementPixelShader.usf:87-99). Decode order matters:
+ * the transfer curve was applied to the STRAIGHT color before premultiplication
+ * (sRGBToLinear(a*c) != a*sRGBToLinear(c) for a<1), so un-premultiply, decode with
+ * sRGBToLinear (the exact inverse of the LinearToSrgb encode Slate would have
+ * applied, GammaCorrectionCommon.ush:45-60), re-premultiply. Alpha is coverage,
+ * not color: it carries no transfer curve either way. The One/InvSrcAlpha blend
+ * stays correct — blending premultiplied linear over linear.
  */
 void MainCompositePS(
 	in noperspective float4 UVAndScreenPos : TEXCOORD0,
 	out float4 OutColor : SV_Target0)
 {
-	OutColor = CompositeTexture.Sample(CompositeSampler, UVAndScreenPos.xy);
+	float4 UI = CompositeTexture.Sample(CompositeSampler, UVAndScreenPos.xy);
+#if VACUUS_LINEAR_OUTPUT
+	// max() guards the a=0 un-premultiply; premultiplied content has rgb <= a
+	// (bilinear interpolation preserves the bound), so Straight stays in [0,1].
+	float3 Straight = UI.rgb / max(UI.a, 1e-6f);
+	UI.rgb = sRGBToLinear(Straight) * UI.a;
+#endif
+	OutColor = UI;
 }

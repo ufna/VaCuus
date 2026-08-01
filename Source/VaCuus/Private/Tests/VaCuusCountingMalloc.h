@@ -77,54 +77,144 @@ public:
 	std::atomic<uint64> NumReallocs{0};
 	std::atomic<uint64> NumFrees{0};
 
+	/**
+	 * THE M6 §2(i) BYTE LEDGER — the RAM row's Dev-only proxy cross-check, with the
+	 * SYMMETRIC QUANTIZED formula the spec fixed after v1's review: add the inner
+	 * allocator's OWN size for the block (`Inner->GetAllocationSize`) after every
+	 * alloc, subtract that same quantity before every free, realloc = subtract-old +
+	 * add-new. Both sides of the ledger then speak quantized bytes, so the sum is
+	 * EXACTLY the window's net change in live quantized bytes. v1's defect, recorded
+	 * because it is the reason for this shape (spec §9.1): adding REQUESTED sizes
+	 * while subtracting QUANTIZED ones accumulates negative drift proportional to
+	 * churn — every alloc/free round-trip leaks the bucket padding out of the sum.
+	 *
+	 * SIGNED, deliberately: a block allocated before the window and freed inside it
+	 * subtracts bytes the window never added — which is CORRECT for a net-live-bytes
+	 * delta (the process really did shrink) and makes negative excursions legal.
+	 *
+	 * SizeLookupFailures is the ledger's own validity bit: one failed
+	 * GetAllocationSize means one block entered or left at unknown size and the
+	 * "exactly" above is void — callers assert it stayed 0.
+	 */
+	std::atomic<int64> LiveQuantizedBytes{0};
+	std::atomic<uint64> SizeLookupFailures{0};
+
 	void ResetCounts()
 	{
 		NumMallocs.store(0, std::memory_order_relaxed);
 		NumReallocs.store(0, std::memory_order_relaxed);
 		NumFrees.store(0, std::memory_order_relaxed);
+		LiveQuantizedBytes.store(0, std::memory_order_relaxed);
+		SizeLookupFailures.store(0, std::memory_order_relaxed);
 	}
 
 	virtual void* Malloc(SIZE_T Size, uint32 Alignment) override
 	{
 		NumMallocs.fetch_add(1, std::memory_order_relaxed);
-		return Inner->Malloc(Size, Alignment);
+		void* Result = Inner->Malloc(Size, Alignment);
+		AddBlockBytes(Result);
+		return Result;
 	}
 
 	virtual void* TryMalloc(SIZE_T Size, uint32 Alignment) override
 	{
 		NumMallocs.fetch_add(1, std::memory_order_relaxed);
-		return Inner->TryMalloc(Size, Alignment);
+		void* Result = Inner->TryMalloc(Size, Alignment);
+		AddBlockBytes(Result);
+		return Result;
 	}
 
 	virtual void* MallocZeroed(SIZE_T Size, uint32 Alignment) override
 	{
 		NumMallocs.fetch_add(1, std::memory_order_relaxed);
-		return Inner->MallocZeroed(Size, Alignment);
+		void* Result = Inner->MallocZeroed(Size, Alignment);
+		AddBlockBytes(Result);
+		return Result;
 	}
 
 	virtual void* TryMallocZeroed(SIZE_T Size, uint32 Alignment) override
 	{
 		NumMallocs.fetch_add(1, std::memory_order_relaxed);
-		return Inner->TryMallocZeroed(Size, Alignment);
+		void* Result = Inner->TryMallocZeroed(Size, Alignment);
+		AddBlockBytes(Result);
+		return Result;
 	}
 
 	virtual void* Realloc(void* Ptr, SIZE_T NewSize, uint32 Alignment) override
 	{
 		NumReallocs.fetch_add(1, std::memory_order_relaxed);
-		return Inner->Realloc(Ptr, NewSize, Alignment);
+		SubBlockBytes(Ptr); // BEFORE the realloc invalidates the old block's size
+		void* Result = Inner->Realloc(Ptr, NewSize, Alignment);
+		if (Result == nullptr && Ptr != nullptr && NewSize > 0)
+		{
+			AddBlockBytes(Ptr); // a failed grow leaves the old block live: restore its bytes
+		}
+		else
+		{
+			AddBlockBytes(Result);
+		}
+		return Result;
 	}
 
 	virtual void* TryRealloc(void* Ptr, SIZE_T NewSize, uint32 Alignment) override
 	{
 		NumReallocs.fetch_add(1, std::memory_order_relaxed);
-		return Inner->TryRealloc(Ptr, NewSize, Alignment);
+		SubBlockBytes(Ptr);
+		void* Result = Inner->TryRealloc(Ptr, NewSize, Alignment);
+		if (Result == nullptr && Ptr != nullptr && NewSize > 0)
+		{
+			AddBlockBytes(Ptr);
+		}
+		else
+		{
+			AddBlockBytes(Result);
+		}
+		return Result;
 	}
 
 	virtual void Free(void* Ptr) override
 	{
 		NumFrees.fetch_add(1, std::memory_order_relaxed);
+		SubBlockBytes(Ptr); // BEFORE the free retires the block
 		Inner->Free(Ptr);
 	}
+
+private:
+	void AddBlockBytes(void* Ptr)
+	{
+		SIZE_T BlockSize = 0;
+		if (Ptr == nullptr)
+		{
+			return;
+		}
+		if (Inner->GetAllocationSize(Ptr, BlockSize))
+		{
+			LiveQuantizedBytes.fetch_add(int64(BlockSize), std::memory_order_relaxed);
+		}
+		else
+		{
+			SizeLookupFailures.fetch_add(1, std::memory_order_relaxed);
+		}
+	}
+
+	void SubBlockBytes(void* Ptr)
+	{
+		SIZE_T BlockSize = 0;
+		if (Ptr == nullptr)
+		{
+			return;
+		}
+		if (Inner->GetAllocationSize(Ptr, BlockSize))
+		{
+			LiveQuantizedBytes.fetch_sub(int64(BlockSize), std::memory_order_relaxed);
+		}
+		else
+		{
+			SizeLookupFailures.fetch_add(1, std::memory_order_relaxed);
+		}
+	}
+
+public:
 
 	//~ Pure forwarding from here down -- the FMallocPoisonProxy checklist PLUS the two
 	//~ cached-memory-size getters that proxy skips (neither GetImmediatelyFreeableCachedMemorySize
@@ -167,6 +257,12 @@ struct FCounts
 	uint64 Mallocs = 0;
 	uint64 Reallocs = 0;
 	uint64 Frees = 0;
+
+	/** Net change in live quantized bytes across the window (the §2(i) ledger; signed by design). */
+	int64 LiveQuantizedBytesDelta = 0;
+
+	/** Nonzero voids the ledger's exactness claim — see the proxy member's comment. */
+	uint64 SizeLookupFailures = 0;
 
 	uint64 Total() const { return Mallocs + Reallocs; }
 };
@@ -227,6 +323,8 @@ inline FCounts End()
 	Counts.Mallocs = Proxy.NumMallocs.load(std::memory_order_relaxed);
 	Counts.Reallocs = Proxy.NumReallocs.load(std::memory_order_relaxed);
 	Counts.Frees = Proxy.NumFrees.load(std::memory_order_relaxed);
+	Counts.LiveQuantizedBytesDelta = Proxy.LiveQuantizedBytes.load(std::memory_order_relaxed);
+	Counts.SizeLookupFailures = Proxy.SizeLookupFailures.load(std::memory_order_relaxed);
 	return Counts;
 }
 }	 // namespace VaCuusAllocWindow

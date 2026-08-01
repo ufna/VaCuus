@@ -13,6 +13,7 @@
 #include "VaCuusUIThread.h"
 #include "VaCuusViewStatus.h"
 
+#include "VaCuusCountingMalloc.h"
 #include "VaCuusRefHudTestTypes.h"
 
 #include "HAL/PlatformProcess.h"
@@ -614,11 +615,32 @@ bool FVaCuusRefHudDirtyScopeTest::RunTest(const FString& Parameters)
 		return false;
 	}
 
+	// The still-frame Update baseline for the ms half below: median of the last 10
+	// settled frames (blips + keyframes animating, no model change) — the same frames
+	// the counter-stability loop just certified.
+	double StillUpdateMedianMs = 0.0;
+	{
+		TArray<double> StillUpdates;
+		const int32 SettledNow = SettledFrames(*Status);
+		for (int32 Index = FMath::Max(0, SettledNow - 10); Index < SettledNow; ++Index)
+		{
+			StillUpdates.Add(Host->FrameLog[Index].UpdateMs);
+		}
+		StillUpdates.Sort();
+		StillUpdateMedianMs = StillUpdates.Num() > 0 ? StillUpdates[StillUpdates.Num() / 2] : 0.0;
+	}
+
 	// One bump -> the apply frame's exact eval delta (counters are sampled per frame
 	// AFTER Update, so the apply frame's record minus its predecessor is exactly what
-	// the dirty evaluation cost).
+	// the dirty evaluation cost). OutBumpUpdateMs is the SOAK-HALF of Exp-REF-SCALE
+	// (M6 Task 5): the apply frame's whole Context::Update() bracket, read against
+	// StillUpdateMedianMs — the controlled venue for the ~0.53 µs/binding law's
+	// prediction (192 bindings ⇒ ~0.10 ms), which the field soak cannot resolve
+	// because a 2-second beat is 2-3 frames per 1,000 and vanishes above p99 into
+	// the animation tail.
 	const auto BumpAndMeasure = [&](const TCHAR* What, int32 ExpectedMarkedFields,
-							  TFunctionRef<void(FVaCuusRefHudTestModel&)> Mutate, FEvalDelta& OutDelta) -> bool
+							  TFunctionRef<void(FVaCuusRefHudTestModel&)> Mutate, FEvalDelta& OutDelta,
+							  double* OutBumpUpdateMs = nullptr) -> bool
 	{
 		const int32 StepStart = SettledFrames(*Status);
 		const uint64 Before = Host->FrameLog[StepStart - 1].FieldsApplied;
@@ -647,18 +669,23 @@ bool FVaCuusRefHudDirtyScopeTest::RunTest(const FString& Parameters)
 		const FRefHudFrameRecord& Prev = Host->FrameLog[ApplyFrame - 1];
 		OutDelta = FEvalDelta{
 			Applied.ScalarGets - Prev.ScalarGets, Applied.ArraySizes - Prev.ArraySizes, Applied.ArrayChilds - Prev.ArrayChilds};
+		if (OutBumpUpdateMs != nullptr)
+		{
+			*OutBumpUpdateMs = Applied.UpdateMs;
+		}
 		AddInfo(FString::Printf(TEXT("%s: %s"), What, *OutDelta.ToString()));
 		return true;
 	};
 
 	FEvalDelta DeltaAlpha, DeltaBravo, DeltaBoth, DeltaPlate;
+	double AlphaBumpUpdateMs = 0.0, BravoBumpUpdateMs = 0.0;
 	if (!BumpAndMeasure(TEXT("alpha bump"), 1,
-			[](FVaCuusRefHudTestModel& M) { M.TeamAlpha[3].Kills += 1; }, DeltaAlpha))
+			[](FVaCuusRefHudTestModel& M) { M.TeamAlpha[3].Kills += 1; }, DeltaAlpha, &AlphaBumpUpdateMs))
 	{
 		return false;
 	}
 	if (!BumpAndMeasure(TEXT("bravo bump"), 1,
-			[](FVaCuusRefHudTestModel& M) { M.TeamBravo[3].Kills += 1; }, DeltaBravo))
+			[](FVaCuusRefHudTestModel& M) { M.TeamBravo[3].Kills += 1; }, DeltaBravo, &BravoBumpUpdateMs))
 	{
 		return false;
 	}
@@ -692,6 +719,18 @@ bool FVaCuusRefHudDirtyScopeTest::RunTest(const FString& Parameters)
 	UE_LOG(LogVaCuus, Display,
 		TEXT("Exp-REF-SCALE dirty scope: one-panel %s | other panel %s | both-panel %s | plate scalar %s"),
 		*DeltaAlpha.ToString(), *DeltaBravo.ToString(), *DeltaBoth.ToString(), *DeltaPlate.ToString());
+
+	// The soak half's ms verdict: the one-panel bump frame's Update against the still
+	// median, next to the law's prediction. Loose 10x tripwire only — the number
+	// itself is the record, and this venue (probe host, 1280x720, blips live) is the
+	// controlled one the passport cites.
+	const double AlphaExtraMs = AlphaBumpUpdateMs - StillUpdateMedianMs;
+	const double BravoExtraMs = BravoBumpUpdateMs - StillUpdateMedianMs;
+	UE_LOG(LogVaCuus, Display,
+		TEXT("Exp-REF-SCALE soak half: one-panel bump-frame Update %.3f / %.3f ms (alpha/bravo) vs still median %.3f ms ")
+		TEXT("=> extra %.3f / %.3f ms; the ~0.53 us/binding law predicts ~0.10 ms for 192 bindings"),
+		AlphaBumpUpdateMs, BravoBumpUpdateMs, StillUpdateMedianMs, AlphaExtraMs, BravoExtraMs);
+	TestTrue(TEXT("one-panel bump extra under the 10x tripwire (1.0 ms)"), AlphaExtraMs < 1.0 && BravoExtraMs < 1.0);
 
 	UIThread->EnqueueRemoveView(ViewId);
 	RunFrames(*UIThread, 1);
@@ -939,6 +978,188 @@ bool FVaCuusRefHudBlipDriverTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("left+top-mode pump under the 10x tripwire"), LeftTop.PumpMeanMs < 5.0);
 	TestEqual(TEXT("both soaks ran the full window"), Transform.Frames, LeftTop.Frames);
 
+	return true;
+}
+
+/**
+ * Exp-RAM-DELTA's Dev-only PROXY CROSS-CHECK + THE GMALLOC CANARY (M6 Task 5, spec
+ * §2(i)). The passport's RAM row is primarily the A/B two-run UsedPhysical delta in
+ * cooked Shipping — the venue this WITH_DEV_AUTOMATION_TESTS test can never see; what
+ * it CAN pin, with the symmetric quantized ledger, is the plugin-visible GMalloc side:
+ *
+ *  1. THE CANARY, first (spec risk table: "the canary before the Dev cross-check
+ *     window"): the research's [inference] — RmlUi's plain operator new lands in
+ *     GMalloc via UE's per-module operator-new replacement — is verified by watching a
+ *     context created and destroyed by VENDORED code move the ledger both directions.
+ *     Without this, a silently bypassing allocator would make the boot window below
+ *     read splendidly small and mean nothing.
+ *  2. THE BOOT WINDOW: pre-boot quiesced baseline -> the full RefHud boot (real
+ *     document over the VFS, both panels applied, JS third seeded) -> settled steady
+ *     state. The delta is the row's cross-check figure, asserted under the §11 32 MiB
+ *     CPU gate (the automation venue has no view RT — GPU is reported separately by
+ *     design, the owner decision the passport records).
+ *  3. THE STILL WINDOW: 60 more settled frames must move the ledger by less than
+ *     256 KiB — the quiesced-window claim made checkable; without it "steady state"
+ *     in (2) is a hope, and a per-frame leak would silently date the boot figure.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusRefHudMemProxyTest, "VaCuus.RefHud.MemProxy",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusRefHudMemProxyTest::RunTest(const FString& Parameters)
+{
+	using namespace VaCuusRefHudTest;
+
+	if (!FPlatformProcess::SupportsMultithreading())
+	{
+		AddInfo(TEXT("Skipped: no multithreading support, so there is no UI thread to drive"));
+		return true;
+	}
+	if (!TestFalse(TEXT("RmlUi is down before the test"), FVaCuusEngine::Get().IsInitialized()))
+	{
+		return false;
+	}
+
+	// (1) THE CANARY — vendored-code allocations on the test thread (the glass-test
+	// venue: single-threaded RmlUi use before any UI thread exists). CreateContext
+	// allocates inside libRmlUi's own compiled objects, so the ledger moving proves the
+	// per-module operator-new replacement routes RmlUi through GMalloc.
+	{
+		FVaCuusEngine& Engine = FVaCuusEngine::Get();
+		if (!TestTrue(TEXT("canary: RmlUi initialized"), Engine.Initialize()))
+		{
+			return false;
+		}
+
+		Rml::Context* Canary = nullptr;
+		if (TestTrue(TEXT("canary: alloc window opened"), VaCuusAllocWindow::Begin()))
+		{
+			Canary = Rml::CreateContext("vacuus_memproxy_canary", Rml::Vector2i(64, 64));
+			const VaCuusAllocWindow::FCounts Create = VaCuusAllocWindow::End();
+			TestNotNull(TEXT("canary: context created"), Canary);
+			TestTrue(FString::Printf(TEXT("canary: CreateContext allocated through GMalloc (mallocs=%llu, bytes=%+lld)"),
+						 Create.Mallocs, Create.LiveQuantizedBytesDelta),
+				Create.Mallocs > 0 && Create.LiveQuantizedBytesDelta > 0);
+			TestTrue(TEXT("canary: every block's size resolved"), Create.SizeLookupFailures == 0);
+		}
+		if (Canary != nullptr && TestTrue(TEXT("canary: release window opened"), VaCuusAllocWindow::Begin()))
+		{
+			Rml::RemoveContext("vacuus_memproxy_canary");
+			const VaCuusAllocWindow::FCounts Remove = VaCuusAllocWindow::End();
+			TestTrue(FString::Printf(TEXT("canary: RemoveContext freed through GMalloc (frees=%llu, bytes=%+lld)"),
+						 Remove.Frees, Remove.LiveQuantizedBytesDelta),
+				Remove.Frees > 0 && Remove.LiveQuantizedBytesDelta < 0);
+		}
+		Engine.Shutdown();
+	}
+
+	// (2) THE BOOT WINDOW, through the production-shaped UI-thread pipeline.
+	FVaCuusModule& Module = FVaCuusModule::Get();
+	FVaCuusUIThread* UIThread = Module.GetOrStartUIThread();
+	if (!TestNotNull(TEXT("UI thread"), UIThread))
+	{
+		return false;
+	}
+	ON_SCOPE_EXIT
+	{
+		Module.StopUIThread();
+	};
+
+	if (!UIThread->HasScriptHost())
+	{
+		// The Count test's rule: without the JS third this measures a different
+		// document; skip with a name rather than record a number for the wrong workload.
+		AddInfo(TEXT("Skipped: no script host (VaCuusJs absent or vacuus.Js.Enable 0), so the JS-built third cannot exist"));
+		return true;
+	}
+
+	const UScriptStruct* Type = FVaCuusRefHudTestModel::StaticStruct();
+	const TSharedRef<FVaCuusBoundModel> Model = MakeShared<FVaCuusBoundModel>(GModelName, Type);
+	if (!TestTrue(TEXT("the model built"), Model->IsValid()))
+	{
+		return false;
+	}
+
+	const TSharedRef<FVaCuusViewStatus> Status = MakeShared<FVaCuusViewStatus>();
+	TUniquePtr<FRefHudProbeHost> OwnedHost = MakeUnique<FRefHudProbeHost>(TEXT("vacuus_refhud_memproxy"));
+	FRefHudProbeHost* Host = OwnedHost.Get();
+	Host->ObservedModel = Model;
+
+	// Quiesce the fresh UI thread OUTSIDE the window so thread start-up cost never
+	// masquerades as document cost.
+	const uint32 ViewId = UIThread->AllocateViewId();
+	if (!TestTrue(TEXT("boot: alloc window opened"), VaCuusAllocWindow::Begin()))
+	{
+		return false;
+	}
+
+	UIThread->EnqueueAddView(ViewId, MoveTemp(OwnedHost), FIntPoint(1280, 720), Status);
+	UIThread->EnqueueBindModel(ViewId, Model);
+	UIThread->EnqueueLoadDocumentFile(ViewId, TEXT("RefHud/refhud.rml"), /*LoadSerial=*/1);
+
+	FVaCuusRefHudTestModel Live;
+	SeedModel(Live);
+	TestTrue(TEXT("the first sample marks fields"), Model->Sample(Type, &Live) > 0);
+	TestTrue(TEXT("...and publishes"), Model->PublishPending());
+
+	bool bLoaded = false;
+	for (int32 Attempt = 0; Attempt < 20 && !bLoaded; ++Attempt)
+	{
+		if (!TestTrue(TEXT("frames ran"), RunFrames(*UIThread, 1)))
+		{
+			return false;
+		}
+		bLoaded = Status->LoadCompletedSerial.load(std::memory_order_acquire) == 1;
+	}
+	if (!TestTrue(TEXT("RefHud/refhud.rml loaded through the VFS"),
+			bLoaded && Status->LoadResult.load(std::memory_order_relaxed) == uint8(EVaCuusLoadResult::Succeeded)))
+	{
+		VaCuusAllocWindow::End();
+		return false;
+	}
+
+	// Settle to declared steady state inside the window (clones built, pools filled,
+	// first collections done), then close it.
+	if (!TestTrue(TEXT("settle frames ran"), RunFrames(*UIThread, 30)))
+	{
+		VaCuusAllocWindow::End();
+		return false;
+	}
+	const VaCuusAllocWindow::FCounts Boot = VaCuusAllocWindow::End();
+
+	const double BootMiB = double(Boot.LiveQuantizedBytesDelta) / (1024.0 * 1024.0);
+	const FString BootReport = FString::Printf(
+		TEXT("Exp-RAM-DELTA proxy cross-check: RefHud boot -> steady state added %+lld live quantized bytes (%.2f MiB; ")
+		TEXT("mallocs=%llu reallocs=%llu frees=%llu, size-lookup failures=%llu)"),
+		Boot.LiveQuantizedBytesDelta, BootMiB, Boot.Mallocs, Boot.Reallocs, Boot.Frees, Boot.SizeLookupFailures);
+	AddInfo(BootReport);
+	UE_LOG(LogVaCuus, Display, TEXT("%s"), *BootReport);
+
+	TestTrue(TEXT("boot window: every block's size resolved (the ledger's exactness bit)"), Boot.SizeLookupFailures == 0);
+	TestTrue(TEXT("boot window: the delta is positive and sane (> 256 KiB — a bypassing allocator would read near zero)"),
+		Boot.LiveQuantizedBytesDelta > 256 * 1024);
+	TestTrue(TEXT("boot window: under the spec 11 CPU-side 32 MiB gate"), Boot.LiveQuantizedBytesDelta < int64(32) * 1024 * 1024);
+
+	// (3) THE STILL WINDOW.
+	if (!TestTrue(TEXT("still: alloc window opened"), VaCuusAllocWindow::Begin()))
+	{
+		return false;
+	}
+	const bool bStillRan = RunFrames(*UIThread, 60);
+	const VaCuusAllocWindow::FCounts Still = VaCuusAllocWindow::End();
+	if (!TestTrue(TEXT("still frames ran"), bStillRan))
+	{
+		return false;
+	}
+	const FString StillReport = FString::Printf(
+		TEXT("Exp-RAM-DELTA still window: 60 settled frames moved the ledger %+lld bytes (mallocs=%llu frees=%llu)"),
+		Still.LiveQuantizedBytesDelta, Still.Mallocs, Still.Frees);
+	AddInfo(StillReport);
+	UE_LOG(LogVaCuus, Display, TEXT("%s"), *StillReport);
+	TestTrue(TEXT("still window: steady state holds (|delta| < 256 KiB over 60 frames)"),
+		FMath::Abs(Still.LiveQuantizedBytesDelta) < 256 * 1024);
+
+	UIThread->EnqueueRemoveView(ViewId);
+	RunFrames(*UIThread, 1);
 	return true;
 }
 

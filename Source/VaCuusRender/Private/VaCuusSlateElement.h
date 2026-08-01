@@ -135,4 +135,7 @@ private:
 
 	/** Latched log for which backbuffer-access path this session took (Exp-GLASS-BACKBUFFER-SRV). */
 	bool bLoggedBackbufferPath = false;
+
+	/** Latched log for which composite gamma permutation this session selected (M6, spec §3.2). */
+	bool bLoggedCompositeGamma = false;
 };

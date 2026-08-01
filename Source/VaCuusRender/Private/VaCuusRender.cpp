@@ -2193,6 +2193,61 @@ static FDelegateHandle GRefHudLaunchFlagHandle = FCoreUObjectDelegates::PostLoad
 	});
 
 /**
+ * THE MEASUREMENT IGNITIONS (M6 Task 5, spec §2(i)) — two flags in the -VaCuusM5Demo
+ * pattern (below) for the same reason it exists: `-ExecCmds` is compiled out of
+ * Shipping, and the passport's own venue for the RAM row IS cooked Shipping, so the
+ * measurement doors must be plugin-parsed launch flags.
+ *
+ *   -VaCuusPerfLog   sets the vacuus.M1HUD.PerfLog cvar to 1 (cvars survive in
+ *                    Shipping; only the console UI and -ExecCmds do not), so the
+ *                    5-second window lines print from a packaged Shipping soak.
+ *   -VaCuusMemProbe  logs FPlatformMemory::GetStats() every 5 s from map load on —
+ *                    the A/B two-run delta's sampling machinery: two identical boots
+ *                    (UI on vs off) print the same schedule, and the row is the
+ *                    UsedPhysical delta at matched quiesced checkpoints. UsedPhysical
+ *                    is the spec-named figure; Peak and virtual ride along because a
+ *                    delta that disagrees with its own peak is how a transient gets
+ *                    caught. Deliberately INDEPENDENT of GState/any view: the B run
+ *                    (UI off) has neither.
+ *
+ * One handler for both flags, self-removing on the first map load like its pattern.
+ */
+static FDelegateHandle GPerfFlagsLaunchHandle = FCoreUObjectDelegates::PostLoadMapWithWorld.AddLambda(
+	[](UWorld* /*World*/)
+	{
+		FCoreUObjectDelegates::PostLoadMapWithWorld.Remove(GPerfFlagsLaunchHandle);
+
+		if (FParse::Param(FCommandLine::Get(), TEXT("VaCuusPerfLog")))
+		{
+			if (IConsoleVariable* PerfLogVar = IConsoleManager::Get().FindConsoleVariable(TEXT("vacuus.M1HUD.PerfLog")))
+			{
+				PerfLogVar->Set(1, ECVF_SetByCode);
+				UE_LOG(LogVaCuus, Display, TEXT("VaCuus perf log (-VaCuusPerfLog): vacuus.M1HUD.PerfLog=1"));
+			}
+		}
+
+		if (FParse::Param(FCommandLine::Get(), TEXT("VaCuusMemProbe")))
+		{
+			const double ProbeStartSeconds = FPlatformTime::Seconds();
+			UE_LOG(LogVaCuus, Display, TEXT("VaCuus MemProbe (-VaCuusMemProbe): sampling FPlatformMemory::GetStats() every 5 s"));
+			FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda(
+				[ProbeStartSeconds](float)
+				{
+					const FPlatformMemoryStats Stats = FPlatformMemory::GetStats();
+					UE_LOG(LogVaCuus, Display,
+						TEXT("VaCuus MemProbe t=%.0fs: UsedPhysical=%llu (%.2f MB) PeakUsedPhysical=%llu (%.2f MB) ")
+						TEXT("UsedVirtual=%llu (%.2f MB)"),
+						FPlatformTime::Seconds() - ProbeStartSeconds, Stats.UsedPhysical,
+						double(Stats.UsedPhysical) / (1024.0 * 1024.0), Stats.PeakUsedPhysical,
+						double(Stats.PeakUsedPhysical) / (1024.0 * 1024.0), Stats.UsedVirtual,
+						double(Stats.UsedVirtual) / (1024.0 * 1024.0));
+					return true; // repeat for the life of the run
+				}),
+				5.0f);
+		}
+	});
+
+/**
  * THE SHIPPING IGNITION (plan 9.3b, found at the packaged gate): `-ExecCmds` is
  * COMPILED OUT of Shipping builds — UnrealEngine.cpp:2543 wraps the :2552
  * QueueDeferredCommands in `#if !(UE_BUILD_SHIPPING) || ENABLE_PGO_PROFILE` — so a

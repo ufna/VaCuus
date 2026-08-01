@@ -373,7 +373,20 @@ body {
 	right: 260px; bottom: 32px;
 }
 
-#ammo-mag { font-size: 38px; color: #ffffff; }
+/*
+ * The Exp-GLYPH-WARMUP surface (M6 Task 5, spec plan 5.2): font-effect glyph
+ * generation is the measured 32.5 ms pathology class (research :94-95), and the
+ * reference workload must carry it (refhud-passport.md 4(c): "the passport asserts
+ * no hitch WITH EFFECTS PRESENT"). The glow forces an effect-glyph layer for the
+ * ammo digits and the objective line; generation runs inside the UI thread's first
+ * Record of the styled text -- BEFORE the first publish, off the game thread by
+ * architecture -- which is what the load-hitch row's A/B run measures (2026-08-02:
+ * first-Record max 5.81 ms with the glows vs 1.65 ms without; steady-state Record
+ * identical).
+ * Syntax per the vendored instancer (FontEffectGlow.cpp:122-126: width-outline /
+ * width-blur / offset-x / offset-y / color).
+ */
+#ammo-mag { font-size: 38px; color: #ffffff; font-effect: glow(2px 4px #f0c04066); }
 #ammo-res { font-size: 20px; color: #93a7ba; margin-left: 6px; }
 
 #objective {
@@ -384,7 +397,10 @@ body {
 	text-align: center;
 }
 
-#objective-text { font-size: 14px; color: #e0d5a8; }
+/* Second glow surface, full-alphabet: the objective line touches far more of the
+ * face than the ammo digits, so its effect-glyph set is the load-window's real
+ * payload (same Exp-GLYPH-WARMUP note as #ammo-mag above). */
+#objective-text { font-size: 14px; color: #e0d5a8; font-effect: glow(1px 3px #e0d5a855); }
 
 /* -------------------------------------------------------------- settings */
 

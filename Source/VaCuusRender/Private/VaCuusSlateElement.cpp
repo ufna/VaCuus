@@ -174,9 +174,28 @@ void FVaCuusSlateElement::Draw_RenderThread(FRDGBuilder& GraphBuilder, const FDr
 	const FIntPoint Offset(FMath::RoundToInt(Inputs.ElementsOffset.X), FMath::RoundToInt(Inputs.ElementsOffset.Y));
 	const FIntRect OutputRect(DestRect.Min + Offset, DestRect.Max + Offset);
 
+	// The PF_FloatRGBA permutation (M6, spec §3.2): a float elements texture holds
+	// LINEAR pixels — the engine pins DisplayGamma to 1.0 for a linear-SDR backbuffer
+	// (UnrealEngine.cpp:2501-2504) and for HDR display targets
+	// (SlateRHIRenderingPolicy.cpp:1508-1509) — so the sRGB-encoded UI RT must be
+	// decoded at composite time. Format-keyed, per frame, because the elements texture
+	// a widget lands in can differ per window and per session (GetViewportPixelFormat,
+	// SlateRHIRenderer.cpp:760-781). Logged once, latched, like the backbuffer-SRV
+	// line: the matrix/PIE check greps this to know which permutation composited.
+	const bool bLinearOutput = VaCuusCompositeWantsLinearOutput(Inputs.OutputTexture->Desc.Format);
+	if (!bLoggedCompositeGamma)
+	{
+		bLoggedCompositeGamma = true;
+		UE_LOG(LogVaCuus, Log, TEXT("VaCuus composite: elements texture is %s -> %s permutation"),
+			GPixelFormats[Inputs.OutputTexture->Desc.Format].Name,
+			bLinearOutput ? TEXT("LinearOutput (sRGB->linear decode, gamma 1.0 target)") : TEXT("pass-through (display-gamma target)"));
+	}
+
 	FGlobalShaderMap* ShaderMap = GetGlobalShaderMap(GMaxRHIFeatureLevel);
 	TShaderMapRef<FScreenPassVS> VertexShader(ShaderMap);
-	TShaderMapRef<FVaCuusCompositePS> PixelShader(ShaderMap);
+	FVaCuusCompositePS::FPermutationDomain CompositePermutation;
+	CompositePermutation.Set<FVaCuusCompositePS::FLinearOutput>(bLinearOutput);
+	TShaderMapRef<FVaCuusCompositePS> PixelShader(ShaderMap, CompositePermutation);
 
 	FVaCuusCompositePS::FParameters* Parameters = GraphBuilder.AllocParameters<FVaCuusCompositePS::FParameters>();
 	Parameters->CompositeTexture = UITexture;
@@ -185,7 +204,8 @@ void FVaCuusSlateElement::Draw_RenderThread(FRDGBuilder& GraphBuilder, const FDr
 
 	// Premultiplied-over: the RT holds premultiplied content (Task 7 contract),
 	// and Inputs.OutputTexture is the post-tonemap Slate target — no gamma
-	// conversion in M1.
+	// conversion in M1 (the LinearOutput permutation above is the one M6 exception,
+	// and it converts INTO the target's own encoding, never out of it).
 	FRHIBlendState* BlendState =
 		TStaticBlendState<CW_RGBA, BO_Add, BF_One, BF_InverseSourceAlpha, BO_Add, BF_One, BF_InverseSourceAlpha>::GetRHI();
 
@@ -437,7 +457,11 @@ void FVaCuusSlateElement::AddGlassPasses(FRDGBuilder& GraphBuilder, const FDrawP
 
 	FGlobalShaderMap* ShaderMap = GetGlobalShaderMap(GMaxRHIFeatureLevel);
 	TShaderMapRef<FScreenPassVS> ScreenVertexShader(ShaderMap);
-	TShaderMapRef<FVaCuusCompositePS> DownsamplePS(ShaderMap);
+	// The default (LinearOutput=false) permutation, DELIBERATELY: the downsample reads
+	// the elements texture and writes a half-res copy of it — identical encoding in and
+	// out, whatever that encoding is. Glass is gamma-neutral by construction
+	// (backdrop-glass.md §6); a decode here would double-decode on a float target.
+	TShaderMapRef<FVaCuusCompositePS> DownsamplePS(ShaderMap, FVaCuusCompositePS::FPermutationDomain());
 	TShaderMapRef<FVaCuusUIVS> GlassVertexShader(ShaderMap);
 	TShaderMapRef<FVaCuusGlassPS> GlassPixelShader(ShaderMap);
 	const FMatrix44f PixelToClip = VaCuusReplay::MakePixelToClipMatrix(OutputExtent);
