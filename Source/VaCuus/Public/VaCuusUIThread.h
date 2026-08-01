@@ -207,6 +207,15 @@ public:
 	void EnqueueDumpModel(uint32 ViewId, FName ModelName);
 
 	/**
+	 * Asks the UI thread to log the recursive node count of every document on this
+	 * view (M6 Task 4): the Exp-REF-COUNT observable, counted by the stated method
+	 * (VaCuusNodeCount.h) and printed at Display. A command for DumpModel's reason,
+	 * word for word: the tree is the UI thread's, and a game-thread walk of it would
+	 * race every mutation the next frame makes.
+	 */
+	void EnqueueDumpNodeCount(uint32 ViewId);
+
+	/**
 	 * Drops RmlUi's parsed stylesheet and template caches on the UI thread. Live
 	 * reload's actual mechanism (controller decision D21).
 	 *
@@ -386,6 +395,9 @@ private:
 
 	/** DumpModel handler: prints the UI-side half of every matching model, or says there is none. UI thread. */
 	void DumpModel(uint32 ViewId, FName ModelName);
+
+	/** DumpNodeCount handler: logs every document's recursive node count (VaCuusNodeCount.h). UI thread. */
+	void DumpNodeCount(uint32 ViewId, IVaCuusDocumentHost& Host);
 
 	/** ClearAssetCaches handler: drops RmlUi's global stylesheet/template caches. UI thread. */
 	void ClearAssetCaches();

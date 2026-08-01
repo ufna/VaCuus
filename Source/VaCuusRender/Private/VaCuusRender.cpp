@@ -4,6 +4,7 @@
 #include "VaCuusContentPaths.h"
 #include "VaCuusDefines.h"
 #include "VaCuusDemoModel.h"
+#include "VaCuusRefHudModel.h"
 #include "VaCuusMaterialDraw.h"
 #include "VaCuusRecordingRenderInterface.h"
 #include "VaCuusRmlDocumentHost.h"
@@ -58,6 +59,7 @@ static const TCHAR* GM5DecoVfsPath = TEXT("m5_deco.rml");
 static const TCHAR* GM5DecoPlainVfsPath = TEXT("m5_deco_plain.rml");
 static const TCHAR* GM5MatSpikeVfsPath = TEXT("m5_matspike.rml");
 static const TCHAR* GM5HudVfsPath = TEXT("M5Hud/m5_hud.rml");
+static const TCHAR* GRefHudVfsPath = TEXT("RefHud/refhud.rml");
 
 /**
  * The name m3_demo.rml's `data-model` attribute writes, and the name `vacuus.DumpModel hud`
@@ -301,6 +303,28 @@ struct FState
 	 * registry roots only the MATERIALS, not the set object naming them.
 	 */
 	TStrongObjectPtr<UVaCuusStyleSet> DemoStyleSet;
+
+	//~ ------------------------------------------------------- M6 reference HUD (plan Task 4)
+
+	/** True while RefHud/refhud.rml is the document up; gates the RefHud pump below. */
+	bool bRefHud = false;
+
+	/**
+	 * The reference HUD's live struct (model 'refhud'), the DemoModel pattern at
+	 * reference scale: two 24-row team arrays with independent dirty scopes plus the
+	 * plate/ammo scalars, all pushed through ONE UpdateModel per frame -- the diff
+	 * inside marks only what moved, so an ordinary frame publishes plate scalars and
+	 * NOTHING of either array.
+	 */
+	FVaCuusRefHudModel RefHudModel;
+
+	/**
+	 * The 2-second beat of the last sparse scoreboard bump (the LastKillfeedBeat
+	 * shape): each beat mutates ONE row of ONE panel, panels strictly alternating --
+	 * so per beat exactly one of the two arrays dirties, which is the
+	 * independent-dirty-scope design doing its work on screen (spec 2(h)).
+	 */
+	int32 LastRefHudStatBeat = 0;
 };
 
 static TUniquePtr<FState> GState;
@@ -774,6 +798,125 @@ static void StartModelDriver(UVaCuusView* View)
 	}
 }
 
+//~ ----------------------------------------------------------- M6 reference HUD (plan Task 4)
+
+/** The reference HUD's model name -- the bare lowercase string, the akj.23 FName-casing watch. */
+static const TCHAR* GRefHudModelName = TEXT("refhud");
+
+/**
+ * Seeds both team panels, serial-deterministic (no RNG anywhere in this demo): every
+ * value is a pure function of (panel, row), so two boots show the same board and a
+ * screenshot's row is computable. PanelSeed skews the two boards apart -- identical
+ * panels would make a cross-panel binding mixup invisible on screen.
+ */
+static void SeedRefHudPanel(TArray<FVaCuusRefHudScoreRow>& Rows, int32 PanelSeed, const TCHAR* Prefix)
+{
+	static const TCHAR* Squads[] = {TEXT("RAPTOR"), TEXT("VIPER"), TEXT("GHOST"), TEXT("NOMAD"), TEXT("HAVOC")};
+
+	Rows.Reset();
+	Rows.Reserve(24);
+	for (int32 Index = 0; Index < 24; ++Index)
+	{
+		FVaCuusRefHudScoreRow& Row = Rows.AddDefaulted_GetRef();
+		Row.Rank = Index + 1;
+		Row.Name = FString::Printf(TEXT("%s-%s-%02d"), Prefix, Squads[(Index + PanelSeed) % UE_ARRAY_COUNT(Squads)], Index + 1);
+		Row.Kills = (37 * (Index + PanelSeed)) % 40;
+		Row.Deaths = (23 * Index + PanelSeed) % 30;
+		Row.Assists = (11 * Index + PanelSeed * 5) % 15;
+		Row.Score = 2500 - Index * 85 - PanelSeed * 13;
+		Row.Ping = 20 + (Index * 7 + PanelSeed * 3) % 90;
+	}
+}
+
+/**
+ * One frame of the reference HUD's C++ feed (spec 2(h)'s binding third): plate bars,
+ * ammo and objective sweep on wall clock every frame; the scoreboard gets a SPARSE
+ * stat bump -- one row, one panel, every 2 s, panels alternating -- so on an ordinary
+ * frame neither array dirties, and on a beat frame exactly ONE does. That cadence is
+ * the two-array design's showcase: the bump re-evaluates only its own panel's ~192
+ * bindings (the DirtyScope test proves it by exact counter deltas).
+ *
+ * ONE UpdateModel WITH THE WHOLE STRUCT, the PumpDemoModel contract: the diff is
+ * inside, and UVaCuusSubsystem::Tick coalesces whatever was marked into one publish.
+ */
+static void PumpRefHudModel()
+{
+	if (!GState || !GState->bRefHud || !GState->View.IsValid())
+	{
+		return;
+	}
+
+	// Function-local static for PumpDemoModel's reason: no FName construction from a
+	// literal at static-init time, and a load instead of a hash per frame.
+	static const FName ModelName(GRefHudModelName);
+
+	FVaCuusRefHudModel& Model = GState->RefHudModel;
+	const double Elapsed = FPlatformTime::Seconds() - GState->ModelDriverStartSeconds;
+
+	// The M3 demo's 10 s triangle for HP; MP on a 16 s one so the two bars never lock
+	// phase (a stuck pipeline would freeze them at a glance-checkable pair).
+	const double HpPhase = FMath::Fmod(Elapsed, 10.0);
+	Model.Health = float(HpPhase < 5.0 ? 100.0 - HpPhase * 20.0 : (HpPhase - 5.0) * 20.0);
+	const double MpPhase = FMath::Fmod(Elapsed, 16.0);
+	Model.Mana = float(MpPhase < 8.0 ? 100.0 - MpPhase * 12.5 : (MpPhase - 8.0) * 12.5);
+
+	// Two rounds a second; every emptied magazine takes 30 from the reserve, which
+	// refills on wrap -- all pure functions of elapsed time.
+	const int32 RoundsFired = int32(Elapsed * 2.0);
+	Model.Ammo = 30 - (RoundsFired % 31);
+	Model.AmmoReserve = 120 - 30 * ((RoundsFired / 31) % 4);
+
+	Model.PlayerName = TEXT("UFNA-01");
+	Model.Objective = FString::Printf(TEXT("HOLD THE LINE // WAVE %02d"), int32(Elapsed / 5.0) % 100);
+
+	// The sparse scoreboard bump. `>` not `!=`, the LastKillfeedBeat rule: time only
+	// moves the board forward. Row hops by a 7-stride so consecutive bumps land far
+	// apart on screen; Kills and Score move together like a real board's would.
+	const int32 StatBeat = int32(Elapsed / 2.0);
+	if (StatBeat > GState->LastRefHudStatBeat)
+	{
+		GState->LastRefHudStatBeat = StatBeat;
+		TArray<FVaCuusRefHudScoreRow>& Panel = (StatBeat % 2 == 0) ? Model.TeamAlpha : Model.TeamBravo;
+		if (Panel.Num() == 24)
+		{
+			FVaCuusRefHudScoreRow& Row = Panel[(StatBeat * 7) % 24];
+			Row.Kills += 1;
+			Row.Score += 100;
+		}
+	}
+
+	GState->View->UpdateModel(ModelName, FVaCuusRefHudModel::StaticStruct(), &Model);
+}
+
+/**
+ * Binds model 'refhud' and starts the reference HUD's per-frame feed. BEFORE the
+ * view's first LoadDocument, which is RmlUi's requirement and not a preference --
+ * StartModelDriver carries the full Element::SetParent argument; the single-producer
+ * FIFO is what carries the ordering across the thread boundary.
+ */
+static void StartRefHudDriver(UVaCuusView* View)
+{
+	if (!GState || View == nullptr)
+	{
+		return;
+	}
+
+	if (!View->BindModel(GRefHudModelName, FVaCuusRefHudModel::StaticStruct()))
+	{
+		UE_LOG(LogVaCuus, Error,
+			TEXT("vacuus.RefHud: the data model could not be bound, so refhud.rml will load with empty panels. ")
+			TEXT("Run vacuus.DumpModel to see which side has the model"));
+		return;
+	}
+
+	GState->RefHudModel = FVaCuusRefHudModel();
+	SeedRefHudPanel(GState->RefHudModel.TeamAlpha, /*PanelSeed=*/0, TEXT("ALFA"));
+	SeedRefHudPanel(GState->RefHudModel.TeamBravo, /*PanelSeed=*/1, TEXT("BRVO"));
+	GState->ModelDriverStartSeconds = FPlatformTime::Seconds();
+	GState->LastRefHudStatBeat = 0;
+	GState->ModelDriverHandle = FCoreDelegates::OnBeginFrame.AddStatic(&PumpRefHudModel);
+}
+
 /**
  * Brings the named document up, or takes it down if it is already the one showing.
  *
@@ -970,6 +1113,16 @@ static void Toggle(const TCHAR* DocumentVfsPath)
 		GState->CameraPanHandle = FCoreDelegates::OnBeginFrame.AddStatic(&PumpCameraPan);
 
 		VaCuusWorldDemo::SpawnM5HudQuad(GM5HudVfsPath, /*DelaySeconds=*/0.5f);
+	}
+
+	// The M6 reference HUD (plan Task 4): model 'refhud' bound and seeded BEFORE the
+	// load below (the StartModelDriver ordering contract), then fed every frame --
+	// the C++ third of the spec 2(h) driver split; refhud_logic.js and the RCSS
+	// keyframes are the other two and need nothing from this side.
+	if (FCString::Strcmp(GDocumentVfsPath, GRefHudVfsPath) == 0)
+	{
+		GState->bRefHud = true;
+		StartRefHudDriver(View);
 	}
 
 	// Asynchronous by design: the document is loaded by the UI thread on its first
@@ -1977,6 +2130,67 @@ static FAutoConsoleCommand GM5DemoCommand(
 	TEXT("camera so the scene moves under the blur, and the SAME document on a raycast-clickable world quad 16° ")
 	TEXT("right. Shares every vacuus.M1HUD.* sub-command; vacuus.M5Glass.Shot works for the second beat."),
 	FConsoleCommandDelegate::CreateLambda([] { Toggle(GM5HudVfsPath); }));
+
+static FAutoConsoleCommand GRefHudCommand(
+	TEXT("vacuus.RefHud"),
+	TEXT("Toggle the M6 reference HUD (DevUI/RefHud/refhud.rml): ~1,750 nodes at declared steady state -- two 24-row ")
+	TEXT("scoreboard panels over two independent data arrays (sparse C++ stat bumps), 64 rAF minimap blips writing one ")
+	TEXT("transform each, a 52-row killfeed (12 live + 40 clipped history) with JS churn, a 24-slot timer-driven damage ")
+	TEXT("pool, 18 keyframe-animated buffs, plate/ammo/objective via UpdateModel. Shares every vacuus.M1HUD.* ")
+	TEXT("sub-command; vacuus.RefHud.Count logs the node count."),
+	FConsoleCommandDelegate::CreateLambda([] { Toggle(GRefHudVfsPath); }));
+
+/**
+ * vacuus.RefHud.Count [delaySeconds]: the Exp-REF-COUNT field door -- see
+ * UVaCuusView::DumpNodeCount. The optional delay is for -ExecCmds runs, where every
+ * command executes at frame 0: a zero-delay count drains right behind the LOAD
+ * command, BEFORE the frame's first Context::Update -- the data-for clones do not
+ * exist yet and the answer would be the boot count spec 2(g) explicitly rejects.
+ */
+static FAutoConsoleCommand GRefHudCountCommand(
+	TEXT("vacuus.RefHud.Count"),
+	TEXT("Log the recursive node count of the demo view's document(s) after [delaySeconds], by the stated method: ")
+	TEXT("elements + text nodes, hidden data-for templates excluded, RmlUi-generated scrollbars included. The answer ")
+	TEXT("prints from the UI thread a frame later."),
+	FConsoleCommandWithArgsDelegate::CreateLambda(
+		[](const TArray<FString>& Args)
+		{
+			const float DelaySeconds = Args.Num() > 0 ? FCString::Atof(*Args[0]) : 0.0f;
+			ScheduleAfter(DelaySeconds,
+				[]
+				{
+					if (!GState || !GState->View.IsValid())
+					{
+						UE_LOG(LogVaCuus, Error, TEXT("vacuus.RefHud.Count needs a demo to be on"));
+						return;
+					}
+					GState->View->DumpNodeCount();
+				});
+		}));
+
+/**
+ * The reference HUD's Shipping ignition (M6 Task 4) -- the -VaCuusM5Demo pattern below,
+ * verbatim, for its reason: `-ExecCmds` is compiled out of Shipping, and the packaged
+ * gates must be able to boot the reference workload. One screenshot at t+8 s for the
+ * visual evidence; the t+8 beat also guarantees several 2 s stat bumps and killfeed
+ * beats have moved the boards by shot time.
+ */
+static FDelegateHandle GRefHudLaunchFlagHandle = FCoreUObjectDelegates::PostLoadMapWithWorld.AddLambda(
+	[](UWorld* /*World*/)
+	{
+		if (!FParse::Param(FCommandLine::Get(), TEXT("VaCuusRefHud")))
+		{
+			return;
+		}
+		FCoreUObjectDelegates::PostLoadMapWithWorld.Remove(GRefHudLaunchFlagHandle);
+		Toggle(GRefHudVfsPath);
+		ScheduleAfter(8.0f,
+			[]
+			{
+				UE_LOG(LogVaCuus, Display, TEXT("VaCuus reference HUD (-VaCuusRefHud): requesting the gate screenshot"));
+				FScreenshotRequest::RequestScreenshot(/*bInShowUI=*/true);
+			});
+	});
 
 /**
  * THE SHIPPING IGNITION (plan 9.3b, found at the packaged gate): `-ExecCmds` is

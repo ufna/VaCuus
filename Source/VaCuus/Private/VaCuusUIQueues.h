@@ -85,6 +85,15 @@ enum class EVaCuusCommandKind : uint8
 	 */
 	DumpModel,
 
+	/**
+	 * Prints the view's recursive node count (M6 Task 4, Exp-REF-COUNT's field door --
+	 * `vacuus.RefHud.Count`): every document on the view's context, counted by the
+	 * STATED method (VaCuusNodeCount.h). Routed through the host lookup, unlike
+	 * DumpModel, because the count genuinely needs the host's context -- a retired
+	 * view has no tree left to count, and the generic Verbose drop describes that.
+	 */
+	DumpNodeCount,
+
 	/** Shows or hides the view's document per bVisible. */
 	SetVisible,
 

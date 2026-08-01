@@ -307,6 +307,14 @@ int32 SVaCuusWidget::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGe
 	const FSlateRect& MyCullingRect, FSlateWindowElementList& OutDrawElements, int32 LayerId,
 	const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const
 {
+	// The widget's LAST unscoped game-thread entry point gains its scope (M6 Task 4,
+	// bead VaCuus-akj.6.38): the arch spec's game-thread budget row is a SUM of the GT
+	// scopes, and OnPaint -- the rect/HDR read, the render-command enqueue, MakeCustom
+	// -- ran outside it every paint pass, so the row could not honestly be tightened
+	// or passported (arch spec section 11's own precondition). Once per paint pass per
+	// hosted view; read beside GameTick/SlateTick/Input as one frame's sum.
+	VACUUS_PERF_SCOPE(OnPaint);
+
 	// Window-space pixel rect of the widget (shared with Tick's frame size).
 	// The element applies the elements-texture offset render-side
 	// (FDrawPassInputs::ElementsOffset), mirroring the Slate blur pass.

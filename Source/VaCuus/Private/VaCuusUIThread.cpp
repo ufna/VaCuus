@@ -8,6 +8,7 @@
 #include "VaCuusDocumentHost.h"
 #include "VaCuusEngine.h"
 #include "VaCuusInputMap.h"
+#include "VaCuusNodeCount.h"
 #include "VaCuusStats.h"
 #include "VaCuusStyleSet.h"
 #include "VaCuusTextInput.h"
@@ -667,6 +668,14 @@ void FVaCuusUIThread::EnqueueDumpModel(uint32 ViewId, FName ModelName)
 	// difference between an FName that stringifies to "None" and no name at all, and only one of
 	// those is a model somebody could have bound.
 	Command.Payload = ModelName.IsNone() ? FString() : ModelName.ToString();
+	Enqueue(MoveTemp(Command));
+}
+
+void FVaCuusUIThread::EnqueueDumpNodeCount(uint32 ViewId)
+{
+	FVaCuusUICommand Command;
+	Command.Kind = EVaCuusCommandKind::DumpNodeCount;
+	Command.ViewId = ViewId;
 	Enqueue(MoveTemp(Command));
 }
 
@@ -1377,6 +1386,10 @@ void FVaCuusUIThread::DrainCommands()
 				Host->SetVisible(Command->bVisible);
 				break;
 
+			case EVaCuusCommandKind::DumpNodeCount:
+				DumpNodeCount(Command->ViewId, *Host);
+				break;
+
 			case EVaCuusCommandKind::Resize:
 				// Nothing left to do: the view size was applied above.
 				break;
@@ -1685,6 +1698,35 @@ void FVaCuusUIThread::DumpModel(uint32 ViewId, FName ModelName)
 		UE_LOG(LogVaCuus, Display,
 			TEXT("DumpModel:   UI thread (view %u): %d model(s) are registered, but none is called '%s'"), ViewId,
 			ViewModels->Num(), *ModelName.ToString());
+	}
+}
+
+void FVaCuusUIThread::DumpNodeCount(uint32 ViewId, IVaCuusDocumentHost& Host)
+{
+	check(IsInUIThread());
+
+	Rml::Context* Context = Host.GetContext();
+	if (Context == nullptr || Context->GetNumDocuments() == 0)
+	{
+		UE_LOG(LogVaCuus, Display, TEXT("NodeCount: view %u has no document to count"), ViewId);
+		return;
+	}
+
+	// Display, the M5 packaged-gate lesson: the count is a field observable and must
+	// survive the most stripped configuration a buyer ships. The method sentence is
+	// part of the line on purpose -- a bare number invites recounting by a different
+	// method (spec M6 2(g): the window is only meaningful with the method pinned).
+	for (int Index = 0; Index < Context->GetNumDocuments(); ++Index)
+	{
+		Rml::ElementDocument* Document = Context->GetDocument(Index);
+		if (Document == nullptr)
+		{
+			continue;
+		}
+		UE_LOG(LogVaCuus, Display,
+			TEXT("NodeCount: view %u document '%s': %d nodes (elements + text nodes, recursive; hidden data-for ")
+			TEXT("templates excluded; RmlUi-generated scrollbars included)"),
+			ViewId, UTF8_TO_TCHAR(Document->GetSourceURL().c_str()), VaCuusNodeCount::CountNodes(Document));
 	}
 }
 

@@ -590,6 +590,21 @@ int32 UVaCuusView::DumpModel(FName ModelName)
 	return NumDumped;
 }
 
+void UVaCuusView::DumpNodeCount()
+{
+	check(IsInGameThread());
+
+	if (FVaCuusUIThread* UIThread = GetUIThread())
+	{
+		UIThread->EnqueueDumpNodeCount(ViewId);
+	}
+	else
+	{
+		UE_LOG(LogVaCuus, Display,
+			TEXT("NodeCount: view %u is no longer registered, so there is no tree to count"), ViewId);
+	}
+}
+
 void UVaCuusView::PublishModelUpdates()
 {
 	check(IsInGameThread());

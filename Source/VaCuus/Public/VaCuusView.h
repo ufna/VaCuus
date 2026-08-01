@@ -405,6 +405,15 @@ public:
 	int32 DumpModel(FName ModelName);
 
 	/**
+	 * `vacuus.RefHud.Count`'s body (M6 Task 4, Exp-REF-COUNT): asks the UI thread to log
+	 * this view's recursive node count by the stated method (VaCuusNodeCount.h in the
+	 * module). A request-and-log door for DumpModel's exact reason: the tree lives on
+	 * the UI thread, so the answer arrives in the log a UI frame later, printed by the
+	 * thread that owns it. Game thread.
+	 */
+	void DumpNodeCount();
+
+	/**
 	 * Publishes every bound model's outstanding fields to the UI thread. Once per frame, from
 	 * UVaCuusSubsystem::Tick.
 	 *
