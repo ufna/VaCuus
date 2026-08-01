@@ -85,6 +85,21 @@ modules; comments cite source, every cited line opened.
       builtin tier + marketing note, plumbing kept.
 - [ ] **5.3** Commit: `feat|spike: the material gate — <GO|FALLBACK>, priced and recorded`
 
+### Task 5b: The material tier production shape (GO follow-up)
+
+- [ ] **5b.1** `UVaCuusStyleSet` (asset: key → UMaterialInterface) + game-side registration
+      (root materials, publish-by-replacement snapshots with the monotonic version counter the
+      UI thread asserts); recorder-side `shader(<key>)` → material resolution through the
+      snapshot; registry refusal of scene-texture/VT materials with a named error.
+- [ ] **5b.2** The per-view republish flag from the recorder's compiled-shader table (replacing
+      the spike's process-global flag), clamped to engine rate; the async-compile pre-warm (the
+      pair-less frame-2 transient the spike observed).
+- [ ] **5b.3** The spike's `vacuus.MatSpike.*` surface retires; `vacuus.MaterialDecorators`
+      default flips 1; the spike test becomes the production-path test + a StyleSet
+      resolution/refusal test; the DefaultGame.ini `DirectoriesToAlwaysCook` note documented
+      for M6's buyer docs.
+- [ ] **5b.4** Commit: `feat: materials as decorators — the production tier`
+
 ### Task 6: World-space — sink refactor, component, RT bridge
 
 - [ ] **6.1** `IVaCuusFrameSink` extraction (Slate element implements unchanged);
