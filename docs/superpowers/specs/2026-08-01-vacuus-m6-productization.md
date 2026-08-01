@@ -1,19 +1,17 @@
 # VaCuus M6 — Productization
 
-**Status:** design v1, for adversarial review before planning.
+**Status:** design v2, ready for planning. v1 was reviewed adversarially by three independent
+passes and came back **NEEDS REWORK** with twenty-four blocking findings; §9 records the classes —
+the project's habit — because the reasons are the most useful part.
 
-**Scope:** five tracks. **(B)** `UVaCuusBundle` — the cook-time archive replacing loose-file
-staging in Shipping. **(R)** the reference HUD (~1,750 nodes, honestly counted) + the perf
-passport (the arch §11 table filled at reference scale, Dev + cooked-Shipping-Linux columns).
-**(F)** the Fab dry-run — `RunUAT BuildPlugin`, the package filter, the no-executables scan, the
-compat-header seam for 5.6/5.7. **(D)** the buyer docs — gotchas, the generated RCSS matrix, the
-perf guide. **(S)** the sweep — five bugs fixed or closed with evidence. **The environment
-boundary is explicit:** Win64/macOS matrix runs and real 5.6/5.7 builds are owner-hardware items;
-everything else lands here, and the handoff checklist is a deliverable, not an apology.
+**Scope:** five tracks. **(B)** `UVaCuusBundle`. **(R)** the reference HUD + the perf passport +
+the PF_FloatRGBA permutation + the Linux-Vulkan manual matrix. **(F)** the Fab dry-run + the
+compat seam. **(D)** the buyer docs + the arch-spec amendments. **(S)** the sweep with a full
+bead disposition table. The environment boundary is explicit: Win64/macOS runs and real 5.6/5.7
+builds are owner-hardware items; the handoff checklist is a deliverable.
 
-**Ground truth:** `docs/research/m6-api-notes/{bundle-cook,buildplugin-fab,refhud-passport,
-p2-sweep}.md` (2026-08-01, written against the code and engine on this disk). **[unverified]**
-claims carry their experiment.
+**Ground truth:** `docs/research/m6-api-notes/*.md` (2026-08-01). **[unverified]** claims carry
+their experiment.
 
 ---
 
@@ -27,121 +25,127 @@ every budget row with numbers the buyer can re-run.
 
 ## 2. The findings that decide the architecture
 
-**(a) The bundle class lives in the Runtime module — the arch spec's "built by VaCuusEditor" is
-corrected.** The cooked game deserializes the class, so it must be Runtime; the packing runs in
-its own `WITH_EDITOR` `PreSave` (the cooker runs an editor target, so the code is present);
-VaCuusEditor contributes only the asset factory/UI. One `FByteBulkData` blob + a UPROPERTY path
-index — deliberately NOT `FFormatContainer`'s bulkdata-per-entry (each bulk datum is its own
-IoStore chunk with 16 KiB alignment; ~50 small UI files would waste TOC entries and padding; one
-blob gives one region and page sharing). Serialization: `Payload.SerializeWithFlags` with
-`BULKDATA_Force_NOT_InlinePayload | BULKDATA_MemoryMappedPayload` when the target supports
-mapping, `BULKDATA_ForceInlinePayload` otherwise — the exact `USoundWave`/`FFormatContainer`
-recipe (BulkData.cpp:1730-1744, SoundWave.cpp:1456-1468).
+**(a) The bundle class lives in the Runtime module; the payload AND index serialize only into
+cooks.** `Index` is **not a UPROPERTY** — a packed live object would otherwise leak its index
+into ordinary editor saves (nondeterministic, undiffable, source-control churn). `Serialize()`
+writes Index + Payload together, manually, only under `Ar.IsCooking()`; `PreSave(IsCooking)`
+fills transient members, `PostSave` clears them; an editor save serializes a pure marker
+(`SourceNote`). One blob + our index, not `FFormatContainer`'s bulkdata-per-entry (the 16 KiB
+alignment penalty applies only to memory-mapped chunks — at ~50 entries ≤~800 KB of Win64-only
+padding + ~2 KB TOC; real but modest — the stronger reasons are one region, one steal, page
+sharing). The flag recipe is `USoundWave`'s minus its audio-feature check:
+`BULKDATA_Force_NOT_InlinePayload | BULKDATA_MemoryMappedPayload` when
+`SupportsFeature(MemoryMappedFiles)`, inline otherwise (BulkData.cpp:1728-1744,
+SoundWave.cpp:1456-1468). **Format discipline:** an explicit `FormatVersion` field checked at
+load/mount — refuse with an Error naming the bundle and both versions on mismatch; every index
+entry validated against payload bounds at mount, refusal on violation; corrupted-fixture tests
+for both.
 
-**(b) Memory-mapping is Win64-only in 5.8 — Linux/macOS get a resident buffer, and the design
-absorbs it.** `SupportsFeature(MemoryMappedFiles)` resolves per target platform; on this machine's
-targets it is false. The read path is span-based either way: mapped → `StealFileMapping()` hands
-the `FOwnedBulkDataPtr` (handle pair or wrapped allocation — BulkData.h:863-867,
-BulkData.cpp:446-462) decoupling the region's lifetime from the UObject; resident → the same span
-over the loaded buffer. The arch spec's "memory-mapped bundle entries" is thereby honest on Win64
-and degrades gracefully elsewhere — stated, not hidden.
+**(b) Memory-mapping is Win64-only in 5.8 — Linux/macOS get a resident buffer.** Per-platform
+`SupportsFeature` resolution verified (Windows true; Linux/Mac inherit Generic's false); the read
+path is span-based either way via `StealFileMapping` (BulkData.h:863-867, BulkData.cpp:446-462).
+**The steal is destructive and unrepeatable** (it nulls the source allocation) — so the mount
+table owns the stolen region for the asset's whole in-memory lifetime: `UnmountBundle` removes
+the LOOKUP entry but the subsystem retains the mount record for reuse; a genuine second-steal
+attempt (null allocation, nonzero size) refuses with an Error. The packaged-gate rerun asserts
+the resident path on Linux explicitly (the `!IsMapped` branch exercised, logged).
 
-**(c) Cook staleness is solved by a 5.8 mechanism that exists: `FCookDependency::Function`.**
-Incremental cook is default-on in 5.8; an unchanged asset whose *source tree* changed would keep
-the stale payload. `OnCookEvent(PlatformCookDependencies)` registers a dependency function that
-hashes the enumerated tree — a changed `.rml` re-cooks the bundle. Pack determinism: entries
-sorted by normalized path; plugin-first duplicate-wins with every shadowed file logged (the D19
-rule); `Tests/` excluded — the Build.cs staging caveat finally retires. **[unverified]** the
-dependency function's exact re-cook trigger granularity — Exp-BUNDLE-STALE: change one .rml
-between two incremental cooks, assert the second recooks the asset.
+**(c) Cook staleness via `FCookDependency::Function` (verified to exist: CookDependency.h:131,
+`UE_COOK_DEPENDENCY_FUNCTION` :375-377), hashing the enumerated tree.** The experiments the
+research demanded all run: **Exp-COOK-FILEDEP with ZenStore ON and OFF** (the legacy-dependency
+path is unprovable by reading — CookOnTheFlyServer.cpp:10590-10598), **Exp-COOK-ADDFILE** (an
+added file must recook — the reason a tree-hash beats per-file deps), and the incremental-cook
+edit case. Fallback if granularity disappoints: hash-in-PreSave + always-recook (correct,
+slower). **Pack determinism gets its observable:** pack the identical tree twice from
+differently-ordered sources, assert byte-identical payload + index hash; the content hash
+surfaces in `vacuus.DumpBundle` so the observable persists into the field.
 
-**(d) The VFS precedence is bundle-first-when-mounted, loose as fallback; Shipping ships
-bundle-only.** The runtime mounts a bundle (config-listed soft path loaded by the subsystem at
-startup, or game code hands one in); `FVaCuusFileInterface::Open` probes the mounted index before
-the loose roots. Dev/editor mounts nothing by default — live reload keeps working on loose files.
-The `RuntimeDependencies` staging globs stay for `Configuration != Shipping` (dev packaged builds
-keep loose files); Shipping drops them — the bundle is the shipping story.
+**(d) VFS precedence: bundle-first when mounted, loose fallback — with the mount predicate
+stated and the editor story made real.** The mount decision: cooked builds
+(`FPlatformProperties::RequiresCookedData()`) mount the config-listed bundle; the editor and
+uncooked `-game` mount nothing by default. **The PIE parity workflow needs a payload the editor
+asset does not have** (editor saves carry none) — so the editor mount path packs on demand:
+`vacuus.Bundle.Enable 1` in PIE packs from the loose tree into a transient buffer
+(`WITH_EDITOR`), and a live-reload watcher event over a mounted bundle logs a Warning naming the
+shadowed path (the trap made loud, not silent). **Bundle-serving observability (the silent-miss
+killer):** a Log-level teardown line per view — "N opens served by bundle 'X', M by loose
+roots" — and the bundle-path acceptance gates assert **M == 0**; the miss Warning names every
+probed bundle before the loose fallback. Multi-bundle: mounts stack in order, first hit wins —
+stated, with a two-bundle overlap test. **Cook inclusion is a buyer-facing rule, not a
+footnote:** a config-soft-path-only bundle is invisible to the cooker — the project must
+hard-reference it or list it in `DirectoriesToAlwaysCook`; setup.md carries the rule, the
+reference project demonstrates it, the Track B tests assert the cook log cooked the package, and
+a cooked build whose configured soft path resolves to no asset logs one Error naming the path.
+Shipping staging: the `RuntimeDependencies` globs gate on `Target.Configuration != Shipping`
+(verified readable in ModuleRules); packaged Development stages both loose files and the bundle —
+the M==0 assertion is what proves the bundle actually served.
 
-**(e) BuildPlugin's reality on Linux: three legs (editor-Dev, game-Dev, game-Shipping), no Win64
-attempted, and the packaged tree is filter-driven — with two live hazards.** The default filter
-ships `/Content/... /Shaders/... /Source/...` minus root-`/Tests/...` only —
-`Source/*/Private/Tests/` rides as source (noise, accepted). **Hazard 1: `Web/` is not in any
-default rule** — today's package has no Web at all, violating arch §2's "Web ships source-only";
-adding `/Web/...` without `-/Web/node_modules/...` would ship the esbuild **ELF executable**
-(verified with `file`). The FilterPlugin.ini gains both rules plus
-`-/Source/ThirdParty/RmlUi/Backends/...` (upstream demo backends we never compile, carrying
-`compile_shaders.py`). **Hazard 2: LFS pointers** — a checkout without LFS smudge would package
-130-byte pointer files silently; the scan greps for the pointer signature. The `gen_relays.sh`
-scripts stay (documented re-vendor procedure) with exec bits stripped; `vacuus.mjs`'s node
-shebang is whitelisted. The scan (extension blacklist + exec bits + shebangs + node_modules +
-LFS pointers) runs over the `-Package` output and is committed as a script the owner re-runs.
+**(e) BuildPlugin + the scan (unchanged from v1's verified mechanics) — plus the scan's own
+fixture.** Three legs on Linux, the filter hazards (Web/ absent by default; the esbuild ELF; the
+LFS pointer scan; `-/Source/ThirdParty/RmlUi/Backends/...`), exec-bit hygiene, the shebang
+whitelist. **The scan is itself a test that must be seen to fail:** a committed fixture tree
+plants one instance of each violation class (exe, exec-bit, shebang, node_modules, LFS pointer);
+the wrapper runs against the fixture first and must report exactly those hits before its clean
+verdict counts.
 
-**(f) Zero version guards exist; the shim strategy is a seam now, experiments on owner hardware
-later.** Writing speculative `#if` guards against unread 5.6/5.7 headers is comment-rot by
-construction. M6 creates `VaCuusEngineCompat.h` and routes the four ranked hotspots through it
-(`ICustomSlateElement::Draw_RenderThread`'s `FDrawPassInputs` fields; `RegisterInputPreProcessor`'s
-registration-key overload; `FMaterialShader::SetParameters`' batched form;
-`FSlateDrawElement::MakeCustom`'s header home). **Experiment SHIM-1** (owner hardware): per
-engine, `BuildPlugin -StrictIncludes -TargetPlatforms=Win64`; every break lands as a
-`UE_VERSION_OLDER_THAN` branch in the compat header; re-run all three engines. The M6 acceptance
-line "BuildPlugin passes on 3 versions" is discharged on this machine as "passes on 5.8 Linux,
-three legs, `-StrictIncludes`" + the seam + SHIM-1 in the handoff.
+**(f) The compat seam + SHIM-1 (unchanged) — and the re-scope is RECORDED, not silent.** Track D
+writes the arch-spec amendments in the established inline style: §14's acceptance discharged as
+"5.8 Linux three legs + the seam + SHIM-1 handoff" with the Win64/macOS/5.6/5.7 items named;
+§9's bundle wording corrected (Runtime-module class, Win64-only mapping); §15's
+`CanContainContent` confirmed and the disclosure list referenced.
 
-**(g) The 1,750 figure was never the HUD's — it is RmlUi's benchmark scale, and M6 makes it
-true.** The bench HTML counts ~442 nodes; the number came from RmlUi's own benchmark suite
-("1750 total elements") and was attached to the HUD by the research summary, inherited by arch
-§11. Building "the bench port" would under-deliver 4×. **Decision: scale the composition to
-genuinely hold it** — the designed layout (two 24-row scoreboard panels at 19 nodes/row, 18
-enriched buff slots, 12 live + 40 clipped-history killfeed rows, 64 blips, damage pool, plate,
-abilities, compass, settings) arithmetics to **≈1,731 nodes**, and the count gets its own
-observable: a boot-time recursive node count logged and asserted ∈ **[1,650, 1,850]**
-(Exp-REF-COUNT — the slogan becomes a checkable claim).
+**(g) The reference HUD's count is a steady-state observable, not a boot one.** The ~1,731
+composition stands (the 952-node scoreboard reading = 2 × (panel + a full 19-node header row +
+24 × 19-node rows); the per-row enumeration is published in the document's comment) — but most of
+it materializes at runtime: data-for clones instantiate on the first Update, killfeed
+history/damage pools fill from the sim. **Exp-REF-COUNT is therefore defined at declared steady
+state**: a serial-deterministic warm-up (N sim seconds saturating every pool — the M4 discipline)
+then a recursive count with a stated method (elements + ElementText nodes; hidden data-for
+templates excluded; scrollbars included if RmlUi generates them) asserted ∈ [1,650, 1,850].
+**Gate precedence stated:** if Exp-REF-SCALE's breach routes ever shrink the document, REF-COUNT
+yields — the budgets are gates, the count is a marketing claim made checkable; both cannot be
+load-bearing at once.
 
-**(h) The driver split: C++ binding for standing data, plain JS for churn, RCSS keyframes for
-free animation; TSX is a coexistence proof, not the workload.** Scoreboard + bars + ammo via
-data binding (the M3b path; 48 rows × ~8 bindings ≈ 0.1 ms per changed frame by the M3b scaling
-law); 64 blips via rAF writing **`transform` as one property** (64 × 2.4 µs ≈ 0.154 ms vs 0.31
-for left+top, and no forced layout — Exp-BLIP-DRIVER settles it); killfeed churn + damage
-numbers via JS (the M4 allocation shape); 18 buff icons on pure RCSS keyframes (zero script
-cost); the M5 TSX HUD ships as a second document with its own already-owned pump row.
+**(h) The scoreboard arithmetic is corrected and the topology is the design.** M3b's law:
+0.42257 ms for one changed row at 200 rows × 4 bindings = 800 bindings ⇒ ~0.53 µs/binding. One
+48-row × 8-binding array ⇒ ~0.20 ms per changed frame. **The design: two separate top-level
+arrays, one per team panel, with independent dirty scopes** ⇒ ~0.10 ms per one-panel change,
+~0.20 worst-case both-panel churn — and Exp-REF-SCALE asserts a one-panel change re-evaluates
+only that panel's bindings (the µs-per-binding shown in the passport). The rest of the driver
+split stands (blips via single-property `transform` rAF; JS churn; RCSS keyframes; TSX as
+coexistence proof).
 
-**(i) The passport's two empty rows get real machinery.** **RAM ≤32 MB** (no number exists):
-layer 1 — the counting-malloc proxy grows byte-summing (+size on alloc, −GetAllocationSize on
-free), installed pre-boot in the headless run; added-RAM = quiesced steady state minus baseline
-([unverified] that RmlUi's `operator new` lands in GMalloc via UE's per-module replacement — one
-canary allocation verifies before the window is trusted); layer 2 — `FPlatformMemory::GetStats`
-before/after as the bypass-catcher bound; layer 3 — GPU reported separately (the 1080p view RT
-alone is 7.9 MB), **and whether "Added RAM" includes GPU is an owner decision the passport
-records explicitly**. **Disk ≤10 MB Win64 Shipping** (no number): two Linux Shipping
-`BuildCookRun` packages, plugin on vs off, delta of staged bytes, itemized (binary + pak +
-bundle); entered as *Linux proxy* with the Win64 literal in the handoff. **The measurement runs
-from the cooked bundle or it measures the wrong shipping story.** Load-hitch adds the
-font-effect warm-up case (the recorded 32.5 ms glyph-gen pathology — Exp-GLYPH-WARMUP) and
-documents the UI-thread build spike (the M3b grow-frame shape) beside the game-thread zero the
-gate structurally watches.
+**(i) The RAM row's primary form is an A/B two-run delta; the proxy is a Dev-only cross-check
+with a fixed formula.** Three v1 defects: the proxy's requested-size-add vs quantized-size-
+subtract accumulates negative drift ∝ churn; the proxy is `WITH_DEV_AUTOMATION_TESTS`-gated and
+compiled out of Shipping (the row's own venue); and a single-run window attributes engine-side
+load allocations to the plugin. **The design: primary = two identical cooked-Shipping-Linux
+boots, plugin (or HUD) enabled vs disabled, `FPlatformMemory::GetStats().UsedPhysical` at
+matched quiesced checkpoints — the honest form, valid in Shipping.** The proxy (Dev cross-check)
+gets symmetric quantized accounting: add `Inner->GetAllocationSize(result)` after alloc,
+subtract it before free, realloc = subtract-old + add-new — the sum equals live quantized bytes
+exactly; the GMalloc canary stays. GPU reported separately; whether "Added RAM" includes GPU is
+the owner decision the passport records. Disk row unchanged (A/B staged-bytes delta, itemized,
+from the cooked bundle, Linux proxy + Win64 handoff).
 
-**(j) The sweep verdicts are evidence-based, and one is the milestone's biggest find.**
-**akj.22:** the three `VaCuusTextInput` casts *work today by a load-order accident* — the
-identity statics bind per dlopen closure under `RTLD_LOCAL`; VaCuusRender's `PostConfigInit`
-load pulls VaCuusRml+VaCuus into one closure, so their ids unify; VaCuusJs (Default-phase, its
-own dlopen) was why both M4 incidents were real. Proven with a dlopen probe against the real
-binaries. One `.uplugin` edit away from silent death: the fix is three exported non-inline cast
-helpers in VaCuusRml (~40 lines, the shape that fixed M4) + a canary test; the global fixes are
-rejected with reasons (WEAK-DEFAULT export doesn't help under RTLD_LOCAL;
-`linux_global_symbols` risks cross-plugin RmlUi collisions). **akj.13:** true forever —
-`Command.Status` never stamped; fix = a `BootState` atomic on the view status, `PollStatus`
-invalidates + fires `OnLoadCompleted(false)` on first `Failed`. **akj.16:** the refusal exists
-nowhere; the hook is `INotifyOnStructChanged` whose `PreChange` fires **before** the compile
-while the old property chain is alive — the one safe teardown moment; game-side shadow destroyed
-synchronously, UI-side dropped via an `Abandon()` (free without `DestroyStruct` — a bounded
-editor-only leak beats a wrong-offset free). **akj.6.17:** reproduced; stock UE behavior; close
-as wontfix-documented ("uncooked → editor `-game`; standalone binary → cooked only" in the
-gotchas). **akj.6.9:** zero `.at(` call sites in the entire vendored tree — close as
-verified-unreachable + one line in the vendor-update protocol. Quick closes: akj.12 (done in
-M3a — verified), akj.6.16 (done differently — verified). Swept-in: akj.6.18 (move
-`vacuus.ReloadUI` runtime-side, ~30 min), akj.11's RMLUI_DEBUG decision (keep off everywhere,
-record it), akj.17's doc row. Deferred with reasons: akj.6.15 (20 test hosts, zero product
-value), akj.17 normalization.
+**(j) akj.16's teardown is fenced-synchronous first; `Abandon()` is only the timeout fallback.**
+v1's leak-vs-corruption dichotomy was false: the plugin already owns a fence
+(`Trigger` + `WaitForFrameCount`, documented any-thread-safe). `PreChange` enqueues the UI-side
+model drop, triggers, waits (~100 ms timeout; `RunFrameInline` in inline mode) — the old
+property chain is alive for the whole window, so the normal `DestroyStruct` teardown runs.
+Only on timeout does `Abandon()` fire, each occurrence logging an Error with an estimated
+leaked-bytes figure — the residual leak is loud, rare, and measured, not a design principle.
+
+**(k) The sweep's evidence is scoped precisely.** akj.22 unchanged (the load-order accident,
+helpers + canary). akj.13 unchanged (BootState). **akj.6.9's closure evidence is scoped to the
+compiled subtree**: zero `.at(` sites in `Source/ThirdParty/RmlUi/{Source,Include}` and all five
+plugin modules; the 30 hits in `Backends/RmlUi_Renderer_DX12.cpp` are never-compiled upstream
+demo code (and Backends is excluded from the Fab package by (e)); the vendor-update protocol
+line greps the compiled subtree. akj.6.17 wontfix-documented; akj.12 close (the scopes exist —
+verified; provenance uncited, dropped); akj.6.16 close-as-done. **akj.6.39 is promoted into the
+sweep and lands BEFORE any passport soak** — the PerfLog TickLog's unbounded game-thread sort
+under the shared lock is machinery the passport leans on; fix = cap/window the sort. akj.6.38
+is cited by the OnPaint-scope task (the bead updates, not orphans).
 
 ---
 
@@ -149,84 +153,122 @@ value), akj.17 normalization.
 
 ### 3.1 Track B — `UVaCuusBundle`
 
-Per §2(a-d): the Runtime-module class (`Index` UPROPERTY + manual-serialized `Payload`),
-`PreSave(IsCooking)` packing with deterministic order and D19 duplicate rules, the cook
-dependency function, per-platform flag selection, `StealFileMapping` at mount, the span-based
-VFS branch (bundle-first), the Shipping-only staging retirement (globs gated on configuration),
-`vacuus.DumpBundle` (index listing + provenance). The editor factory in VaCuusEditor. Tests:
-pack/read round-trip (editor-built bundle read through the VFS on the UI thread); duplicate
-shadowing logged; Tests/ excluded; the staleness experiment; the M5 demo booting from a mounted
-bundle in the packaged gate rerun.
+Per §2(a-d). Tests: pack/read round-trip through the VFS on the UI thread; the determinism
+double-pack; duplicate shadowing logged; `Tests/` excluded; format-version + bounds-violation
+refusals (corrupted fixtures); the two-bundle overlap; **Exp-BUNDLE-UNMOUNT-RACE** (unmount
+mid-read, two threads — the region-lifetime claim's observable); the three cook experiments
+(§2(c)); the M==0 bundle-serving assertion in the packaged rerun incl. the Linux resident-path
+assert. `vacuus.DumpBundle` (index, provenance, content hash).
 
-### 3.2 Track R — the reference HUD + passport
+### 3.2 Track R — the reference HUD + passport + matrix
 
-Per §2(g-i): `Content/DevUI/RefHud/` (document + RCSS + JS driver + the C++ feed on the demo
-driver pattern), `vacuus.RefHud` (+ the Shipping ignition flag), the node-count observable, the
-driver split, the passport soak (every §11 row, Dev + cooked-Shipping-Linux columns, the PerfLog
-machinery that already exists + the new RAM/disk experiments), `SVaCuusWidget::OnPaint` gains
-its scope first (the row's own prerequisite). The passport lands as
-`docs/passport/2026-08-vacuus-perf-passport.md` with every number's method named.
+Per §2(g-i): the document + drivers + the steady-state count; `SVaCuusWidget::OnPaint` gains its
+scope first (bead akj.6.38 cited); **akj.6.39's sort fix precedes the soaks**; the passport
+(`docs/passport/`) with a **mandatory Method column** per row (an empty cell is visible); every
+§11 row gets Dev + cooked-Shipping-Linux numbers or a named handoff line. **The PF_FloatRGBA
+composite permutation** (M5's explicit assignment to M6): implement the editor/PIE float-target
+permutation the arch spec requires for correct editor rendering, with a PIE composite check as
+its observable. **The Linux-Vulkan manual matrix pass is defined and executed**: an enumerated
+interactive checklist (mouse/keyboard/gamepad input on screen-space and world-space views, IME
+text entry expectations per platform, live reload, glass/decorators visually verified, the demo
+suite toggles) — run once by hand on this machine, recorded with screenshots; the identical
+checklist ships as the Win64 D3D12 / macOS Metal handoff pages.
 
 ### 3.3 Track F — the Fab dry-run
 
-Per §2(e-f): FilterPlugin.ini rules (+Web, −node_modules, −RmlUi/Backends), exec-bit hygiene,
-the scan script (committed, run, output recorded), `RunUAT BuildPlugin -StrictIncludes
--TargetPlatforms=Linux` run to green (three legs), the packaged-zip inventory diffed against
-expectations, `VaCuusEngineCompat.h` + the four hotspot reroutes, SHIM-1 written as the
-owner-hardware experiment. `CanContainContent` confirmed required (the bundle asset). The
-third-party disclosure list drafted (RmlUi MIT, quickjs-ng MIT, preact MIT, itlib MIT, LatoLatin
-OFL — inventory verified against the trees).
+Per §2(e-f): FilterPlugin rules, the scan + its fixture, `BuildPlugin -StrictIncludes` three
+legs green, the zip inventory diffed, `VaCuusEngineCompat.h` + the four reroutes, SHIM-1
+written. The third-party disclosure list with **every entry pointing at a real in-tree license
+file the package includes**: RmlUi MIT (present), quickjs-ng MIT (present), preact MIT
+(present), itlib MIT (verify in-tree; add if the vendored copy lacks it), **LatoLatin OFL —
+currently MISSING: add `Content/DevUI/fonts/OFL.txt` with the Lato copyright notice** (a real
+compliance gap v1 claimed as verified).
 
-### 3.4 Track D — the docs
+### 3.4 Track D — the docs + amendments
 
-`docs/buyer/`: **gotchas.md** (the 16 recorded findings, seeded verbatim from the research
-inventory), **rcss-matrix.md** (generated from `StyleSheetSpecification.cpp`'s 99+20
-registrations keyed to `VENDORED_SHA.txt`, + the second enumeration pass for
-decorators/font-effects, + annotation column), **perf-guide.md** (the §11 table, the
-bindings×rows scaling law, the facade op costs, the transform-vs-left idiom, the idle-gate
-contract, the data-style-units row from akj.17), **setup.md** (the ten scattered buyer notes:
-style-set cooking, Shipping ignition + logging, Web npm-install, DevUI roots, live-reload
-editor-only, the stale-receipt rule until the bundle, quickjs re-vendor protocol). The
-owner-hardware handoff checklist as its own page.
+The four buyer pages as v1, **plus**: setup.md gains the bundle cook-inclusion rule and the
+mount-predicate table (editor vs uncooked-game vs packaged); gotchas.md gains the
+bundle-vs-live-reload shadowing trap; **the arch-spec amendment task** (§2(f)) writes the §9,
+§14, §15 inline amendments. The handoff page carries: Win64/macOS matrix checklists (§3.2's
+enumerated list), SHIM-1 per engine, the Win64 disk-row literal, the Win64 IME re-check
+(bead akj.6.19 named), the quickjs c11atomics decision, the Fab upload itself.
 
-### 3.5 Track S — the sweep
+### 3.5 Track S — the sweep + the disposition table
 
-Per §2(j), in the research's recommended order: akj.22 (helpers + canary), akj.13 (BootState),
-closes with evidence (akj.6.9, akj.12, akj.6.16, akj.6.17-documented), akj.16 (the recompile
-refusal), akj.6.18 (ReloadUI move), akj.11 (decision recorded), akj.17 (doc row). Each fix
-restore-the-bug where expressible.
+Fixes: akj.22, akj.13, akj.16 (per §2(j)), akj.6.39 (before soaks), akj.6.18, akj.11's decision
+recorded, akj.17's doc row. Closes with evidence: akj.6.9 (scoped per §2(k)), akj.12, akj.6.16,
+akj.6.17 (documented). **The disposition table covers every open bead** — the ones v1 silently
+skipped, dispositioned here: akj.6.19 (handoff, named command); akj.6.35 (the stick-press
+decision — decide it in this milestone: recommend "no digitized stick presses enter the nav
+grid by default, cvar opt-in", record on the bead); akj.6.42 (fold its named coverage gaps into
+the sweep's test work where they overlap the touched code, defer the rest with the list); 
+akj.6.24/6.37/6.40/6.41 (defer with one-line reasons); akj.6.25/6.26/6.27 (defer — texture
+pipeline v1.x); akj.6.15 (defer — 20 hosts, zero product value); akj.6.22 (close — the
+two-tree workflow is this session's own working practice, documented in CLAUDE.md); akj.18/akj.3
+(parked as recorded). Each disposition lands on its bead.
 
 ## 4. Threading
 
-Nothing new in kind: the bundle mount publishes an immutable index (the style-set snapshot
-pattern); the mapped region's lifetime outlives every document reading it (owned by the mount,
-released after views close — the ReleasedTextures discipline); the VFS read path stays UI-thread.
+The mount publishes an immutable index (the snapshot pattern); **the region's release rule is
+the mount table's** (§2(b)): the record outlives lookup removal and is destroyed only at
+subsystem/module teardown after views close — the unmount-race test is the observable. The VFS
+read path stays UI-thread; reads are clamped memcpys/span views validated at mount time.
 
 ## 5. Acceptance
 
 1. The M5 demo + the reference HUD boot from a **cooked bundle** in packaged Development AND
-   Shipping (Linux), zero JS errors, clean teardown — the M5 gate rerun on the bundle path.
-2. The passport is filled: every §11 row has a Dev number and a cooked-Shipping-Linux number
-   (or a named owner-hardware line), with methods.
-3. `BuildPlugin -StrictIncludes` green on 5.8 Linux, three legs; the scan clean; the zip
-   inventory as designed.
-4. The docs exist and every gotcha cites its source.
-5. The sweep: five beads closed with evidence, three quick-closes verified, the deferred two
-   reasoned.
-6. The handoff checklist enumerates every owner-hardware item with its exact command.
+   Shipping (Linux), zero JS errors, clean teardown, **bundle-served M==0 asserted**, the Linux
+   resident path asserted.
+2. The passport filled: every §11 row Dev + cooked-Shipping-Linux (or named handoff), Method
+   column complete; PF_FloatRGBA's PIE check green.
+3. `BuildPlugin -StrictIncludes` green on 5.8 Linux, three legs; the scan clean **after its
+   fixture run reports exactly the planted violations**; the zip inventory as designed; every
+   disclosure entry points at an in-tree license file.
+4. The docs exist; every gotcha cites its source; the arch amendments landed.
+5. The sweep per §3.5; the disposition table complete, every bead updated.
+6. **The Linux-Vulkan manual matrix checklist executed and recorded**; the handoff enumerates
+   every owner-hardware item with its exact command.
 
 ## 6. Risks
 
 | Risk | Mitigation |
 |---|---|
-| The cook dependency function's granularity surprises | Exp-BUNDLE-STALE before the design freezes; fallback = hash-in-PreSave + always-recook (correct, slower) |
-| RmlUi allocations bypass GMalloc | the canary check before the RAM window is trusted; the FPlatformMemory bound catches the rest |
-| The reference HUD breaches the UI row at 1,731 nodes | the M3b document-side scaling law predicts ~0.1 ms/changed frame for the scoreboard; if the soak breaches, the routes are document-side (fewer bindings per row, coarser rows) — the budget commentary already frames the headroom |
-| BuildPlugin finds a foreign-env compile break | -StrictIncludes on this machine first; the compat seam absorbs version drift |
-| Fab's unrecorded rules | the dry-run confirms what §2 recorded; anything new lands in the disclosure draft |
+| Cook-dependency granularity | the three cook experiments before the design freezes; fallback always-recook |
+| RmlUi allocations bypass GMalloc | the canary before the Dev cross-check window; the A/B primary form does not care |
+| The HUD breaches the UI row at ~1,731 nodes | the corrected two-array topology (~0.10/0.20 ms); breach routes are document-side; REF-COUNT yields to the gates per §2(g) |
+| BuildPlugin foreign-env break | -StrictIncludes here first; the seam absorbs drift |
+| Fab's unrecorded rules | the dry-run confirms; new findings land in the disclosure draft |
+| The steady-state count drifts with RmlUi internals | the method statement pins what is counted; the window is ±100 |
 
 ## 7. Out of scope
 
-Win64/macOS execution (handoff); real 5.6/5.7 builds (SHIM-1 handoff); the Fab upload itself;
-pricing/licensing decisions (arch §15 owner items); akj.6.15's host dedup; akj.17 normalization;
-per-element granularity (akj.18 stays parked); the Servo tier (akj.3).
+Win64/macOS execution, real 5.6/5.7 builds, the Fab upload (handoff); pricing/licensing owner
+items; akj.6.15; akj.17 normalization; akj.18; akj.3; the texture-pipeline trio (akj.6.25-27).
+
+## 8. (reserved)
+
+## 9. What v1 got wrong, and why it matters
+
+1. **The RAM proxy's formula accumulated bias** (requested-add vs quantized-subtract) **and its
+   venue was compiled out of the config the row is for** — two independent breaks in one
+   measurement design; the A/B two-run delta is the honest primary.
+2. **A UPROPERTY index on a packed live object leaks cook state into editor saves** — the
+   pack-once-serialize-thrice flow only works when cook data serializes exclusively into cooks.
+3. **The PIE parity story was structurally vacuous** — the editor asset has no payload; mounting
+   it tests the fallback path while reporting success. Pack-on-demand makes it real.
+4. **`StealFileMapping` is once-only** and v1's remount story would have returned empty spans.
+5. **The boot-time node count was unpassable** — most of the composition materializes at
+   runtime; the observable moved to declared steady state with a stated method.
+6. **The scoreboard arithmetic contradicted its own cited law** (the fixture has 4 bindings/row,
+   not 8 per row of cost) — corrected to ~0.53 µs/binding and the two-array topology became the
+   design, not an accident.
+7. **`Abandon()` was a false dichotomy** — the plugin owns a fence; synchronous teardown is the
+   primary and the leak is the measured timeout fallback.
+8. **"Zero `.at(` in the entire vendored tree" was false as written** (30 hits in never-compiled
+   backend code) — evidence scoped to what is compiled, the protocol line corrected.
+9. **Silence, the recurring class**: PF_FloatRGBA (M5's explicit assignment) dropped; the
+   Linux-Vulkan manual matrix undefined; five open beads undispositioned; the arch re-scopes
+   unrecorded; the bundle cook-inclusion rule flagged by the research and dropped by the spec;
+   the OFL license claimed verified while absent from the tree; the scan never seen to fail;
+   determinism asserted without an observable; the dropped research experiments. Each is now a
+   named deliverable with an observable — the M2 lesson, applied to a spec about applying it.
