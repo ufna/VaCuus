@@ -252,6 +252,22 @@ UnrealEditor.modules` manifests to have been rewritten — a stale platform modu
 directory becomes live again.** (Cousin of the "program targets go stale" note; same
 tree, same class.)
 
+**Second hazard, earned after the fact (2026-08-02): the scan's own LFS plant made
+the repo unpushable.** GitHub's pre-receive parses EVERY pushed blob that opens with
+the git-lfs pointer signature — the same signature our LFS_POINTER class matches —
+and rejects the ref (`GH008: unknown Git LFS object`) if the referenced OID is not in
+LFS storage; an all-zeros OID is structurally invalid and can never be uploaded
+(`[422] Oid is invalid`). The original plant used zeros, so the first `git push` of
+the canonical repo was refused, and because the blob lived in history from this
+task's commit onward, fixing HEAD alone could not help: the one blob was rewritten
+across the 23 local-only commits that contained it (`git filter-branch --index-filter`,
+guarded on the old blob's hash; backup branch + bundle kept), and every doc/bead SHA
+citation in the rewritten range was re-pinned to the new hashes. The plant now
+references a real, uploaded object of this repo — which is also the more honest
+fixture: an accidentally-unsmuged pointer in a package points at a real OID too.
+**Rule this earns: a fixture that imitates a scanner's target is itself a target for
+every OTHER scanner in the pipeline — plant valid-shaped data, not degenerate data.**
+
 ## 9. What SHIM-1 inherits
 
 The 5.8-Linux legs are done here; `docs/passport/2026-08-vacuus-shim1.md` carries the

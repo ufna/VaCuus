@@ -14,7 +14,7 @@ scanner itself).
 | `planted_shebang.sh` | SHEBANG | `#!` first bytes; no exec bit; .sh is not blacklisted |
 | `planted_elf.bin` | ELF_MAGIC | first four bytes \x7fELF; text after; no bit, no blacklisted name, no shebang — the renamed-payload shape the class exists for |
 | `node_modules/planted.js` | NODE_MODULES | the DIRECTORY trips; the .js inside is inert |
-| `planted_lfs_pointer.txt` | LFS_POINTER | the pointer signature line; .gitattributes here disables LFS so it commits raw |
+| `planted_lfs_pointer.txt` | LFS_POINTER | the pointer signature line; .gitattributes here disables LFS so it commits raw. The OID is a REAL object of this repo (DevUIBundle's), not zeros: GitHub's push-time scanner parses every pointer-shaped blob and rejects the ref if the object is unknown — a zero-OID plant made the whole repo unpushable (2026-08-02; the dry-run doc §8 carries the story). The scan itself never reads the OID |
 
 **The sibling fixture `../scan-fixture-whitelist/`** exercises the shebang-whitelist
 branch, which no plant above reaches (review round 1's gap): a shebang file at
