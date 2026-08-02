@@ -30,6 +30,7 @@
 #include "Misc/Parse.h"
 #include "Misc/Paths.h"
 #include "Modules/ModuleManager.h"
+#include "UObject/Package.h" // complete UPackage for NewObject(GetTransientPackage()) — UObjectGlobals.h only forward-declares it
 #include "UObject/StrongObjectPtr.h"
 #include "UObject/UObjectGlobals.h"
 #include "RenderingThread.h"

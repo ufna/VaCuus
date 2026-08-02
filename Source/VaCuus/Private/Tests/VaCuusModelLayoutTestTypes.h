@@ -3,6 +3,11 @@
 #pragma once
 
 #include "CoreMinimal.h"
+// CoreMinimal only FORWARD-declares FAnsiString/FUtf8String (ContainersFwd.h:24); the
+// members below need the complete types. Surfaced by the M6 BuildPlugin -StrictIncludes
+// leg — unity/PCH had been supplying them by accident.
+#include "Containers/AnsiString.h"
+#include "Containers/Utf8String.h"
 #include "UObject/ObjectMacros.h"
 
 #include "VaCuusModelLayoutTestTypes.generated.h"

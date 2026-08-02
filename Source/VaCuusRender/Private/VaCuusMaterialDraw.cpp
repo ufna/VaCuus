@@ -252,15 +252,17 @@ bool DrawMaterial_RenderThread(FRHICommandList& RHICmdList, FPassState& PassStat
 		SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
 	}
 
+	// The scratch/commit plumbing goes through the engine-version seam with the
+	// SetParameters overload it feeds (VaCuusEngineCompat.h hotspot 3).
 	{
-		FRHIBatchedShaderParameters& BatchedParameters = RHICmdList.GetScratchShaderParameters();
+		FRHIBatchedShaderParameters& BatchedParameters = VaCuusCompat::GetScratchShaderParameters(RHICmdList);
 		VertexShader->SetParameters(BatchedParameters, PassState.ViewUB, DrawMatrix);
-		RHICmdList.SetBatchedShaderParameters(VertexShader.GetVertexShader(), BatchedParameters);
+		VaCuusCompat::SetBatchedShaderParameters(RHICmdList, VertexShader.GetVertexShader(), BatchedParameters);
 	}
 	{
-		FRHIBatchedShaderParameters& BatchedParameters = RHICmdList.GetScratchShaderParameters();
+		FRHIBatchedShaderParameters& BatchedParameters = VaCuusCompat::GetScratchShaderParameters(RHICmdList);
 		PixelShader->SetParameters(BatchedParameters, PassState.ViewUB, Proxy, *Material);
-		RHICmdList.SetBatchedShaderParameters(PixelShader.GetPixelShader(), BatchedParameters);
+		VaCuusCompat::SetBatchedShaderParameters(RHICmdList, PixelShader.GetPixelShader(), BatchedParameters);
 	}
 
 	RHICmdList.SetStreamSource(0, VertexBuffer, 0);

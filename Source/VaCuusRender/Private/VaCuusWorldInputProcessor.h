@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 
+#include "Engine/HitResult.h" // complete FHitResult (the CachedTraceHit member)
 #include "Framework/Application/IInputProcessor.h"
 #include "Layout/Geometry.h"
 

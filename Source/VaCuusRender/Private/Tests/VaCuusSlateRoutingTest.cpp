@@ -6,6 +6,7 @@
 #include "VaCuus.h"
 #include "VaCuusDocumentHost.h"
 #include "VaCuusEngine.h"
+#include "VaCuusInputEvent.h"
 #include "VaCuusInteractiveSnapshot.h"
 #include "VaCuusRmlCasts.h"
 #include "VaCuusSlateElement.h"

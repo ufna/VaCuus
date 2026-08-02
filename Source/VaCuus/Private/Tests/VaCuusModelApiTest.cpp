@@ -15,6 +15,7 @@
 #include "Engine/GameInstance.h"
 #include "HAL/PlatformProcess.h"
 #include "Misc/ScopeExit.h"
+#include "UObject/Package.h" // complete UPackage for NewObject(GetTransientPackage()) — UObjectGlobals.h only forward-declares it
 #include "UObject/StrongObjectPtr.h"
 #include "UObject/UnrealType.h"
 

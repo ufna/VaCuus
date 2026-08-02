@@ -3,6 +3,7 @@
 #include "SVaCuusWidget.h"
 
 #include "VaCuusDefines.h"
+#include "VaCuusEngineCompat.h"
 #include "VaCuusInputEvent.h"
 #include "VaCuusInteractiveSnapshot.h"
 #include "VaCuusSlateElement.h"
@@ -342,7 +343,9 @@ int32 SVaCuusWidget::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGe
 			LocalElement->SetGlassAllowed_RenderThread(bGlassAllowed);
 		});
 
-	FSlateDrawElement::MakeCustom(OutDrawElements, LayerId, Element);
+	// Through the engine-version seam: MakeCustom's declaring header moved recently
+	// (DrawElementTypes.h:303 on 5.8; VaCuusEngineCompat.h hotspot 4, M6 spec §2(f)).
+	VaCuusCompat::MakeCustomDrawElement(OutDrawElements, LayerId, Element);
 	return LayerId;
 }
 
