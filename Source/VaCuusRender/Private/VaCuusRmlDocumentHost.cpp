@@ -470,10 +470,31 @@ void FVaCuusRmlDocumentHost::RecordAndPublishFrame()
 	// frame costs now, and hiding it outside the scope it pays for would make the
 	// perf log lie about the trade.
 	TUniquePtr<FVaCuusCommandBuffer> Buffer;
+	int32 NumCommands = 0;
+	int32 NumDrawCalls = 0;
 	{
 		VACUUS_PERF_SCOPE(Record);
 		Context->Render();
 		Buffer = Recorder->EndFrameAndPublish();
+
+		// INSIDE the Record scope, the same rule the idle gate's hash follows two lines
+		// above: this walk is part of what recording a frame costs now, and hiding it
+		// outside the scope it is paid in would make the perf log lie about the trade.
+		// It runs only on a PUBLISHED frame (Buffer is null otherwise), i.e. never on the
+		// ~13,000-to-1 idle path, and it is one pass over an array the line above just
+		// finished building -- see FVaCuusViewStatus::LastPublishedCommands for why the
+		// count is taken here and not from the replayer that also counts it.
+		if (Buffer.IsValid())
+		{
+			NumCommands = Buffer->Commands.Num();
+			for (const FVaCuusCommand& Command : Buffer->Commands)
+			{
+				if (Command.Type == EVaCuusCommandType::DrawGeometry || Command.Type == EVaCuusCommandType::DrawShader)
+				{
+					++NumDrawCalls;
+				}
+			}
+		}
 	}
 
 	// Null == the idle gate withheld this frame because it draws what the render
@@ -529,6 +550,11 @@ void FVaCuusRmlDocumentHost::RecordAndPublishFrame()
 		if (bPublished)
 		{
 			Status->FramesPublished.fetch_add(1, std::memory_order_release);
+
+			// Only on a publish, so the pair keeps describing the picture the render
+			// target is actually showing rather than being zeroed by every withheld frame.
+			Status->LastPublishedCommands.store(NumCommands, std::memory_order_release);
+			Status->LastPublishedDrawCalls.store(NumDrawCalls, std::memory_order_release);
 		}
 	}
 }

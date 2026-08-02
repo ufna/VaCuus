@@ -145,6 +145,36 @@ struct FVaCuusViewStatus
 	 */
 	std::atomic<uint64> FramesPublished{0};
 
+	/**
+	 * Size of the newest PUBLISHED command buffer: every recorded command, and the subset
+	 * of them the replayer turns into an RHI draw. Both are 0 until this view publishes.
+	 *
+	 * WHY PER VIEW, when vacuus.M1HUD.PerfLog already prints `draws/frame`. That figure is a
+	 * process-wide ratio of two counters the render thread accumulates over every view's
+	 * replays (VaCuusStats.cpp AddDraws), so with three stacked fullscreen views it answers
+	 * "how much does the stack draw" and CANNOT answer "which layer is drawing it" -- which
+	 * is the only question an overdraw audit asks. These two say, per view, what that view
+	 * put on the screen the last time it had anything new to say.
+	 *
+	 * DRAWS ARE COUNTED FROM THE RECORD, NOT FROM THE REPLAY, so the number is available on
+	 * the UI thread where the buffer is built and needs no channel back from the render
+	 * thread. It counts the command types the replayer has a `++NumDrawCalls` for --
+	 * DrawGeometry, DrawShader (VaCuusReplayRenderer.cpp:397, 445, 542) -- so it is exact
+	 * except for a material DrawGeometry the render thread declines (`bDrawn` false at
+	 * :443-448), which the recorder cannot know about. Layer composites are excluded for the
+	 * same reason: the replayer does not count them either.
+	 *
+	 * NEWEST PUBLISHED, not newest recorded: on a withheld frame the render target still
+	 * carries the last published buffer, so the published one is what is on screen. A view
+	 * that has gone idle keeps reporting the picture it is actually showing.
+	 *
+	 * Written by the UI thread with release ordering, read by the game thread -- the
+	 * FramesPublished protocol exactly, and for the same reason: no lock is worth taking
+	 * for a counter.
+	 */
+	std::atomic<int32> LastPublishedCommands{0};
+	std::atomic<int32> LastPublishedDrawCalls{0};
+
 	//~ Interactive-region snapshot: UI thread produces, game thread consumes.
 	//~ See FVaCuusInteractiveSnapshot for what it means and how stale it is.
 

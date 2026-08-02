@@ -502,6 +502,21 @@ public:
 	uint64 GetFramesPublished() const;
 
 	/**
+	 * What this view's newest PUBLISHED frame draws: total recorded commands, and the
+	 * subset the replayer turns into an RHI draw call. Both 0 before the first publish.
+	 *
+	 * THE PER-VIEW ANSWER vacuus.M1HUD.PerfLog cannot give: its `draws/frame` sums every
+	 * view's replays into one process-wide ratio, so a stack of fullscreen views reports a
+	 * total with no way to attribute it. Read these against each other across the stack to
+	 * find the layer that is painting what nobody sees.
+	 *
+	 * See FVaCuusViewStatus::LastPublishedCommands for the counting rule and its one known
+	 * inexactness (a material draw the render thread declines still counts here).
+	 */
+	int32 GetLastPublishedCommandCount() const;
+	int32 GetLastPublishedDrawCallCount() const;
+
+	/**
 	 * Serial of the newest load this view has ASKED for, and of the newest one the UI
 	 * thread has FINISHED. Equal means the view is showing the answer to the last
 	 * request; a completed serial above your own request's means yours was
