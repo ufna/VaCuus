@@ -108,6 +108,6 @@ the `-/Binaries/...` `-/Intermediate/...` filter fix). Steps:
   document-side: shrink the reference workload (REF-COUNT yields to the gates, by
   spec), or re-baseline the row with the reasoning recorded. The passport prints
   the number and deliberately does not choose.
-- **GPU in or out of the 32 MB RAM row** (passport row 5): recommendation recorded
-  — keep it out, publish the RT as its own line (7.91 MiB @1080p is a view-size
-  choice, not plugin behavior); the row must then say so.
+- **GPU in or out of the 32 MB RAM row** (passport row 5): **DECIDED 2026-08-02 —
+  out, its own line**, per the recorded recommendation (7.91 MiB @1080p is a
+  view-size choice, not plugin behavior); the row now states the exclusion.

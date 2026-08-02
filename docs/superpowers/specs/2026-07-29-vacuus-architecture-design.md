@@ -405,8 +405,8 @@ venue vs the 0.50 budget, with every driver animating every frame. The budget is
 quietly re-baselined: the breach, its attribution (the per-frame animated surfaces
 dominate) and the two document-side routes are in the passport's "The breach" section;
 choosing shrink-the-workload vs re-baseline-the-row is an owner decision. (3) The RAM
-row measured +14.3 MB (Shipping A/B median) with GPU reported separately — whether GPU
-counts against the 32 MB is the recorded OWNER DECISION on the passport's row 5.)*
+row measured +14.3 MB (Shipping A/B median) with GPU reported separately — the owner
+decided (2026-08-02) GPU stays out of the 32 MB row, published as its own passport line.)*
 
 | Metric | Budget | Status |
 |---|---|---|
