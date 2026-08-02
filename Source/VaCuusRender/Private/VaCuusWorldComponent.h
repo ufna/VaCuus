@@ -98,6 +98,20 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "VaCuus")
 	bool bTwoSided = true;
 
+	/**
+	 * Give the render target a full mip chain, regenerated after every PUBLISHED
+	 * frame, and sample it trilinearly. ON buys a panel that stays readable instead of
+	 * strobing when it shrinks on screen (distance, glancing angles): minification
+	 * samples a filtered far mip instead of skipping texels. It costs one
+	 * FGenerateMips pass per published frame (the PerfLog's WorldMips line -- ~zero
+	 * while idle, per engine frame with a live material decorator, exactly like the
+	 * copy) and ~33% more render-target memory. Turn it OFF for a panel that never
+	 * minifies -- always near-1:1 on screen -- or to shave the memory/publish cost;
+	 * runtime changes go through SetGenerateMips().
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "VaCuus")
+	bool bGenerateMips = true;
+
 	/** Re-sizes the view, render target, quad and collision. Degenerate sizes are refused with an Error. */
 	UFUNCTION(BlueprintCallable, Category = "VaCuus")
 	void SetDrawSize(FIntPoint NewDrawSize);
@@ -105,6 +119,10 @@ public:
 	/** See bTwoSided. */
 	UFUNCTION(BlueprintCallable, Category = "VaCuus")
 	void SetTwoSided(bool bInTwoSided);
+
+	/** See bGenerateMips. Re-inits the render target (same shape as a resize); the panel repaints itself. */
+	UFUNCTION(BlueprintCallable, Category = "VaCuus")
+	void SetGenerateMips(bool bInGenerateMips);
 
 	/** Replaces the current document (asynchronous, like everything on the view). */
 	UFUNCTION(BlueprintCallable, Category = "VaCuus")
@@ -182,7 +200,7 @@ private:
 	UPROPERTY(Transient)
 	TWeakObjectPtr<UVaCuusSubsystem> OwningSubsystem;
 
-	/** The copy destination; non-sRGB PF_B8G8R8A8, extent == CurrentDrawSize. */
+	/** The copy destination; non-sRGB PF_B8G8R8A8, extent == CurrentDrawSize, full mip chain iff bGenerateMips. */
 	UPROPERTY(Transient)
 	TObjectPtr<UTextureRenderTarget2D> RenderTarget;
 

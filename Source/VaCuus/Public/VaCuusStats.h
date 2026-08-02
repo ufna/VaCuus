@@ -59,6 +59,7 @@ DECLARE_CYCLE_STAT_EXTERN(TEXT("VaCuus Replay (RT)"), STAT_VaCuusReplay, STATGRO
 DECLARE_CYCLE_STAT_EXTERN(TEXT("VaCuus Glass (RT)"), STAT_VaCuusGlass, STATGROUP_VaCuus, VACUUS_API);
 DECLARE_CYCLE_STAT_EXTERN(TEXT("VaCuus Composite (RT)"), STAT_VaCuusComposite, STATGROUP_VaCuus, VACUUS_API);
 DECLARE_CYCLE_STAT_EXTERN(TEXT("VaCuus WorldCopy (RT)"), STAT_VaCuusWorldCopy, STATGROUP_VaCuus, VACUUS_API);
+DECLARE_CYCLE_STAT_EXTERN(TEXT("VaCuus WorldMips (RT)"), STAT_VaCuusWorldMips, STATGROUP_VaCuus, VACUUS_API);
 
 // (GT) == the game thread, i.e. the spec's own budget line. Three scopes rather than one
 // because they have three different rates and only the sum is the per-frame figure:
@@ -116,10 +117,15 @@ public:
 		// copy-on-publish — WS-COPY-COST's observable: its per-window sample count IS
 		// the copy count, so "~0 when idle" and "per engine frame with a live material
 		// decorator" are both readable from one PerfLog line next to published=N.
+		// WorldMips is the sink's per-publish FGenerateMips over a >1-mip destination
+		// (the component's bGenerateMips): same cadence as WorldCopy while the option
+		// is on, ZERO samples while it is off — the option's cost is a line you can
+		// read next to the copy it follows, not a claim.
 		Replay,
 		Glass,
 		Composite,
 		WorldCopy,
+		WorldMips,
 
 		/**
 		 * The GAME-thread scopes, added for the Task 14 budget gate ("input + snapshot

@@ -343,6 +343,21 @@ void UVaCuusWorldComponent::SetTwoSided(bool bInTwoSided)
 	}
 }
 
+void UVaCuusWorldComponent::SetGenerateMips(bool bInGenerateMips)
+{
+	bGenerateMips = bInGenerateMips;
+
+	// Cheap because the resize path already is: UpdateRenderTarget notices the RT's
+	// bAutoGenerateMips no longer matches, re-inits at the same extent and enqueues
+	// the slot update FIFO behind the resource recreation (spec 2(g)); the slot
+	// update's immediate repaint then refills mip 0 from the replayer's persistent
+	// OutputRT -- and builds the chain when one now exists -- so even an IDLE panel
+	// (no publish coming, the M2 trap) shows pixels again without waiting. Before
+	// registration there is no sink and this is a no-op; OnRegister applies the
+	// property when it builds the RT.
+	UpdateRenderTarget();
+}
+
 void UVaCuusWorldComponent::LoadDocument(FString Path)
 {
 	// Kept even without a view, so a load requested before registration is applied by
@@ -462,16 +477,51 @@ void UVaCuusWorldComponent::UpdateRenderTarget()
 	// (VaCuusReplayRenderer.cpp:170-178). An sRGB-tagged destination would make the
 	// material's sampler hardware-decode pixels the WS-GAMMA decision decodes (or
 	// not) explicitly in the preset's graph.
+	//
+	// THE MIP LEVER, applied before every InitCustomFormat because that is when it is
+	// read: bAutoGenerateMips is the class's ONLY route to NumMips > 1 -- the resource
+	// rebuild computes NumMips = FloorLog2(max side) + 1 from it and 1 otherwise
+	// (CreateResource, TextureRenderTarget2D.cpp:96-103; NPOT DrawSizes are fine, the
+	// generator clamps each level to max(size >> level, 1), GenerateMips.cpp:158-160)
+	// and InitRHI stamps it into the RHI texture with the create flags mip generation
+	// needs (SetNumMips + UAV iff the format supports compute generation,
+	// TextureRenderTarget2D.cpp:498-504, :542, :570-573). The flag's NAME promises a
+	// generation cadence we do not let it have: the engine's own generation site
+	// (UpdateDeferredResource, :649-657) runs only on freshly CLEARED content and only
+	// once per resource (re)init -- the InitRHI-time one-shot (AddToDeferredUpdateList
+	// with OnlyUpdateOnce=true, :578; unhooked after that single run,
+	// TextureRenderTarget.cpp:634-638) and the resize path's UpdateResourceImmediate
+	// below -- so every mip of a REAL frame is built at exactly one place, the sink's
+	// copy tail (VaCuusWorldSink.cpp, GenerateDestinationMips).
+	//
+	// Filter rides the same switch: the preset samples this RT through the resource's
+	// own sampler (the default SSM_FromTextureAsset binds GetResource()->SamplerStateRHI,
+	// MaterialUniformExpressions.cpp:1714), which InitRHI builds from Filter
+	// (TextureRenderTarget2D.cpp:582-592) -- TF_Trilinear maps to trilinear explicitly
+	// (TextureLODSettings.cpp, GetSamplerFilter), blending between the mips the sink
+	// now maintains. TF_Default when off is the class default untouched: the LOD
+	// group's filter, exactly the pre-mips behavior.
 	bool bChanged = false;
 	if (RenderTarget == nullptr)
 	{
 		RenderTarget = NewObject<UTextureRenderTarget2D>(this);
 		RenderTarget->ClearColor = FLinearColor::Transparent;
+		RenderTarget->bAutoGenerateMips = bGenerateMips;
+		RenderTarget->Filter = bGenerateMips ? TF_Trilinear : TF_Default;
+		// KNOWN WINDOW, pre-dating mips and unchanged by them: InitRHI joins the
+		// deferred-update list once (AddToDeferredUpdateList(true),
+		// TextureRenderTarget2D.cpp:578), so the NEXT scene render clears this RT
+		// one time (and, with mips on, regenerates mips of that cleared content) --
+		// a publish that lands before that scene render is wiped and heals on the
+		// following publish. Identical on the single-mip path since M5; accepted.
 		RenderTarget->InitCustomFormat(CurrentDrawSize.X, CurrentDrawSize.Y, PF_B8G8R8A8, /*bInForceLinearGamma=*/true);
 		bChanged = true;
 	}
-	else if (RenderTarget->SizeX != CurrentDrawSize.X || RenderTarget->SizeY != CurrentDrawSize.Y)
+	else if (RenderTarget->SizeX != CurrentDrawSize.X || RenderTarget->SizeY != CurrentDrawSize.Y ||
+			 RenderTarget->bAutoGenerateMips != bGenerateMips)
 	{
+		RenderTarget->bAutoGenerateMips = bGenerateMips;
+		RenderTarget->Filter = bGenerateMips ? TF_Trilinear : TF_Default;
 		RenderTarget->InitCustomFormat(CurrentDrawSize.X, CurrentDrawSize.Y, PF_B8G8R8A8, /*bInForceLinearGamma=*/true);
 		RenderTarget->UpdateResourceImmediate();
 		bChanged = true;
@@ -500,6 +550,30 @@ void UVaCuusWorldComponent::UpdateRenderTarget()
 			// (the UTexture is stable, only its resource moved) but not the
 			// RenderTarget == nullptr create path.
 			MaterialInstance->SetTextureParameterValue(TEXT("VaCuusUI"), RenderTarget);
+
+			// THE SAMPLER REBIND, and it is LOAD-BEARING for the mip toggle, not
+			// hygiene. The MID's uniform-expression cache binds the sampler by
+			// resource at FILL time (SamplerSource = &GetResource()->SamplerStateRHI,
+			// MaterialUniformExpressions.cpp:1714) and nothing on this path refills
+			// it: the SetTextureParameterValue above short-circuits on an unchanged
+			// UTexture pointer (MaterialInstance.cpp:4321-4322), the per-draw check
+			// refills only on a shader-map change (MaterialRenderProxy.cpp:744-752),
+			// and MarkRenderStateDirty below recreates the scene proxy, not this
+			// cache. The TEXTURE slot survives re-init anyway through the
+			// TextureReferenceRHI indirection (MaterialUniformExpressions.cpp:1729,
+			// re-pointed by TextureRenderTarget2D.cpp:576); the SAMPLER slot has no
+			// indirection. A same-Filter re-init (resize) never noticed, because
+			// FTexture::GetOrCreateSamplerState dedupes by initializer into an
+			// immortal global cache (RenderResource.cpp:449-467) -- the "stale"
+			// pointer IS the new resource's sampler. SetGenerateMips is the first
+			// path that CHANGES the initializer, so without this the trilinear half
+			// of the toggle never reaches the GPU. RecacheUniformExpressions
+			// enqueues the invalidate-and-refill (MaterialInstance.cpp:4768-4771 ->
+			// CacheUniformExpressions_GameThread, MaterialRenderProxy.cpp:680-694 ->
+			// InvalidateUniformExpressionCache, :651-678). The create path needs
+			// none of this: OnRegister builds the MID AFTER this RT exists, and a
+			// fresh proxy's first fill already reads the right sampler.
+			MaterialInstance->RecacheUniformExpressions(/*bRecreateUniformBuffer=*/true);
 		}
 		MarkRenderStateDirty();
 	}

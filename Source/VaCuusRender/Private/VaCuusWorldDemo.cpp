@@ -999,6 +999,29 @@ static void SetDecode(const TArray<FString>& Args)
 		});
 }
 
+static void SetMips(const TArray<FString>& Args)
+{
+	if (Args.Num() < 1)
+	{
+		UE_LOG(LogVaCuus, Error, TEXT("vacuus.WorldDemo.Mips expects <0|1> [delaySeconds]"));
+		return;
+	}
+	const bool bEnabled = FCString::Atoi(*Args[0]) != 0;
+	ScheduleAfter(Args.Num() > 1 ? FCString::Atof(*Args[1]) : 0.0f,
+		[bEnabled]
+		{
+			UVaCuusWorldComponent* Component = GState ? GState->Component.Get() : nullptr;
+			if (!Component)
+			{
+				UE_LOG(LogVaCuus, Error, TEXT("vacuus.WorldDemo.Mips: no live world demo panel"));
+				return;
+			}
+			Component->SetGenerateMips(bEnabled);
+			UE_LOG(LogVaCuus, Log, TEXT("World demo: bGenerateMips = %d (RT now %d mip(s))"), bEnabled ? 1 : 0,
+				Component->GetRenderTarget() ? Component->GetRenderTarget()->GetNumMips() : 0);
+		});
+}
+
 static void Shot(const TArray<FString>& Args)
 {
 	ScheduleAfter(Args.Num() > 0 ? FCString::Atof(*Args[0]) : 0.0f,
@@ -1021,8 +1044,9 @@ static void Stats(const TArray<FString>& Args)
 				UE_LOG(LogVaCuus, Display, TEXT("vacuus.WorldDemo.Stats: no live world demo panel"));
 				return;
 			}
-			UE_LOG(LogVaCuus, Display, TEXT("World demo sink: %llu buffer(s) arrived, %llu copie(s), %llu extent skip(s)"),
-				Sink->GetNumArrivals(), Sink->GetNumCopies(), Sink->GetNumExtentSkips());
+			UE_LOG(LogVaCuus, Display,
+				TEXT("World demo sink: %llu buffer(s) arrived, %llu copie(s), %llu extent skip(s), %llu mip generation(s)"),
+				Sink->GetNumArrivals(), Sink->GetNumCopies(), Sink->GetNumExtentSkips(), Sink->GetNumMipGenerations());
 			UE_LOG(LogVaCuus, Display,
 				TEXT("World demo panel: at %s, bounds origin %s extent %s, registered=%d, proxy=%d, visible=%d, RT=%dx%d"),
 				*Component->GetComponentLocation().ToCompactString(), *Component->Bounds.Origin.ToCompactString(),
@@ -1058,6 +1082,12 @@ static FAutoConsoleCommand GDecodeCommand(
 	TEXT("vacuus.WorldDemo.Decode"),
 	TEXT("Set the live panel MID's VaCuusDecodeSRGB scalar (<0|1> [delaySeconds]) — the WS-GAMMA A/B knob."),
 	FConsoleCommandWithArgsDelegate::CreateStatic(&SetDecode));
+
+static FAutoConsoleCommand GMipsCommand(
+	TEXT("vacuus.WorldDemo.Mips"),
+	TEXT("Set the live panel's bGenerateMips (<0|1> [delaySeconds]) — the minification A/B knob: 0 restores the ")
+	TEXT("single-mip strobe, 1 restores the chain."),
+	FConsoleCommandWithArgsDelegate::CreateStatic(&SetMips));
 
 static FAutoConsoleCommand GShotCommand(
 	TEXT("vacuus.WorldDemo.Shot"),

@@ -19,6 +19,7 @@ DEFINE_STAT(STAT_VaCuusReplay);
 DEFINE_STAT(STAT_VaCuusGlass);
 DEFINE_STAT(STAT_VaCuusComposite);
 DEFINE_STAT(STAT_VaCuusWorldCopy);
+DEFINE_STAT(STAT_VaCuusWorldMips);
 DEFINE_STAT(STAT_VaCuusGameTick);
 DEFINE_STAT(STAT_VaCuusSlateTick);
 DEFINE_STAT(STAT_VaCuusOnPaint);
@@ -72,6 +73,7 @@ static const TCHAR* GScopeNames[FVaCuusPerfLog::Num] = {
 	TEXT("Glass         (RT)"),
 	TEXT("Composite     (RT)"),
 	TEXT("WorldCopy     (RT)"),
+	TEXT("WorldMips     (RT)"),
 	TEXT("GameTick      (GT)"),
 	TEXT("SlateTick     (GT)"),
 	TEXT("OnPaint       (GT)"),
