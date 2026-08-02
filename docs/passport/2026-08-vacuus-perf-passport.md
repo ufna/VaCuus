@@ -25,7 +25,8 @@ effect-glyph pathology is present, not dodged.
 | # | Metric | Budget | Dev | cooked-Shipping-Linux | Verdict | Method |
 |---|--------|--------|-----|----------------------|---------|--------|
 | 1 | Game-thread cost/frame (input + snapshots + paint) | ≤ 0.10 ms | **0.012 ms avg / ~0.021 ms p99-sum** (GameTick 0.004 + SlateTick 0.001 + OnPaint 0.001 + ModelSample 0.006; Input 0 events) | **0.008–0.009 ms avg / ~0.017 p99-sum** (GameTick 0.003 + SlateTick 0.001 + OnPaint 0.000 + ModelSample 0.004 + Input 0.000 × ~790 ev/win) | PASS (≈8–11× headroom) | Dev: 100 s PerfLog soak (R1): `-game -RenderOffscreen -ForceRes -resx=1920 -resy=1080 -ExecCmds="vacuus.M1HUD.PerfLog 1, vacuus.RefHud, …"`, 22,727 frames @227 fps. Shipping: staged build, `-VaCuusRefHud -VaCuusPerfLog`, 95 s, 22,292 frames @234.6 fps, steady windows. Per-frame sum of the once-per-frame GT scopes incl. the new OnPaint (bead akj.6.38). The five rare-EVENT handlers (OnMouseEnter/Leave/CaptureLost, OnFocusReceived/Lost) carry no scope — arch:369's stated unmeasured remainder of rare-event cost, outside every per-frame sum. |
-| 2 | UI-thread Update + Record/frame | ≤ 0.50 ms | **1.077 ms avg / 1.672 ms p99-sum** (Update 0.659/1.003 + Record 0.418/0.669) — **BREACH, ~2.2× over** | **1.050 ms avg / ~1.67 p99-sum** (steady windows: Update 0.630–0.653 avg over the 19 steady windows, median 0.642, p99 1.01–1.03 + Record 0.394–0.404/0.64–0.66) — **the same breach in the row's own venue** | **FAIL at reference scale** (see "The breach" below) | Dev: R1 soak; Shipping: `-VaCuusRefHud -VaCuusPerfLog` soak, steady windows (the boot window runs hot — first-window Update avg 1.40 while Vulkan PSOs and IoStore warm — and is excluded from the steady figure but included in row 7's spike accounting). Update+Record summed per the arch row's definition; JS drivers ride separately in JsPump (row 2b). |
+| 2 | UI-thread Update + Record/frame — typical HUD scale | ≤ 0.50 ms | **0.052 ms avg / 0.113 p99 (M1 HUD), 0.023 avg / 0.060 p99 (M2 demo)** — M2-era editor venue @1080p, 13k frames each | not separately measured at typical scale — bounded above by row 2a's Shipping figure | PASS (≈10–20× headroom at the measured scale) | The M2 soak pair (arch §11 row 2's original figures; venue stated there). The 0.50 budget stands at this scale; the reference worst case moved to its own row 2a by the owner's route-B decision (2026-08-02) — see "The re-baseline" below. |
+| 2a | UI-thread Update + Record/frame — reference worst case (1,732 always-animated nodes) | ≤ 1.2 ms steady avg (re-baselined 2026-08-02, route B) | **1.077 ms avg / 1.672 ms p99-sum** (Update 0.659/1.003 + Record 0.418/0.669) | **1.050 ms avg / ~1.67 p99-sum** (steady windows: Update 0.630–0.653 avg over the 19 steady windows, median 0.642, p99 1.01–1.03 + Record 0.394–0.404/0.64–0.66) | **PASS (Shipping steady avg, ~14% headroom; an avg budget — p99 printed, not gated)** | Dev: R1 soak; Shipping: `-VaCuusRefHud -VaCuusPerfLog` soak, steady windows (the boot window runs hot — first-window Update avg 1.40 while Vulkan PSOs and IoStore warm — and is excluded from the steady figure but included in row 7's spike accounting). Update+Record summed per the arch row's definition; JS drivers ride separately in JsPump (row 2b). The original 0.50 budget was breached ~2.1× at this scale — the history and the reasoning are in "The re-baseline" below. |
 | 2b | JS drivers (pump)/frame — informational, no budget row | — | 0.295 ms avg / 0.460 p99 (blips + killfeed + damage timers) | 0.326–0.331 avg / 0.478–0.487 p99 | — | Same soaks, JsPump scope. Isolation: Exp-BLIP-DRIVER (below). |
 | 3 | Render-thread replay (re-replay frames) | ≤ 0.50 ms @1080p | **0.403 ms avg / 0.589 ms p99** @ 908.3 draws/frame — avg PASS, **p99 1.18× over** | **0.179–0.199 ms avg / 0.292–0.298 p99** @ 908.3 draws/frame — **PASS, ~1.7× headroom at p99** | Dev-marginal / **Shipping PASS** | Same soaks, Replay scope; every frame re-replays on this workload (publishes 100%) — the row's worst case by construction. The Dev p99 breach is consistent with Development-RHI overhead (validation, uninstrumented debug paths) [inference — not isolated]; the shipped configuration is the row's venue and passes. |
 | 4 | Composite-only frames (idle UI) | ≤ 0.05 ms | **0.003 ms avg / 0.007 p99 / 0.079 max** | **0.002 avg / 0.003–0.004 p99** | PASS (≈12–25×) | Same soaks, Composite scope (graph-build cost; execution under the RDG event). Confirmed idle venue: the static-HUD idle session (row 8b) where composite is the entire per-frame render cost. |
@@ -34,21 +35,31 @@ effect-glyph pathology is present, not dodged.
 | 7 | Frame-drop on document load | 0 GT hitches > 1 ms | **PASS — GT maxima in the load window: GameTick 0.015 / SlateTick 0.012 / OnPaint 0.018 ms.** UI-thread build spike (not a GT hitch, reported by the arch row's own demand): DrainCommands max **10.6 ms** = parse + first layout + **document-ready JS seeding** (52 killfeed rows × 8 nodes via innerRML + 64 blips + 24 pool spans ≈ 600 nodes built in ONE JsPump at ready); first Update **3.5 ms** (data-for clone build); first Record **5.8 ms** incl. **~4.2 ms effect-glyph generation** (Exp-GLYPH-WARMUP: 5.81 with glow vs 1.65 without, steady-state Record identical) | **PASS — GT maxima in the load window: GameTick 0.029 / SlateTick 0.038 / OnPaint 0.004 ms.** UI spike: DrainCommands max **11.2 ms** (same load event); first-window Update max **13.5 ms** / Record max **11.8 ms** — larger than Dev because Vulkan PSO creation and IoStore first-touch land in the same window; settles to steady by window 2 | PASS (GT, both venues); UI spike documented | Dev: R1 boot window vs R2 control (identical run, `font-effect: glow` stripped from refhud.rcss). Shipping: ship-perf boot window. The document-ready seeding is the measured event — the boot IS the warm-up (the HUD boots at declared steady state), and it lands on the UI thread where the game-thread hitch gate structurally cannot see it; that is the architecture doing its job, and the spike numbers are printed here so nobody mistakes "no GT hitch" for "free". |
 | 8 | Idle-gate publish ratio (static content) | — (idle economy) | RefHud: **published 100%** of 22,727 frames (animates every frame, by design). Static M1 HUD: **1 publish / 6,910 recorded (100.0% idle windows)**, Replay ran ONCE (1.49 ms, atlas+first upload), composite 0.004 avg is the whole per-frame render cost. Glass idle: **0 publishes / 3,363 recorded** while Glass sampled every engine frame (0.011 avg) | RefHud: published 100% of 22,275 (same by design) | PASS (the gate exists and bites where content is static) | Dev sessions: `vacuus.M1HUD + PerfLog` 35 s; `vacuus.M5Glass + PerfLog` 25 s; Shipping: the RefHud soak's own publish line. |
 
-### The breach (row 2), stated plainly
+### The re-baseline (row 2a), decided 2026-08-02 — the section formerly titled "The breach"
 
-The 0.50 ms UI row does not survive contact with the full 1,732-node reference workload on this
-machine — in Development AND in the row's own venue, cooked Shipping (steady Update+Record
-1.05 ms avg there): Update alone averages ~0.65 ms with every driver running. The spec
-predicted the risk ("the churn breach already lives in this budget's regime",
-refhud-passport.md §3) and pre-assigned the consequence: **breach routes are document-side**
-(fewer per-frame animated surfaces, smaller standing DOM), and **REF-COUNT yields to the gates**
-(spec §2(g)) — the budgets are gates, the 1,732 count is a marketing claim made checkable. What
-this passport does NOT do is quietly re-baseline the budget; the number is printed, the owner
-decides: shrink the reference workload, or re-baseline the row with the reasoning recorded.
-Attribution from the same soak: the per-frame animated surfaces dominate (rAF blip transforms +
-18 keyframe sweeps + per-frame scalar bindings land in Update's 0.66 avg; the sparse scoreboard
-beats are invisible above p99 — see Exp-REF-SCALE). Steady-state Record 0.42 avg scales with the
-908 draws/frame command stream.
+The original 0.50 ms UI row did not survive contact with the full 1,732-node reference workload
+on this machine — in Development AND in the row's own venue, cooked Shipping (steady
+Update+Record 1.05 ms avg there): Update alone averages ~0.65 ms with every driver running. The
+spec predicted the risk ("the churn breach already lives in this budget's regime",
+refhud-passport.md §3) and pre-assigned the consequence: breach routes are document-side, and
+REF-COUNT yields to the gates (spec §2(g)). This passport printed the number without quietly
+re-baselining, and the owner then decided — **route B, split the row**: the 0.50 ms budget
+stands at typical HUD scale (row 2, measured 10–20× inside), and the reference worst case
+carries its own ≤1.2 ms steady-avg budget (row 2a, measured 1.05 — ~14% headroom).
+
+Reasoning, recorded per spec §2(g): (1) the reference HUD exists to be the honest worst case —
+shrinking it to fit the old budget would destroy the thing it proves; (2) the cost lives on the
+dedicated UI thread — 1.05 ms is ~6% of that thread's 16.6 ms frame, and the game thread pays
+row 1's ~0.01 ms regardless; (3) the 0.50 figure was set at M2 scale, when the arch table itself
+recorded that the reference margin was "not the final margin", and no external claim had been
+published against it.
+
+Attribution from the same soak (unchanged by the decision): the per-frame animated surfaces
+dominate (rAF blip transforms + 18 keyframe sweeps + per-frame scalar bindings land in Update's
+0.66 avg; the sparse scoreboard beats are invisible above p99 — see Exp-REF-SCALE). Steady-state
+Record 0.42 avg scales with the 908 draws/frame command stream. The document-side levers (fewer
+per-frame movers, smaller standing DOM) remain the buyer's path to sit inside 0.50 at their own
+scale — perf-guide, "The reference row, and how to stay inside 0.50".
 
 ### RAM (row 5), all three layers
 

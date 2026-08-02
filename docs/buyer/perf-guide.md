@@ -17,7 +17,8 @@ owner-hardware handoff (`owner-handoff.md`), never guessed.
 | Metric | Budget | Dev | Shipping | Verdict |
 |---|---|---|---|---|
 | Game-thread cost/frame | ≤ 0.10 ms | 0.012 avg | 0.008–0.009 avg | PASS, ~8–11× headroom |
-| UI-thread Update+Record/frame | ≤ 0.50 ms | 1.077 avg | 1.050 avg | **FAIL at reference scale — see "The breach"** |
+| UI-thread Update+Record — typical HUD scale | ≤ 0.50 ms | 0.052 avg (M1 HUD) / 0.023 (M2 demo) | bounded above by the reference row | PASS, ~10–20× headroom |
+| UI-thread Update+Record — reference worst case (1,732 live nodes) | ≤ 1.2 ms steady avg (re-baselined 2026-08-02) | 1.077 avg | 1.050 avg | **PASS, ~14% avg headroom — see below** |
 | JS drivers (pump), informational | — | 0.295 avg | 0.33 avg | blips + killfeed + damage timers |
 | Render-thread replay | ≤ 0.50 ms | 0.403 avg / 0.589 p99 | 0.179–0.199 avg | PASS in Shipping (~1.7× at p99); Dev p99 marginal |
 | Composite-only (idle UI) | ≤ 0.05 ms | 0.003 avg | 0.002 avg | PASS, ~12–25× |
@@ -30,12 +31,15 @@ nodes with every driver running, the game thread pays ~0.01 ms/frame — queue w
 and a snapshot read, nothing else. The costs live on the UI thread, where they
 belong.
 
-## The breach, and what you do about it
+## The reference row, and how to stay inside 0.50
 
-The 0.50 ms UI-thread row does not survive the full reference workload on this
-machine: steady Update+Record is ~1.05 ms in Shipping (Update alone ~0.65 ms with
-every driver live). The passport prints the number instead of re-baselining the
-budget; the breach routes are **document-side** and they are yours too:
+The original single 0.50 ms UI-thread budget did not survive the full reference
+workload on this machine: steady Update+Record is ~1.05 ms in Shipping (Update alone
+~0.65 ms with every driver live). The passport printed the number first, and the
+owner then split the row with the reasoning recorded (passport, "The re-baseline",
+2026-08-02): **0.50 ms stands at typical HUD scale; the 1,732-node worst case
+budgets 1.2 ms steady avg on its own row.** The levers below are how YOUR document
+sits inside 0.50 at your scale — they are **document-side** and they are yours:
 
 1. **Fewer per-frame animated surfaces.** Attribution from the soak: the per-frame
    movers dominate (64 rAF blip transforms + 18 keyframe sweeps + per-frame scalar
