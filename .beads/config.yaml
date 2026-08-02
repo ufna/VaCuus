@@ -72,3 +72,5 @@
 # - github.token    → use GITHUB_TOKEN env var instead
 
 export.auto: true
+sync:
+    remote: "git+ssh://git@github.com/ufna/VaCuus.git"
