@@ -496,7 +496,7 @@ void UVaCuusWorldComponent::UpdateRenderTarget()
 	//
 	// Filter rides the same switch: the preset samples this RT through the resource's
 	// own sampler (the default SSM_FromTextureAsset binds GetResource()->SamplerStateRHI,
-	// MaterialUniformExpressions.cpp:1715), which InitRHI builds from Filter
+	// MaterialUniformExpressions.cpp:1714), which InitRHI builds from Filter
 	// (TextureRenderTarget2D.cpp:582-592) -- TF_Trilinear maps to trilinear explicitly
 	// (TextureLODSettings.cpp, GetSamplerFilter), blending between the mips the sink
 	// now maintains. TF_Default when off is the class default untouched: the LOD
@@ -554,7 +554,7 @@ void UVaCuusWorldComponent::UpdateRenderTarget()
 			// THE SAMPLER REBIND, and it is LOAD-BEARING for the mip toggle, not
 			// hygiene. The MID's uniform-expression cache binds the sampler by
 			// resource at FILL time (SamplerSource = &GetResource()->SamplerStateRHI,
-			// MaterialUniformExpressions.cpp:1715) and nothing on this path refills
+			// MaterialUniformExpressions.cpp:1714) and nothing on this path refills
 			// it: the SetTextureParameterValue above short-circuits on an unchanged
 			// UTexture pointer (MaterialInstance.cpp:4321-4322), the per-draw check
 			// refills only on a shader-map change (MaterialRenderProxy.cpp:744-752),

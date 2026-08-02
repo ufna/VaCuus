@@ -504,7 +504,7 @@ bool FVaCuusWorldResizeRaceTest::RunTest(const FString& Parameters)
  *
  * THE SAMPLER IS THE INVARIANT, NOT THE UPROPERTY: what the material draws with is
  * the resource's SamplerStateRHI, bound by identity into the MID's
- * uniform-expression cache at fill time (MaterialUniformExpressions.cpp:1715) and
+ * uniform-expression cache at fill time (MaterialUniformExpressions.cpp:1714) and
  * re-carried there only by UpdateRenderTarget's RecacheUniformExpressions -- a
  * Filter UPROPERTY that never reached a new sampler object would pass a
  * property-level test while the GPU kept filtering with the old one. So each toggle
