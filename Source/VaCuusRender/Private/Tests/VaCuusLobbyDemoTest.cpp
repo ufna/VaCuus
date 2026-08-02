@@ -57,4 +57,46 @@ bool FVaCuusLobbyDemoRefusalTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+/**
+ * vacuus.LobbyDemo.Backdrop's own refusals. The command creates and destroys a VIEW now,
+ * so "no live demo" is the difference between a no-op and a view with no stack to sit
+ * under -- and the argument check is what stops `Backdrop` (no argument at all) from being
+ * read as `Backdrop 0` by FCString::Atoi, which answers 0 for any unparseable string.
+ *
+ * Both are reachable in this host with no demo running, which is the only state automation
+ * has: there is no game viewport here, so no demo can exist to be found.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusLobbyDemoBackdropRefusalTest, "VaCuus.Render.LobbyDemo.BackdropRefuses",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusLobbyDemoBackdropRefusalTest::RunTest(const FString& Parameters)
+{
+	if (GEngine == nullptr)
+	{
+		AddInfo(TEXT("No GEngine; console commands cannot be dispatched. Skipping."));
+		return true;
+	}
+
+	// No argument: refused on the ARGUMENT, before anything looks for a demo. The two
+	// errors are distinct on purpose -- an argument-less call that reported "no live lobby
+	// demo" would send the reader looking for the wrong problem.
+	//
+	// PLAIN, not the regex form the rest of this file uses: AddExpectedError treats its
+	// pattern as a regex by default (AutomationTest.h:1854, `bool IsRegex = true`), and
+	// this message's literal `[delaySeconds]` would be read as a character class matching
+	// one letter. AddExpectedErrorPlain (:1866) compares the text as text.
+	AddExpectedErrorPlain(TEXT("vacuus.LobbyDemo.Backdrop expects <0|1> [delaySeconds]"),
+		EAutomationExpectedErrorFlags::Contains, 1);
+	GEngine->Exec(nullptr, TEXT("vacuus.LobbyDemo.Backdrop"));
+
+	// Argument present, no demo: refused on the STATE. Both directions, because create and
+	// destroy take different paths to the same answer and only one of them used to exist.
+	AddExpectedError(TEXT("vacuus.LobbyDemo.Backdrop: no live lobby demo"),
+		EAutomationExpectedErrorFlags::Contains, 2);
+	GEngine->Exec(nullptr, TEXT("vacuus.LobbyDemo.Backdrop 1"));
+	GEngine->Exec(nullptr, TEXT("vacuus.LobbyDemo.Backdrop 0"));
+
+	return true;
+}
+
 #endif	  // WITH_AUTOMATION_TESTS
