@@ -13,12 +13,24 @@
  *
  * THREE STACKED VIEWS, ONE INPUT DOOR:
  *
- *   backdrop (bottom)  a host-owned inline document showing img/bg.png. Chrome owns
- *                      the backdrop markup, but chrome composites ON TOP -- its opaque
+ *   backdrop (bottom)  backdrop.rml: img/bg.png plus the #bg-fx drift layer. Chrome
+ *                      owns the same markup, but chrome composites ON TOP -- its opaque
  *                      full-bleed #bg would hide every screen -- so the host hides
- *                      chrome's #bg and paints the same art in the one layer that is
+ *                      chrome's #bg and paints the art in the one layer that is
  *                      genuinely behind everything. As its own view it also never
  *                      republishes on navigation.
+ *
+ *                      SINCE `vacuus.LobbyDemo.Backdrop`, THE BAKED ART IS OFF BY
+ *                      DEFAULT and the lobby floats over the live 3D scene. bg.png is
+ *                      the ONLY opaque full-bleed thing in the whole document set --
+ *                      colour type 2, no alpha channel -- so suppressing that one <img>
+ *                      is the entire change: RmlUi's background-color default is
+ *                      `transparent` (StyleSheetSpecification.cpp:343) so every body is
+ *                      already see-through, the per-view RT clears to
+ *                      FClearValueBinding::Transparent (VaCuusReplayRenderer.cpp:175)
+ *                      and Slate composites premultiplied
+ *                      (VaCuusSlateElement.cpp:216-217). The VIEW stays: it carries the
+ *                      #bg-fx drift, which has nothing to do with the baked plate.
  *   content (middle)   the screen document, swapped by UVaCuusView::LoadDocument.
  *   chrome (top)       chrome.rml, loaded once and NEVER reloaded -- top bar, rails,
  *                      chrome-level overlays. Screen overlays (ov-match/ov-buy/ov-bp)
@@ -72,6 +84,8 @@
 #include <RmlUi/Core.h>
 #include <RmlUi/Core/Elements/ElementFormControl.h>
 
+#include <atomic>
+
 /** Shared with VaCuusRender.cpp (same module, external linkage there) -- the SpawnM5HudQuad pattern. */
 namespace VaCuusM1HUD
 {
@@ -83,9 +97,22 @@ bool ClickWhereThePointerIs(const FVector2D& Position);
 
 namespace VaCuusLobbyDemo
 {
+/**
+ * Which of the three stacked views a host decorator drives. An enum and not the bool
+ * this used to be: three roles cannot be spelled in a bool, so every call site had to
+ * be revisited rather than silently keeping its old meaning when the backdrop joined.
+ */
+enum class ERole : uint8
+{
+	Backdrop = 0,
+	Content = 1,
+	Chrome = 2,
+};
+
 /** The persistent chrome and the boot screen; the other four screens arrive by navigation. */
 static const TCHAR* GChromeVfsPath = TEXT("chrome.rml");
 static const TCHAR* GLobbyVfsPath = TEXT("lobby.rml");
+static const TCHAR* GBackdropVfsPath = TEXT("backdrop.rml");
 
 /** The event the UI thread emits for navigation and the payload key naming the screen. */
 static const TCHAR* GNavEventName = TEXT("lobby_nav");
@@ -212,10 +239,17 @@ class FVaCuusLobbyBrain final : public Rml::EventListener
 public:
 	//~ ------------------------------------------------------------ host hooks (UI thread)
 
-	void OnHostInitialized(bool bChrome, uint32 ViewId)
+	void OnHostInitialized(ERole Role, uint32 ViewId)
 	{
 		check(FVaCuusUIThread::IsInUIThread());
-		(bChrome ? ChromeViewId : ContentViewId) = ViewId;
+		if (Role == ERole::Chrome)
+		{
+			ChromeViewId = ViewId;
+		}
+		else if (Role == ERole::Content)
+		{
+			ContentViewId = ViewId;
+		}
 
 		// Fonts are process-global in RmlUi, so once is enough, and BEFORE any document
 		// parses (this runs while the AddView command drains; every LoadDocument was
@@ -247,10 +281,10 @@ public:
 		}
 	}
 
-	void OnHostShutdown(bool bChrome)
+	void OnHostShutdown(ERole Role)
 	{
 		check(FVaCuusUIThread::IsInUIThread());
-		(bChrome ? ChromeDoc : ContentDoc) = nullptr;
+		DocumentFor(Role) = nullptr;
 	}
 
 	/** Every view resize passes through here so the hybrid floor can be re-evaluated. */
@@ -269,7 +303,7 @@ public:
 	 * LAST in the context: Context::LoadDocument appends, and a load that FAILED kept
 	 * the old document up -- which the same-pointer guard turns into a no-op here.
 	 */
-	void OnDocumentLoaded(bool bChrome, Rml::Context* Context)
+	void OnDocumentLoaded(ERole Role, Rml::Context* Context)
 	{
 		check(FVaCuusUIThread::IsInUIThread());
 		if (Context == nullptr || Context->GetNumDocuments() == 0)
@@ -278,7 +312,7 @@ public:
 		}
 
 		Rml::ElementDocument* Document = Context->GetDocument(Context->GetNumDocuments() - 1);
-		Rml::ElementDocument*& Stored = bChrome ? ChromeDoc : ContentDoc;
+		Rml::ElementDocument*& Stored = DocumentFor(Role);
 		if (Document == nullptr || Document == Stored)
 		{
 			// Same pointer: a failed reload (AdoptDocument kept the old document) or a
@@ -286,6 +320,20 @@ public:
 			return;
 		}
 		Stored = Document;
+
+		if (Role == ERole::Backdrop)
+		{
+			// The backdrop is inert on purpose and takes NONE of the three treatments
+			// below. No click listener: its widget is HitTestInvisible and its view is
+			// never sent input, so a listener could not fire. No interactive markers:
+			// it owns no control. And NO HYBRID FLOOR -- letterboxing the backdrop
+			// would leave the sub-1500x1000 bars showing the scene through a hole the
+			// baked art used to cover, which is a resolution-dependent look nobody
+			// asked for; a backdrop fills the window at every size, which is what its
+			// own `width/height: 100%` already says.
+			ApplyBakedBackdrop(bBakedBackdropRequested.load(std::memory_order_relaxed));
+			return;
+		}
 
 		// Bubble-phase click listener on the document element (the <body>): every
 		// descendant click bubbles here, the one-listener shape preview.js uses.
@@ -307,7 +355,7 @@ public:
 		ApplyInteractiveMarkers(Document);
 		ApplyHybridFloor(Document);
 
-		if (bChrome)
+		if (Role == ERole::Chrome)
 		{
 			// Chrome composites ABOVE the content, so its own opaque full-bleed backdrop
 			// must not draw -- the backdrop view under everything shows the same art.
@@ -328,7 +376,7 @@ public:
 		}
 	}
 
-	/** Once per UI frame from either host: the matchmaking clock (preview.js's 4 s setTimeout). */
+	/** Once per UI frame from every host: the matchmaking clock and the backdrop toggle. */
 	void Pump()
 	{
 		check(FVaCuusUIThread::IsInUIThread());
@@ -340,6 +388,23 @@ public:
 				ContentDoc->SetClass("match-found", true);
 			}
 		}
+
+		// The console toggle's UI-thread landing. ONLY on a change: the property write
+		// dirties the element, and dirtying it every frame would defeat the withheld
+		// publication that keeps a static lobby at ~13,000 recorded frames to 1
+		// published. The atomic is the whole cross-thread story -- the game thread
+		// writes a bool, the RmlUi call still happens here, on the UI thread.
+		const bool bRequested = bBakedBackdropRequested.load(std::memory_order_relaxed);
+		if (bRequested != bBakedBackdropApplied && BackdropDoc != nullptr)
+		{
+			ApplyBakedBackdrop(bRequested);
+		}
+	}
+
+	/** Game thread: ask for the baked plate to be shown or suppressed. Applied in Pump(). */
+	void RequestBakedBackdrop(bool bShow)
+	{
+		bBakedBackdropRequested.store(bShow, std::memory_order_relaxed);
 	}
 
 	//~ ------------------------------------------------------------ Rml::EventListener
@@ -355,6 +420,58 @@ public:
 	}
 
 private:
+	//~ ------------------------------------------------------------ the backdrop plate
+
+	/**
+	 * Show or suppress backdrop.rml's `img#bg` -- the one opaque full-bleed element in
+	 * the demo's whole document set, and therefore the only thing between the lobby and
+	 * the 3D scene. UI thread only.
+	 *
+	 * SUPPRESSED WITH `display`, NOT `visibility`, and not by dropping the view: `display:
+	 * none` takes the element out of layout so the recorder never emits its textured quad
+	 * at all, where `visibility: hidden` still lays it out; and the VIEW has to survive
+	 * because its sibling #bg-fx is the M5 drift layer. One inline property on one
+	 * element -- the markup stays untouched on disk, so the browser twins that link the
+	 * same sheets stay byte-identical.
+	 *
+	 * Restoring uses RemoveProperty rather than an inline "block", the ApplyHybridFloor
+	 * rule in this same file: an inline copy of the sheet's own value would be a second
+	 * source of truth for the same fact. backdrop.rml's <style> already says
+	 * `#bg { display: block; ... }`.
+	 */
+	void ApplyBakedBackdrop(bool bShow)
+	{
+		check(FVaCuusUIThread::IsInUIThread());
+		bBakedBackdropApplied = bShow;
+		if (BackdropDoc == nullptr)
+		{
+			return;
+		}
+		if (Rml::Element* Bg = BackdropDoc->GetElementById("bg"))
+		{
+			if (bShow)
+			{
+				Bg->RemoveProperty("display");
+			}
+			else
+			{
+				Bg->SetProperty("display", "none");
+			}
+		}
+	}
+
+	/**
+	 * The document slot for a role. An ARRAY indexed by the enum, with the member-count
+	 * static_assert beside it: adding a fourth role fails to compile here instead of
+	 * quietly aliasing onto an existing slot, which a switch with a default would do.
+	 */
+	Rml::ElementDocument*& DocumentFor(ERole Role)
+	{
+		const int32 Index = int32(Role);
+		check(Index >= 0 && Index < UE_ARRAY_COUNT(Documents));
+		return Documents[Index];
+	}
+
 	//~ ------------------------------------------------------------ closest() helpers
 
 	static Rml::Element* ClosestId(Rml::Element* Element, const char* Id)
@@ -911,11 +1028,34 @@ private:
 
 	//~ ------------------------------------------------------------ state (UI thread only)
 
-	Rml::ElementDocument* ChromeDoc = nullptr;
-	Rml::ElementDocument* ContentDoc = nullptr;
+	/**
+	 * One slot per ERole, indexed by it. The static_assert is the guard the enum cannot
+	 * carry itself: a fourth role stops compiling here rather than indexing past the end.
+	 */
+	Rml::ElementDocument* Documents[3] = {};
+	static_assert(int32(ERole::Chrome) + 1 == UE_ARRAY_COUNT(Documents),
+		"ERole gained an enumerator; give it a slot in Documents (and a name below)");
+
+	//~ Names for the slots, so the state machine below reads as prose. References, so
+	//~ there is exactly one storage location per role and no copy to keep in sync.
+	Rml::ElementDocument*& BackdropDoc = Documents[int32(ERole::Backdrop)];
+	Rml::ElementDocument*& ContentDoc = Documents[int32(ERole::Content)];
+	Rml::ElementDocument*& ChromeDoc = Documents[int32(ERole::Chrome)];
+
 	uint32 ChromeViewId = 0;
 	uint32 ContentViewId = 0;
 	bool bFontsLoaded = false;
+
+	/**
+	 * The baked-backdrop toggle. Written by the console command on the GAME thread, read
+	 * by Pump() on the UI thread -- the only member of this class that crosses threads,
+	 * which is why it is the only atomic one. Default false: the lobby floats over the
+	 * live scene unless someone asks for the plate back.
+	 */
+	std::atomic<bool> bBakedBackdropRequested{false};
+
+	/** UI thread only: what ApplyBakedBackdrop last wrote, so Pump() only acts on a change. */
+	bool bBakedBackdropApplied = false;
 
 	/** Which screen chrome believes is up; flips at click time, the document follows. */
 	Rml::String CurrentScreen = "lobby";
@@ -946,10 +1086,10 @@ private:
 class FVaCuusLobbyDemoHost final : public IVaCuusDocumentHost
 {
 public:
-	FVaCuusLobbyDemoHost(TUniquePtr<IVaCuusDocumentHost> InInner, const TSharedRef<FVaCuusLobbyBrain>& InBrain, bool bInChrome)
+	FVaCuusLobbyDemoHost(TUniquePtr<IVaCuusDocumentHost> InInner, const TSharedRef<FVaCuusLobbyBrain>& InBrain, ERole InRole)
 		: Inner(MoveTemp(InInner))
 		, Brain(InBrain)
-		, bChrome(bInChrome)
+		, Role(InRole)
 	{
 	}
 
@@ -960,13 +1100,13 @@ public:
 		{
 			return false;
 		}
-		Brain->OnHostInitialized(bChrome, InViewId);
+		Brain->OnHostInitialized(Role, InViewId);
 		return true;
 	}
 
 	virtual void Shutdown() override
 	{
-		Brain->OnHostShutdown(bChrome);
+		Brain->OnHostShutdown(Role);
 		Inner->Shutdown();
 	}
 
@@ -982,18 +1122,18 @@ public:
 	virtual void LoadDocumentFromFile(const FString& VfsPath, uint64 LoadSerial) override
 	{
 		Inner->LoadDocumentFromFile(VfsPath, LoadSerial);
-		Brain->OnDocumentLoaded(bChrome, Inner->GetContext());
+		Brain->OnDocumentLoaded(Role, Inner->GetContext());
 	}
 
 	virtual void LoadDocumentFromMemory(const FString& RmlSource, uint64 LoadSerial) override
 	{
 		Inner->LoadDocumentFromMemory(RmlSource, LoadSerial);
-		Brain->OnDocumentLoaded(bChrome, Inner->GetContext());
+		Brain->OnDocumentLoaded(Role, Inner->GetContext());
 	}
 
 	virtual void CloseDocument() override
 	{
-		Brain->OnHostShutdown(bChrome);
+		Brain->OnHostShutdown(Role);
 		Inner->CloseDocument();
 	}
 
@@ -1013,7 +1153,7 @@ public:
 private:
 	TUniquePtr<IVaCuusDocumentHost> Inner;
 	TSharedRef<FVaCuusLobbyBrain> Brain;
-	bool bChrome = false;
+	ERole Role = ERole::Content;
 };
 
 /**
@@ -1212,6 +1352,13 @@ struct FState
 
 	/** The OnJsEvent adapter carrying navigation requests to LoadDocument (WorldDemo shape). */
 	TStrongObjectPtr<UVaCuusDemoWriteListener> NavListener;
+
+	/**
+	 * The brain, so vacuus.LobbyDemo.Backdrop can reach it from the game thread. The
+	 * hosts hold their own refs; this one exists only to give the console command a
+	 * handle that TearDown drops with everything else.
+	 */
+	TSharedPtr<FVaCuusLobbyBrain> Brain;
 };
 
 static TUniquePtr<FState> GState;
@@ -1355,13 +1502,17 @@ static void Toggle()
 	TSharedRef<FVaCuusSlateElement> ContentElement = MakeShared<FVaCuusSlateElement>();
 	TSharedRef<FVaCuusSlateElement> ChromeElement = MakeShared<FVaCuusSlateElement>();
 
-	UVaCuusView* BackdropView =
-		Subsystem->CreateView(MakeUnique<FVaCuusRmlDocumentHost>(BackdropElement), InitialViewSize);
+	// The backdrop host is DECORATED too (it was a bare FVaCuusRmlDocumentHost until the
+	// scene became visible through it): the brain needs a UI-thread hook on the backdrop
+	// document to suppress its `img#bg`, and Pump() is where the console toggle lands.
+	UVaCuusView* BackdropView = Subsystem->CreateView(
+		MakeUnique<FVaCuusLobbyDemoHost>(MakeUnique<FVaCuusRmlDocumentHost>(BackdropElement), Brain, ERole::Backdrop),
+		InitialViewSize);
 	UVaCuusView* ContentView = Subsystem->CreateView(
-		MakeUnique<FVaCuusLobbyDemoHost>(MakeUnique<FVaCuusRmlDocumentHost>(ContentElement), Brain, /*bChrome=*/false),
+		MakeUnique<FVaCuusLobbyDemoHost>(MakeUnique<FVaCuusRmlDocumentHost>(ContentElement), Brain, ERole::Content),
 		InitialViewSize);
 	UVaCuusView* ChromeView = Subsystem->CreateView(
-		MakeUnique<FVaCuusLobbyDemoHost>(MakeUnique<FVaCuusRmlDocumentHost>(ChromeElement), Brain, /*bChrome=*/true),
+		MakeUnique<FVaCuusLobbyDemoHost>(MakeUnique<FVaCuusRmlDocumentHost>(ChromeElement), Brain, ERole::Chrome),
 		InitialViewSize);
 	if (BackdropView == nullptr || ContentView == nullptr || ChromeView == nullptr)
 	{
@@ -1382,6 +1533,7 @@ static void Toggle()
 	}
 
 	GState = MakeUnique<FState>();
+	GState->Brain = Brain;
 	GState->Subsystem = Subsystem;
 	GState->Viewport = Viewport;
 	GState->InputWorld = World;
@@ -1431,20 +1583,22 @@ static void Toggle()
 	};
 	ContentView->OnJsEvent.AddDynamic(GState->NavListener.Get(), &UVaCuusDemoWriteListener::HandleJsEvent);
 
-	// The backdrop: chrome owns the art but composites on top, so the same bg.png
-	// shows from the content-side backdrop.rml in the bottom view (see the file
-	// header and that document's own comment). A FILE, not an inline document, so
-	// its relative img src resolves through the DevUI roots like every other
-	// document's -- an inline document's vacuus://memory.rml source URL is served
-	// by no root, and RmlUi's URL join mangles even an absolute POSIX src path.
-	if (VaCuusContentPaths::ResolveExistingDocument(TEXT("backdrop.rml")).IsEmpty())
+	// The backdrop: chrome owns the art but composites on top, so backdrop.rml carries
+	// it in the bottom view (see the file header and that document's own comment). A
+	// FILE, not an inline document, so its relative img src resolves through the DevUI
+	// roots like every other document's -- an inline document's vacuus://memory.rml
+	// source URL is served by no root, and RmlUi's URL join mangles even an absolute
+	// POSIX src path. Its `img#bg` is suppressed on load unless the toggle asked for it,
+	// leaving the view to carry only the #bg-fx drift over the live scene.
+	if (VaCuusContentPaths::ResolveExistingDocument(GBackdropVfsPath).IsEmpty())
 	{
 		UE_LOG(LogVaCuus, Warning,
-			TEXT("vacuus.LobbyDemo: backdrop.rml not found under any DevUI root; the demo runs without its backdrop"));
+			TEXT("vacuus.LobbyDemo: backdrop.rml not found under any DevUI root; the demo runs without its backdrop ")
+			TEXT("(and without the #bg-fx drift, which lives in that document)"));
 	}
 	else
 	{
-		BackdropView->LoadDocument(TEXT("backdrop.rml"));
+		BackdropView->LoadDocument(GBackdropVfsPath);
 	}
 
 	// Content first, chrome second; the brain flips chrome's body to on-lobby when
@@ -1476,7 +1630,8 @@ static void Toggle()
 	// Display, the M5 packaged-gate precedent: one boot line that survives Shipping's
 	// verbosity floor and names what is up.
 	UE_LOG(LogVaCuus, Display,
-		TEXT("VaCuus lobby demo on: chrome view %u over content view %u over backdrop view %u (initial %dx%d)"),
+		TEXT("VaCuus lobby demo on: chrome view %u over content view %u over backdrop view %u (initial %dx%d); ")
+		TEXT("baked backdrop OFF -- the lobby floats over the world (vacuus.LobbyDemo.Backdrop 1 puts bg.png back)"),
 		ChromeView->GetViewId(), ContentView->GetViewId(), BackdropView->GetViewId(),
 		InitialViewSize.X, InitialViewSize.Y);
 }
@@ -1488,6 +1643,44 @@ static FAutoConsoleCommand GLobbyDemoCommand(
 	TEXT("overlays, mode cycle, matchmaking, tabs, skins, equip, claims, purchases, login, chat) with no script in ")
 	TEXT("any document. Refuses by name when the content is not served."),
 	FConsoleCommandDelegate::CreateStatic(&Toggle));
+
+/**
+ * The baked-backdrop A/B, the vacuus.WorldDemo.Mips shape (<0|1> [delaySeconds],
+ * scheduled, refuses by name, logs what it did). Live on a running demo: the write is
+ * one atomic, and the UI thread picks it up in the brain's next Pump().
+ */
+static void SetBackdrop(const TArray<FString>& Args)
+{
+	if (Args.Num() < 1)
+	{
+		UE_LOG(LogVaCuus, Error, TEXT("vacuus.LobbyDemo.Backdrop expects <0|1> [delaySeconds]"));
+		return;
+	}
+	const bool bShow = FCString::Atoi(*Args[0]) != 0;
+	VaCuusM1HUD::ScheduleAfter(Args.Num() > 1 ? FCString::Atof(*Args[1]) : 0.0f,
+		[bShow]
+		{
+			if (!GState || !GState->Brain.IsValid())
+			{
+				UE_LOG(LogVaCuus, Error, TEXT("vacuus.LobbyDemo.Backdrop: no live lobby demo"));
+				return;
+			}
+			GState->Brain->RequestBakedBackdrop(bShow);
+			UE_LOG(LogVaCuus, Display,
+				TEXT("vacuus.LobbyDemo.Backdrop %d: backdrop.rml's img#bg (img/bg.png) will be %s -- %s"),
+				bShow ? 1 : 0, bShow ? TEXT("shown") : TEXT("display:none"),
+				bShow ? TEXT("the baked plate is back, the world is hidden")
+					  : TEXT("the lobby floats over the world; the #bg-fx drift keeps playing"));
+		});
+}
+
+static FAutoConsoleCommand GLobbyDemoBackdropCommand(
+	TEXT("vacuus.LobbyDemo.Backdrop"),
+	TEXT("Show (1) or suppress (0, the default) the lobby's baked backdrop plate -- backdrop.rml's img#bg, the one ")
+	TEXT("opaque full-bleed element in the demo's documents. 0 leaves the UI floating over the live 3D scene with the ")
+	TEXT("#bg-fx drift still playing; 1 restores the pre-scene look. Takes <0|1> [delaySeconds] and applies to a ")
+	TEXT("running demo without a reload."),
+	FConsoleCommandWithArgsDelegate::CreateStatic(&SetBackdrop));
 
 static FAutoConsoleCommand GLobbyDemoShotCommand(
 	TEXT("vacuus.LobbyDemo.Shot"),
