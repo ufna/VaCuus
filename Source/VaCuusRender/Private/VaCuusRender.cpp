@@ -137,8 +137,11 @@ div { display: block; position: absolute; }
  * This belongs to the debug toggle, not to the plugin: a real game decides its own
  * input mode, and a UMG-hosted VaCuus widget (Task 8) inherits whatever the game
  * already set.
+ *
+ * External linkage (not static): vacuus.LobbyDemo (VaCuusLobbyDemo.cpp, same module)
+ * shares it by forward declaration, the SpawnM5HudQuad pattern in reverse.
  */
-static void SetUIInputMode(UWorld* World, bool bEnable)
+void SetUIInputMode(UWorld* World, bool bEnable)
 {
 	APlayerController* PlayerController = World ? World->GetFirstPlayerController() : nullptr;
 	if (!PlayerController)
@@ -1225,8 +1228,10 @@ static FString DescribeNavDirections(EVaCuusNavDirection Directions)
  * HoverShot, NavShot and TypeShot all solve this with a timed second step; this is the same
  * pattern for the two read-only commands, so a headless acceptance run can put the query on
  * the same command line as the toggle.
+ *
+ * External linkage: shared with VaCuusLobbyDemo.cpp by forward declaration.
  */
-static void ScheduleAfter(float DelaySeconds, TFunction<void()> Work)
+void ScheduleAfter(float DelaySeconds, TFunction<void()> Work)
 {
 	if (DelaySeconds <= 0.0f)
 	{
@@ -1339,8 +1344,10 @@ static void HitTest(const TArray<FString>& Args)
  * synthesized is the position, which is the one part a headless session cannot
  * produce. ProcessMouseMoveEvent is public engine API (SlateApplication.h:1292) and
  * the same call the platform layer makes; nothing here is a test hook into VaCuus.
+ *
+ * External linkage: shared with VaCuusLobbyDemo.cpp by forward declaration.
  */
-static bool MoveMouseTo(const FVector2D& Position)
+bool MoveMouseTo(const FVector2D& Position)
 {
 	if (!FSlateApplication::IsInitialized())
 	{
@@ -1384,8 +1391,10 @@ static bool MoveMouseTo(const FVector2D& Position)
  * passing a null one makes Slate resolve the path from the cursor position instead, which
  * is exactly what we want after MoveMouseTo. ProcessMouseButtonUpEvent needs no window at
  * all -- by then the captor (if any) is known.
+ *
+ * External linkage: shared with VaCuusLobbyDemo.cpp by forward declaration.
  */
-static bool ClickWhereThePointerIs(const FVector2D& Position)
+bool ClickWhereThePointerIs(const FVector2D& Position)
 {
 	if (!FSlateApplication::IsInitialized())
 	{
