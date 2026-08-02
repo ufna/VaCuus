@@ -289,6 +289,19 @@ public:
 
 		// Bubble-phase click listener on the document element (the <body>): every
 		// descendant click bubbles here, the one-listener shape preview.js uses.
+		//
+		// TWO TWIN-PARITY GAPS ARE LEFT OPEN BY DESIGN (recorded for the content's
+		// developer in VaCuusDemo Content/DevUI/PLUGIN-NOTES.md):
+		//  - The Escape KEY does not close overlays: only clicks are listened for.
+		//    Escape sits in SVaCuusWidget's pass-through set -- keys the UI never
+		//    consumes, by contract (controller decision D12) -- and the README's
+		//    control tables list only click targets; the clickable ESC keycap
+		//    (`.esc-back`) is the routed control.
+		//  - Content `:hover` keeps tracking under an open CHROME dim: the router
+		//    widget forwards every move to the content view unconditionally, so its
+		//    hover can clear when the pointer moves on. The single-page twin
+		//    freezes hover under its dim; two stacked views cannot without lying to
+		//    one context about where the pointer is.
 		Document->AddEventListener(Rml::EventId::Click, this);
 
 		ApplyInteractiveMarkers(Document);
