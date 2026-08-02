@@ -91,6 +91,10 @@ cd /w/Unreal/UnrealEngine && ./Engine/Build/BatchFiles/Linux/Build.sh \
   kills your shell.
 - **`-ExecCmds` splits on COMMAS, not semicolons.** A recipe written with `;` runs as one
   malformed command and silently does nothing — no "not recognized" line anywhere.
+  **The value also swallows every argument after it** (`bShouldStopOnSeparator=false`,
+  ParseExecCommands.cpp:63) and the editor launcher re-appends `-game` at the END of the
+  command line — so a single command with no trailing comma becomes `vacuus.Foo -game`
+  and dies silently too. End the value with a comma: `-ExecCmds="vacuus.Foo,"`.
 - **The editor often does not exit** after `Automation RunTests …, Quit`: `Quit` is dispatched at
   frame 0, deferred, and never fires. Kill by PID once `Sending StopTestSession` appears.
 - **Read test counts from `Saved/Logs/VcHost.log`**, not stdout — an interleaved `UnrealTraceServer`
