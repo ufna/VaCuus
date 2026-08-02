@@ -6,7 +6,10 @@
 #include "VaCuusDefines.h"
 #include "VaCuusStats.h"
 
+#include "GenerateMips.h"
+#include "PooledRenderTarget.h"
 #include "RHICommandList.h"
+#include "RenderGraphBuilder.h"
 
 void FVaCuusWorldSink::SetPendingBuffer_RenderThread(FRHICommandList& RHICmdList, TUniquePtr<FVaCuusCommandBuffer> InBuffer)
 {
@@ -34,6 +37,11 @@ void FVaCuusWorldSink::SetDestination_RenderThread(FRHICommandList& RHICmdList, 
 	check(IsInRenderingThread());
 	Destination = MoveTemp(InDestination);
 
+	// The pooled wrapper holds its own TRefCountPtr<FRHITexture>; released with the
+	// slot it wrapped, so a retired destination is not kept alive by our cache.
+	// GenerateDestinationMips rebuilds it on the next >1-mip copy.
+	DestinationPooled.SafeRelease();
+
 	// The immediate repaint the header calls load-bearing: a fresh destination on an
 	// idle view would otherwise wait for a publish the idle gate never sends. No-ops
 	// harmlessly before the first replay (no OutputRT yet) or while extents disagree
@@ -50,6 +58,7 @@ void FVaCuusWorldSink::ReleaseResources_RenderThread()
 	check(IsInRenderingThread());
 	Replayer.ReleaseResources();
 	Destination.SafeRelease();
+	DestinationPooled.SafeRelease();
 }
 
 void FVaCuusWorldSink::CopyToDestination(FRHICommandList& RHICmdList)
@@ -94,4 +103,60 @@ void FVaCuusWorldSink::CopyToDestination(FRHICommandList& RHICmdList)
 	RHICmdList.Transition(FRHITransitionInfo(Source, ERHIAccess::CopySrc, ERHIAccess::SRVMask));
 
 	NumCopies.fetch_add(1, std::memory_order_relaxed);
+
+	// The copy above writes mip 0 only (FRHICopyTextureInfo::NumMips defaults to 1,
+	// RHICommandList.h:207); a >1-mip destination means the component asked for a
+	// chain (bGenerateMips -> bAutoGenerateMips -> NumMips = FloorLog2(max side) + 1,
+	// TextureRenderTarget2D.cpp:96-103), and stale far mips under a fresh mip 0 would
+	// show the OLD frame to any minified sample. One branch is the whole cost of the
+	// off path: a 1-mip destination never reaches GenerateDestinationMips.
+	if (Destination->GetDesc().NumMips > 1)
+	{
+		GenerateDestinationMips(RHICmdList);
+	}
+}
+
+void FVaCuusWorldSink::GenerateDestinationMips(FRHICommandList& RHICmdList)
+{
+	VACUUS_PERF_SCOPE(WorldMips);
+
+	// FGenerateMips is RDG-only (GenerateMips.h:38-43), and an FRDGBuilder wants the
+	// immediate list -- which every caller already is: both entry points are bodies of
+	// ENQUEUE_RENDER_COMMAND lambdas (VaCuusRmlDocumentHost.cpp:493-497, the
+	// component's slot update), whose parameter IS FRHICommandListImmediate. Get()
+	// check()s that (RHICommandList.h:4411-4415), so a future non-immediate caller
+	// fails loudly here instead of corrupting command order.
+	FRDGBuilder GraphBuilder(FRHICommandListImmediate::Get(RHICmdList));
+
+	CacheRenderTarget(Destination, TEXT("VaCuusWorldPanelMips"), DestinationPooled);
+	FRDGTextureRef DestinationRDG = GraphBuilder.RegisterExternalTexture(DestinationPooled);
+
+	// THE TRANSITION STORY. The copy block left Destination in SRVMask (all
+	// subresources -- our transitions are whole-texture). RDG assumes nothing about a
+	// registered external texture's current state (prologue Access defaults to
+	// Unknown, RenderGraphResources.h:110), transitions per PASS and per SUBRESOURCE
+	// while the chain builds -- each level reads mip N-1 as SRV and writes mip N as
+	// RTV or UAV (GenerateMips.cpp:154-196 raster, :234-261 compute; AutoDetect picks
+	// compute iff the format has TypedUAVStore AND the texture carries the UAV flag,
+	// :370-376, which is exactly when the RT resource added that flag,
+	// TextureRenderTarget2D.cpp:498-504 -- the two sites consult the same
+	// WillFormatSupportCompute, so they cannot disagree) -- and its epilogue returns
+	// the whole texture to SRVMask (EpilogueAccess default, RenderGraphResources.h:361
+	// and :454, applied at RenderGraphBuilder.cpp:4163). SRVMask in, SRVMask out: the
+	// steady state the material sampler and the next copy's Unknown->CopyDest both
+	// expect.
+	//
+	// THE GAMMA NOTE (WS-GAMMA): the chain is downsampled in display-encoded
+	// premultiplied space -- the only space these pixels exist in (the replay RT is
+	// raw-encoded bytes, VaCuusReplayRenderer.cpp:170-178, and this destination is
+	// deliberately not sRGB-tagged, so the generator's own decode permutation stays
+	// off, GenerateMips.cpp:209). Averaging encoded values darkens gradients slightly
+	// on far mips -- accepted; premultiplied is the CORRECT form for edge filtering
+	// (a straight-alpha average would bleed the transparent texels' dead RGB into
+	// glyph edges as fringes).
+	FGenerateMips::Execute(GraphBuilder, GMaxRHIFeatureLevel, DestinationRDG, FGenerateMipsParams{});
+
+	GraphBuilder.Execute();
+
+	NumMipGenerations.fetch_add(1, std::memory_order_relaxed);
 }

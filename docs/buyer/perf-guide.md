@@ -101,6 +101,18 @@ blur is composite-time work, deliberately outside the publish gate. The referenc
 HUD publishes 100% by design (it animates every frame); your pause menu should look
 like the M1 number, and `vacuus.M1HUD.PerfLog 1` prints the ratio so you can check.
 
+## World panels: mips ride the same gate
+
+A world panel's render target carries a full mip chain by default (`bGenerateMips`
+on `UVaCuusWorldComponent`), regenerated right after the copy on every PUBLISHED
+frame — so a panel that shrinks on screen samples a filtered far mip instead of
+strobing, and the cost obeys the same idle economics as the copy itself: ~zero on a
+static document, once per engine frame with a live material decorator. The price is
+one `FGenerateMips` pass per publish (its own `WorldMips` PerfLog line, printed next
+to the `WorldCopy` it follows) and ~33% more RT memory. Turn it off — per component,
+`SetGenerateMips(false)` at runtime — for a panel that never minifies (pinned
+near-1:1 on screen), where the chain buys nothing and the memory is real.
+
 ## Load behavior at scale
 
 Loading the 1,732-node HUD produced **zero game-thread hitches** in both venues.

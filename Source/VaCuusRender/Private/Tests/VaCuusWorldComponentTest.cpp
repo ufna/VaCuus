@@ -4,6 +4,7 @@
 
 #include "VaCuus.h"
 #include "VaCuusCommandBuffer.h"
+#include "VaCuusDefines.h"
 #include "VaCuusSubsystem.h"
 #include "VaCuusUIThread.h"
 #include "VaCuusView.h"
@@ -20,7 +21,10 @@
 #include "HAL/PlatformProcess.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Misc/App.h"
+#include "RHI.h"
+#include "RHIGPUReadback.h"
 #include "RenderingThread.h"
+#include "TextureResource.h"
 #include "UObject/StrongObjectPtr.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
@@ -472,6 +476,354 @@ bool FVaCuusWorldResizeRaceTest::RunTest(const FString& Parameters)
 	}
 	TestEqual(TEXT("...into an RT at the final DrawSize"),
 		FIntPoint(Component->GetRenderTarget()->SizeX, Component->GetRenderTarget()->SizeY), FIntPoint(160, 120));
+
+	Component->UnregisterComponent();
+	if (TestTrue(TEXT("UI frames ran after the unregister"), RunFrames(*UIThread, 2)))
+	{
+		TestEqual(TEXT("No views survive the component"), UIThread->GetNumViews(), 0);
+	}
+	FlushRenderingCommands();
+
+	return true;
+}
+
+/**
+ * The bGenerateMips contract at the resource level, both ways, on one component
+ * (post-M6, the minification-strobe fix):
+ *
+ *   ON  (the default): the RT reports the full chain -- NumMips = FloorLog2(max
+ *        side) + 1, computed at resource creation (TextureRenderTarget2D.cpp:96-103)
+ *        -- filtered trilinearly, and every copy is followed by exactly one mip
+ *        generation (the counter rides NumCopies one-to-one).
+ *   OFF (SetGenerateMips(false)): exactly 1 mip, the filter back at the class
+ *        default, and the generation counter FROZEN while copies keep flowing --
+ *        the off path's zero-cost observable, not a comment.
+ *   ON again: the slot-update repaint alone (no new publish -- the idle gate is
+ *        withholding) rebuilds the chain, because a fresh >1-mip destination on an
+ *        idle view would otherwise minify against garbage far mips forever.
+ *
+ * Under -nullrhi UTextures create no resource at all (Texture.cpp:336-339, the
+ * lifecycle test's step-3 argument), so there the test pins the property plumbing
+ * (bAutoGenerateMips/Filter reach the RT object) and the counters' zeros; the
+ * NumMips/counter-motion halves run wherever the suite has a real RHI.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusWorldMipChainTest, "VaCuus.World.MipChain",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusWorldMipChainTest::RunTest(const FString& Parameters)
+{
+	using namespace VaCuusWorldComponentTest;
+	if (!SuiteViable(*this))
+	{
+		return true;
+	}
+
+	FVaCuusModule& Module = FVaCuusModule::Get();
+	FVaCuusUIThread* UIThread = Module.GetOrStartUIThread();
+	if (!TestNotNull(TEXT("UI thread"), UIThread))
+	{
+		return false;
+	}
+	ON_SCOPE_EXIT
+	{
+		Module.StopUIThread();
+	};
+
+	FWorldFixture Fixture;
+	if (!Fixture.Init(*this))
+	{
+		return false;
+	}
+	UWorld* World = Fixture.GetWorld();
+
+	AActor* Actor = World->SpawnActor<AActor>();
+	UVaCuusWorldComponent* Component = NewObject<UVaCuusWorldComponent>(Actor);
+	TestTrue(TEXT("bGenerateMips defaults ON"), Component->bGenerateMips);
+	Component->DrawSize = FIntPoint(128, 64);
+	Component->bAutoLoadDocument = false;
+	Component->RegisterComponentWithWorld(World);
+
+	UVaCuusView* View = Component->GetView();
+	TSharedPtr<FVaCuusWorldSink> Sink = Component->GetWorldSink();
+	UTextureRenderTarget2D* RenderTarget = Component->GetRenderTarget();
+	if (!TestNotNull(TEXT("View"), View) || !TestTrue(TEXT("Sink"), Sink.IsValid()) ||
+		!TestNotNull(TEXT("Render target"), RenderTarget))
+	{
+		return false;
+	}
+
+	const bool bTextureResourcesExist = FApp::CanEverRender();
+	// TextureRenderTarget2D.cpp:96-103's exact formula; 128x64 -> 8. NPOT sides are
+	// fine: only the max side sets the count and the generator clamps each level to
+	// max(size >> level, 1) (GenerateMips.cpp:158-160).
+	const int32 ExpectedNumMips = int32(FMath::FloorLog2(128u)) + 1;
+
+	// 1. ON at registration.
+	TestTrue(TEXT("ON: the RT object asks for mips"), RenderTarget->bAutoGenerateMips);
+	TestEqual(TEXT("ON: trilinear filtering, so minification blends between the mips"),
+		RenderTarget->Filter, TEnumAsByte<TextureFilter>(TF_Trilinear));
+	if (bTextureResourcesExist)
+	{
+		FlushRenderingCommands();
+		TestEqual(TEXT("ON: the RT resource carries the full chain"), RenderTarget->GetNumMips(), ExpectedNumMips);
+		FTextureRenderTargetResource* Resource = RenderTarget->GameThread_GetRenderTargetResource();
+		FRHITexture* TextureRHI = Resource ? Resource->GetRenderTargetTexture() : nullptr;
+		if (TestNotNull(TEXT("ON: the RHI texture exists"), TextureRHI))
+		{
+			TestEqual(TEXT("ON: ...and was created with the chain"), int32(TextureRHI->GetDesc().NumMips), ExpectedNumMips);
+		}
+	}
+
+	// 2. Publish once; on a real RHI the generation counter must ride the copies 1:1.
+	View->LoadDocumentFromMemory(GTinyDocument);
+	if (!TestTrue(TEXT("UI frames ran for the load"), RunFrames(*UIThread, 3)))
+	{
+		return false;
+	}
+	FlushRenderingCommands();
+	if (bTextureResourcesExist)
+	{
+		TestTrue(TEXT("ON: publishes copied"), Sink->GetNumCopies() >= 1);
+		TestEqual(TEXT("ON: one generation per copy, no more, no fewer"),
+			int64(Sink->GetNumMipGenerations()), int64(Sink->GetNumCopies()));
+	}
+	else
+	{
+		TestEqual(TEXT("Without texture resources (null RHI) the sink parks: no generations either"),
+			int64(Sink->GetNumMipGenerations()), int64(0));
+	}
+
+	// 3. OFF at runtime: one mip, default filter, and the counter freezes while the
+	// slot-update repaint still copies.
+	const uint64 GenerationsBeforeOff = Sink->GetNumMipGenerations();
+	const uint64 CopiesBeforeOff = Sink->GetNumCopies();
+	Component->SetGenerateMips(false);
+	FlushRenderingCommands();
+	TestFalse(TEXT("OFF: the RT object no longer asks for mips"), RenderTarget->bAutoGenerateMips);
+	TestEqual(TEXT("OFF: the filter is the class default again (LOD-group behavior, untouched)"),
+		RenderTarget->Filter, TEnumAsByte<TextureFilter>(TF_Default));
+	if (bTextureResourcesExist)
+	{
+		TestEqual(TEXT("OFF: exactly 1 mip"), RenderTarget->GetNumMips(), 1);
+		TestTrue(TEXT("OFF: the re-init's slot-update repaint copied"), Sink->GetNumCopies() > CopiesBeforeOff);
+		TestEqual(TEXT("OFF: ...and generated NOTHING -- the off path's zero new cost"),
+			int64(Sink->GetNumMipGenerations()), int64(GenerationsBeforeOff));
+	}
+
+	// 4. ON again while idle: the repaint alone rebuilds the chain.
+	const uint64 GenerationsBeforeOn = Sink->GetNumMipGenerations();
+	Component->SetGenerateMips(true);
+	FlushRenderingCommands();
+	if (bTextureResourcesExist)
+	{
+		TestEqual(TEXT("ON again: the chain is back"), RenderTarget->GetNumMips(), ExpectedNumMips);
+		TestTrue(TEXT("ON again: the repaint generated without waiting for a publish the idle gate withholds"),
+			Sink->GetNumMipGenerations() > GenerationsBeforeOn);
+	}
+
+	Component->UnregisterComponent();
+	if (TestTrue(TEXT("UI frames ran after the unregister"), RunFrames(*UIThread, 2)))
+	{
+		TestEqual(TEXT("No views survive the component"), UIThread->GetNumViews(), 0);
+	}
+	FlushRenderingCommands();
+
+	return true;
+}
+
+namespace VaCuusWorldMipsGPU
+{
+/** One mip level of the panel RT, staged through a 1-mip texture (FRHIGPUTextureReadback has no mip parameter) and read back. */
+struct FMipReadback
+{
+	TArray<FColor> Pixels;
+	FIntPoint Size = FIntPoint::ZeroValue;
+	bool bRead = false;
+
+	FColor At(int32 X, int32 Y) const { return Pixels[Y * Size.X + X]; }
+};
+
+static FMipReadback ReadMip(FRHICommandListImmediate& RHICmdList, FRHITexture* WorldRT, int32 MipIndex)
+{
+	FMipReadback Result;
+	Result.Size = FIntPoint(FMath::Max(WorldRT->GetSizeXY().X >> MipIndex, 1), FMath::Max(WorldRT->GetSizeXY().Y >> MipIndex, 1));
+
+	// The readback's own staging texture clones the SOURCE's desc (mip count and
+	// all, RHIGPUReadback.cpp EnqueueCopy), and its copy has no mip argument -- so
+	// mip N is first isolated into a 1-mip texture of mip-N extent.
+	const FRHITextureCreateDesc StageDesc =
+		FRHITextureCreateDesc::Create2D(TEXT("VaCuusMipStage"), Result.Size, WorldRT->GetFormat())
+			.SetFlags(ETextureCreateFlags::ShaderResource)
+			.SetInitialState(ERHIAccess::CopyDest);
+	FTextureRHIRef Stage = RHICmdList.CreateTexture(StageDesc);
+
+	// The panel RT sits in SRVMask between publishes (the sink's steady state).
+	RHICmdList.Transition(FRHITransitionInfo(WorldRT, ERHIAccess::SRVMask, ERHIAccess::CopySrc));
+	FRHICopyTextureInfo CopyInfo;
+	CopyInfo.SourceMipIndex = uint32(MipIndex);
+	CopyInfo.Size = FIntVector(Result.Size.X, Result.Size.Y, 1);
+	RHICmdList.CopyTexture(WorldRT, Stage, CopyInfo);
+	RHICmdList.Transition(FRHITransitionInfo(WorldRT, ERHIAccess::CopySrc, ERHIAccess::SRVMask));
+	RHICmdList.Transition(FRHITransitionInfo(Stage, ERHIAccess::CopyDest, ERHIAccess::CopySrc));
+
+	FRHIGPUTextureReadback Readback(TEXT("VaCuusMipReadback"));
+	Readback.EnqueueCopy(RHICmdList, Stage, FIntVector::ZeroValue, 0, FIntVector(Result.Size.X, Result.Size.Y, 1));
+	RHICmdList.SubmitAndBlockUntilGPUIdle();
+
+	if (Readback.IsReady())
+	{
+		int32 RowPitchInPixels = 0;
+		if (const void* Data = Readback.Lock(RowPitchInPixels))
+		{
+			// PF_B8G8R8A8 rows; FColor is the same B,G,R,A byte order.
+			Result.Pixels.SetNumUninitialized(Result.Size.X * Result.Size.Y);
+			for (int32 Y = 0; Y < Result.Size.Y; ++Y)
+			{
+				FMemory::Memcpy(Result.Pixels.GetData() + Y * Result.Size.X,
+					static_cast<const FColor*>(Data) + Y * RowPitchInPixels, Result.Size.X * sizeof(FColor));
+			}
+			Result.bRead = true;
+			Readback.Unlock();
+		}
+	}
+	return Result;
+}
+}	 // namespace VaCuusWorldMipsGPU
+
+/**
+ * GPU proof that the chain is REAL -- generated pixels in mip 1, not just a mip
+ * count in a desc. The tiny document's solid #d04030 div (premultiplied a=1, so
+ * bytes 208/64/48/255 exactly) is published into a 128x64 mips-on panel; mip 0 and
+ * mip 1 are read back and compared at three points:
+ *
+ *   - mip 0 div center (24,12): the copy landed -- exact bytes.
+ *   - mip 1 (12,6), whose 2x2 mip-0 source block sits entirely inside the div: a
+ *     box filter of four identical texels IS that texel, so a generated mip 1
+ *     equals the div color to rounding -- while an UNWRITTEN mip 1 holds whatever
+ *     the allocation held (typically zero, never accidentally 208/64/48/255).
+ *   - mip 1 (56,28), whose source block is entirely background: generated
+ *     transparent black, exactly.
+ *
+ * Venue discipline copied from VaCuus.Render.Composite.LinearOutputGPU: under
+ * NullRHI this self-skips loudly and passes vacuously; the real-RHI leg carries
+ * the evidence.
+ *
+ * Restore-the-bug (2026-08-02): with the sink's GenerateDestinationMips call
+ * suppressed, "mip 1 over the div equals the div color" failed at (0 0 0 0) vs
+ * (208 64 48 255) while every mip 0 assertion kept passing; restored, all green.
+ * Both outcomes verbatim in the worldpanel-mips report.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusWorldMipContentGPUTest, "VaCuus.World.MipContentGPU",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusWorldMipContentGPUTest::RunTest(const FString& Parameters)
+{
+	using namespace VaCuusWorldComponentTest;
+	using namespace VaCuusWorldMipsGPU;
+	if (!SuiteViable(*this))
+	{
+		return true;
+	}
+
+	if (GUsingNullRHI || !FApp::CanEverRender())
+	{
+		UE_LOG(LogVaCuus, Display,
+			TEXT("VaCuus.World.MipContentGPU: SKIPPED under NullRHI (no RT resource, no copy, no readback)"));
+		return true;
+	}
+
+	FVaCuusModule& Module = FVaCuusModule::Get();
+	FVaCuusUIThread* UIThread = Module.GetOrStartUIThread();
+	if (!TestNotNull(TEXT("UI thread"), UIThread))
+	{
+		return false;
+	}
+	ON_SCOPE_EXIT
+	{
+		Module.StopUIThread();
+	};
+
+	FWorldFixture Fixture;
+	if (!Fixture.Init(*this))
+	{
+		return false;
+	}
+	UWorld* World = Fixture.GetWorld();
+
+	AActor* Actor = World->SpawnActor<AActor>();
+	UVaCuusWorldComponent* Component = NewObject<UVaCuusWorldComponent>(Actor);
+	Component->DrawSize = FIntPoint(128, 64);
+	Component->bAutoLoadDocument = false;
+	Component->RegisterComponentWithWorld(World);
+
+	UVaCuusView* View = Component->GetView();
+	TSharedPtr<FVaCuusWorldSink> Sink = Component->GetWorldSink();
+	if (!TestNotNull(TEXT("View"), View) || !TestTrue(TEXT("Sink"), Sink.IsValid()))
+	{
+		return false;
+	}
+
+	View->LoadDocumentFromMemory(GTinyDocument);
+	if (!TestTrue(TEXT("UI frames ran for the load"), RunFrames(*UIThread, 3)))
+	{
+		return false;
+	}
+	FlushRenderingCommands();
+	if (!TestTrue(TEXT("The panel published and copied"), Sink->GetNumCopies() >= 1))
+	{
+		return false;
+	}
+	TestEqual(TEXT("Every copy generated the chain"), int64(Sink->GetNumMipGenerations()), int64(Sink->GetNumCopies()));
+
+	// No scene render can interleave here: RunTest owns the game thread, and only the
+	// game thread's own Tick enqueues scene renders -- so the RT still holds exactly
+	// what the last copy + generation left in it.
+	FTextureRenderTargetResource* Resource = Component->GetRenderTarget()->GameThread_GetRenderTargetResource();
+	if (!TestNotNull(TEXT("The RT resource exists"), Resource))
+	{
+		return false;
+	}
+
+	FMipReadback Mip0, Mip1;
+	ENQUEUE_RENDER_COMMAND(VaCuusWorldMipReadback)
+	([&Mip0, &Mip1, Resource](FRHICommandListImmediate& RHICmdList)
+		{
+			FRHITexture* WorldRT = Resource->GetRenderTargetTexture();
+			if (!WorldRT || WorldRT->GetDesc().NumMips < 2)
+			{
+				return;
+			}
+			Mip0 = ReadMip(RHICmdList, WorldRT, 0);
+			Mip1 = ReadMip(RHICmdList, WorldRT, 1);
+		});
+	FlushRenderingCommands();
+
+	if (!TestTrue(TEXT("Both mip readbacks completed"), Mip0.bRead && Mip1.bRead))
+	{
+		return false;
+	}
+
+	const FColor DivColor(208, 64, 48, 255);
+	const auto TestClose = [this](const TCHAR* What, const FColor& Actual, const FColor& Expected, int32 Tolerance)
+	{
+		TestTrue(FString::Printf(TEXT("%s: got (%d %d %d %d), expected (%d %d %d %d) +/-%d"), What, Actual.R, Actual.G,
+					 Actual.B, Actual.A, Expected.R, Expected.G, Expected.B, Expected.A, Tolerance),
+			FMath::Abs(int32(Actual.R) - int32(Expected.R)) <= Tolerance &&
+				FMath::Abs(int32(Actual.G) - int32(Expected.G)) <= Tolerance &&
+				FMath::Abs(int32(Actual.B) - int32(Expected.B)) <= Tolerance &&
+				FMath::Abs(int32(Actual.A) - int32(Expected.A)) <= Tolerance);
+	};
+
+	// The div spans (4,4)-(44,20) at mip 0. Centers avoid every AA edge.
+	TestClose(TEXT("mip 0 div center (the copy)"), Mip0.At(24, 12), DivColor, 2);
+	TestClose(TEXT("mip 1 over the div equals the div color (the generation)"), Mip1.At(12, 6), DivColor, 6);
+	TestClose(TEXT("mip 1 over the background is transparent black"), Mip1.At(56, 28), FColor(0, 0, 0, 0), 2);
+
+	AddInfo(FString::Printf(TEXT("GPU evidence: mip0(24,12)=(%d %d %d %d), mip1(12,6)=(%d %d %d %d), mip1(56,28)=(%d %d %d %d), ")
+							TEXT("%llu cop(ies), %llu generation(s)"),
+		Mip0.At(24, 12).R, Mip0.At(24, 12).G, Mip0.At(24, 12).B, Mip0.At(24, 12).A, Mip1.At(12, 6).R, Mip1.At(12, 6).G,
+		Mip1.At(12, 6).B, Mip1.At(12, 6).A, Mip1.At(56, 28).R, Mip1.At(56, 28).G, Mip1.At(56, 28).B, Mip1.At(56, 28).A,
+		Sink->GetNumCopies(), Sink->GetNumMipGenerations()));
 
 	Component->UnregisterComponent();
 	if (TestTrue(TEXT("UI frames ran after the unregister"), RunFrames(*UIThread, 2)))

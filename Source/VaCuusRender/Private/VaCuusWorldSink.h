@@ -9,12 +9,17 @@
 
 #include <atomic>
 
+struct IPooledRenderTarget;
+
 /**
  * The world-space frame sink (M5 spec 2(g)): replay ON ARRIVAL, then one CopyTexture
  * into the owning component's UTextureRenderTarget2D -- so the copy rides the publish
  * rate, which the idle gate makes ~zero on a static HUD, and a material-decorator
  * document (whose forced republish is clamped to engine rate, M5 Task 5b) pays one
- * copy per engine frame. Nothing here runs per engine frame on its own: unlike
+ * copy per engine frame. When the destination carries a mip chain (the component's
+ * bGenerateMips, on by default), each copy is followed by one FGenerateMips pass over
+ * the chain -- same cadence, same idle economics. Nothing here runs per engine frame
+ * on its own: unlike
  * FVaCuusSlateElement there is no paint to defer to, so each published buffer is
  * replayed in the render command that delivered it. That also makes the Slate
  * element's newest-buffer drain unnecessary -- render commands from the one UI
@@ -65,16 +70,37 @@ public:
 	/** Copies skipped by the extent guard (resize in flight). Any thread. */
 	uint64 GetNumExtentSkips() const { return NumExtentSkips.load(std::memory_order_relaxed); }
 
+	/**
+	 * Mip-chain generations run after copies (== copies into a >1-mip destination).
+	 * Any thread. The observable for BOTH halves of the bGenerateMips contract: rides
+	 * NumCopies one-to-one when the option is on, stays exactly 0 when it is off.
+	 */
+	uint64 GetNumMipGenerations() const { return NumMipGenerations.load(std::memory_order_relaxed); }
+
 private:
 	/** The guarded copy: OutputRT -> Destination, or a counted skip on extent mismatch. */
 	void CopyToDestination(FRHICommandList& RHICmdList);
+
+	/** FGenerateMips over the (already >1-mip) destination; see the .cpp for the transition story. */
+	void GenerateDestinationMips(FRHICommandList& RHICmdList);
 
 	FVaCuusReplayRenderer Replayer;
 
 	/** The one destination slot. Render thread only; see the class comment. */
 	FTextureRHIRef Destination;
 
+	/**
+	 * RDG can only speak to Destination through an IPooledRenderTarget wrapper; cached
+	 * so the wrapper is built once per destination instead of once per publish
+	 * (CacheRenderTarget no-ops while the texture matches, PooledRenderTarget.h:470-475
+	 * -- the engine resource keeps the same cache member for the same reason,
+	 * FTextureRenderTarget2DResource::MipGenerationCache). Render thread only; dropped
+	 * with the destination so it can never outlive-and-pin a texture the RT released.
+	 */
+	TRefCountPtr<IPooledRenderTarget> DestinationPooled;
+
 	std::atomic<uint64> NumArrivals{0};
 	std::atomic<uint64> NumCopies{0};
 	std::atomic<uint64> NumExtentSkips{0};
+	std::atomic<uint64> NumMipGenerations{0};
 };
