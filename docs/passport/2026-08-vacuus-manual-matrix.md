@@ -32,7 +32,7 @@ UnrealEditor <proj>.uproject -game -RenderOffscreen -ForceRes -resx=1920 -resy=1
 | 9 | Gradient + builtin decorators | `vacuus.M5Deco, vacuus.M1HUD.AutoShot 10` | Linear/radial/conic fills + glass-panel builtin render as in the M5 gallery | PASS (all six cells) | owner hw | owner hw |
 | 10 | Material decorators (UMaterial in UI pass) | `vacuus.M5MatSpike, vacuus.M1HUD.AutoShot 10` | Spike cells draw their materials; refused cells named in log | PASS (five materials drawn) | owner hw | owner hw |
 | 11 | M5 acceptance demo (TSX + translation + glass + world quad) | `vacuus.M5Demo, vacuus.M1HUD.AutoShot 10, vacuus.M5Glass.Shot 8` | Both beats read as the M5 T9 proofs; zero `LogVaCuusJS: Error` | PASS (0 JS errors, beats match proofs) | owner hw | owner hw |
-| 12 | **PF_FloatRGBA composite permutation** (spec §3.2) | set `r.DefaultBackBufferPixelFormat=3` in DefaultEngine.ini `[/Script/Engine.RendererSettings]`, run row 1; then revert and run row 1 again | Log line `VaCuus composite: elements texture is PF_FloatRGBA -> LinearOutput`; HUD colors match the default-format run by eye (no washed-out ~2.2× brightening) | PASS (LinearOutput line + A/B by eye) | owner hw | owner hw |
+| 12 | **PF_FloatRGBA composite permutation** (spec §3.2) | set `r.DefaultBackBufferPixelFormat=3` in DefaultEngine.ini `[/Script/Engine.RendererSettings]`, run row 1; then revert and run row 1 again | Log line `VaCuus composite: elements texture is FloatRGBA -> LinearOutput` (GPixelFormats names carry no `PF_` prefix — engine Misc/PixelFormat.cpp:44); HUD colors match the default-format run by eye (no washed-out ~2.2× brightening) | PASS (LinearOutput line + A/B by eye) | owner hw | owner hw |
 | 13 | Live reload (editor watcher) | interactive editor PIE: edit a loaded .rml/.rcss on disk, watch the view reload; runtime half: `vacuus.ReloadUI` | Document reloads without restart; watcher Warning if a bundle shadows the edit | PARTIAL — note B | owner hw | owner hw |
 | 14 | Demo-suite toggles + clean teardown | each row's session end (SIGTERM) | Teardown tail: UI thread stopped in-band, RmlUi shut down, zero unpublished NEW resources | PASS (all sessions) | owner hw | owner hw |
 | 15 | Shipping ignition flags | packaged Shipping: `-VaCuusRefHud` / `-VaCuusM5Demo` (+`-VaCuusPerfLog`, `-VaCuusMemProbe`) | Demo boots with no console; gate screenshot at t+8 s | PASS (bundle-mounted Shipping) | owner hw | owner hw |
@@ -121,7 +121,11 @@ region read slightly lighter on the float target — linear-space alpha blending
 blending, the same property the engine's own translucent Slate has on linear targets. PASS.
 Numeric backstop: `VaCuus.Render.Composite.LinearOutputGPU` (real-RHI readback, both
 permutations, seen to fail with the decode removed and pass restored). Ini reverted after
-the session.
+the session. Venue substitution, recorded per spec §2(f): spec §3.2 / plan 5.1 name an
+editor-PIE composite check; what ran here is the ini-forced FloatRGBA-backbuffer `-game`
+session plus the real-RHI readback test — mechanism-identical (the permutation keys off the
+actual target format, not the viewport kind) — and the interactive editor-PIE leg rides the
+owner-hardware pass of this row.
 
 **Row 13 — live reload.** PARTIAL by venue: the file watcher lives in `VaCuusEditor`
 (editor-only module) and needs an interactive editor session plus a mid-run file edit —

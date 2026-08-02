@@ -1155,6 +1155,12 @@ bool FVaCuusRefHudMemProxyTest::RunTest(const FString& Parameters)
 		Still.LiveQuantizedBytesDelta, Still.Mallocs, Still.Frees);
 	AddInfo(StillReport);
 	UE_LOG(LogVaCuus, Display, TEXT("%s"), *StillReport);
+	TestTrue(TEXT("still window: every block's size resolved (the ledger's exactness bit)"),
+		Still.SizeLookupFailures == 0);
+	// The ledger hooks GMalloc process-wide, not per-view: a background editor task that
+	// retains > 256 KiB during these ~60 frames would flake this bound. Low risk in the
+	// automation venue (nothing else allocates at steady state here), recorded so a flake
+	// reads as the known hazard, not a regression.
 	TestTrue(TEXT("still window: steady state holds (|delta| < 256 KiB over 60 frames)"),
 		FMath::Abs(Still.LiveQuantizedBytesDelta) < 256 * 1024);
 

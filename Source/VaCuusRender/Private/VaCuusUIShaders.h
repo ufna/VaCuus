@@ -49,7 +49,7 @@ public:
  * variants take a blend state (they copy/overwrite), hence this trivial PS.
  *
  * THE PF_FloatRGBA PERMUTATION (M6 Task 5, spec §3.2 — M5's explicit assignment,
- * arch spec :193-194 "the PF_FloatRGBA editor/PIE composition permutation (gamma
+ * arch spec :194-195 "the PF_FloatRGBA editor/PIE composition permutation (gamma
  * 1.0)"). The M1 contract writes the UI RT's sRGB-encoded premultiplied pixels RAW
  * into the Slate elements texture — correct exactly because an LDR elements texture
  * holds display-encoded pixels. A FLOAT elements texture does not: with

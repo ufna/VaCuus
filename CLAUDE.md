@@ -102,6 +102,9 @@ cd /w/Unreal/UnrealEngine && ./Engine/Build/BatchFiles/Linux/Build.sh \
   need a separate normal-quit run to verify.
 - **`vacuus.M1HUD.AutoShot N` fires after `max(N, 3)` *recorded* frames**, not published ones and
   not N — the counter is a floor. To photograph a transient state, make the state last longer.
+- **`BuildPlugin`'s HostProject editor leg rewrites `Engine/Binaries/**/UnrealEditor.modules`**
+  and can resurrect stale platform modules; the next editor launch dies on `!bIsRunningPlatform`
+  (TargetPlatformManagerModule.cpp:1070). Fix: delete the stale `.so`s and the manifest.
 
 ## Architecture Overview
 
