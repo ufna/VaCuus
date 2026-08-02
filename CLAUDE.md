@@ -109,6 +109,15 @@ cd /w/Unreal/UnrealEngine && ./Engine/Build/BatchFiles/Linux/Build.sh \
 - **`BuildPlugin`'s HostProject editor leg rewrites `Engine/Binaries/**/UnrealEditor.modules`**
   and can resurrect stale platform modules; the next editor launch dies on `!bIsRunningPlatform`
   (TargetPlatformManagerModule.cpp:1070). Fix: delete the stale `.so`s and the manifest.
+- **`stat <any group>` KILLS every UE process on this machine** (Arch glibc 2.43): the first
+  stat message after master-enable dies in ld.so TLS allocation — the process calls
+  `exit(127)` with no log tail, no core, no crash handler (CrashReportClient is not built, so
+  every hard death looks like silent disappearance; grep nothing, suspect exit-status 127).
+  Not a VaCuus bug (`stat slate` dies identically; UBT already builds all modules
+  `-ftls-model=local-dynamic`, LinuxToolChain.cs:529); no `GLIBC_TUNABLES` dose works — the
+  needed surplus overlaps the engine's 128 KB thread stacks. **Use `vacuus.M1HUD.PerfLog 1`
+  instead — it exists precisely because the passport never trusted engine stats.** Bead 68h
+  holds the full evidence chain.
 
 ## Architecture Overview
 
