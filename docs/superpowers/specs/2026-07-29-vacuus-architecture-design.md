@@ -45,6 +45,13 @@ enqueues input/data; the render thread only replays pre-built command lists.
 | HarfBuzz (v1.x) | UE's bundled | MIT-like | engine dependency |
 | Preact (patched) | `@vacuus/preact` npm fork | MIT | `Web/` (source only) |
 
+*(Amended 2026-08-02, M6 Task 6/7 (buildplugin-fab-dryrun.md §4): the HarfBuzz row is
+stale — HarfBuzz is NOT USED. No build rule references it, zero Debugger relay TUs
+compile in `VaCuusRml/Private/Gen/` (the only vendored code that could want it), and the
+third-party disclosure list carries no entry for it. The v1.x BiDi plan in §1's non-goals
+stands as a plan, but nothing ships, links, or needs disclosure today. FreeType remains
+engine-provided as the table says.)*
+
 Fab compliance (rules verified in research: source-shipping mandate 4.3.6.1.a, `.exe`/
 `.msi` ban 4.3.6.1.e, license stack, size caps): all UE-facing modules ship as source
 (mandatory); ThirdParty is MIT source — no closed binaries, no executables. **`Web/`
@@ -333,6 +340,26 @@ reference HUD).
   build"). Guarantees cook correctness without loose-file staging rules in the consuming
   project.
 
+  *(Amended 2026-08-02, M6 spec §2(a-d), as built: the class lives in the RUNTIME
+  module — `VaCuusEditor` supplies only the factory; a cooked game must load the asset.
+  The pack runs in `PreSave(IsCooking)` and payload+index serialize EXCLUSIVELY into
+  cooks — an editor save is a small diffable marker, so cook state never leaks into
+  source control. "Memory-mapped" is Win64-only in 5.8: Linux/macOS report no
+  memory-mapped-file support and get a resident buffer, asserted by the mount log line.
+  The mount predicate: cooked builds (`RequiresCookedData`) auto-mount the config-listed
+  bundle at game-instance init; the editor and uncooked `-game` mount nothing —
+  `vacuus.Bundle.Enable 1` packs the loose tree on demand for PIE parity, and a
+  live-reload event over bundle-shadowed content logs a Warning naming the path. Cook
+  staleness rides an `FCookDependency::Function` tree-hash (edit/add/delete all verified
+  to recook exactly the bundle package under ZenStore). Two observables keep the path
+  honest: every view's teardown prints "N opens served by mounted bundles, M by loose
+  roots" — the packaged gates assert M==0 — and "cook correctness without staging rules"
+  gained its one required consuming-project rule: the bundle asset must be reachable by
+  the cooker (`DirectoriesToAlwaysCook` or a hard reference); a cooked build whose
+  configured soft path resolves to no asset logs one Error naming it. Loose-file staging
+  itself gates on `Target.Configuration != Shipping` — Shipping ships the bundle or
+  nothing. Buyer-facing form: docs/buyer/setup.md §3.)*
+
 Fonts: registered per style set; loaded on UI thread at init. Font-**effect** glyph
 generation (glow/outline) is a measured spike risk (up to 32.5 ms for large glyph sets):
 v1 mitigations — effect-glyph warm-up during document load (before the view is shown) +
@@ -363,6 +390,23 @@ workload — ~1,750 elements: 64 rAF-animated minimap blips, 18 keyframe-animate
 icons, 24-row scoreboard, killfeed, animated bars — plus the demo's ability bar and
 damage numbers. Exists from **M1 onward** (static subset) and is completed by M3;
 budgets are asserted from M3.
+
+*(Amended 2026-08-02, M6: the reference HUD was built in M6 — 1,732 nodes at declared
+steady state, asserted ∈ [1650, 1850] — and the full table below was measured on it in
+BOTH venues (Dev and cooked-Shipping-Linux); the filled table with a Method column per
+row is `docs/passport/2026-08-vacuus-perf-passport.md`, which supersedes the per-row
+status notes below for current numbers. Three outcomes worth stating here: (1) the
+game-thread row holds at full scale with ~8–11× headroom — and per this table's own
+demand, `SVaCuusWidget::OnPaint` gained its scope BEFORE the passport soaks
+(bead akj.6.38); the five rare-event input/focus handlers remain unscoped, recorded as
+the stated unmeasured remainder in the passport's row 1 method. (2) The UI-thread
+Update+Record row FAILS at reference scale — 1.05 ms steady in the row's own Shipping
+venue vs the 0.50 budget, with every driver animating every frame. The budget is not
+quietly re-baselined: the breach, its attribution (the per-frame animated surfaces
+dominate) and the two document-side routes are in the passport's "The breach" section;
+choosing shrink-the-workload vs re-baseline-the-row is an owner decision. (3) The RAM
+row measured +14.3 MB (Shipping A/B median) with GPU reported separately — whether GPU
+counts against the 32 MB is the recorded OWNER DECISION on the passport's row 5.)*
 
 | Metric | Budget | Status |
 |---|---|---|
@@ -441,6 +485,22 @@ budgets are asserted from M3.
   manual matrix pass on Win64 D3D12 / Linux Vulkan / macOS Metal; no-executables scan
   clean.
 
+  *(Amended 2026-08-02, M6 spec §2(f) — the accept line discharged as what this
+  machine can prove, with every remainder NAMED, not dropped. Ran here: `RunUAT
+  BuildPlugin -StrictIncludes` three legs green on 5.8 Linux (run 1 failed on 14
+  PCH-masked includes and that was the point — all fixed with real includes,
+  buildplugin-fab-dryrun.md §6); the compat seam `VaCuusEngineCompat.h` holds every
+  drift-suspect call with zero version guards in the tree today. The §11 gates ran from
+  the cooked bundle in packaged Development AND Shipping on LINUX (venue substitution
+  recorded: Win64 hardware does not exist here) — M==0 bundle serving asserted, the
+  Linux resident path asserted, zero JS errors, clean teardown; the UI row FAILS at
+  reference scale per the §11 amendment above (owner decision). The manual matrix
+  executed on Linux Vulkan (15 rows, `docs/passport/2026-08-vacuus-manual-matrix.md`).
+  The scan is clean after being seen to fail on its planted fixture. Owner hardware,
+  enumerated with commands in `docs/buyer/owner-handoff.md`: the 5.6/5.7 SHIM-1 builds,
+  everything Win64 (matrix column, §11 columns, the disk-row literal, IME/akj.6.19, the
+  quickjs c11atomics decision), the macOS column, and the Fab upload itself.)*
+
 ## 15. Open items (non-blocking, owner decisions)
 
 - Plugin license for direct (non-Fab) distribution; pricing tiers.
@@ -448,3 +508,14 @@ budgets are asserted from M3.
 - Public API prefix (`VaCuus`/`Vc`) — confirm before M2 freezes headers.
 - Win64 (D3D12) and macOS (Metal) validation hardware for M6 matrix.
 - Third-party declaration mechanics on Fab (form details) — confirm at M6 dry-run.
+
+*(Amended 2026-08-02, M6: three items land. `CanContainContent` CONFIRMED true — the
+plugin ships content in earnest: the bundle marker asset, the world-panel and spike
+materials, the DevUI tree with fonts (and their OFL.txt, added by the dry-run when the
+claimed license file turned out not to exist). Third-party declaration mechanics: the
+disclosure list is written with every entry pointing at an in-tree license file the
+package includes — buildplugin-fab-dryrun.md §4; HarfBuzz is NOT USED and gets no entry
+(§2 amendment); Fab's unrecorded rules past 4.3.6.1.a/e remain a confirm-at-upload item.
+Validation hardware: still absent, now concretized — every hardware-gated item is an
+exact command in `docs/buyer/owner-handoff.md`. Still open: license/pricing (owner), and
+the API prefix resolved itself long ago — every public symbol says `VaCuus`.)*
