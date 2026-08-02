@@ -89,20 +89,25 @@ void FVaCuusWorldSink::CopyToDestination(FRHICommandList& RHICmdList)
 		return;
 	}
 
-	VACUUS_PERF_SCOPE(WorldCopy);
+	{
+		// Braced so the scope CLOSES before the mips branch: WorldCopy and WorldMips
+		// are disjoint samples a reader may sum, never nested -- an open copy scope
+		// around the generation would double-count it into both lines.
+		VACUUS_PERF_SCOPE(WorldCopy);
 
-	// OutputRT sits in SRVMask outside Replay by class invariant
-	// (VaCuusReplayRenderer.cpp:176-177, :617), so its transitions are explicit
-	// round trips. The destination's before-state is Unknown on purpose: a freshly
-	// (re)initialized render-target resource arrives in whatever state its InitRHI
-	// left, and only after our first copy is SRVMask its steady state.
-	RHICmdList.Transition(FRHITransitionInfo(Source, ERHIAccess::SRVMask, ERHIAccess::CopySrc));
-	RHICmdList.Transition(FRHITransitionInfo(Destination, ERHIAccess::Unknown, ERHIAccess::CopyDest));
-	RHICmdList.CopyTexture(Source, Destination, FRHICopyTextureInfo());
-	RHICmdList.Transition(FRHITransitionInfo(Destination, ERHIAccess::CopyDest, ERHIAccess::SRVMask));
-	RHICmdList.Transition(FRHITransitionInfo(Source, ERHIAccess::CopySrc, ERHIAccess::SRVMask));
+		// OutputRT sits in SRVMask outside Replay by class invariant
+		// (VaCuusReplayRenderer.cpp:176-177, :617), so its transitions are explicit
+		// round trips. The destination's before-state is Unknown on purpose: a freshly
+		// (re)initialized render-target resource arrives in whatever state its InitRHI
+		// left, and only after our first copy is SRVMask its steady state.
+		RHICmdList.Transition(FRHITransitionInfo(Source, ERHIAccess::SRVMask, ERHIAccess::CopySrc));
+		RHICmdList.Transition(FRHITransitionInfo(Destination, ERHIAccess::Unknown, ERHIAccess::CopyDest));
+		RHICmdList.CopyTexture(Source, Destination, FRHICopyTextureInfo());
+		RHICmdList.Transition(FRHITransitionInfo(Destination, ERHIAccess::CopyDest, ERHIAccess::SRVMask));
+		RHICmdList.Transition(FRHITransitionInfo(Source, ERHIAccess::CopySrc, ERHIAccess::SRVMask));
 
-	NumCopies.fetch_add(1, std::memory_order_relaxed);
+		NumCopies.fetch_add(1, std::memory_order_relaxed);
+	}
 
 	// The copy above writes mip 0 only (FRHICopyTextureInfo::NumMips defaults to 1,
 	// RHICommandList.h:207); a >1-mip destination means the component asked for a

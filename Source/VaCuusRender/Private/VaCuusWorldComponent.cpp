@@ -508,6 +508,12 @@ void UVaCuusWorldComponent::UpdateRenderTarget()
 		RenderTarget->ClearColor = FLinearColor::Transparent;
 		RenderTarget->bAutoGenerateMips = bGenerateMips;
 		RenderTarget->Filter = bGenerateMips ? TF_Trilinear : TF_Default;
+		// KNOWN WINDOW, pre-dating mips and unchanged by them: InitRHI joins the
+		// deferred-update list once (AddToDeferredUpdateList(true),
+		// TextureRenderTarget2D.cpp:578), so the NEXT scene render clears this RT
+		// one time (and, with mips on, regenerates mips of that cleared content) --
+		// a publish that lands before that scene render is wiped and heals on the
+		// following publish. Identical on the single-mip path since M5; accepted.
 		RenderTarget->InitCustomFormat(CurrentDrawSize.X, CurrentDrawSize.Y, PF_B8G8R8A8, /*bInForceLinearGamma=*/true);
 		bChanged = true;
 	}
@@ -544,6 +550,30 @@ void UVaCuusWorldComponent::UpdateRenderTarget()
 			// (the UTexture is stable, only its resource moved) but not the
 			// RenderTarget == nullptr create path.
 			MaterialInstance->SetTextureParameterValue(TEXT("VaCuusUI"), RenderTarget);
+
+			// THE SAMPLER REBIND, and it is LOAD-BEARING for the mip toggle, not
+			// hygiene. The MID's uniform-expression cache binds the sampler by
+			// resource at FILL time (SamplerSource = &GetResource()->SamplerStateRHI,
+			// MaterialUniformExpressions.cpp:1715) and nothing on this path refills
+			// it: the SetTextureParameterValue above short-circuits on an unchanged
+			// UTexture pointer (MaterialInstance.cpp:4321-4322), the per-draw check
+			// refills only on a shader-map change (MaterialRenderProxy.cpp:744-752),
+			// and MarkRenderStateDirty below recreates the scene proxy, not this
+			// cache. The TEXTURE slot survives re-init anyway through the
+			// TextureReferenceRHI indirection (MaterialUniformExpressions.cpp:1729,
+			// re-pointed by TextureRenderTarget2D.cpp:576); the SAMPLER slot has no
+			// indirection. A same-Filter re-init (resize) never noticed, because
+			// FTexture::GetOrCreateSamplerState dedupes by initializer into an
+			// immortal global cache (RenderResource.cpp:449-467) -- the "stale"
+			// pointer IS the new resource's sampler. SetGenerateMips is the first
+			// path that CHANGES the initializer, so without this the trilinear half
+			// of the toggle never reaches the GPU. RecacheUniformExpressions
+			// enqueues the invalidate-and-refill (MaterialInstance.cpp:4768-4771 ->
+			// CacheUniformExpressions_GameThread, MaterialRenderProxy.cpp:680-694 ->
+			// InvalidateUniformExpressionCache, :651-678). The create path needs
+			// none of this: OnRegister builds the MID AFTER this RT exists, and a
+			// fresh proxy's first fill already reads the right sampler.
+			MaterialInstance->RecacheUniformExpressions(/*bRecreateUniformBuffer=*/true);
 		}
 		MarkRenderStateDirty();
 	}

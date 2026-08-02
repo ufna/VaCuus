@@ -43,7 +43,7 @@ struct IPooledRenderTarget;
  * (VaCuusReplayRenderer.h, ReleaseResources' note). The replayer's persistent
  * OutputRT is that only copy, and the slot update repaints from it.
  *
- * THREAD AFFINITY: all state belongs to the render thread except the three counters,
+ * THREAD AFFINITY: all state belongs to the render thread except the four counters,
  * which are atomics so tests and diagnostics can read them from the game thread.
  */
 class FVaCuusWorldSink final : public IVaCuusFrameSink

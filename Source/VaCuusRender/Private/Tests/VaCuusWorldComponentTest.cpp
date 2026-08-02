@@ -502,10 +502,24 @@ bool FVaCuusWorldResizeRaceTest::RunTest(const FString& Parameters)
  *        withholding) rebuilds the chain, because a fresh >1-mip destination on an
  *        idle view would otherwise minify against garbage far mips forever.
  *
+ * THE SAMPLER IS THE INVARIANT, NOT THE UPROPERTY: what the material draws with is
+ * the resource's SamplerStateRHI, bound by identity into the MID's
+ * uniform-expression cache at fill time (MaterialUniformExpressions.cpp:1715) and
+ * re-carried there only by UpdateRenderTarget's RecacheUniformExpressions -- a
+ * Filter UPROPERTY that never reached a new sampler object would pass a
+ * property-level test while the GPU kept filtering with the old one. So each toggle
+ * asserts the resource-level sampler IDENTITY moved. Identity is exact here, not
+ * flaky: FTexture::GetOrCreateSamplerState dedupes by full initializer into an
+ * immortal global cache (RenderResource.cpp:449-467), so equal filters mean the
+ * SAME pointer (ON twice returns the identical object) and different filters mean
+ * different pointers. On a platform whose RenderTarget LOD group already filtered
+ * trilinearly the ON/OFF identity check would fail loudly -- flagging that the
+ * toggle's filtering half is a no-op there -- rather than pass vacuously.
+ *
  * Under -nullrhi UTextures create no resource at all (Texture.cpp:336-339, the
  * lifecycle test's step-3 argument), so there the test pins the property plumbing
  * (bAutoGenerateMips/Filter reach the RT object) and the counters' zeros; the
- * NumMips/counter-motion halves run wherever the suite has a real RHI.
+ * NumMips/counter-motion/sampler halves run wherever the suite has a real RHI.
  */
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusWorldMipChainTest, "VaCuus.World.MipChain",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -558,10 +572,20 @@ bool FVaCuusWorldMipChainTest::RunTest(const FString& Parameters)
 	// max(size >> level, 1) (GenerateMips.cpp:158-160).
 	const int32 ExpectedNumMips = int32(FMath::FloorLog2(128u)) + 1;
 
+	// The bound-sampler probe (see the test comment: the sampler is the invariant).
+	// Safe to read from the game thread after FlushRenderingCommands: the field is
+	// written once by InitRHI and the flush orders that write before this read.
+	const auto BoundSampler = [&]() -> FRHISamplerState*
+	{
+		FTextureRenderTargetResource* Resource = RenderTarget->GameThread_GetRenderTargetResource();
+		return Resource ? Resource->SamplerStateRHI.GetReference() : nullptr;
+	};
+
 	// 1. ON at registration.
 	TestTrue(TEXT("ON: the RT object asks for mips"), RenderTarget->bAutoGenerateMips);
 	TestEqual(TEXT("ON: trilinear filtering, so minification blends between the mips"),
 		RenderTarget->Filter, TEnumAsByte<TextureFilter>(TF_Trilinear));
+	FRHISamplerState* SamplerOn = nullptr;
 	if (bTextureResourcesExist)
 	{
 		FlushRenderingCommands();
@@ -572,6 +596,8 @@ bool FVaCuusWorldMipChainTest::RunTest(const FString& Parameters)
 		{
 			TestEqual(TEXT("ON: ...and was created with the chain"), int32(TextureRHI->GetDesc().NumMips), ExpectedNumMips);
 		}
+		SamplerOn = BoundSampler();
+		TestNotNull(TEXT("ON: the resource carries a sampler"), SamplerOn);
 	}
 
 	// 2. Publish once; on a real RHI the generation counter must ride the copies 1:1.
@@ -602,12 +628,16 @@ bool FVaCuusWorldMipChainTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("OFF: the RT object no longer asks for mips"), RenderTarget->bAutoGenerateMips);
 	TestEqual(TEXT("OFF: the filter is the class default again (LOD-group behavior, untouched)"),
 		RenderTarget->Filter, TEnumAsByte<TextureFilter>(TF_Default));
+	FRHISamplerState* SamplerOff = nullptr;
 	if (bTextureResourcesExist)
 	{
 		TestEqual(TEXT("OFF: exactly 1 mip"), RenderTarget->GetNumMips(), 1);
 		TestTrue(TEXT("OFF: the re-init's slot-update repaint copied"), Sink->GetNumCopies() > CopiesBeforeOff);
 		TestEqual(TEXT("OFF: ...and generated NOTHING -- the off path's zero new cost"),
 			int64(Sink->GetNumMipGenerations()), int64(GenerationsBeforeOff));
+		SamplerOff = BoundSampler();
+		TestTrue(TEXT("OFF: the BOUND sampler moved with the toggle (a new object -- trilinear left the initializer)"),
+			SamplerOff != nullptr && SamplerOff != SamplerOn);
 	}
 
 	// 4. ON again while idle: the repaint alone rebuilds the chain.
@@ -619,6 +649,13 @@ bool FVaCuusWorldMipChainTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("ON again: the chain is back"), RenderTarget->GetNumMips(), ExpectedNumMips);
 		TestTrue(TEXT("ON again: the repaint generated without waiting for a publish the idle gate withholds"),
 			Sink->GetNumMipGenerations() > GenerationsBeforeOn);
+		// The dedup cache makes this exact: same initializer, same immortal object
+		// (RenderResource.cpp:449-467) -- so "back to trilinear" is pointer equality
+		// with step 1's sampler, not just "different from OFF".
+		TestTrue(TEXT("ON again: the bound sampler is step 1's trilinear object, identically"),
+			BoundSampler() == SamplerOn);
+		AddInfo(FString::Printf(TEXT("Sampler identity: on=%p off=%p on-again=%p"),
+			static_cast<void*>(SamplerOn), static_cast<void*>(SamplerOff), static_cast<void*>(BoundSampler())));
 	}
 
 	Component->UnregisterComponent();
@@ -711,7 +748,7 @@ static FMipReadback ReadMip(FRHICommandListImmediate& RHICmdList, FRHITexture* W
  * Restore-the-bug (2026-08-02): with the sink's GenerateDestinationMips call
  * suppressed, "mip 1 over the div equals the div color" failed at (0 0 0 0) vs
  * (208 64 48 255) while every mip 0 assertion kept passing; restored, all green.
- * Both outcomes verbatim in the worldpanel-mips report.
+ * Both outcomes verbatim in docs/research/proofs/worldpanel-mips/restore-the-bug.md.
  */
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusWorldMipContentGPUTest, "VaCuus.World.MipContentGPU",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
