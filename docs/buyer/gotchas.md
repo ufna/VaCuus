@@ -153,3 +153,22 @@ stale-bundle configuration found; everything else either recooks correctly
 recooks everything (ZenStore off, default full cook — slow but correct).
 Do: with `bUseZenStore=False`, do not pass `-legacyiterative` on a project that cooks
 UI bundles. The safe default full cook is what you get without it.
+
+**20. `stat <group>` can kill any UE process on bleeding-edge glibc (Linux).**
+Symptom: the game or editor exits instantly and silently — no callstack, no
+crash dialog, exit status 127 — the moment ANY stat group is enabled (`stat
+vacuus`, `stat slate`, anything that master-enables stats collection).
+Cause: not VaCuus, and not even your project — the first stat message after
+master-enable performs a lazy thread-local-storage allocation in the dynamic
+linker, and on very recent glibc (observed on glibc 2.43 / Arch, 2026-08) the
+static TLS reserve is exhausted by the editor's hundreds of dlopened modules;
+ld.so's fatal path is a bare `exit(127)`. UE already mitigates the classic
+form for everything UBT builds (`-ftls-model=local-dynamic`,
+LinuxToolChain.cs:529-531 — VaCuus modules included), so the residual trigger
+is environment-side; LTS-distro glibc (Ubuntu 22.04/24.04) has not been seen
+to reproduce it.
+Do: measure VaCuus with its built-in instrument — `vacuus.M1HUD.PerfLog 1`
+(all scopes, publish/skip ratios, per-window means/p99, works in every
+configuration including packaged Shipping via `-VaCuusPerfLog`). If you hit
+the silent-127 death on a rolling-release distro, that is the signature; it
+is engine/glibc territory, not a plugin defect.

@@ -727,6 +727,16 @@ uint64 UVaCuusView::GetFramesPublished() const
 	return Status.IsValid() ? Status->FramesPublished.load(std::memory_order_acquire) : 0;
 }
 
+int32 UVaCuusView::GetLastPublishedCommandCount() const
+{
+	return Status.IsValid() ? Status->LastPublishedCommands.load(std::memory_order_acquire) : 0;
+}
+
+int32 UVaCuusView::GetLastPublishedDrawCallCount() const
+{
+	return Status.IsValid() ? Status->LastPublishedDrawCalls.load(std::memory_order_acquire) : 0;
+}
+
 uint64 UVaCuusView::GetLastRequestedLoadSerial() const
 {
 	return Status.IsValid() ? Status->LoadRequestSerial.load(std::memory_order_relaxed) : 0;
