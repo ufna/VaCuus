@@ -27,8 +27,9 @@
  * Everything else the plugin calls was surveyed by the same research and judged
  * stable by construction (ITextInputMethodContext/System are 4.x-era; IInputProcessor
  * virtuals, FScriptArrayHelper, the RDG utility family are unchanged across the
- * range; quickjs/RmlUi are vendored) — those are NOT wrapped, because burying four
- * live hotspots under fifty inert pass-throughs would hide the seam's signal.
+ * range; the batched scratch/commit shader-parameter pair — see hotspot 3's note;
+ * quickjs/RmlUi are vendored) — those are NOT wrapped, because burying four live
+ * hotspots under fifty inert pass-throughs would hide the seam's signal.
  */
 
 namespace VaCuusCompat
@@ -109,35 +110,32 @@ inline bool RegisterInputPreProcessor_PreGame(FSlateApplication& SlateApp, const
 }
 
 // ---------------------------------------------------------------------------
-// HOTSPOT 3 — batched material-shader parameters, without an FSceneView.
+// HOTSPOT 3 — the scene-free FMaterialShader::SetParameters overload.
 //
-// 5.8: FMaterialShader::SetParameters has a scene-free overload taking
-// `const FSceneInterface*` (MaterialShader.h:88-92); null Scene is an explicitly
-// handled input (ShaderBaseClasses.cpp:264: feature level falls back to
-// GMaxRHIFeatureLevel, parameter collections to process defaults). The batched
-// plumbing around it: FRHICommandListBase::GetScratchShaderParameters
-// (RHICommandList.h:996) and FRHICommandList::SetBatchedShaderParameters
-// (RHICommandList.h:3683).
+// 5.8: `const FSceneInterface*` overload at MaterialShader.h:88-92; null Scene is
+// an explicitly handled input (ShaderBaseClasses.cpp:264: feature level falls back
+// to GMaxRHIFeatureLevel, parameter collections to process defaults). ONE call
+// site (VaCuusMaterialDraw.h). This overload is the research's genuinely
+// unconfirmed item — "the FSceneInterface* overload's presence there is
+// unconfirmed" — which is what earns it a wrapper.
+//
+// DELIBERATELY NOT WRAPPED alongside it (M6 review round 1): the batched
+// scratch/commit plumbing — FRHICommandListBase::GetScratchShaderParameters
+// (RHICommandList.h:996) / FRHICommandList::SetBatchedShaderParameters
+// (RHICommandList.h:3683). It is used as seven get/commit pairs across three files
+// of this module (the replay draw path, the glass path, the material path), the research
+// rated it stable ("[inference] batched-parameters API predates 5.6", no
+// deprecation churn near it in 5.8), and round 1 proved that wrapping it only
+// where it was handy makes the seam's one-file promise false. It belongs to the
+// surveyed-stable list in the header comment above; if SHIM-1 falsifies the
+// inference, the port wraps ALL its sites in the same change.
 //
 // 5.6/5.7 CHECK: whether the FSceneInterface* overload exists there. If only the
 // `const FSceneView&` form (:81-86 on 5.8) exists, the port must fabricate a
 // minimal view — the Slate recipe the pass's view UB already follows
 // (SlateRHIRenderingPolicy.cpp:706-756) — and that work lands HERE, not at the
-// call site. The scratch/commit pair below is [inference in the research] older
-// than 5.6; if it is missing, the per-shader SetParameters path replaces it here.
+// call site.
 // ---------------------------------------------------------------------------
-
-/** One scratch batched-parameters block from the command list's allocator (RHICommandList.h:996). */
-inline FRHIBatchedShaderParameters& GetScratchShaderParameters(FRHICommandList& RHICmdList)
-{
-	return RHICmdList.GetScratchShaderParameters();
-}
-
-/** Commits a filled batched-parameters block to a graphics shader (RHICommandList.h:3683). */
-inline void SetBatchedShaderParameters(FRHICommandList& RHICmdList, FRHIGraphicsShader* Shader, FRHIBatchedShaderParameters& Parameters)
-{
-	RHICmdList.SetBatchedShaderParameters(Shader, Parameters);
-}
 
 /** Material-specific (non-mesh) shader parameters with NO scene: the MaterialShader.h:88-92 overload, null Scene. */
 inline void SetMaterialShaderParameters_NullScene(FMaterialShader& Shader, FRHIBatchedShaderParameters& BatchedParameters,

@@ -37,9 +37,11 @@ returns only the compat header's own comments.
    ```
 
    Three legs run per invocation: host editor (Development) + Win64 game
-   (Development AND Shipping) — BuildPluginCommand.Automation.cs:297,309-310. On a
-   Windows host, Linux legs are silently dropped, never attempted (:505-517) — a pass
-   there says nothing about Linux, and vice versa.
+   (Development AND Shipping) — BuildPluginCommand.Automation.cs:297,309-310. No Linux
+   leg runs here only because the command REQUESTS `-TargetPlatforms=Win64`; Linux is
+   buildable from both Windows and Linux hosts (:509-517). The host filter's SILENT
+   drops are the other direction — Win64 on a non-Windows host and Mac on a non-Mac
+   host (:499-508). Either way, a Win64 pass says nothing about Linux and vice versa.
 
 3. **Every compile break lands in the seam, not at the call site**: fix inside
    `VaCuusEngineCompat.h` under `#if UE_VERSION_OLDER_THAN(5, 8, 0)` (or the tightest
@@ -48,8 +50,11 @@ returns only the compat header's own comments.
    did not regress the primary engine.
 
 4. **Scan + smoke**: `bash Tools/fab_scan.sh <Package-dir>` must self-test-fail on the
-   fixture then report CLEAN; then drop the packaged plugin into a blank project of that
-   engine version and load a DevUI document (the setup.md happy path).
+   fixtures then report CLEAN; then drop the packaged plugin into a blank project of
+   that engine version and load a DevUI document (the setup.md happy path).
+   **Run the scan step under WSL or on a Linux box**: on Git-for-Windows noacl
+   mounts, `find -perm /111` reports spurious exec bits and the self-test refuses
+   everything — fail-closed by design, not a scan bug.
 
 ## Expected failure shapes (what a break looks like, per hotspot)
 
@@ -62,7 +67,7 @@ seam if it is version drift.
 |---|---|---|---|
 | 1 | `ICustomSlateElement::FDrawPassInputs` field set (RenderingCommon.h:945-955 on 5.8) | `'FDrawPassInputs' has no member named 'OutputTexture'` (or ElementsOffset / SceneViewRect / bOutputIsHDRDisplay) in `VaCuusEngineCompat.h`; or `Draw_RenderThread ... marked 'override', but does not override` if the virtual's shape itself moved | repoint the four accessors (old-name candidates on the 5.5-deprecated `FSlateCustomDrawParams`, :963-972: ViewOffset/ViewRect/bIsHDR); if the struct moved/renamed, edit the `FVaCuusDrawPassInputs` alias |
 | 2 | `RegisterInputPreProcessor(processor, FInputPreprocessorRegistrationKey)` (SlateApplication.h:1568/:222 on 5.8) | `no matching function for call to 'FSlateApplication::RegisterInputPreProcessor'` or `'FInputPreprocessorRegistrationKey' was not declared` in `VaCuusEngineCompat.h` | fall back to the `EInputPreProcessorType` overload (:1560 on 5.8) keeping PreGame; if even the enum is absent, the plain overload (:1544) — and RECORD the lost before-Game ordering guarantee |
-| 3 | `FMaterialShader::SetParameters(..., const FSceneInterface*)` (MaterialShader.h:88-92 on 5.8) | `no matching function ... SetParameters` with only the `const FSceneView&` candidate listed, in `VaCuusEngineCompat.h` | fabricate the minimal view the pass's own view UB already mimics (SlateRHIRenderingPolicy.cpp:706-756 recipe), inside the seam |
+| 3 | `FMaterialShader::SetParameters(..., const FSceneInterface*)` (MaterialShader.h:88-92 on 5.8) — the overload ONLY; the batched scratch/commit pair around it is surveyed-stable ("[inference] predates 5.6") and deliberately unwrapped, used as seven pairs across three files | `no matching function ... SetParameters` with only the `const FSceneView&` candidate listed, in `VaCuusEngineCompat.h`; if instead `GetScratchShaderParameters`/`SetBatchedShaderParameters` themselves fail to resolve, the stable-inference is falsified — wrap ALL their sites in one change and record it | fabricate the minimal view the pass's own view UB already mimics (SlateRHIRenderingPolicy.cpp:706-756 recipe), inside the seam |
 | 4 | `FSlateDrawElement::MakeCustom` declaring header (DrawElementTypes.h:303 on 5.8) | none expected — the compat header includes umbrella `DrawElements.h`, which predates the split; a surprise would be a changed MakeCustom signature | one-line fix in `VaCuusCompat::MakeCustomDrawElement` |
 
 **Also expected on Win64, unrelated to the seam** (research §1 risk table): the quickjs

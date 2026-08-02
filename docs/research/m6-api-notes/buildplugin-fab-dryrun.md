@@ -5,7 +5,12 @@ Machine: this one (Linux, UE 5.8.1 source at `/w/Unreal/UnrealEngine`). Companio
 bundle-cook-experiments.md style: commands, verbatim outputs, and errata against the
 research where running found them. The compat-seam half of the task lives in
 `Source/VaCuusRender/Private/VaCuusEngineCompat.h` (the four reroutes) and
-`docs/passport/2026-08-vacuus-shim1.md` (the owner-hardware experiment).
+`docs/passport/2026-08-vacuus-shim1.md` (the owner-hardware experiment); review
+round 1 narrowed hotspot 3 to the scene-free SetParameters overload alone — the
+batched scratch/commit pair it sits in is used as seven pairs across three files,
+was rated stable by the research, and wrapping it only where convenient had made
+the seam's one-file promise false (the header and SHIM-1 row 3 carry the
+correction).
 
 ## 1. FilterPlugin.ini — the three rules and their reasons
 
@@ -50,59 +55,72 @@ Full-tree sweep (`find . -type f -perm /111` + `git ls-files -s | awk '$1=="1007
 `compile_shaders.py` as exec-bit-set; in this tree both are 644 and start with
 `import sys` (no shebang either). Moot regardless — Backends is excluded.
 
-## 3. The scan + its fixture — seen to fail, both ways
+## 3. The scan + its fixtures — seen to fail, both ways, and seen to REFUSE
 
-`Tools/fab_scan.sh`: five classes (EXTENSION, EXECBIT, SHEBANG, NODE_MODULES,
-LFS_POINTER — spec §2(e)'s list), a three-entry shebang whitelist (the two
-`gen_relays.sh` + `vacuus.mjs`, reasons in the script), and a MANDATORY self-test:
-every invocation first scans the committed fixture `Tools/scan-fixture/` (one plant per
-class, each tripping exactly one check) and aborts unless the report is exactly the five
-plants. Verbatim, scan pointed AT the fixture (the fail leg):
+`Tools/fab_scan.sh`: SIX classes (EXTENSION, EXECBIT, SHEBANG, ELF_MAGIC,
+NODE_MODULES, LFS_POINTER — spec §2(e)'s five, plus the review round's ELF-magic
+class: an ELF with a harmless name, no bit and no shebang evaded all five originals,
+and that renamed-esbuild shape is the scan's whole charter), a three-entry shebang
+whitelist (the two `gen_relays.sh` + `vacuus.mjs`, reasons in the script), and TWO
+mandatory self-tests per invocation: `Tools/scan-fixture/` (one plant per class,
+must report exactly the six) and `Tools/scan-fixture-whitelist/` (a shebang at
+exactly a whitelisted path must be forgiven while its near-miss neighbour is
+reported — the whitelist branch is seen to both admit and refuse, closing review
+round 1's untested-branch gap).
 
-```
-== fab_scan self-test: scanning the planted fixture (must report exactly the 5 plants) ==
-EXECBIT	planted_execbit.txt
-EXTENSION	planted.exe
-LFS_POINTER	planted_lfs_pointer.txt
-NODE_MODULES	node_modules
-SHEBANG	planted_shebang.sh
-== self-test OK: the scan has been seen to fail, exactly as planted ==
-
-== fab_scan: scanning /w/Unreal/VcHost/Plugins/VaCuus/Tools/scan-fixture ==
-EXECBIT	planted_execbit.txt
-EXTENSION	planted.exe
-LFS_POINTER	planted_lfs_pointer.txt
-NODE_MODULES	node_modules
-SHEBANG	planted_shebang.sh
-SCAN: FAIL (5 violation(s))
-exit=1
-```
-
-And the self-test's own restore-the-bug — `planted.exe` removed, the self-test refuses
-to bless anything (then restored):
+**Fail-closed (review round 1's blocker, demonstrated by the reviewer):** the
+original scan blessed an empty directory (CLEAN exit 0) and a tree whose unreadable
+subdir hid a `.so` (find's Permission-denied went to the screen and nowhere else).
+Now: the target must carry a root `*.uplugin` (every BuildPlugin package does —
+BPC:433-445 rewrites and saves it there), and every find/head stderr is collected —
+any read failure ABORTS the scan (exit 2). Both refusals re-demonstrated, verbatim:
 
 ```
-== fab_scan self-test: scanning the planted fixture (must report exactly the 5 plants) ==
-EXECBIT	planted_execbit.txt
-LFS_POINTER	planted_lfs_pointer.txt
-NODE_MODULES	node_modules
-SHEBANG	planted_shebang.sh
-SELF-TEST FAILED: fixture report does not match the known plants.
---- expected ---
-EXECBIT	planted_execbit.txt
-EXTENSION	planted.exe
-LFS_POINTER	planted_lfs_pointer.txt
-NODE_MODULES	node_modules
-SHEBANG	planted_shebang.sh
---- got ---
-EXECBIT	planted_execbit.txt
-LFS_POINTER	planted_lfs_pointer.txt
-NODE_MODULES	node_modules
-SHEBANG	planted_shebang.sh
+--- REFUSAL LEG A: empty dir ---
+SCAN ABORTED: no *.uplugin at .../scratchpad/empty-dir — not a BuildPlugin package root
+exit=2
+--- REFUSAL LEG B: unreadable subdir hiding a .so ---
+[self-tests 1+2 pass as below]
+== fab_scan: scanning .../scratchpad/denied-tree ==
+SCAN ABORTED: find could not read the tree (target tree):
+find: '.../denied-tree/locked': Permission denied   [x5 — one per check pass]
 exit=2
 ```
 
-The green leg over the real package output is in §6.
+**The fail leg** (a package-shaped tree — the fixture plus a dummy `Demo.uplugin` —
+carrying all six plants), verbatim:
+
+```
+== fab_scan self-test 1: scanning the planted fixture (must report exactly the 6 plants) ==
+ELF_MAGIC	planted_elf.bin
+EXECBIT	planted_execbit.txt
+EXTENSION	planted.exe
+LFS_POINTER	planted_lfs_pointer.txt
+NODE_MODULES	node_modules
+SHEBANG	planted_shebang.sh
+== fab_scan self-test 2: whitelist mode (must forgive the whitelisted path, report the near-miss) ==
+SHEBANG	Source/VaCuusJs/gen_relays_nearmiss.sh
+== self-tests OK: the scan has been seen to fail, exactly as planted ==
+
+== fab_scan: scanning .../scratchpad/planted-package ==
+ELF_MAGIC	planted_elf.bin
+EXECBIT	planted_execbit.txt
+EXTENSION	planted.exe
+LFS_POINTER	planted_lfs_pointer.txt
+NODE_MODULES	node_modules
+SHEBANG	planted_shebang.sh
+SCAN: FAIL (6 violation(s))
+exit=1
+```
+
+And the self-test's own restore-the-bug — `planted.exe` removed (round-1 run, then
+five classes), the self-test refused to bless anything, expected-vs-got printed,
+exit 2; restored. Known limits are STATED in the script header rather than
+discovered: symlinks not followed (UAT-materialized trees contain none), and
+Git-for-Windows noacl mounts make `-perm /111` refuse everything (fail-closed;
+SHIM-1 step 4 says run the scan under WSL/Linux).
+
+The green leg over the real package output is in §7.
 
 ## 4. Third-party disclosure list
 
@@ -180,7 +198,7 @@ game-Dev / game-Shipping). The packaged `.uplugin` rewrite matched the research
 
 **Run 2's inventory found the filter's last gap**: the package carried
 `Binaries/Linux/libUnrealEditor-VaCuus*.so/.sym/.debug` (manifest build products are
-included by exact path, BPC:460) and 674 `Intermediate/Build/.../Inc` UHT files
+included by exact path, BPC:462) and 674 `Intermediate/Build/.../Inc` UHT files
 (BPC:466). Right for a precompiled drop; wrong for the Fab source-only submission
 (mandate 4.3.6.1.a), where the scan itself would — correctly — refuse the `.so`s.
 Fix: `-/Binaries/...` and `-/Intermediate/...` in FilterPlugin.ini (rules land after
@@ -188,30 +206,35 @@ the build-product rules; latest match wins), so the package IS the upload shape 
 the three compile legs remain the compilability proof.
 
 **Run 3** (final filter): `BUILD SUCCESSFUL`, ExitCode=0, 2 m 31 s. Package: **976
-files, 13 MB**. The scan over it, verbatim (self-test first, every run):
+files, 13 MB**. The hardened scan over it (post-review: six classes, two self-tests,
+fail-closed), verbatim:
 
 ```
-== fab_scan self-test: scanning the planted fixture (must report exactly the 5 plants) ==
+== fab_scan self-test 1: scanning the planted fixture (must report exactly the 6 plants) ==
+ELF_MAGIC	planted_elf.bin
 EXECBIT	planted_execbit.txt
 EXTENSION	planted.exe
 LFS_POINTER	planted_lfs_pointer.txt
 NODE_MODULES	node_modules
 SHEBANG	planted_shebang.sh
-== self-test OK: the scan has been seen to fail, exactly as planted ==
+== fab_scan self-test 2: whitelist mode (must forgive the whitelisted path, report the near-miss) ==
+SHEBANG	Source/VaCuusJs/gen_relays_nearmiss.sh
+== self-tests OK: the scan has been seen to fail, exactly as planted ==
 
 == fab_scan: scanning /w/Unreal/FabDryRun/Package ==
 SCAN: CLEAN
 ```
 
-Inventory diff vs expectations: **34/34 PASS** — Web/ present source-only
-(package.json/lock, apps, packages, PREACT-LICENSE, cli/bin) with `node_modules`
-absent; `Source/ThirdParty/RmlUi/Backends` absent with the compiled subtree intact;
-all five license pointers present (RmlUi, Containers, Debugger, quickjs-ng, OFL.txt +
-the ttf); `Content/Bundles/DevUIBundle.uasset` present (the 1.2 KB marker);
-`Tools/`, `docs/`, `CLAUDE.md`/`AGENTS.md`, root `Tests/`, `Binaries/`,
+Inventory: **`Tools/fab_inventory.sh` (committed post-review so the count is
+reproducible, not prose) → `pass=34 fail=0`** against the same package — Web/
+present source-only with `node_modules` absent; Backends absent with the compiled
+subtree intact; all license pointers present; the 1.2 KB marker bundle asset
+present; `Tools/`, `docs/`, `CLAUDE.md`/`AGENTS.md`, root `Tests/`, `Binaries/`,
 `Intermediate/` all absent; `Source/*/Private/Tests` present (decision, §1);
-`Web/.gitignore` present ON PURPOSE — it keeps a buyer's `npm install` output (the
-esbuild ELF) out of THEIR version control, the exact hazard class this scan polices.
+`Web/.gitignore` present ON PURPOSE (its row in the checklist carries the reason).
+The scan/fixture/checklist changes live under `Tools/`, which is never packaged —
+the run-3 package needed no rebuild for them, and the FilterPlugin edit in the same
+review round was comment-only (`:460`→`:462`).
 
 ## 8. Side effect worth its own warning: BuildPlugin rewrites engine module manifests
 
