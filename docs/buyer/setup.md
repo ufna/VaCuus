@@ -109,4 +109,4 @@ M must be 0, and the plugin's own packaged acceptance gates assert exactly that.
 - `rcss-matrix.md` — the exact supported RCSS surface, generated from the vendored
   RmlUi this plugin ships.
 - `perf-guide.md` — the budgets, the measured numbers, and the design idioms
-  (read "The breach" before planning a 1,700-node always-animated HUD).
+  (read the passport's "The re-baseline" before planning a 1,700-node always-animated HUD).

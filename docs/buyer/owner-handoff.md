@@ -103,11 +103,11 @@ the `-/Binaries/...` `-/Intermediate/...` filter fix). Steps:
 
 ## 8. Decisions owed (not hardware, but owner calls)
 
-- **The UI-row breach at reference scale** (passport, "The breach"): 1.05 ms
-  steady vs the 0.50 budget at 1,732 always-animated nodes. Two routes, both
-  document-side: shrink the reference workload (REF-COUNT yields to the gates, by
-  spec), or re-baseline the row with the reasoning recorded. The passport prints
-  the number and deliberately does not choose.
+- **The UI-row breach at reference scale**: **DECIDED 2026-08-02 — route B, the
+  row split** (passport, "The re-baseline"): ≤0.50 ms stands at typical HUD scale
+  (M2 figures, 10–20× inside); the 1,732-node reference worst case budgets
+  ≤1.2 ms steady avg (measured 1.05 — ~14% headroom). Reasoning recorded per
+  spec §2(g); the buyer's document-side levers stay in the perf-guide.
 - **GPU in or out of the 32 MB RAM row** (passport row 5): **DECIDED 2026-08-02 —
   out, its own line**, per the recorded recommendation (7.91 MiB @1080p is a
   view-size choice, not plugin behavior); the row now states the exclusion.
