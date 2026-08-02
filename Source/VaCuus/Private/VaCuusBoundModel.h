@@ -16,12 +16,48 @@
 #include <RmlUi/Core/DataModelHandle.h>
 #include <RmlUi/Core/Types.h>
 
+#include <atomic>
+
 namespace Rml
 {
 class Context;
 }
 
 class UScriptStruct;
+
+/**
+ * Where one model is in the Blueprint-struct-recompile teardown (VaCuus-akj.16, spec M6
+ * 2(j)). One atomic on the model, because the decision it carries -- "may the UI-side
+ * buffers still be destroyed through the type, or must they be abandoned" -- is raced
+ * between the game thread's fence timeout and the UI thread's drop command, and losing
+ * that race the quiet way is heap corruption.
+ *
+ * Transitions (values are compared/exchanged as uint8 in the atomic):
+ *
+ *   Live -> DropQueued        game thread, CondemnForStructRecompile (inside PreChange).
+ *   DropQueued -> Dropping    UI thread, the drop command, via CAS -- claims the right to
+ *                             run DestroyStruct while the game thread provably waits.
+ *   Dropping -> TornDown      UI thread, teardown finished.
+ *   DropQueued -> AbandonRequired
+ *                             game thread, fence timeout, via CAS -- the compile is about
+ *                             to free the old chain, so nobody may DestroyStruct anymore.
+ *   AbandonRequired -> TornDown
+ *                             whoever tears down late (the drop command when it finally
+ *                             drains, or ~FVaCuusBoundModel if it never does): Abandon().
+ *
+ * The two CASes on DropQueued are the whole safety argument: exactly one side wins, and a
+ * game thread that LOSES (finds Dropping) spins until TornDown before returning from
+ * PreChange -- returning earlier would let the compile delete the chain under a running
+ * DestroyStruct.
+ */
+enum class EVaCuusModelDropState : uint8
+{
+	Live = 0,
+	DropQueued,
+	Dropping,
+	TornDown,
+	AbandonRequired,
+};
 
 /**
  * ONE BOUND MODEL -- the whole M3a pipeline for a single (view, model name, USTRUCT) triple,
@@ -95,6 +131,15 @@ public:
 	 */
 	FVaCuusBoundModel(const FString& InModelName, const UScriptStruct* InStruct);
 
+	/**
+	 * Trivial in every normal life. Non-trivial in exactly one: a model condemned for a
+	 * struct recompile whose UI-side drop never ran (the command was refused or discarded by
+	 * a stopping UI thread). Then the old FProperty chain is gone and the member destructors'
+	 * DestroyStruct would corrupt the heap, so the buffers are Abandon()ed here first --
+	 * DropState is the proof of which case this is.
+	 */
+	~FVaCuusBoundModel();
+
 	//~ Neither copyable nor movable: FVaCuusModelChannel is neither (it holds a reference to
 	//~ Layout, which is a member of this object), and RmlUi holds a raw pointer to UIShadow's
 	//~ base. Owners hold this by TSharedPtr.
@@ -164,6 +209,58 @@ public:
 	 * matters most: a UI half that never appears means the model reached no context.
 	 */
 	void DumpGameSide(uint32 ViewId);
+
+	//~ ------------------------------------------------------------ Recompile refusal (akj.16)
+
+	/**
+	 * The game-side half of the refusal, called inside the struct-editor PreChange window
+	 * while the OLD FProperty chain is still alive (UserDefinedStructureCompilerUtils.cpp:599
+	 * broadcasts before the compile at :622): sets the dead flag that turns Sample() and
+	 * PublishPending() into no-ops, destroys the game-side shadow through the normal
+	 * DestroyStruct path NOW, and arms the drop state for the UI-side command the caller is
+	 * about to enqueue. Game thread. Idempotent refusal: false when already condemned, so a
+	 * second broadcast for the same incident (the engine recompiles dependent structs in the
+	 * same transaction) neither logs twice nor re-enqueues.
+	 */
+	bool CondemnForStructRecompile();
+
+	/** True from CondemnForStructRecompile() on; the walk's skip and the tests' observable. Game thread. */
+	bool IsCondemned() const { return bDeadFromRecompile; }
+
+	/**
+	 * The fence's timeout resolution, game thread, still inside PreChange. Attempts
+	 * DropQueued -> AbandonRequired; on success the UI-side buffers are declared
+	 * unreclaimable-through-the-type and true is returned (the caller logs the leak with
+	 * EstimateAbandonedBytes()). On failure the UI side won the race: if it is mid-teardown
+	 * this SPINS until TornDown -- returning from PreChange while DestroyStruct walks the old
+	 * chain would hand the compile a live use of memory it is about to free -- and false
+	 * (no leak) is returned.
+	 */
+	bool ResolveDropTimeout();
+
+	EVaCuusModelDropState GetDropState() const
+	{
+		return static_cast<EVaCuusModelDropState>(DropState.load(std::memory_order_acquire));
+	}
+
+	/**
+	 * Lower bound on what an Abandon() of the UI-side buffers leaks, in bytes: the struct
+	 * stride times (one UI shadow + the channel slots actually allocated). The heap payloads
+	 * INSIDE those instances (FString buffers, array blocks) are additional and uncountable
+	 * from here -- counting them would mean walking a property chain that is being deleted.
+	 * Game thread (reads the producer-side allocation count).
+	 */
+	uint64 EstimateAbandonedBytes() const;
+
+	/**
+	 * The UI-side half: tears down the UI shadow and the channel's three slot buffers, by
+	 * DestroyStruct or Abandon() as the drop state dictates (the CAS dance above), and
+	 * forgets the RmlUi handle. Runs on the UI thread from the DropModelForRecompile drain --
+	 * AFTER the caller removed this model from the UI thread's registry and the write router,
+	 * and AFTER Context::RemoveDataModel dropped RmlUi's raw view of the shadow. The producer
+	 * is quiescent by then: the dead flag preceded the command in game-thread program order.
+	 */
+	void TearDownUISideForRecompile();
 
 	//~ ------------------------------------------------------------------ UI thread
 
@@ -271,4 +368,18 @@ private:
 	uint64 NumFieldsApplied = 0;
 
 	bool bBoundToContext = false;
+
+	/**
+	 * Set by CondemnForStructRecompile(), read by the game-thread entry points it gates
+	 * (Sample, PublishPending) and by the walk's idempotence check. PLAIN bool, not the
+	 * atomic below, and that is a statement: every reader and the one writer are the game
+	 * thread, so making it atomic would claim a cross-thread contract it does not have.
+	 */
+	bool bDeadFromRecompile = false;
+
+	/** Latches the one refused-Sample Warning per model; frame-rate calls must not spam. Game thread. */
+	bool bLoggedRefusedSample = false;
+
+	/** EVaCuusModelDropState; the enum's comment is the protocol. The ONE cross-thread member here. */
+	std::atomic<uint8> DropState{static_cast<uint8>(EVaCuusModelDropState::Live)};
 };

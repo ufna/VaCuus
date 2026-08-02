@@ -2,6 +2,7 @@
 
 #include "VaCuusFileInterface.h"
 
+#include "VaCuusBundleMount.h"
 #include "VaCuusContentPaths.h"
 #include "VaCuusDefines.h"
 
@@ -48,6 +49,25 @@ struct FOpenFile
 	int64 Position = 0;
 
 	int64 Size = 0;
+
+	/**
+	 * BUNDLE-SPAN MODE (M6): Span non-null means the bytes live in a mounted bundle's
+	 * payload region and Handle is null. The SAME [0, Size] position model carries
+	 * over unchanged -- a span trivially represents exact EOF, so the whole
+	 * FFileHandleUnix clamp saga above simply does not apply -- and Read() becomes a
+	 * clamped memcpy. The span was bounds-validated against the payload at mount
+	 * (VaCuusBundleFormat::ValidateEntries), which is what lets Read() trust
+	 * Span + Position without re-checking.
+	 */
+	const uint8* Span = nullptr;
+
+	/**
+	 * Keeps the span's region alive for this handle's whole life: unmounting removes
+	 * the record from the LOOKUP only, and the last strong reference -- possibly this
+	 * one, mid-read -- is what actually frees the bytes (spec M6 section 4; the
+	 * unmount-race test observes exactly this).
+	 */
+	TSharedPtr<FVaCuusBundleMount> Mount;
 };
 
 FOpenFile* ToFile(Rml::FileHandle File)
@@ -56,15 +76,106 @@ FOpenFile* ToFile(Rml::FileHandle File)
 }
 } // namespace VaCuusFileInterfacePrivate
 
+FVaCuusFileInterface::~FVaCuusFileInterface()
+{
+	// The M==0 line (spec M6 2(d)): the bundle-path acceptance gates grep this for a
+	// zero loose count, because with a bundle mounted every loose-served open is a
+	// potential stale shadow. Per-bundle counts follow so a nonzero split is
+	// attributable; the records outlive this interface (module-shutdown rule), so
+	// reading them here is safe.
+	const uint64 BundleOpens = GetNumBundleOpens();
+	const uint64 LooseOpens = GetNumLooseOpens();
+	UE_LOG(LogVaCuus, Log, TEXT("VaCuus VFS teardown: %llu open(s) served by mounted bundles, %llu by loose roots"),
+		BundleOpens, LooseOpens);
+
+	// The SCRIPT half of the same assertion, same "by loose roots" grep shape: script
+	// reads bypass this interface entirely (VaCuusJs reads <script src>/module files via
+	// ReadScriptByVfsPath), so without this line "M==0" would only mean no loose
+	// DOCUMENT serves -- a bundle missing every .js would still grep green. Printed
+	// here, not at VaCuusJs shutdown, because ShutdownModule never runs in an
+	// `Automation RunTests ...; Quit` session (CLAUDE.md) while this destructor rides
+	// the RmlUi session teardown the first line already proved reaches the log.
+	UE_LOG(LogVaCuus, Log,
+		TEXT("VaCuus VFS teardown: %llu script read(s) served by mounted bundles, %llu by loose roots"),
+		VaCuusScriptServing::GetNumBundleScriptServes(), VaCuusScriptServing::GetNumLooseScriptServes());
+
+	// Per-bundle ServedOpens counts document opens AND script reads (both serving paths
+	// bump it), so these lines reconcile against the SUM of the two totals above -- in a
+	// single-RmlUi-session (packaged) process, the reconciliation's venue: the automation
+	// suite runs many sessions, and there the per-interface totals reset per session
+	// while the script-serving statics are process-monotonic.
+	for (const TSharedRef<FVaCuusBundleMount>& Record : FVaCuusBundleMountTable::GetAllRecords())
+	{
+		UE_LOG(LogVaCuus, Log, TEXT("  bundle '%s' served %llu open(s)"), *Record->BundleName,
+			static_cast<uint64>(Record->ServedOpens.load(std::memory_order_relaxed)));
+	}
+}
+
 Rml::FileHandle FVaCuusFileInterface::Open(const Rml::String& Path)
 {
 	const FString RequestedPath = UTF8_TO_TCHAR(Path.c_str());
 
+	// BUNDLE-FIRST for relative paths (spec M6 2(d)), and the precedence is the
+	// decision, not an accident: the bundle exists to make shipping deterministic, so
+	// a stale loose file staged next to it (packaged Development stages both) must
+	// not shadow it -- the config closest to Shipping would otherwise be the least
+	// tested. In the editor nothing is mounted by default, so loose-first behavior
+	// (and live reload) is preserved exactly where it matters.
+	if (FPaths::IsRelative(RequestedPath))
+	{
+		if (const TSharedPtr<const FVaCuusBundleLookup> Lookup = FVaCuusBundleMountTable::GetLookup())
+		{
+			const FString NormalizedPath = VaCuusBundleFormat::NormalizePath(RequestedPath);
+			for (const TSharedRef<FVaCuusBundleMount>& Mount : Lookup->Mounts)
+			{
+				const FVaCuusBundleEntry* Entry = Mount->FindEntry(NormalizedPath);
+				if (Entry == nullptr)
+				{
+					continue;
+				}
+
+				// WHICH copy answered -- the same stale-duplicate visibility rule the
+				// root log below follows, third source added.
+				UE_LOG(LogVaCuus, Verbose, TEXT("Resolved '%s' in bundle '%s' (%lld bytes)"),
+					*RequestedPath, *Mount->BundleName, Entry->Size);
+
+				Mount->ServedOpens.fetch_add(1, std::memory_order_relaxed);
+				NumBundleOpens.fetch_add(1, std::memory_order_relaxed);
+
+				auto* Open = new VaCuusFileInterfacePrivate::FOpenFile();
+				Open->Span = Mount->Base + Entry->Offset;
+				Open->Size = Entry->Size;
+				Open->Mount = Mount;
+				return reinterpret_cast<Rml::FileHandle>(Open);
+			}
+
+			if (Lookup->Mounts.Num() > 0)
+			{
+				// The silent-miss killer (spec M6 2(d)): with bundles mounted, a loose
+				// fallback usually means the pack missed a file -- say WHICH bundles
+				// were probed, at Warning, before quietly serving from disk.
+				TArray<FString> ProbedNames;
+				for (const TSharedRef<FVaCuusBundleMount>& Mount : Lookup->Mounts)
+				{
+					ProbedNames.Add(Mount->BundleName);
+				}
+				UE_LOG(LogVaCuus, Warning,
+					TEXT("'%s' is in NO mounted bundle (probed: %s); falling back to the loose roots"),
+					*RequestedPath, *FString::Join(ProbedNames, TEXT(", ")));
+			}
+		}
+	}
+
 	// Ordered roots, plugin first (D19). ResolveExistingDocument() existence-checks as it
 	// goes, so a hit is a file that opened a moment ago; a miss falls through to the FIRST
 	// root below purely so the failure log names a concrete path rather than nothing.
+	// bIncludeMountedBundles = false: the bundle probe already ran above against THIS
+	// call's own lookup snapshot; letting the resolver probe a fresh one could hand
+	// back a bundle pseudo-path for a mount published between the two reads, and a
+	// pseudo-path is not something PlatformFile below can open.
 	FString SatisfyingRoot;
-	FString FullPath = VaCuusContentPaths::ResolveExistingDocument(RequestedPath, &SatisfyingRoot);
+	FString FullPath =
+		VaCuusContentPaths::ResolveExistingDocument(RequestedPath, &SatisfyingRoot, /*bIncludeMountedBundles*/ false);
 	if (FullPath.IsEmpty())
 	{
 		const TArray<FString>& Roots = VaCuusContentPaths::GetDocumentRoots();
@@ -95,8 +206,12 @@ Rml::FileHandle FVaCuusFileInterface::Open(const Rml::String& Path)
 		return Rml::FileHandle(0);
 	}
 
-	return reinterpret_cast<Rml::FileHandle>(
-		new VaCuusFileInterfacePrivate::FOpenFile{Handle, /*Position=*/0, Handle->Size()});
+	NumLooseOpens.fetch_add(1, std::memory_order_relaxed);
+
+	auto* Open = new VaCuusFileInterfacePrivate::FOpenFile();
+	Open->Handle = Handle;
+	Open->Size = Handle->Size();
+	return reinterpret_cast<Rml::FileHandle>(Open);
 }
 
 void FVaCuusFileInterface::Close(Rml::FileHandle File)
@@ -131,6 +246,16 @@ size_t FVaCuusFileInterface::Read(void* Buffer, size_t Size, Rml::FileHandle Fil
 	if (BytesToRead <= 0)
 	{
 		return 0;
+	}
+
+	if (Open->Span != nullptr)
+	{
+		// A bundle span: the clamp above plus the mount-time bounds validation is the
+		// whole safety argument, and the strong Mount reference is what makes the
+		// source pointer valid even if the bundle was unmounted mid-read.
+		FMemory::Memcpy(Buffer, Open->Span + Open->Position, BytesToRead);
+		Open->Position += BytesToRead;
+		return static_cast<size_t>(BytesToRead);
 	}
 
 	// Re-sync the handle, which Seek() deliberately left where it was. Guarded on a mismatch

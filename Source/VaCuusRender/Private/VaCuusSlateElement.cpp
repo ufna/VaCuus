@@ -101,8 +101,15 @@ void FVaCuusSlateElement::ReleaseResources_RenderThread()
 	GlassHalfRT[1].SafeRelease();
 }
 
-void FVaCuusSlateElement::Draw_RenderThread(FRDGBuilder& GraphBuilder, const FDrawPassInputs& Inputs)
+void FVaCuusSlateElement::Draw_RenderThread(FRDGBuilder& GraphBuilder, const FVaCuusDrawPassInputs& Inputs)
 {
+	// Engine-version seam (VaCuusEngineCompat.h hotspot 1): every FDrawPassInputs
+	// field this pass consumes is read ONCE here through the VaCuusCompat accessors,
+	// so a 5.6/5.7 field rename is an edit to the compat header, never to this body.
+	FRDGTexture* OutputTexture = VaCuusCompat::GetOutputTexture(Inputs);
+	const FVector2f ElementsOffset = VaCuusCompat::GetElementsOffset(Inputs);
+	const bool bHDRDisplayOutput = VaCuusCompat::IsHDRDisplayOutput(Inputs);
+
 	if (PendingBuffers.Num() > 0)
 	{
 		// 1. Setup-time (graph build): make sure the persistent RT exists at
@@ -139,7 +146,7 @@ void FVaCuusSlateElement::Draw_RenderThread(FRDGBuilder& GraphBuilder, const FDr
 	}
 
 	FRHITexture* OutputRT = Replayer.GetOutputRT();
-	if (!OutputRT || !Inputs.OutputTexture || DestRect.Area() <= 0)
+	if (!OutputRT || !OutputTexture || DestRect.Area() <= 0)
 	{
 		// Nothing replayed yet (or torn down): draw nothing this frame.
 		return;
@@ -153,7 +160,7 @@ void FVaCuusSlateElement::Draw_RenderThread(FRDGBuilder& GraphBuilder, const FDr
 	// output: the game-thread mirror (SetGlassAllowed_RenderThread) is the shipped
 	// discriminator, with bOutputIsHDRDisplay honored as the belt for the non-composite
 	// HDR case where it still reads true.
-	if (bGlassAllowed && !Inputs.bOutputIsHDRDisplay && GlassDistiller.GetEntries().Num() > 0 &&
+	if (bGlassAllowed && !bHDRDisplayOutput && GlassDistiller.GetEntries().Num() > 0 &&
 		GlassDistiller.GetViewSize().X > 0 && GlassDistiller.GetViewSize().Y > 0)
 	{
 		AddGlassPasses(GraphBuilder, Inputs);
@@ -171,21 +178,41 @@ void FVaCuusSlateElement::Draw_RenderThread(FRDGBuilder& GraphBuilder, const FDr
 
 	// DestRect is window-space; the elements texture may host the window at an
 	// offset (same convention as the Slate post-process blur pass).
-	const FIntPoint Offset(FMath::RoundToInt(Inputs.ElementsOffset.X), FMath::RoundToInt(Inputs.ElementsOffset.Y));
+	const FIntPoint Offset(FMath::RoundToInt(ElementsOffset.X), FMath::RoundToInt(ElementsOffset.Y));
 	const FIntRect OutputRect(DestRect.Min + Offset, DestRect.Max + Offset);
+
+	// The PF_FloatRGBA permutation (M6, spec §3.2): a float elements texture holds
+	// LINEAR pixels — the engine pins DisplayGamma to 1.0 for a linear-SDR backbuffer
+	// (UnrealEngine.cpp:2501-2504) and for HDR display targets
+	// (SlateRHIRenderingPolicy.cpp:1508-1509) — so the sRGB-encoded UI RT must be
+	// decoded at composite time. Format-keyed, per frame, because the elements texture
+	// a widget lands in can differ per window and per session (GetViewportPixelFormat,
+	// SlateRHIRenderer.cpp:760-781). Logged once, latched, like the backbuffer-SRV
+	// line: the matrix/PIE check greps this to know which permutation composited.
+	const bool bLinearOutput = VaCuusCompositeWantsLinearOutput(OutputTexture->Desc.Format);
+	if (!bLoggedCompositeGamma)
+	{
+		bLoggedCompositeGamma = true;
+		UE_LOG(LogVaCuus, Log, TEXT("VaCuus composite: elements texture is %s -> %s permutation"),
+			GPixelFormats[OutputTexture->Desc.Format].Name,
+			bLinearOutput ? TEXT("LinearOutput (sRGB->linear decode, gamma 1.0 target)") : TEXT("pass-through (display-gamma target)"));
+	}
 
 	FGlobalShaderMap* ShaderMap = GetGlobalShaderMap(GMaxRHIFeatureLevel);
 	TShaderMapRef<FScreenPassVS> VertexShader(ShaderMap);
-	TShaderMapRef<FVaCuusCompositePS> PixelShader(ShaderMap);
+	FVaCuusCompositePS::FPermutationDomain CompositePermutation;
+	CompositePermutation.Set<FVaCuusCompositePS::FLinearOutput>(bLinearOutput);
+	TShaderMapRef<FVaCuusCompositePS> PixelShader(ShaderMap, CompositePermutation);
 
 	FVaCuusCompositePS::FParameters* Parameters = GraphBuilder.AllocParameters<FVaCuusCompositePS::FParameters>();
 	Parameters->CompositeTexture = UITexture;
 	Parameters->CompositeSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
-	Parameters->RenderTargets[0] = FRenderTargetBinding(Inputs.OutputTexture, ERenderTargetLoadAction::ELoad);
+	Parameters->RenderTargets[0] = FRenderTargetBinding(OutputTexture, ERenderTargetLoadAction::ELoad);
 
 	// Premultiplied-over: the RT holds premultiplied content (Task 7 contract),
-	// and Inputs.OutputTexture is the post-tonemap Slate target — no gamma
-	// conversion in M1.
+	// and the elements texture is the post-tonemap Slate target — no gamma
+	// conversion in M1 (the LinearOutput permutation above is the one M6 exception,
+	// and it converts INTO the target's own encoding, never out of it).
 	FRHIBlendState* BlendState =
 		TStaticBlendState<CW_RGBA, BO_Add, BF_One, BF_InverseSourceAlpha, BO_Add, BF_One, BF_InverseSourceAlpha>::GetRHI();
 
@@ -199,7 +226,7 @@ void FVaCuusSlateElement::Draw_RenderThread(FRDGBuilder& GraphBuilder, const FDr
 	// with letterboxing, or blanking until sizes agree) both look worse for a few
 	// frames and cost more than they buy.
 	AddDrawScreenPass(GraphBuilder, RDG_EVENT_NAME("VaCuusComposite"), FScreenPassViewInfo(),
-		/*OutputViewport=*/FScreenPassTextureViewport(Inputs.OutputTexture, OutputRect),
+		/*OutputViewport=*/FScreenPassTextureViewport(OutputTexture, OutputRect),
 		/*InputViewport=*/FScreenPassTextureViewport(UITexture),
 		VertexShader, PixelShader, BlendState, Parameters);
 }
@@ -326,7 +353,7 @@ void FVaCuusSlateElement::RefreshGlassDrawResources(FRHICommandList& RHICmdList)
 	}
 }
 
-void FVaCuusSlateElement::AddGlassPasses(FRDGBuilder& GraphBuilder, const FDrawPassInputs& Inputs)
+void FVaCuusSlateElement::AddGlassPasses(FRDGBuilder& GraphBuilder, const FVaCuusDrawPassInputs& Inputs)
 {
 	// Graph-build cost of the whole glass section; the passes' execution shows under the
 	// RDG events VaCuusGlass*. The per-window SAMPLE COUNT of this scope against
@@ -334,10 +361,13 @@ void FVaCuusSlateElement::AddGlassPasses(FRDGBuilder& GraphBuilder, const FDrawP
 	// glass HUD keeps producing these at engine rate with publishes at zero.
 	VACUUS_PERF_SCOPE(Glass);
 
+	// Engine-version seam: field reads once, through VaCuusEngineCompat.h hotspot 1.
+	FRDGTexture* OutputTexture = VaCuusCompat::GetOutputTexture(Inputs);
+
 	const TArray<FVaCuusGlassEntry>& Entries = GlassDistiller.GetEntries();
-	const FIntPoint OutputExtent = Inputs.OutputTexture->Desc.Extent;
-	const FVaCuusGlassMapping Mapping =
-		VaCuusMakeGlassMapping(DestRect, Inputs.ElementsOffset, GlassDistiller.GetViewSize(), Inputs.SceneViewRect, OutputExtent);
+	const FIntPoint OutputExtent = OutputTexture->Desc.Extent;
+	const FVaCuusGlassMapping Mapping = VaCuusMakeGlassMapping(DestRect, VaCuusCompat::GetElementsOffset(Inputs),
+		GlassDistiller.GetViewSize(), VaCuusCompat::GetSceneViewRect(Inputs), OutputExtent);
 
 	// THE COORDINATE MAPPING (spec §2(a)), per engine frame from the LIVE transform:
 	// regions, mask vertices (via the draw matrix below) and sigma all go through it,
@@ -389,7 +419,7 @@ void FVaCuusSlateElement::AddGlassPasses(FRDGBuilder& GraphBuilder, const FDrawP
 	// screen (spec §2(c)) — per element, so N glass-bearing views cost N pairs, which is
 	// the budget table's stated multiplier. Format follows the output so a 10-bit LDR
 	// backbuffer is not squeezed through 8 bits on the way round.
-	const EPixelFormat HalfFormat = Inputs.OutputTexture->Desc.Format;
+	const EPixelFormat HalfFormat = OutputTexture->Desc.Format;
 	for (FTextureRHIRef& RT : GlassHalfRT)
 	{
 		if (!RT.IsValid() || RT->GetSizeXY() != NeededExtent || RT->GetFormat() != HalfFormat)
@@ -412,9 +442,9 @@ void FVaCuusSlateElement::AddGlassPasses(FRDGBuilder& GraphBuilder, const FDrawP
 	// bounded AddCopyTexturePass into a transient (the engine fallback shape,
 	// SlateRHIRenderer.cpp:1140-1147). The DESC FLAG is the runtime check — an RHI whose
 	// swapchain image cannot be sampled does not create it ShaderResource.
-	const bool bOutputSampleable = EnumHasAnyFlags(Inputs.OutputTexture->Desc.Flags, TexCreate_ShaderResource);
+	const bool bOutputSampleable = EnumHasAnyFlags(OutputTexture->Desc.Flags, TexCreate_ShaderResource);
 	const bool bDirectSRV = bOutputSampleable && CVarVaCuusGlassBackbufferSRV.GetValueOnRenderThread() != 0;
-	FRDGTextureRef SceneSource = Inputs.OutputTexture;
+	FRDGTextureRef SceneSource = OutputTexture;
 	FIntPoint SourceShift = FIntPoint::ZeroValue;
 	if (!bDirectSRV)
 	{
@@ -422,7 +452,7 @@ void FVaCuusSlateElement::AddGlassPasses(FRDGBuilder& GraphBuilder, const FDrawP
 			FRDGTextureDesc::Create2D(SampleBounds.Size(), HalfFormat, FClearValueBinding::Black,
 				TexCreate_RenderTargetable | TexCreate_ShaderResource),
 			TEXT("VaCuusGlassSceneCopy"));
-		AddCopyTexturePass(GraphBuilder, Inputs.OutputTexture, SceneCopy, SampleBounds.Min, FIntPoint::ZeroValue, SampleBounds.Size());
+		AddCopyTexturePass(GraphBuilder, OutputTexture, SceneCopy, SampleBounds.Min, FIntPoint::ZeroValue, SampleBounds.Size());
 		SceneSource = SceneCopy;
 		SourceShift = SampleBounds.Min;
 	}
@@ -437,7 +467,11 @@ void FVaCuusSlateElement::AddGlassPasses(FRDGBuilder& GraphBuilder, const FDrawP
 
 	FGlobalShaderMap* ShaderMap = GetGlobalShaderMap(GMaxRHIFeatureLevel);
 	TShaderMapRef<FScreenPassVS> ScreenVertexShader(ShaderMap);
-	TShaderMapRef<FVaCuusCompositePS> DownsamplePS(ShaderMap);
+	// The default (LinearOutput=false) permutation, DELIBERATELY: the downsample reads
+	// the elements texture and writes a half-res copy of it — identical encoding in and
+	// out, whatever that encoding is. Glass is gamma-neutral by construction
+	// (backdrop-glass.md §6); a decode here would double-decode on a float target.
+	TShaderMapRef<FVaCuusCompositePS> DownsamplePS(ShaderMap, FVaCuusCompositePS::FPermutationDomain());
 	TShaderMapRef<FVaCuusUIVS> GlassVertexShader(ShaderMap);
 	TShaderMapRef<FVaCuusGlassPS> GlassPixelShader(ShaderMap);
 	const FMatrix44f PixelToClip = VaCuusReplay::MakePixelToClipMatrix(OutputExtent);
@@ -499,7 +533,7 @@ void FVaCuusSlateElement::AddGlassPasses(FRDGBuilder& GraphBuilder, const FDrawP
 			FVaCuusGlassPS::FParameters* PSParameters = GraphBuilder.AllocParameters<FVaCuusGlassPS::FParameters>();
 			PSParameters->GlassTexture = HalfA;
 			PSParameters->GlassSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
-			PSParameters->RenderTargets[0] = FRenderTargetBinding(Inputs.OutputTexture, ERenderTargetLoadAction::ELoad);
+			PSParameters->RenderTargets[0] = FRenderTargetBinding(OutputTexture, ERenderTargetLoadAction::ELoad);
 
 			// SV_Position (output px, already at pixel centers) -> half-res UV: the
 			// downsample maps SampleRect.Min to half texel 0, at HalfRatio texels per

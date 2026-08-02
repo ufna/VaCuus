@@ -1,0 +1,3 @@
+Not an executable. This text file exists so the EXTENSION check of Tools/fab_scan.sh
+is seen to fail: its name matches the .exe blacklist (Fab rule 4.3.6.1.e), nothing else
+about it is wrong.

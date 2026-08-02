@@ -4,6 +4,7 @@
 
 #include "VaCuusDefines.h"
 #include "VaCuusLiveReload.h"
+#include "VaCuusStructRecompileGuard.h"
 
 #define LOCTEXT_NAMESPACE "FVaCuusEditorModule"
 
@@ -19,6 +20,10 @@ void FVaCuusEditorModule::StartupModule()
 	LiveReload = MakeUnique<FVaCuusLiveReload>();
 	LiveReload->Start();
 
+	// Constructing IS subscribing (ListenerManager.h:25-32) -- from here on every Blueprint
+	// struct recompile broadcasts through the guard into the runtime refusal (akj.16).
+	StructRecompileGuard = MakeUnique<FVaCuusStructRecompileGuard>();
+
 	UE_LOG(LogVaCuus, Log, TEXT("VaCuus editor module started"));
 }
 
@@ -31,6 +36,10 @@ void FVaCuusEditorModule::ShutdownModule()
 		LiveReload->Shutdown();
 		LiveReload.Reset();
 	}
+
+	// Destroying IS unsubscribing (the same ListenerManager contract); explicit here so it
+	// provably happens while UnrealEd's FStructEditorManager still exists to unregister from.
+	StructRecompileGuard.Reset();
 
 	UE_LOG(LogVaCuus, Log, TEXT("VaCuus editor module shut down"));
 }

@@ -125,14 +125,18 @@ bool FVaCuusModelChannel::Publish(const FVaCuusModelShadow& Source)
 	if (!Slot.Values.IsValid())
 	{
 		// At most three times in this channel's life -- once per buffer, the first time that
-		// buffer becomes the write buffer. Lazily rather than in the constructor because
-		// TTripleBuffer offers no way to reach its three buffers except by holding the write
-		// index, and there is no way to hold it three times without publishing.
+		// buffer becomes the write buffer. Still lazy although the slots are now named
+		// members (SlotStorage): a channel that never publishes -- a model whose document
+		// never binds -- must not pay three struct instances for it.
 		Slot.Values = FVaCuusModelShadow(Layout.GetStruct());
 		if (!Slot.Values.IsValid())
 		{
 			return false;
 		}
+
+		// Counted for exactly one reader: the recompile timeout's leaked-bytes estimate,
+		// which must know how many buffers exist without touching them cross-thread.
+		++NumSlotBuffersAllocated;
 	}
 
 	// ASSIGNED, NEVER OR'd. A recycled slot's old bits describe values from an earlier
@@ -204,4 +208,27 @@ bool FVaCuusModelChannel::ConsumeUpdate(TFunctionRef<void(const FVaCuusModelUpda
 	// silent -- everything keeps working and only the cost grows.
 	AppliedGeneration.store(Update.Generation, std::memory_order_release);
 	return true;
+}
+
+void FVaCuusModelChannel::TeardownSlotsForRecompile(bool bStructChainAlive)
+{
+	// No thread assert CAN be written here -- the whole point is that this touches state two
+	// different threads normally own, under the quiescence protocol the header spells out.
+	// The state machine that establishes it is FVaCuusBoundModel's drop state; this function
+	// is mechanism only.
+	for (FVaCuusModelUpdate& Slot : SlotStorage)
+	{
+		if (bStructChainAlive)
+		{
+			// The normal DestroyStruct path: the old FProperty chain is still alive (the
+			// fence held), so every FString/array the slot's instance owns is released.
+			Slot.Values.Reset();
+		}
+		else
+		{
+			// The timeout path: the chain is (or may be) gone; free the buffer only. The
+			// caller has already logged the leak with its estimate.
+			Slot.Values.Abandon();
+		}
+	}
 }

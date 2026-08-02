@@ -6,6 +6,8 @@
 #include "VaCuusDefines.h"
 #include "VaCuusUIThread.h"
 
+#include "HAL/PlatformProcess.h"
+#include "HAL/PlatformTime.h"
 #include "UObject/Class.h"
 
 #include <RmlUi/Core/Context.h>
@@ -36,6 +38,32 @@ FVaCuusBoundModel::FVaCuusBoundModel(const FString& InModelName, const UScriptSt
 	// dirty), and both shadows are already initialised instances of InStruct.
 }
 
+FVaCuusBoundModel::~FVaCuusBoundModel()
+{
+	// THE SAFETY NET FOR THE DROP THAT NEVER RAN (akj.16). DropQueued or AbandonRequired at
+	// destruction means the UI-side teardown command was refused by a stopping queue or
+	// discarded behind a shutdown -- it cannot still be pending, because a pending command
+	// holds a TSharedPtr to this object and this destructor could not be running. The struct
+	// may have been recompiled since (that is what condemned the model), so the member
+	// destructors' DestroyStruct path is the corruption this whole state machine exists to
+	// prevent: abandon the buffers first, and the destructors below find them empty.
+	//
+	// No CAS needed: with both owners' references gone there is no other thread left to race.
+	const EVaCuusModelDropState State = GetDropState();
+	if (State == EVaCuusModelDropState::DropQueued || State == EVaCuusModelDropState::AbandonRequired)
+	{
+		UE_LOG(LogVaCuus, Error,
+			TEXT("VaCuus model '%s': destroyed with its recompile drop still undelivered; the UI-side buffers are freed ")
+			TEXT("WITHOUT destructors and their contents leak (>= %llu bytes)"),
+			*ModelNameStr, EstimateAbandonedBytes());
+
+		UIShadow.Abandon();
+		Channel.TeardownSlotsForRecompile(/*bStructChainAlive=*/false);
+		// The game-side shadow was already Reset() by CondemnForStructRecompile, inside the
+		// window where that was still legal.
+	}
+}
+
 bool FVaCuusBoundModel::IsValid() const
 {
 	return Layout.IsValid() && Sampler.IsValid() && Channel.IsValid() && UIShadow.IsValid();
@@ -47,6 +75,22 @@ int32 FVaCuusBoundModel::Sample(const UScriptStruct* LiveType, const void* LiveD
 	// entry point a future caller reaches first.
 	check(IsInGameThread());
 
+	if (bDeadFromRecompile)
+	{
+		// THE REFUSED SAMPLE (akj.16): the layout's offsets and the sampler's shadow died
+		// with the recompile, so reading LiveData through them is exactly the corruption the
+		// refusal exists to prevent. Once, not per frame -- this is called at frame rate.
+		if (!bLoggedRefusedSample)
+		{
+			bLoggedRefusedSample = true;
+			UE_LOG(LogVaCuus, Warning,
+				TEXT("VaCuus model '%s': Sample refused -- the model was torn down when '%s' was recompiled. ")
+				TEXT("Re-bind the model (BindModel replaces a dead entry) and reload the document to recover"),
+				*ModelNameStr, Layout.GetStruct() != nullptr ? *Layout.GetStruct()->GetName() : TEXT("none"));
+		}
+		return 0;
+	}
+
 	return Sampler.Sample(LiveType, LiveData, Channel);
 }
 
@@ -54,7 +98,126 @@ bool FVaCuusBoundModel::PublishPending()
 {
 	check(IsInGameThread());
 
+	if (bDeadFromRecompile)
+	{
+		// Quietly, unlike Sample's latched Warning: a publish with a dead sampler has nothing
+		// to say that Sample has not already said, and this runs once per frame per model
+		// from the subsystem's tick whether or not anyone called UpdateModel.
+		return false;
+	}
+
 	return Channel.Publish(Sampler.GetShadow());
+}
+
+bool FVaCuusBoundModel::CondemnForStructRecompile()
+{
+	check(IsInGameThread());
+
+	if (bDeadFromRecompile)
+	{
+		// The second broadcast of the same transaction (the engine appends dependent structs
+		// to the compile set and broadcasts each -- UserDefinedStructureCompilerUtils.cpp:585-616
+		// loops a growing array): already condemned, nothing more to do, and returning false
+		// is what keeps it at ONE Error and ONE drop command per model per incident.
+		return false;
+	}
+
+	// ORDER: the flag first, then the shadow. Everything after this line runs with Sample and
+	// PublishPending already refusing, so the producer side of the channel is quiescent from
+	// here on -- the property TeardownSlotsForRecompile's contract stands on.
+	bDeadFromRecompile = true;
+
+	// Inside PreChange the OLD chain is provably alive (the broadcast at
+	// UserDefinedStructureCompilerUtils.cpp:599 precedes the compile at :622), so this is the
+	// last moment the game-side shadow can be destroyed through the type.
+	Sampler.DropShadowForStructTeardown();
+
+	DropState.store(static_cast<uint8>(EVaCuusModelDropState::DropQueued), std::memory_order_release);
+	return true;
+}
+
+bool FVaCuusBoundModel::ResolveDropTimeout()
+{
+	check(IsInGameThread());
+
+	uint8 Expected = static_cast<uint8>(EVaCuusModelDropState::DropQueued);
+	if (DropState.compare_exchange_strong(Expected, static_cast<uint8>(EVaCuusModelDropState::AbandonRequired),
+			std::memory_order_acq_rel))
+	{
+		// The UI thread never got there. From the moment PreChange returns the old chain is
+		// fair game for the compile, so the late drop (or the destructor) must Abandon().
+		return true;
+	}
+
+	// The UI side won the CAS. If it is mid-DestroyStruct, WAIT -- unbounded, deliberately:
+	// this blocks the recompile for the tail of one teardown (microseconds), while returning
+	// early would let the compile free the chain that teardown is walking. A UI thread that
+	// dies inside the teardown leaves the editor blocked here, which is loud and debuggable;
+	// the alternative is silent heap corruption.
+	double NextComplaint = FPlatformTime::Seconds() + 1.0;
+	while (GetDropState() == EVaCuusModelDropState::Dropping)
+	{
+		if (FPlatformTime::Seconds() >= NextComplaint)
+		{
+			NextComplaint = FPlatformTime::Seconds() + 1.0;
+			UE_LOG(LogVaCuus, Warning,
+				TEXT("VaCuus model '%s': still waiting on the UI thread to finish the recompile teardown"), *ModelNameStr);
+		}
+		FPlatformProcess::Sleep(0.0001f);
+	}
+
+	return false;
+}
+
+uint64 FVaCuusBoundModel::EstimateAbandonedBytes() const
+{
+	const UScriptStruct* Struct = Layout.GetStruct();
+	const uint64 Stride = Struct != nullptr ? static_cast<uint64>(Struct->GetStructureSize()) : 0;
+
+	// One UI shadow plus however many channel slots the producer ever allocated. A lower
+	// bound by construction: the heap payloads inside those instances are invisible without
+	// walking the (dying) property chain.
+	return Stride * (1 + static_cast<uint64>(Channel.GetNumSlotBuffersAllocated()));
+}
+
+void FVaCuusBoundModel::TearDownUISideForRecompile()
+{
+	// The drop command's drain -- the real UI thread, or the game thread inside
+	// RunFrameInline, both of which satisfy this.
+	check(FVaCuusUIThread::IsInUIThread());
+
+	uint8 Expected = static_cast<uint8>(EVaCuusModelDropState::DropQueued);
+	const bool bStructChainAlive = DropState.compare_exchange_strong(Expected,
+		static_cast<uint8>(EVaCuusModelDropState::Dropping), std::memory_order_acq_rel);
+
+	if (!bStructChainAlive && Expected != static_cast<uint8>(EVaCuusModelDropState::AbandonRequired))
+	{
+		// Live (never condemned), Dropping or TornDown here is a caller bug -- the command is
+		// enqueued exactly once, by the same call that condemned the model.
+		UE_LOG(LogVaCuus, Error, TEXT("VaCuus model '%s': recompile teardown found drop state %u; nothing torn down"),
+			*ModelNameStr, static_cast<uint32>(Expected));
+		return;
+	}
+
+	// Winning the CAS proves the game thread is still parked inside PreChange (its timeout
+	// CAS lost), so the OLD chain is alive for the whole teardown below and the normal
+	// DestroyStruct path is safe. Losing it to AbandonRequired means the fence timed out:
+	// free without destructors, leak the contents -- the timeout already logged the Error.
+	bBoundToContext = false;
+	ModelHandle = Rml::DataModelHandle();
+	TopLevelNamesUtf8.Empty();
+
+	if (bStructChainAlive)
+	{
+		UIShadow.Reset();
+	}
+	else
+	{
+		UIShadow.Abandon();
+	}
+	Channel.TeardownSlotsForRecompile(bStructChainAlive);
+
+	DropState.store(static_cast<uint8>(EVaCuusModelDropState::TornDown), std::memory_order_release);
 }
 
 bool FVaCuusBoundModel::BindToContext(Rml::Context& Context)
@@ -134,6 +297,17 @@ bool FVaCuusBoundModel::BindToContext(Rml::Context& Context)
 void FVaCuusBoundModel::ApplyPendingUpdate()
 {
 	check(FVaCuusUIThread::IsInUIThread());
+
+	if (GetDropState() != EVaCuusModelDropState::Live)
+	{
+		// Condemned for a recompile (akj.16): never consume again. The window this guards is
+		// narrow and real -- a frame already past DrainCommands when the fence TIMES OUT
+		// would otherwise apply a pre-condemnation publish by copying through FProperty
+		// pointers the compile has just freed. (Visibility: the condemning store precedes the
+		// ~100 ms fence, so any frame reaching here after the timeout is far past it.) The
+		// drop command removes this model from the frame loop entirely one drain later.
+		return;
+	}
 
 	if (!bBoundToContext)
 	{

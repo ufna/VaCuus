@@ -4,10 +4,16 @@
 
 #include "CoreMinimal.h"
 
+#include "VaCuusEngineCompat.h"
+
 #include "MaterialDomain.h"
 #include "MaterialShader.h"
 #include "MaterialShaderType.h"
 #include "RHICommandList.h"
+// Complete FViewUniformShaderParameters (SceneView.h:1157): the inline SetParameters
+// below instantiates GetUniformBufferParameter<> with it, and MaterialShader.h:18 only
+// forward-declares the struct. Surfaced by the M6 BuildPlugin -StrictIncludes leg.
+#include "SceneView.h"
 
 class FMaterialRenderProxy;
 
@@ -104,11 +110,12 @@ public:
 		const FMaterialRenderProxy* MaterialRenderProxy, const FMaterial& Material)
 	{
 		SetUniformBufferParameter(BatchedParameters, GetUniformBufferParameter<FViewUniformShaderParameters>(), ViewUniformBuffer);
-		// The FSceneView-free, batched-parameters overload (MaterialShader.h:88-92);
-		// null Scene is an explicitly handled input (ShaderBaseClasses.cpp:264: feature
-		// level falls back to GMaxRHIFeatureLevel, parameter collections to the process
-		// defaults).
-		FMaterialShader::SetParameters(BatchedParameters, MaterialRenderProxy, Material, static_cast<const FSceneInterface*>(nullptr));
+		// The FSceneView-free, batched-parameters overload with null Scene — an
+		// explicitly handled input (ShaderBaseClasses.cpp:264: feature level falls back
+		// to GMaxRHIFeatureLevel, parameter collections to the process defaults).
+		// Routed through the engine-version seam: the overload's 5.6/5.7 presence is
+		// unconfirmed (VaCuusEngineCompat.h hotspot 3, M6 spec §2(f)).
+		VaCuusCompat::SetMaterialShaderParameters_NullScene(*this, BatchedParameters, MaterialRenderProxy, Material);
 	}
 };
 

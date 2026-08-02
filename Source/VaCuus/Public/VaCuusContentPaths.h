@@ -66,12 +66,27 @@ namespace VaCuusContentPaths
 VACUUS_API const TArray<FString>& GetDocumentRoots();
 
 /**
- * Absolute path of the first root that actually contains VfsPath, or an empty string.
+ * Where VfsPath would be served from, or an empty string when nowhere: the mounted
+ * bundles first (M6 -- the same bundle-first precedence FVaCuusFileInterface::Open
+ * resolves with, so this answer and the open that follows it cannot disagree), then
+ * the first loose root that actually contains it. A bundle hit returns a
+ * `bundle://<BundleName>/<path>` PSEUDO-path -- truthy for the "does it exist"
+ * question every caller asks, loggable, but NOT openable through the platform file
+ * layer; the file interface serves the actual bytes from the mounted span. Without
+ * this probe, every existence-gated caller (the demo bootstraps, the default-font
+ * check) would report "missing" in a bundle-only Shipping build whose loose files
+ * are deliberately not staged.
  *
- * An absolute VfsPath is answered about itself (existence-checked, no root involved),
- * which is what keeps the file interface's absolute passthrough honest.
- * OutRoot, when supplied, receives the root that satisfied the request (empty for the
- * absolute case) so callers can log WHICH copy they got -- the whole point of D19.
+ * An absolute VfsPath is answered about itself (existence-checked, no root or bundle
+ * involved), which is what keeps the file interface's absolute passthrough honest.
+ * OutRoot, when supplied, receives the root that satisfied the request
+ * (`bundle://<BundleName>` for a bundle hit, empty for the absolute case) so callers
+ * can log WHICH copy they got -- the whole point of D19.
+ *
+ * bIncludeMountedBundles = false restricts the answer to the loose roots; the file
+ * interface's own fallback uses it because its bundle probe already ran against its
+ * own lookup snapshot.
  */
-VACUUS_API FString ResolveExistingDocument(const FString& VfsPath, FString* OutRoot = nullptr);
+VACUUS_API FString ResolveExistingDocument(const FString& VfsPath, FString* OutRoot = nullptr,
+	bool bIncludeMountedBundles = true);
 }	 // namespace VaCuusContentPaths

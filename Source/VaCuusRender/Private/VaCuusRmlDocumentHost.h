@@ -6,6 +6,8 @@
 
 #include "VaCuusDocumentHost.h"
 
+#include "GenericPlatform/ICursor.h" // EMouseCursor (the latched-cursor members below)
+
 class FVaCuusRecordingRenderInterface;
 class IVaCuusFrameSink;
 

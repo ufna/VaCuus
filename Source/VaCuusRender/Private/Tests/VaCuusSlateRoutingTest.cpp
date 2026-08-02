@@ -6,7 +6,9 @@
 #include "VaCuus.h"
 #include "VaCuusDocumentHost.h"
 #include "VaCuusEngine.h"
+#include "VaCuusInputEvent.h"
 #include "VaCuusInteractiveSnapshot.h"
+#include "VaCuusRmlCasts.h"
 #include "VaCuusSlateElement.h"
 #include "VaCuusSubsystem.h"
 #include "Engine/GameInstance.h"
@@ -16,6 +18,7 @@
 
 #include "Framework/Application/NavigationConfig.h"
 #include "Framework/Application/SlateApplication.h"
+#include "HAL/IConsoleManager.h"
 #include "HAL/PlatformProcess.h"
 #include "InputCoreTypes.h"
 #include "Input/Events.h"
@@ -170,7 +173,10 @@ public:
 		{
 			if (Rml::Element* Field = RmlDocument->GetElementById("field"))
 			{
-				if (Rml::ElementFormControl* Control = rmlui_dynamic_cast<Rml::ElementFormControl*>(Field))
+				// VaCuusRml's exported helper, not rmlui_dynamic_cast: the id compare only
+				// resolves under every load order inside VaCuusRml.so (VaCuusRmlCasts.h,
+				// bead VaCuus-akj.22).
+				if (Rml::ElementFormControl* Control = VaCuusCastFormControl(*Field))
 				{
 					const Rml::String Value = Control->GetValue();
 					for (const char Byte : Value)
@@ -1215,38 +1221,66 @@ bool FVaCuusNavEntryTest::RunTest(const FString& Parameters)
 		// Controller decision D13 says a walking player's stick must not enter the UI -- that is
 		// what the gate in TickAnalogNavigation is -- so the entry rule must not consume them,
 		// or the same bug returns through the key path at 0.0 s instead of 0.4 s.
+		//
+		// THE HOLE THIS BLOCK USED TO RECORD IS NOW THE DECISION IT ASSERTS (bead
+		// VaCuus-akj.6.35, decided in M6): the unconditional enqueue meant the stick key was
+		// not consumed yet still FORWARDED, reached KI_RIGHT through VaCuusInputMap, and
+		// entered the grid -- the double-action this whole decision removes for the DPad,
+		// doubled AGAIN by the analog repeat clock driving the same four keys. The gate in
+		// OnKeyDown/OnKeyUp (see CVarVaCuusNavStickPress's comment, the decision record) now
+		// drops the engine's digitized events by default; the analog clock keeps stick
+		// navigation alive through SendAnalogNavKey, which bypasses the gated handlers.
+		const uint64 QueuedBeforeStick = View->GetNumInputEventsQueued();
 		const FReply Stick = Widget->OnKeyDown(Geometry, MakeKeyEvent(EKeys::Gamepad_LeftStick_Right));
 		TestFalse(TEXT("A digital left-stick direction is NOT consumed as an entry key (D13)"),
 			Stick.IsEventHandled());
 		Widget->OnKeyUp(Geometry, MakeKeyEvent(EKeys::Gamepad_LeftStick_Right));
 
+		TestEqual(TEXT("...and by default it is not FORWARDED either (akj.6.35: vacuus.NavStickPress 0)"),
+			View->GetNumInputEventsQueued(), QueuedBeforeStick);
+
 		if (!TestTrue(TEXT("UI frame ran after the stick key"), RunFrames(*UIThread, 1)))
 		{
 			return false;
 		}
+		TestEqual(TEXT("A default-gated stick key moves no focus"), Host->FocusId, FString());
 
-		// AND HERE IS A PRE-EXISTING HOLE, ASSERTED RATHER THAN GLOSSED, because it is the one
-		// place where this decision cannot make the two answers agree.
-		//
-		// OnKeyDown ENQUEUES every non-pass-through key unconditionally -- consumption and
-		// forwarding are independent by design (see SVaCuusWidget's class comment) -- so the
-		// stick key still reaches Rml::Context, still maps to KI_RIGHT (VaCuusInputMap), and
-		// still enters the grid. The result is exactly the double-action this decision removes
-		// for the DPad: the UI acts AND the game sees the key. It predates Task 14 (the enqueue
-		// has always been unconditional) and Task 14 neither creates nor widens it.
-		//
-		// FIXING IT IS A SEPARATE POLICY CALL, and deliberately not made here: suppressing the
-		// enqueue would mean a pad player can no longer enter a VaCuus menu with the stick AT
-		// ALL -- the analog path is gated on bWantsKeyboardFocus, so this accident is currently
-		// the only stick-based entry there is. Choosing between "a walking player can lose the
-		// stick" and "a pad player must use the DPad to enter a menu" belongs to whoever owns
-		// D13. It is a product trade, not a missing mechanism: the suppression itself is two
-		// lines above the enqueue in this very handler.
-		//
-		// This assertion is deliberately about the CURRENT behaviour, so it fails loudly whichever
-		// way that decision goes -- which is the point of writing it down instead of a comment.
-		TestEqual(TEXT("A stick key is still FORWARDED and still enters the grid (pre-existing, see above)"),
-			Host->FocusId, FString(TEXT("btn")));
+		// THE OPT-IN, WHICH IS ALSO THIS DECISION'S RESTORE-THE-BUG: with the cvar at 1 the
+		// old forwarding returns verbatim -- unconsumed but queued, mapped to KI_RIGHT, and
+		// into the grid. Green here proves the gate (and only the gate) is what changed the
+		// default path above.
+		IConsoleVariable* NavStickPress = IConsoleManager::Get().FindConsoleVariable(TEXT("vacuus.NavStickPress"));
+		if (!TestNotNull(TEXT("vacuus.NavStickPress exists"), NavStickPress))
+		{
+			return false;
+		}
+		NavStickPress->Set(1);
+
+		// The gate must be restored on EVERY exit from this window, not only the straight-line
+		// one: the RunFrames early-return below used to leak =1 into whatever test ran next,
+		// which would then assert the DEFAULT path against the opted-in behavior. Scope guard,
+		// so no future early-return can reopen the leak either.
+		ON_SCOPE_EXIT
+		{
+			NavStickPress->Set(0);
+		};
+
+		const uint64 QueuedBeforeOptIn = View->GetNumInputEventsQueued();
+		const FReply OptInStick = Widget->OnKeyDown(Geometry, MakeKeyEvent(EKeys::Gamepad_LeftStick_Right));
+		TestFalse(TEXT("Opted in, the stick key is still not consumed as an entry key (D13 holds)"),
+			OptInStick.IsEventHandled());
+		Widget->OnKeyUp(Geometry, MakeKeyEvent(EKeys::Gamepad_LeftStick_Right));
+		TestEqual(TEXT("...but it IS forwarded again (down + up)"),
+			View->GetNumInputEventsQueued(), QueuedBeforeOptIn + 2);
+
+		if (!TestTrue(TEXT("UI frame ran after the opted-in stick key"), RunFrames(*UIThread, 1)))
+		{
+			return false;
+		}
+		TestEqual(TEXT("An opted-in stick key enters the grid"), Host->FocusId, FString(TEXT("btn")));
+
+		// (The cvar is restored by the scope guard above -- the NavigateBack below does not go
+		// through the gated key handlers, so restoring at scope end is equivalent.)
 
 		// Put focus back on the document for the next state, so the loads below start where the
 		// other two states do.

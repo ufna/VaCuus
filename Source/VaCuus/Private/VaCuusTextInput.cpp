@@ -4,6 +4,7 @@
 
 #include "VaCuusDefines.h"
 #include "VaCuusInputEvent.h"
+#include "VaCuusRmlCasts.h"
 #include "VaCuusUIThread.h"
 #include "VaCuusView.h"
 
@@ -17,8 +18,6 @@
 #include <RmlUi/Core/Element.h>
 #include <RmlUi/Core/ElementUtilities.h>
 #include <RmlUi/Core/Elements/ElementFormControl.h>
-#include <RmlUi/Core/Elements/ElementFormControlInput.h>
-#include <RmlUi/Core/Elements/ElementFormControlTextArea.h>
 #include <RmlUi/Core/StringUtilities.h>
 #include <RmlUi/Core/TextInputContext.h>
 #include <RmlUi/Core/TextInputHandler.h>
@@ -221,39 +220,6 @@ int32 Utf8CharacterOffsetToUtf16Index(const Rml::String& Utf8Value, int32 Charac
 	return FString(UTF8_TO_TCHAR(Prefix.c_str())).Len();
 }
 
-/**
- * This element's selection as RmlUi CHARACTER offsets, or false if it has none.
- *
- * `GetSelection` is NOT on Rml::ElementFormControl -- it exists separately on
- * ElementFormControlInput (ElementFormControlInput.h:47) and ElementFormControlTextArea
- * (ElementFormControlTextArea.h:72), because only those two own a WidgetTextInput. Hence two
- * casts rather than one. The values come back as character offsets: WidgetTextInput stores
- * bytes and converts on the way out (WidgetTextInput.cpp:365-369).
- */
-bool GetSelectionCharacterRange(Rml::Element& Element, int32& OutBegin, int32& OutEnd)
-{
-	int Begin = 0;
-	int End = 0;
-
-	if (Rml::ElementFormControlInput* const Input = rmlui_dynamic_cast<Rml::ElementFormControlInput*>(&Element))
-	{
-		Input->GetSelection(&Begin, &End, nullptr);
-	}
-	else if (Rml::ElementFormControlTextArea* const TextArea =
-				 rmlui_dynamic_cast<Rml::ElementFormControlTextArea*>(&Element))
-	{
-		TextArea->GetSelection(&Begin, &End, nullptr);
-	}
-	else
-	{
-		return false;
-	}
-
-	OutBegin = int32(Begin);
-	OutEnd = int32(End);
-	return true;
-}
-
 /** The element's border box in view pixels; the same two paths the snapshot DFS takes. */
 FIntRect GetElementViewRect(Rml::Element& Element)
 {
@@ -331,7 +297,11 @@ bool FillTextFieldState(Rml::Context& Context, FVaCuusTextFieldState& OutState)
 		return false;
 	}
 
-	Rml::ElementFormControl* const Control = rmlui_dynamic_cast<Rml::ElementFormControl*>(Focus);
+	// Through VaCuusRml's exported helper, NEVER rmlui_dynamic_cast from this module: the
+	// cast compares module-local static addresses and only VaCuusRml.so holds both sides
+	// under every load order (VaCuusRmlCasts.h carries the whole argument, bead
+	// VaCuus-akj.22 the incident record).
+	Rml::ElementFormControl* const Control = VaCuusCastFormControl(*Focus);
 	if (Control == nullptr)
 	{
 		// An element that looks like an <input> by tag but is not a form control: an author
@@ -349,9 +319,13 @@ bool FillTextFieldState(Rml::Context& Context, FVaCuusTextFieldState& OutState)
 	OutState.Value = UTF8_TO_TCHAR(Value.c_str());
 
 	// INDEX-SPACE CONVERSION SITE 1: RmlUi character offsets -> engine UTF-16 indices.
+	// The selection read is VaCuusRml's exported helper because it needs the OTHER two
+	// casts (GetSelection lives on the two concrete controls, not the base -- see
+	// VaCuusGetFormControlSelection), and a cast that silently failed here parked the
+	// caret at end-of-text below with no line anywhere saying why.
 	int32 SelectionBeginChars = 0;
 	int32 SelectionEndChars = 0;
-	if (GetSelectionCharacterRange(*Focus, SelectionBeginChars, SelectionEndChars))
+	if (VaCuusGetFormControlSelection(*Focus, SelectionBeginChars, SelectionEndChars))
 	{
 		OutState.SelectionBegin = Utf8CharacterOffsetToUtf16Index(Value, SelectionBeginChars);
 		OutState.SelectionEnd = Utf8CharacterOffsetToUtf16Index(Value, SelectionEndChars);

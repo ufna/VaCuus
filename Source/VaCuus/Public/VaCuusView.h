@@ -264,11 +264,11 @@ public:
 	//~
 	//~ 2. THERE IS NO UNBIND, AND THERE WILL NOT BE. RmlUi has no API for it: the only
 	//~    teardown is Context::RemoveDataModel, and that is a one-way door -- it calls
-	//~    Element::SetDataModel(nullptr) on every attached root (Context.cpp:1097-1111), and
+	//~    Element::SetDataModel(nullptr) on every attached root (Context.cpp:1106-1107), and
 	//~    SetDataModel is PRIVATE (Element.h:662, and SetParent is the only caller), so a
 	//~    document that is still loaded is permanently detached with no way to re-attach it.
 	//~    Re-binding the same name instead is refused: Context::CreateDataModel returns a
-	//~    falsy constructor (Context.cpp:1074-1075) and the existing model keeps pointing at
+	//~    falsy constructor (Context.cpp:1075-1076) and the existing model keeps pointing at
 	//~    the OLD shadow. A model therefore lives as long as its view, and dies with the
 	//~    context.
 	//~
@@ -353,6 +353,28 @@ public:
 	bool HasModel(FName ModelName) const;
 
 	/**
+	 * The recompile refusal's per-view walk (VaCuus-akj.16, spec M6 2(j)), called from
+	 * UVaCuusSubsystem::NotifyStructPreRecompile inside the struct editor's PreChange window.
+	 * A model MATCHES when its root struct, or the element struct of any of its array fields
+	 * (FVaCuusModelArrayDesc::ElementLayout -- the surface M3b doubled), is ChangedStruct.
+	 *
+	 * THE WALK IS GAME-THREAD STATE END TO END, and that is the design rather than luck: this
+	 * map is written only by BindModel on the game thread, and a model's layout is immutable
+	 * from construction (its header's threading note), so matching here needs no fence and no
+	 * lock. Each match is condemned (dead flag, game shadow destroyed NOW while the old chain
+	 * is provably alive), logged as one Error naming view + model + struct, and appended to
+	 * OutCondemned for the caller's UI-side drop + fence. Already-condemned models are
+	 * skipped, which is what keeps a transaction's second broadcast at zero extra Errors.
+	 *
+	 * The dead entry STAYS in the map: HasModel keeps answering true, UpdateModel reaches the
+	 * latched Sample refusal instead of an anonymous "nothing bound" Warning, and BindModel
+	 * replaces it on the recovery re-bind. Appends (ViewId, model) pairs -- the id is what
+	 * the caller's per-model drop command routes by. Returns the number of models condemned.
+	 */
+	int32 RefuseModelsForStructRecompile(
+		const UScriptStruct* ChangedStruct, TArray<TPair<uint32, TSharedRef<FVaCuusBoundModel>>>& OutCondemned);
+
+	/**
 	 * Fields of ModelName the UI thread has not confirmed applying, or INDEX_NONE when no such
 	 * model is bound.
 	 *
@@ -381,6 +403,15 @@ public:
 	 *         nothing -- and the two lines say so separately.
 	 */
 	int32 DumpModel(FName ModelName);
+
+	/**
+	 * `vacuus.RefHud.Count`'s body (M6 Task 4, Exp-REF-COUNT): asks the UI thread to log
+	 * this view's recursive node count by the stated method (VaCuusNodeCount.h in the
+	 * module). A request-and-log door for DumpModel's exact reason: the tree lives on
+	 * the UI thread, so the answer arrives in the log a UI frame later, printed by the
+	 * thread that owns it. Game thread.
+	 */
+	void DumpNodeCount();
 
 	/**
 	 * Publishes every bound model's outstanding fields to the UI thread. Once per frame, from
@@ -480,7 +511,13 @@ public:
 	uint64 GetLastRequestedLoadSerial() const;
 	uint64 GetLastCompletedLoadSerial() const;
 
-	/** True while a queued load has not been answered yet. */
+	/**
+	 * True while a queued load has not been answered yet. False once a boot failure has been
+	 * ADMITTED (PollStatus observed BootState Failed and latched): nothing is pending on a
+	 * dead view -- no result will ever be published for it, and the failure itself was
+	 * already answered by OnLoadCompleted(this, false). Like every observable here, the flip
+	 * lands at the poll, not whenever the UI thread happens to stamp the status.
+	 */
 	UFUNCTION(BlueprintCallable, Category = "VaCuus")
 	bool IsLoadPending() const;
 
@@ -631,10 +668,15 @@ private:
 	 * SHARED WITH THE UI THREAD, which holds its own reference per view and drops it in
 	 * RemoveView() -- after the context that points into each model's shadow is gone.
 	 *
-	 * NOT CLEARED BY Invalidate(), deliberately: it is what lets UpdateModel() tell "this view
-	 * is dead" from "you never bound that model", which are different mistakes with different
-	 * fixes. Nothing publishes through it once the view is unregistered
-	 * (PublishModelUpdates() returns early), and the entries die with this object.
+	 * EMPTIED BY Invalidate(), and that is the recompile contract rather than tidiness (M6
+	 * review): a retired view is invisible to NotifyStructPreRecompile's walk, so an entry
+	 * surviving retirement is a model no recompile can condemn -- its shadows and layout
+	 * would be destroyed at GC time through an FProperty chain the compile may long since
+	 * have freed. The UI thread's own references carry each model to RemoveView()'s ordered
+	 * drain, so the release costs nothing early (see Invalidate()'s comment for the whole
+	 * ownership argument). UpdateModel() tells "this view is dead" (Verbose, via its
+	 * registration gate, checked before this map) from "you never bound that model"
+	 * (Warning) without needing the corpse entries the old design kept here.
 	 */
 	TMap<FName, TSharedPtr<FVaCuusBoundModel>> Models;
 
@@ -682,6 +724,13 @@ private:
 
 	/** Cleared by Invalidate(); gates every enqueue. */
 	bool bRegistered = false;
+
+	/**
+	 * True once PollStatus() has answered a BootState of Failed (bead VaCuus-akj.13):
+	 * the Error, the Invalidate() and the OnLoadCompleted(this, false) fire exactly once,
+	 * and the latch is what makes later polls of the still-Failed status a no-op.
+	 */
+	bool bBootFailureReported = false;
 
 	/** Backs GetNumInputEventsQueued(); game thread only, like everything else here. */
 	uint64 NumInputEventsQueued = 0;

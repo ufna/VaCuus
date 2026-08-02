@@ -2,13 +2,13 @@
 
 #include "VaCuusLiveReload.h"
 
+#include "VaCuusBundleMount.h"
 #include "VaCuusContentPaths.h"
 #include "VaCuusDefines.h"
 #include "VaCuusSubsystem.h"
 
 #include "DirectoryWatcherModule.h"
 #include "HAL/FileManager.h"
-#include "HAL/IConsoleManager.h"
 #include "Interfaces/IPluginManager.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
@@ -469,6 +469,34 @@ int32 FVaCuusLiveReload::FlushAt(double Now)
 	Changed.Sort();
 	PendingChanges.Empty();
 
+	// THE BUNDLE SHADOW TRAP MADE LOUD (M6, spec 2(d)): with a bundle mounted --
+	// `vacuus.Bundle.Enable 1` in PIE -- the VFS serves the PACKED copy of anything
+	// the bundle contains, so the reload below will re-read the edited file and then
+	// show the stale bundled bytes anyway, with no error anywhere. Live reload never
+	// applies to bundle-served content (the watcher watches loose roots only; that is
+	// documented, not "fixed"), so the one honest thing this flush can do is name the
+	// shadow per changed file.
+	for (const FString& ChangedPath : Changed)
+	{
+		for (const FString& Root : WatchedRoots)
+		{
+			if (!ChangedPath.StartsWith(Root + TEXT("/")))
+			{
+				continue;
+			}
+			FString BundleName;
+			if (FVaCuusBundleMountTable::ContainsPath(ChangedPath.Mid(Root.Len() + 1), &BundleName))
+			{
+				UE_LOG(LogVaCuus, Warning,
+					TEXT("Live reload: '%s' is SHADOWED by mounted bundle '%s' -- the reload will show the bundle's ")
+					TEXT("packed copy, not this edit. `vacuus.Bundle.Enable 0` unmounts (loose files serve again); ")
+					TEXT("`1` re-packs the tree with the edit in it"),
+					*ChangedPath, *BundleName);
+			}
+			break;
+		}
+	}
+
 	const double WaitedMs = (Now - FirstChangeSeconds) * 1000.0;
 
 	// The one line the live proof reads: what changed, how long the debounce held it, and
@@ -499,33 +527,26 @@ int32 FVaCuusLiveReload::ReloadAllLiveViews(const TCHAR* Reason)
 	return UVaCuusSubsystem::ClearAssetCachesAndReloadAllViews(Reason);
 }
 
-namespace VaCuusLiveReloadPrivate
-{
-/**
- * THE ESCAPE HATCH, and it is not optional: the Linux backend skips IN_Q_OVERFLOW events
- * outright instead of turning them into FCA_RescanRequired
- * (DirectoryWatchRequestLinux.cpp:496 -- `(Event->wd != -1) && (Event->mask &
- * IN_Q_OVERFLOW) == 0`, with no log; FCA_RescanRequired appears nowhere in that backend),
- * so after a bulk operation -- a git checkout, a tool that rewrites the whole DevUI tree --
- * changes are silently lost. The watcher is not lossless and must not be presented as such.
- *
- * Unconditional by design: it does not consult the pending set, the debounce or the watcher
- * at all, so it is also the thing that still works when a watch ROOT did not exist when
- * Start() ran. That gap is OURS, not the engine's -- Start() skips a missing root and never
- * retries it. The backend itself keeps up with a growing tree: on IN_CREATE|IN_ISDIR it
- * calls WatchDirectoryTree on the new subtree and synthesizes FCA_Added for the directory
- * and everything under it (:391-400, :225, :246-249), so a SUBDIRECTORY created while the
- * editor runs is watched.
- */
-static void ReloadUICommand()
-{
-	const int32 NumReloaded = FVaCuusLiveReload::ReloadAllLiveViews(TEXT("vacuus.ReloadUI"));
-	UE_LOG(LogVaCuus, Log, TEXT("vacuus.ReloadUI reloaded %d view(s)"), NumReloaded);
-}
-
-static FAutoConsoleCommand GReloadUICommand(
-	TEXT("vacuus.ReloadUI"),
-	TEXT("Re-load the current document of every live VaCuus view, dropping RmlUi's stylesheet/template caches first. ")
-	TEXT("The manual counterpart to the file watcher, which is not lossless."),
-	FConsoleCommandDelegate::CreateStatic(&ReloadUICommand));
-}	 // namespace VaCuusLiveReloadPrivate
+// `vacuus.ReloadUI` IS NO LONGER REGISTERED HERE (bead VaCuus-akj.6.18): the command MOVED to
+// the runtime module (VaCuusSubsystem.cpp, beside vacuus.DumpModel), because an editor-only
+// registration left `-game` and packaged Development builds -- the venues with no watcher at
+// all -- without the one manual reload door. Moved rather than copied: for a console COMMAND,
+// IConsoleManager warns about a same-name re-registration (ConsoleManager.cpp:3308) and then
+// REPLACES it -- the ExistingCmd branch (:3389-3396) hands the name to the NEW command and
+// Release()s the first, out from under the still-live FAutoConsoleCommand that owns it
+// (IConsoleManager.h:1532 keeps the raw Target its destructor will try to unregister). A twin
+// here would mean whichever module registered LAST serves the name -- load order, i.e. this
+// editor module's body winning in the editor and not existing anywhere else -- with the losing
+// registration left holding a freed pointer.
+//
+// The escape-hatch argument that used to justify the command travels with it and still names
+// this watcher: the Linux backend skips IN_Q_OVERFLOW events outright instead of turning them
+// into FCA_RescanRequired (DirectoryWatchRequestLinux.cpp:496 -- `(Event->wd != -1) &&
+// (Event->mask & IN_Q_OVERFLOW) == 0`, with no log; FCA_RescanRequired appears nowhere in that
+// backend), so after a bulk operation -- a git checkout, a tool that rewrites the whole DevUI
+// tree -- changes are silently lost. The watcher is not lossless and must not be presented as
+// such; the runtime command is what still works then, and it also covers the other gap that is
+// OURS rather than the engine's: Start() skips a watch root that did not exist yet and never
+// retries it. (The backend itself keeps up with a GROWING tree: on IN_CREATE|IN_ISDIR it calls
+// WatchDirectoryTree on the new subtree and synthesizes FCA_Added for everything under it,
+// :391-400, :225, :246-249.)

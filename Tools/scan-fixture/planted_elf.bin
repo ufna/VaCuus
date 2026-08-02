@@ -1,0 +1,1 @@
+ELF — not a real binary: the first four bytes are the plant, the ELF_MAGIC check of Tools/fab_scan.sh must be seen to fail on them; nothing else about this file is wrong (no exec bit, no blacklisted extension, no shebang).

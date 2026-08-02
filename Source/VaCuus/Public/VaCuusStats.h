@@ -67,6 +67,7 @@ DECLARE_CYCLE_STAT_EXTERN(TEXT("VaCuus WorldCopy (RT)"), STAT_VaCuusWorldCopy, S
 // frame, which is precisely the number the budget is stated in.
 DECLARE_CYCLE_STAT_EXTERN(TEXT("VaCuus GameTick (GT)"), STAT_VaCuusGameTick, STATGROUP_VaCuus, VACUUS_API);
 DECLARE_CYCLE_STAT_EXTERN(TEXT("VaCuus SlateTick (GT)"), STAT_VaCuusSlateTick, STATGROUP_VaCuus, VACUUS_API);
+DECLARE_CYCLE_STAT_EXTERN(TEXT("VaCuus OnPaint (GT)"), STAT_VaCuusOnPaint, STATGROUP_VaCuus, VACUUS_API);
 DECLARE_CYCLE_STAT_EXTERN(TEXT("VaCuus Input (GT)"), STAT_VaCuusInput, STATGROUP_VaCuus, VACUUS_API);
 DECLARE_CYCLE_STAT_EXTERN(TEXT("VaCuus ModelSample (GT)"), STAT_VaCuusModelSample, STATGROUP_VaCuus, VACUUS_API);
 
@@ -121,7 +122,7 @@ public:
 		WorldCopy,
 
 		/**
-		 * The three GAME-thread scopes, added for the Task 14 budget gate ("input + snapshot
+		 * The GAME-thread scopes, added for the Task 14 budget gate ("input + snapshot
 		 * read <= 0.10 ms"). Read them as a sum per frame:
 		 *
 		 *   GameTick  -- UVaCuusSubsystem::Tick: poll every view's published snapshot into its
@@ -132,11 +133,23 @@ public:
 		 *                hosted view. Deliberately EXCLUDES FVaCuusPerfLog::TickLog(), which
 		 *                is the logger's own 5-second print and would otherwise be the max
 		 *                sample in every window it printed.
+		 *   OnPaint   -- SVaCuusWidget::OnPaint (M6, bead VaCuus-akj.6.38): the rect/HDR
+		 *                push and the MakeCustom enqueue, once per paint pass per hosted
+		 *                view. Until M6 this was the one PER-PAINT entry point of the
+		 *                widget with no scope, so the budget's per-frame sum silently
+		 *                excluded it -- and the arch spec's game-thread row (arch:369)
+		 *                refuses to be tightened or passported before the scope exists.
+		 *                The five rare-EVENT handlers (OnMouseEnter/Leave/CaptureLost,
+		 *                OnFocusReceived/Lost) remain unscoped: arch:369's stated
+		 *                unmeasured remainder of rare-event cost, outside every
+		 *                per-frame sum. The declare-first playbook (DataApply above):
+		 *                the scope lands in the same change that needs it, never after,
+		 *                so its cost was never folded into a neighbour.
 		 *   Input     -- one sample per input EVENT, covering the whole handler: the
 		 *                screen-to-view transform, the snapshot scan that produces the FReply,
 		 *                and the enqueue. The "input" half of the budget.
 		 *
-		 * ModelSample (M3a) is the fourth, and it is its own scope rather than part of
+		 * ModelSample (M3a) is the fifth, and it is its own scope rather than part of
 		 * GameTick for a reason spec 6 did not anticipate: the sample can only run where the
 		 * live struct is, i.e. inside UVaCuusView::UpdateModel, wherever the game calls it
 		 * from. Folding it into GameTick would need a full extra copy of the struct per update
@@ -148,6 +161,7 @@ public:
 		 */
 		GameTick,
 		SlateTick,
+		OnPaint,
 		Input,
 		ModelSample,
 

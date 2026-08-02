@@ -47,6 +47,21 @@ void UVaCuusView::Invalidate()
 	// dropping ours would only make a late PollStatus() crash instead of no-op.
 	bRegistered = false;
 
+	// RETIREMENT RELEASES THE GAME SIDE OF EVERY BOUND MODEL (M6 review). From here this
+	// view is unreachable to NotifyStructPreRecompile's walk (it iterates the subsystem's
+	// Views array), so an entry kept in this map would be a model no recompile can ever
+	// condemn -- destroyed at GC time through an FProperty chain a later recompile may
+	// have freed, the exact dangle the refusal exists to prevent. Dropping the references
+	// is safe on the UI side's ownership: the UI thread holds its own TSharedRef per model
+	// (FVaCuusUIThread::Models after the BindModel drain, the queued command before it),
+	// released in RemoveView() only AFTER the host's Shutdown() destroyed the context that
+	// pointed into the shadows -- so the last reference dies in that ordered drain and the
+	// buffers are destroyed through still-live property chains. (With no UI thread left to
+	// drain anything, the release here is already the destruction -- equally inside a
+	// window where the chains are alive.) UpdateModel() answers a retired view at Verbose
+	// through its registration gate, which runs BEFORE the map lookup for this reason.
+	Models.Empty();
+
 	// After this, a routed item still in flight for this view drops at Verbose in the
 	// drain -- the same fate as input for a dead view, one rule for both directions.
 	FVaCuusWriteRouter::UnregisterGameView(ViewId);
@@ -318,19 +333,36 @@ bool UVaCuusView::BindModel(const FString& ModelName, const UScriptStruct* Type)
 		return false;
 	}
 
-	if (Models.Contains(ModelKey))
+	if (const TSharedPtr<FVaCuusBoundModel>* ExistingModel = Models.Find(ModelKey))
 	{
-		// Refused here rather than left to RmlUi, which would also refuse it -- one
-		// Log::LT_ERROR from Context::CreateDataModel (Context.cpp:1075), and that one does
-		// reach LogVaCuus (see FVaCuusSystemInterface::LogMessage). What it does NOT say is
-		// the part that matters: the second model's values then go nowhere while the FIRST
-		// model's shadow stays on screen, so the UI keeps looking plausible. Refusing on this
-		// side also keeps the game-thread map single-valued, which nothing downstream rechecks.
-		UE_LOG(LogVaCuus, Error,
-			TEXT("View %u already has a model called '%s'; the second BindModel is ignored (there is no unbind in RmlUi, so a ")
-			TEXT("name cannot be reused on one view; names are compared case-insensitively here)"),
+		if (!(*ExistingModel)->IsCondemned())
+		{
+			// Refused here rather than left to RmlUi, which would also refuse it -- one
+			// Log::LT_ERROR from Context::CreateDataModel (Context.cpp:1075), and that one does
+			// reach LogVaCuus (see FVaCuusSystemInterface::LogMessage). What it does NOT say is
+			// the part that matters: the second model's values then go nowhere while the FIRST
+			// model's shadow stays on screen, so the UI keeps looking plausible. Refusing on this
+			// side also keeps the game-thread map single-valued, which nothing downstream rechecks.
+			UE_LOG(LogVaCuus, Error,
+				TEXT("View %u already has a model called '%s'; the second BindModel is ignored (there is no unbind in RmlUi, so a ")
+				TEXT("name cannot be reused on one view; names are compared case-insensitively here)"),
+				ViewId, *ModelName);
+			return false;
+		}
+
+		// THE RECOVERY RE-BIND (VaCuus-akj.16): the entry is a corpse -- torn down when its
+		// struct was recompiled -- and refusing to replace it would leave the name dead for
+		// the life of the view. The no-unbind rule above is not violated: the recompile drop
+		// already ran Context::RemoveDataModel (which erases the name, Context.cpp:1111), so
+		// RmlUi will accept the re-creation. Replacing the map entry drops the last game-side
+		// reference; the UI side let go in the drop, so the corpse is destroyed here, with
+		// its drop state at TornDown and its buffers already empty. The caller still owes a
+		// document reload: the detach RemoveDataModel did to a LOADED document is one-way.
+		UE_LOG(LogVaCuus, Log,
+			TEXT("View %u: model '%s' replaces the one torn down by the struct recompile; reload the document so the new model ")
+			TEXT("attaches"),
 			ViewId, *ModelName);
-		return false;
+		Models.Remove(ModelKey);
 	}
 
 	if (NextLoadSerial > 1)
@@ -391,6 +423,18 @@ void UVaCuusView::UpdateModel(FName ModelName, const UScriptStruct* Type, const 
 	// gameplay memory, which has no engine synchronisation of any kind.
 	check(IsInGameThread());
 
+	// The registration gate FIRST, because Invalidate() empties the model map: on a retired
+	// view "nothing bound" is not the caller's mistake, and this runs at frame rate -- a
+	// view can outlive the thing driving it by a frame during teardown, so it drops at
+	// Verbose for the reason SendInput() gives. (VaCuus.Model.Api holds this line: its
+	// post-DestroyView UpdateModel would push the "before anything was bound" Warning past
+	// the exact count the test expects.)
+	if (GetUIThread() == nullptr)
+	{
+		UE_LOG(LogVaCuus, Verbose, TEXT("UpdateModel('%s') on an invalid view is ignored"), *ModelName.ToString());
+		return;
+	}
+
 	const TSharedPtr<FVaCuusBoundModel>* Found = Models.Find(ModelName);
 	if (Found == nullptr)
 	{
@@ -422,14 +466,6 @@ void UVaCuusView::UpdateModel(FName ModelName, const UScriptStruct* Type, const 
 		return;
 	}
 
-	if (GetUIThread() == nullptr)
-	{
-		// The registration gate, at Verbose for the reason SendInput() gives: this runs at
-		// frame rate, and a view can outlive the thing driving it by a frame during teardown.
-		UE_LOG(LogVaCuus, Verbose, TEXT("UpdateModel('%s') on an invalid view is ignored"), *ModelName.ToString());
-		return;
-	}
-
 	// MEASURED HERE RATHER THAN INSIDE THE GameTick SCOPE, and that is a deliberate deviation
 	// from spec 6's wording ("must be driven from UVaCuusSubsystem::Tick"). The sample can
 	// only run where the data is: the only pointer to the live struct VaCuus ever sees is this
@@ -448,6 +484,64 @@ bool UVaCuusView::HasModel(FName ModelName) const
 {
 	check(IsInGameThread());
 	return Models.Contains(ModelName);
+}
+
+int32 UVaCuusView::RefuseModelsForStructRecompile(
+	const UScriptStruct* ChangedStruct, TArray<TPair<uint32, TSharedRef<FVaCuusBoundModel>>>& OutCondemned)
+{
+	check(IsInGameThread());
+
+	if (ChangedStruct == nullptr)
+	{
+		return 0;
+	}
+
+	// The match rule, both halves (the header's contract): the model's own root, or any
+	// array field's ELEMENT type. Element layouts cannot nest further arrays (the desc build
+	// refuses nested containers, VaCuusModelLayout.h's ElementLayout comment), so one level
+	// of descent is the whole surface. Nested-by-value structs need no clause of their own:
+	// their leaves belong to the CONTAINING type's compile set, and the engine broadcasts a
+	// PreChange for every dependent struct it recompiles in the same transaction
+	// (UserDefinedStructureCompilerUtils.cpp:585-616 loops the growing ChangedStructs array),
+	// so the containing root matches on its own broadcast.
+	int32 NumCondemned = 0;
+	for (const TPair<FName, TSharedPtr<FVaCuusBoundModel>>& Pair : Models)
+	{
+		FVaCuusBoundModel& Model = *Pair.Value;
+
+		bool bMatches = Model.GetLayout().GetStruct() == ChangedStruct;
+		if (!bMatches)
+		{
+			for (const FVaCuusModelField& Field : Model.GetLayout().GetFields())
+			{
+				if (Field.ArrayDesc != nullptr && Field.ArrayDesc->ElementLayout.IsValid() &&
+					Field.ArrayDesc->ElementLayout->GetStruct() == ChangedStruct)
+				{
+					bMatches = true;
+					break;
+				}
+			}
+		}
+
+		// CondemnForStructRecompile answers false for a model already condemned (the same
+		// transaction's second broadcast), which is what holds this at ONE Error and ONE
+		// drop command per model per incident.
+		if (!bMatches || !Model.CondemnForStructRecompile())
+		{
+			continue;
+		}
+
+		UE_LOG(LogVaCuus, Error,
+			TEXT("View %u: model '%s' is torn down -- its struct '%s' is being recompiled and every FProperty the model resolved ")
+			TEXT("dies with the old layout. Sample/UpdateModel are refused from now on; re-bind the model and reload the ")
+			TEXT("document to recover"),
+			ViewId, *Model.GetModelNameString(), *ChangedStruct->GetName());
+
+		OutCondemned.Emplace(ViewId, Pair.Value.ToSharedRef());
+		++NumCondemned;
+	}
+
+	return NumCondemned;
 }
 
 int32 UVaCuusView::NumOutstandingModelFields(FName ModelName)
@@ -494,6 +588,21 @@ int32 UVaCuusView::DumpModel(FName ModelName)
 	}
 
 	return NumDumped;
+}
+
+void UVaCuusView::DumpNodeCount()
+{
+	check(IsInGameThread());
+
+	if (FVaCuusUIThread* UIThread = GetUIThread())
+	{
+		UIThread->EnqueueDumpNodeCount(ViewId);
+	}
+	else
+	{
+		UE_LOG(LogVaCuus, Display,
+			TEXT("NodeCount: view %u is no longer registered, so there is no tree to count"), ViewId);
+	}
 }
 
 void UVaCuusView::PublishModelUpdates()
@@ -630,6 +739,21 @@ uint64 UVaCuusView::GetLastCompletedLoadSerial() const
 
 bool UVaCuusView::IsLoadPending() const
 {
+	// A dead view has nothing pending (M6 review): after the boot-failure admission --
+	// PollStatus's latch, which also invalidated the handle and broadcast the one
+	// OnLoadCompleted(false) -- the completed serial can never advance (the UI thread
+	// dropped the host, so no result will ever be published), and the serial comparison
+	// alone would answer "pending" forever. Gated on the game-side LATCH rather than on
+	// BootState directly, deliberately: the raw flag is stamped whenever the UI thread's
+	// drain happens to run (Enqueue() triggers a frame, so that races the very next game
+	// statement), while every observable on this handle changes at the POLL -- a mid-frame
+	// flip here would be the one exception, and VaCuus.View.BootFailure's "pending before
+	// the drain" assertion is what catches it.
+	if (bBootFailureReported)
+	{
+		return false;
+	}
+
 	return GetLastCompletedLoadSerial() < GetLastRequestedLoadSerial();
 }
 
@@ -683,6 +807,30 @@ void UVaCuusView::PollStatus()
 
 	if (!Status.IsValid())
 	{
+		return;
+	}
+
+	// A view whose host never booted admits it here (bead VaCuus-akj.13). Before the
+	// snapshot refresh because there is nothing to refresh: the host was dropped on the UI
+	// thread, so no snapshot, frame or load result will ever be published for this view.
+	// Acquire pairs with the release store in FVaCuusUIThread::AddView's failure branches.
+	if (!bBootFailureReported &&
+		static_cast<EVaCuusViewBootState>(Status->BootState.load(std::memory_order_acquire)) ==
+			EVaCuusViewBootState::Failed)
+	{
+		bBootFailureReported = true;
+
+		// One Error naming the view; the UI thread already logged WHY it failed to boot.
+		UE_LOG(LogVaCuus, Error,
+			TEXT("View %u never booted: its document host failed to initialize on the UI thread (see the Error ")
+			TEXT("logged there). The handle is now invalid; OnLoadCompleted fires once with bSuccess=false."),
+			ViewId);
+
+		// Invalidate BEFORE the broadcast, so a listener that reacts by querying the view
+		// sees IsViewValid() == false -- the honest answer, and the one every later call
+		// site (LoadDocument, SendInput, ...) already handles as a logged no-op.
+		Invalidate();
+		OnLoadCompleted.Broadcast(this, /*bSuccess=*/false);
 		return;
 	}
 

@@ -3,6 +3,7 @@
 #include "SVaCuusWidget.h"
 
 #include "VaCuusDefines.h"
+#include "VaCuusEngineCompat.h"
 #include "VaCuusInputEvent.h"
 #include "VaCuusInteractiveSnapshot.h"
 #include "VaCuusSlateElement.h"
@@ -26,6 +27,41 @@ static TAutoConsoleVariable<int32> CVarVaCuusM1HUDAutoShot(
 	TEXT("vacuus.M1HUD.AutoShot"),
 	0,
 	TEXT("If > 0, request a screenshot (with UI) once the view has recorded this many UI frames."));
+
+/**
+ * THE akj.6.35 DECISION, DECIDED: engine-digitized left-stick presses do NOT enter the UI
+ * navigation grid by default; this cvar is the opt-in.
+ *
+ * What "digitized" means and why the default is off: platforms synthesize DIGITAL key events
+ * from the analog left stick -- FLinuxApplication raises OnControllerButtonPressed for
+ * FGamepadKeyNames::LeftStickUp when the axis crosses its own dead zone
+ * (Linux/LinuxApplication.cpp:626-632, released at :634-638), and XInput maps Buttons[16..19]
+ * onto the same four names (XInputInterface.cpp:100-103). Those events arrive in OnKeyDown
+ * exactly like a DPad press, and VaCuusInputMap maps the LeftStick_* names onto
+ * KI_UP/DOWN/LEFT/RIGHT -- so before this gate, a held MOVEMENT stick stepped the focus grid
+ * of any UI that owned the keyboard, DOUBLED by the widget's own analog repeat clock
+ * (TickAnalogNavigation), which synthesizes the same four keys with a deliberate dead zone
+ * and repeat cadence. Two clocks, one grid, and only one of them tuned.
+ *
+ * The gate drops the ENGINE's digitized events only -- neither consumed nor queued, the D12
+ * pass-through shape -- and cannot starve pad navigation: the widget's own synthesis calls
+ * SendInput directly (SendAnalogNavKey) and never passes through OnKeyDown, so stick
+ * navigation still works through the one tuned clock, and the DPad is untouched. Opting in
+ * (1) restores the raw events for a game that wants the platform's digitization instead.
+ */
+static TAutoConsoleVariable<int32> CVarVaCuusNavStickPress(
+	TEXT("vacuus.NavStickPress"),
+	0,
+	TEXT("If 0 (default), engine-digitized left-stick key events (Gamepad_LeftStick_*) are neither consumed nor forwarded ")
+	TEXT("to the UI -- stick navigation goes through the widget's tuned analog repeat clock instead. Set 1 to let the raw ")
+	TEXT("digitized presses drive the navigation grid too."));
+
+/** The four digitized-stick names the gate above filters. */
+static bool IsDigitalLeftStickKey(const FKey& Key)
+{
+	return Key == EKeys::Gamepad_LeftStick_Up || Key == EKeys::Gamepad_LeftStick_Down ||
+		   Key == EKeys::Gamepad_LeftStick_Left || Key == EKeys::Gamepad_LeftStick_Right;
+}
 
 void SVaCuusWidget::Construct(const FArguments& InArgs,
 	UVaCuusView* InView,
@@ -272,6 +308,17 @@ int32 SVaCuusWidget::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGe
 	const FSlateRect& MyCullingRect, FSlateWindowElementList& OutDrawElements, int32 LayerId,
 	const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const
 {
+	// The widget's last unscoped PER-PAINT entry point gains its scope (M6 Task 4,
+	// bead VaCuus-akj.6.38): the arch spec's game-thread budget row is a SUM of the GT
+	// scopes, and OnPaint -- the rect/HDR read, the render-command enqueue, MakeCustom
+	// -- ran outside it every paint pass, so the row could not honestly be tightened
+	// or passported (arch spec section 11's own precondition). Once per paint pass per
+	// hosted view; read beside GameTick/SlateTick/Input as one frame's sum. The five
+	// rare-EVENT handlers (OnMouseEnter/Leave/CaptureLost, OnFocusReceived/Lost)
+	// still carry no scope -- arch:369's stated unmeasured remainder of rare-event
+	// cost, not part of any per-frame sum.
+	VACUUS_PERF_SCOPE(OnPaint);
+
 	// Window-space pixel rect of the widget (shared with Tick's frame size).
 	// The element applies the elements-texture offset render-side
 	// (FDrawPassInputs::ElementsOffset), mirroring the Slate blur pass.
@@ -296,7 +343,9 @@ int32 SVaCuusWidget::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGe
 			LocalElement->SetGlassAllowed_RenderThread(bGlassAllowed);
 		});
 
-	FSlateDrawElement::MakeCustom(OutDrawElements, LayerId, Element);
+	// Through the engine-version seam: MakeCustom's declaring header moved recently
+	// (DrawElementTypes.h:303 on 5.8; VaCuusEngineCompat.h hotspot 4, M6 spec §2(f)).
+	VaCuusCompat::MakeCustomDrawElement(OutDrawElements, LayerId, Element);
 	return LayerId;
 }
 
@@ -742,6 +791,16 @@ FReply SVaCuusWidget::OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& In
 		return FReply::Unhandled();
 	}
 
+	// The digitized-stick gate (bead VaCuus-akj.6.35; the cvar's comment is the decision
+	// record): by default the engine's synthesized LeftStick_* key events take the D12
+	// pass-through shape, so a walking player's stick cannot double-drive the nav grid the
+	// analog repeat clock already drives. The widget's own synthesized repeats do not pass
+	// through here (SendAnalogNavKey calls SendInput directly) and are unaffected.
+	if (IsDigitalLeftStickKey(Key) && CVarVaCuusNavStickPress.GetValueOnGameThread() == 0)
+	{
+		return FReply::Unhandled();
+	}
+
 	// Answered from the snapshot exactly like pointer events are: keys are consumed
 	// only while a real focusable element holds RmlUi focus, OR while this key is the one
 	// that would give it focus (Task 14 decision A1, see DoesKeyEnterUIFocus). Otherwise
@@ -781,6 +840,15 @@ FReply SVaCuusWidget::OnKeyUp(const FGeometry& MyGeometry, const FKeyEvent& InKe
 	const FKey Key = InKeyEvent.GetKey();
 
 	if (PassThroughKeys.Contains(Key))
+	{
+		return FReply::Unhandled();
+	}
+
+	// The digitized-stick gate, mirrored from OnKeyDown so both halves of one press get one
+	// verdict. (A cvar flipped mid-hold can still split a pair; RmlUi keeps no key state of
+	// its own -- the SendAnalogNavKey comment -- so the cost is one unmatched down or up to a
+	// LISTENER, the same exposure Remove/AddPassThroughKey mid-hold already has.)
+	if (IsDigitalLeftStickKey(Key) && CVarVaCuusNavStickPress.GetValueOnGameThread() == 0)
 	{
 		return FReply::Unhandled();
 	}

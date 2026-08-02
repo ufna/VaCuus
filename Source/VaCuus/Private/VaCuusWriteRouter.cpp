@@ -416,6 +416,18 @@ void FVaCuusWriteRouter::UnregisterViewModels(uint32 ViewId)
 	}
 }
 
+void FVaCuusWriteRouter::UnregisterModel(FVaCuusBoundModel* Model)
+{
+	check(FVaCuusUIThread::IsInUIThread());
+
+	// The same two halves as the per-view drop above, scoped to one model: the registry
+	// entry (writes stop attributing, reads stop resolving) and its pending reverts (a
+	// flush later this frame must not DirtyVariable into a data model the recompile drop
+	// has just removed).
+	GPendingReverts.RemoveAll([Model](const TPair<FVaCuusBoundModel*, FString>& Pair) { return Pair.Key == Model; });
+	GRegisteredModels.RemoveAll([Model](const FRegisteredModel& Entry) { return Entry.Model == Model; });
+}
+
 bool FVaCuusWriteRouter::TryRouteScalarSet(const FString& DiagnosticPath, const void* InValuePtr, const Rml::Variant& Variant,
 	TFunctionRef<bool(Rml::Variant&)> GetCurrentValue)
 {

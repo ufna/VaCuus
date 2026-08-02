@@ -17,6 +17,7 @@ class FRunnableThread;
 class FVaCuusBoundModel;
 class FVaCuusEngine;
 class IVaCuusDocumentHost;
+class UScriptStruct;
 struct FVaCuusInputEvent;
 struct FVaCuusUICommand;
 struct FVaCuusUIQueues;
@@ -175,6 +176,25 @@ public:
 	void EnqueueBindModel(uint32 ViewId, const TSharedRef<FVaCuusBoundModel>& Model);
 
 	/**
+	 * Queues the UI-side half of one model's recompile refusal (VaCuus-akj.16, spec M6 2(j)):
+	 * drop it from this thread's registries, remove its data model from the view's context,
+	 * and tear its UI-side buffers down through the model's drop-state machine. Enqueued by
+	 * UVaCuusSubsystem::NotifyStructPreRecompile AFTER CondemnForStructRecompile armed the
+	 * model, and then FENCED: the caller triggers and waits (~100 ms) for the drain, because
+	 * the teardown's normal DestroyStruct path is only legal while the struct editor's
+	 * PreChange holds the old property chain alive. Owner's thread, like every Enqueue*.
+	 */
+	void EnqueueDropModelForRecompile(uint32 ViewId, const TSharedRef<FVaCuusBoundModel>& Model);
+
+	/**
+	 * Queues FVaCuusDefinitionRegistry::MarkStale for one recompiled struct. THREAD-level
+	 * (the registry is process-wide); FIFO from the single producer, so it lands before any
+	 * re-bind enqueued after the recompile -- which is the ordering that makes the registry's
+	 * evict-on-next-use safe to rely on. Owner's thread.
+	 */
+	void EnqueueMarkDefinitionsStale(const UScriptStruct* RecompiledStruct, const FString& StructName);
+
+	/**
 	 * Asks the UI thread to print its half of `vacuus.DumpModel` (spec 8) for ModelName on this
 	 * view, or for every model of the view when ModelName is None.
 	 *
@@ -185,6 +205,15 @@ public:
 	 * therefore arrives in the log a UI frame later, on the thread that owns the buffer.
 	 */
 	void EnqueueDumpModel(uint32 ViewId, FName ModelName);
+
+	/**
+	 * Asks the UI thread to log the recursive node count of every document on this
+	 * view (M6 Task 4): the Exp-REF-COUNT observable, counted by the stated method
+	 * (VaCuusNodeCount.h) and printed at Display. A command for DumpModel's reason,
+	 * word for word: the tree is the UI thread's, and a game-thread walk of it would
+	 * race every mutation the next frame makes.
+	 */
+	void EnqueueDumpNodeCount(uint32 ViewId);
 
 	/**
 	 * Drops RmlUi's parsed stylesheet and template caches on the UI thread. Live
@@ -277,7 +306,18 @@ public:
 	 */
 	uint64 GetNumAssetCacheClears() const;
 
-	/** Blocks until GetFrameCount() >= Target. Returns false on timeout. Test helper. */
+	/**
+	 * Blocks (1 ms polls on the atomic frame counter) until GetFrameCount() >= Target;
+	 * false on timeout. Safe from any thread EXCEPT the UI thread itself, where waiting on
+	 * your own next frame is a guaranteed timeout; useless in inline mode for the same
+	 * reason (no one else runs frames -- the caller must RunFrameInline() instead).
+	 *
+	 * NOT ONLY A TEST HELPER ANY MORE (VaCuus-akj.16): it is the wait half of the recompile
+	 * fence -- UVaCuusSubsystem::NotifyStructPreRecompile parks the game thread on it,
+	 * inside the struct editor's PreChange window, until the drain has run the condemned
+	 * models' UI-side drops (Trigger-and-wait per round; the drop state, not the frame
+	 * count, is what ends that loop).
+	 */
 	bool WaitForFrameCount(uint64 Target, double TimeoutSeconds);
 
 	/**
@@ -350,8 +390,14 @@ private:
 	/** BindModel handler: creates the model on the view's context and keeps it. UI thread. */
 	void BindModel(uint32 ViewId, IVaCuusDocumentHost& Host, const TSharedPtr<FVaCuusBoundModel>& Model);
 
+	/** DropModelForRecompile handler; see the command kind for the steps and their order. UI thread. */
+	void DropModelForRecompile(uint32 ViewId, const TSharedPtr<FVaCuusBoundModel>& Model);
+
 	/** DumpModel handler: prints the UI-side half of every matching model, or says there is none. UI thread. */
 	void DumpModel(uint32 ViewId, FName ModelName);
+
+	/** DumpNodeCount handler: logs every document's recursive node count (VaCuusNodeCount.h). UI thread. */
+	void DumpNodeCount(uint32 ViewId, IVaCuusDocumentHost& Host);
 
 	/** ClearAssetCaches handler: drops RmlUi's global stylesheet/template caches. UI thread. */
 	void ClearAssetCaches();
@@ -411,9 +457,13 @@ private:
 	 *
 	 * A model's entry is dropped in RemoveView(), AFTER the host's Shutdown() has destroyed
 	 * the context: RmlUi retains a raw void* into each model's UI shadow and revalidates it
-	 * never, so the buffer must outlive the context that points at it. The game thread holds
-	 * its own reference to the same object, so this drop is a refcount decrement rather than a
-	 * destruction in the common case.
+	 * never, so the buffer must outlive the context that points at it. This drop is normally
+	 * the DESTRUCTION: the game thread releases its reference when the view retires
+	 * (UVaCuusView::Invalidate() empties its map, normally before this drains -- both
+	 * retirement paths enqueue the removal BEFORE Invalidate() runs, and the enqueue's
+	 * triggered UI frame races the next game-thread statement, the same race the
+	 * IsLoadPending comment documents -- the M6 recompile contract explained there), so
+	 * the reference held here is what carries each model to this ordered teardown point.
 	 */
 	TMap<uint32, TArray<TSharedRef<FVaCuusBoundModel>>> Models;
 
