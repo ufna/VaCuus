@@ -85,9 +85,12 @@
 #include "Engine/World.h"
 #include "HAL/IConsoleManager.h"
 #include "HAL/PlatformTime.h"
+#include "Misc/CommandLine.h"
+#include "Misc/Parse.h"
 #include "Misc/Paths.h"
 #include "UObject/Package.h"
 #include "UObject/StrongObjectPtr.h"
+#include "UObject/UObjectGlobals.h" // FCoreUObjectDelegates::PostLoadMapWithWorld, the -VaCuusLobbyDemo arming site
 #include "UnrealClient.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 
@@ -1803,6 +1806,59 @@ static FAutoConsoleCommand GLobbyDemoCommand(
 	TEXT("overlays, mode cycle, matchmaking, tabs, skins, equip, claims, purchases, login, chat) with no script in ")
 	TEXT("any document. Refuses by name when the content is not served."),
 	FConsoleCommandDelegate::CreateStatic(&Toggle));
+
+/**
+ * THE LAUNCH-FLAG IGNITION -- the -VaCuusRefHud / -VaCuusM5Demo pattern
+ * (VaCuusRender.cpp:2188-2203 and :2274-2288), verbatim, for the same reason those
+ * exist: `-ExecCmds` is COMPILED OUT of Shipping. UnrealEngine.cpp:2543 opens
+ * `#if !(UE_BUILD_SHIPPING) || ENABLE_PGO_PROFILE` and :2563 closes it around the
+ * :2552 `QueueDeferredCommands(ParseExecCmdsFromCommandLine(TEXT("ExecCmds")))` --
+ * verified by reading those lines -- so `-ExecCmds="vacuus.LobbyDemo"` boots the demo
+ * in Development and does exactly nothing in Shipping, with no "not recognized" line
+ * anywhere to say why. This flag is the door that survives: plain FParse over
+ * FCommandLine, which Shipping keeps.
+ *
+ * The lobby was the last demo of the set with no such door, and it is the one most
+ * likely to be shown from a package. One command line now works in every
+ * configuration.
+ *
+ * WHY PostLoadMapWithWorld AND NOT STATIC INIT: the flag is READ inside the lambda, on
+ * the first map load -- the delegate IS the deferral. Toggle() needs
+ * GEngine->GameViewport and a UVaCuusSubsystem on the game instance (:1580-1595); at
+ * static-init time this module is at LoadingPhase PostConfigInit and neither exists.
+ *
+ * SELF-REMOVING AFTER THE FLAG TEST, not before -- the RefHud ordering, deliberately.
+ * A run WITHOUT the flag leaves the handler armed and harmless; a run with it toggles
+ * once, so a later map change cannot re-toggle (which would tear the demo down, since
+ * Toggle() is a toggle).
+ *
+ * NO extra refusal logic here on purpose: Toggle() already refuses by name for missing
+ * content, viewport and subsystem (:1565-1596), so the flag adds no new failure mode.
+ * The t+8 s screenshot mirrors the two existing flags -- FScreenshotRequest is
+ * Shipping-clean where the AutoShot cvar path's console UI is not -- and the beat is
+ * long enough for the chrome and content documents to have loaded and laid out.
+ *
+ * OWED FOR SHIPPING (not this change): VaCuusDemo.Target.cs has no
+ * `bUseLoggingInShipping`, unlike VcHost.Target.cs:20-24, so a Shipping VaCuusDemo
+ * would ignite here and produce no log to prove it -- only the screenshot.
+ */
+static FDelegateHandle GLobbyDemoLaunchFlagHandle = FCoreUObjectDelegates::PostLoadMapWithWorld.AddLambda(
+	[](UWorld* /*World*/)
+	{
+		if (!FParse::Param(FCommandLine::Get(), TEXT("VaCuusLobbyDemo")))
+		{
+			return;
+		}
+		FCoreUObjectDelegates::PostLoadMapWithWorld.Remove(GLobbyDemoLaunchFlagHandle);
+		Toggle();
+		VaCuusM1HUD::ScheduleAfter(8.0f,
+			[]
+			{
+				UE_LOG(LogVaCuus, Display,
+					TEXT("VaCuus lobby demo (-VaCuusLobbyDemo): requesting the gate screenshot"));
+				FScreenshotRequest::RequestScreenshot(/*bInShowUI=*/true);
+			});
+	});
 
 /**
  * The baked-backdrop A/B, the vacuus.WorldDemo.Mips shape (<0|1> [delaySeconds],
