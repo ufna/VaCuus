@@ -109,15 +109,19 @@ cd /w/Unreal/UnrealEngine && ./Engine/Build/BatchFiles/Linux/Build.sh \
 - **`BuildPlugin`'s HostProject editor leg rewrites `Engine/Binaries/**/UnrealEditor.modules`**
   and can resurrect stale platform modules; the next editor launch dies on `!bIsRunningPlatform`
   (TargetPlatformManagerModule.cpp:1070). Fix: delete the stale `.so`s and the manifest.
-- **`stat <any group>` KILLS every UE process on this machine** (Arch glibc 2.43): the first
-  stat message after master-enable dies in ld.so TLS allocation — the process calls
-  `exit(127)` with no log tail, no core, no crash handler (CrashReportClient is not built, so
-  every hard death looks like silent disappearance; grep nothing, suspect exit-status 127).
-  Not a VaCuus bug (`stat slate` dies identically; UBT already builds all modules
-  `-ftls-model=local-dynamic`, LinuxToolChain.cs:529); no `GLIBC_TUNABLES` dose works — the
-  needed surplus overlaps the engine's 128 KB thread stacks. **Use `vacuus.M1HUD.PerfLog 1`
-  instead — it exists precisely because the passport never trusted engine stats.** Bead 68h
-  holds the full evidence chain.
+- **A GROUP stat (`stat vacuus`, `stat slate`, …) kills the MODULAR editor binary on this
+  machine; `stat fps` and packaged monolithic builds are fine.** Four runs, each "survive 60 s"
+  (bead 68h): modular `-game` + `stat slate` **with VaCuus disabled** → dead; modular + `stat
+  vacuus` → dead; modular + **`stat fps` → lives** (it draws its own counter, it does not
+  master-enable collection); **staged monolithic + `stat vacuus` → lives** (no dlopen, no
+  TLS pressure). So this is not a VaCuus defect and not a packaged-game problem — it is the
+  dev-loop editor binary. Death is silent: `exit(127)`, log ends mid-line, no core, no
+  callstack, because CrashReportClient is not built here — **grep nothing; suspect exit 127**.
+  Mechanism seen under gdb: `_dl_fatal_printf` under the first stat message after
+  master-enable (ld.so TLS allocation). ROOT CAUSE STILL OPEN — the owner reports group stats
+  working here before, and glibc updated 2026-06-30; whether that is the trigger is
+  unverified. Meanwhile: **`vacuus.M1HUD.PerfLog 1` is the instrument** the passport was
+  measured with anyway.
 
 ## Architecture Overview
 
