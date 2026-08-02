@@ -101,7 +101,7 @@ the `-/Binaries/...` `-/Intermediate/...` filter fix). Steps:
    `!bIsRunningPlatform` (TargetPlatformManagerModule.cpp:1070). Fix: delete the
    stale `.so`s + that manifest (CLAUDE.md dev-loop hazards; dry-run §8).
 
-## 8. Decisions owed (not hardware, but owner calls)
+## 8. Owner decisions (both made 2026-08-02; kept here as the record)
 
 - **The UI-row breach at reference scale**: **DECIDED 2026-08-02 — route B, the
   row split** (passport, "The re-baseline"): ≤0.50 ms stands at typical HUD scale

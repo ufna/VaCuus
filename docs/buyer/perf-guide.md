@@ -8,7 +8,9 @@ every driver family live), the instrument is the built-in perf logger
 `docs/passport/2026-08-vacuus-perf-passport.md`; this page is what to DO with it.
 
 **Measurement venue for every number below:** 7950X3D, Linux, Vulkan, offscreen
-1920×1080, UE 5.8.1, 2026-08-02. Two columns: Dev (`UnrealEditor -game`) and
+1920×1080, UE 5.8.1, 2026-08-02 — except the typical-scale UI row's 0.052/0.023,
+which are the 2026-07-30 M2-era editor-venue figures (the passport's row 2 marks
+the venue). Two columns: Dev (`UnrealEditor -game`) and
 cooked-Shipping-Linux (staged, bundle-mounted). Win64/macOS columns are an
 owner-hardware handoff (`owner-handoff.md`), never guessed.
 
