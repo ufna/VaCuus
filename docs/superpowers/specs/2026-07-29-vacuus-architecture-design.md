@@ -497,7 +497,9 @@ decided (2026-08-02) GPU stays out of the 32 MB row, published as its own passpo
   the cooked bundle in packaged Development AND Shipping on LINUX (venue substitution
   recorded: Win64 hardware does not exist here) — M==0 bundle serving asserted, the
   Linux resident path asserted, zero JS errors, clean teardown; the UI row FAILS at
-  reference scale per the §11 amendment above (owner decision). The manual matrix
+  reference scale per the §11 amendment above (owner decision) *(post-acceptance
+  2026-08-02: decided, route B — the row split; see §11's row and the passport's
+  "The re-baseline")*. The manual matrix
   executed on Linux Vulkan (15 rows, `docs/passport/2026-08-vacuus-manual-matrix.md`).
   The scan is clean after being seen to fail on its planted fixture. Owner hardware,
   enumerated with commands in `docs/buyer/owner-handoff.md`: the 5.6/5.7 SHIM-1 builds,
