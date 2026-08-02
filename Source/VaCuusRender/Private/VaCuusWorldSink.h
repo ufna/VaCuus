@@ -7,9 +7,17 @@
 #include "VaCuusFrameSink.h"
 #include "VaCuusReplayRenderer.h"
 
-#include <atomic>
+// Complete IPooledRenderTarget (PooledRenderTarget.h:433), not a forward declaration:
+// the DestinationPooled member below is a TRefCountPtr, whose destructor calls
+// Reference->Release() (RefCounting.h:341) and so needs the full type at every point
+// this class is destroyed -- including TUs that only construct it, e.g.
+// MakeShared<FVaCuusWorldSink>() in Tests/VaCuusWorldComponentTest.cpp. Unity and the
+// shared PCH had been supplying the definition by accident; `BuildPlugin
+// -StrictIncludes` (= -NoPCH -NoSharedPCH -DisableUnity) is where that stopped
+// compiling.
+#include "PooledRenderTarget.h"
 
-struct IPooledRenderTarget;
+#include <atomic>
 
 /**
  * The world-space frame sink (M5 spec 2(g)): replay ON ARRIVAL, then one CopyTexture
