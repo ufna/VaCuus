@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 
+#include "VaCuusEngineCompat.h" // FVaCuusDrawPassInputs + the engine-version seam (M6 spec §2(f))
 #include "VaCuusFrameSink.h"
 #include "VaCuusGlassDistiller.h"
 #include "VaCuusReplayRenderer.h"
@@ -60,7 +61,7 @@ public:
 	 * The game-thread HDR mirror (Exp-GLASS-HDR-DETECT's shipped answer): under
 	 * bCompositeUIWithSceneHDR the elements texture carries no scene and no
 	 * FDrawPassInputs field says so — bOutputIsHDRDisplay is reset false for the SDR
-	 * elements pass (SlateRHIRenderer.cpp:1069) — so the widget reads
+	 * elements pass (SlateRHIRenderer.cpp:1068) — so the widget reads
 	 * r.HDR.EnableHDROutput game-side each paint and pushes the verdict here. False
 	 * disables every glass pass; the UI itself keeps compositing.
 	 */
@@ -70,7 +71,9 @@ public:
 	virtual void ReleaseResources_RenderThread() override;
 
 	//~ Begin ICustomSlateElement
-	virtual void Draw_RenderThread(FRDGBuilder& GraphBuilder, const FDrawPassInputs& Inputs) override;
+	// FVaCuusDrawPassInputs = the engine's FDrawPassInputs behind the version seam
+	// (VaCuusEngineCompat.h hotspot 1); field reads go through VaCuusCompat accessors.
+	virtual void Draw_RenderThread(FRDGBuilder& GraphBuilder, const FVaCuusDrawPassInputs& Inputs) override;
 	//~ End ICustomSlateElement
 
 	/**
@@ -85,7 +88,7 @@ private:
 	static constexpr int32 MaxPendingBuffers = 4;
 
 	/** Adds the downsample -> blur -> masked-draw chain for the current glass list. */
-	void AddGlassPasses(FRDGBuilder& GraphBuilder, const FDrawPassInputs& Inputs);
+	void AddGlassPasses(FRDGBuilder& GraphBuilder, const FVaCuusDrawPassInputs& Inputs);
 
 	/** (Re)creates VB/IB pairs for the current glass entries (mask geometry or generated quads). */
 	void RefreshGlassDrawResources(FRHICommandList& RHICmdList);
@@ -135,4 +138,7 @@ private:
 
 	/** Latched log for which backbuffer-access path this session took (Exp-GLASS-BACKBUFFER-SRV). */
 	bool bLoggedBackbufferPath = false;
+
+	/** Latched log for which composite gamma permutation this session selected (M6, spec §3.2). */
+	bool bLoggedCompositeGamma = false;
 };

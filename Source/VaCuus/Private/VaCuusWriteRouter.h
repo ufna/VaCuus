@@ -131,6 +131,14 @@ public:
 	static void UnregisterViewModels(uint32 ViewId);
 
 	/**
+	 * ONE model leaves the registry, pending reverts included -- the recompile drop's step 2
+	 * (VaCuus-akj.16): its UI shadow is about to be destroyed, so the span walk must stop
+	 * attributing writes to it and `vacuus.model(name)` reads must stop resolving through it
+	 * BEFORE the buffer goes. Same UI-thread rule as every registry entry here.
+	 */
+	static void UnregisterModel(FVaCuusBoundModel* Model);
+
+	/**
 	 * THE SEAM, called by FVaCuusScalarDefinition::Set and nowhere else. Attributes
 	 * InValuePtr against the registry (the class comment's span walk); on a hit, coerces
 	 * Variant to a tagged value (bool / number / string -- the wire's own three kinds,

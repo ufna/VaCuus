@@ -1,0 +1,3 @@
+Plain text carrying an executable permission bit (committed as git mode 100755).
+Exists so the EXECBIT check of Tools/fab_scan.sh is seen to fail; nothing else about
+this file is wrong.

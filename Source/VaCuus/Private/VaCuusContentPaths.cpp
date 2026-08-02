@@ -2,6 +2,7 @@
 
 #include "VaCuusContentPaths.h"
 
+#include "VaCuusBundleMount.h"
 #include "VaCuusDefines.h"
 
 #include "HAL/FileManager.h"
@@ -51,7 +52,7 @@ const TArray<FString>& GetDocumentRoots()
 	return Roots;
 }
 
-FString ResolveExistingDocument(const FString& VfsPath, FString* OutRoot)
+FString ResolveExistingDocument(const FString& VfsPath, FString* OutRoot, bool bIncludeMountedBundles)
 {
 	if (OutRoot)
 	{
@@ -68,6 +69,24 @@ FString ResolveExistingDocument(const FString& VfsPath, FString* OutRoot)
 		// Absolute passthrough: no root is involved, so there is nothing to report in
 		// OutRoot either.
 		return FPaths::FileExists(VfsPath) ? VfsPath : FString();
+	}
+
+	if (bIncludeMountedBundles)
+	{
+		// Bundle-first, matching FVaCuusFileInterface::Open exactly (see the header):
+		// a caller that existence-checks here and then opens must get the same answer
+		// twice. The pseudo-path is deliberately unopenable -- it names the serving
+		// bundle for logs, nothing more.
+		FString BundleName;
+		if (FVaCuusBundleMountTable::ContainsPath(VfsPath, &BundleName))
+		{
+			const FString BundleRoot = FString::Printf(TEXT("bundle://%s"), *BundleName);
+			if (OutRoot)
+			{
+				*OutRoot = BundleRoot;
+			}
+			return BundleRoot / VaCuusBundleFormat::NormalizePath(VfsPath);
+		}
 	}
 
 	for (const FString& Root : GetDocumentRoots())

@@ -8,6 +8,7 @@
 #include "VaCuusDocumentHost.h"
 #include "VaCuusEngine.h"
 #include "VaCuusInputMap.h"
+#include "VaCuusNodeCount.h"
 #include "VaCuusStats.h"
 #include "VaCuusStyleSet.h"
 #include "VaCuusTextInput.h"
@@ -637,6 +638,25 @@ void FVaCuusUIThread::EnqueueBindModel(uint32 ViewId, const TSharedRef<FVaCuusBo
 	Enqueue(MoveTemp(Command));
 }
 
+void FVaCuusUIThread::EnqueueDropModelForRecompile(uint32 ViewId, const TSharedRef<FVaCuusBoundModel>& Model)
+{
+	FVaCuusUICommand Command;
+	Command.Kind = EVaCuusCommandKind::DropModelForRecompile;
+	Command.ViewId = ViewId;
+	Command.Model = Model;
+	Enqueue(MoveTemp(Command));
+}
+
+void FVaCuusUIThread::EnqueueMarkDefinitionsStale(const UScriptStruct* RecompiledStruct, const FString& StructName)
+{
+	// No ViewId: the definition registry is process-wide, applied before per-view routing.
+	FVaCuusUICommand Command;
+	Command.Kind = EVaCuusCommandKind::MarkDefinitionsStale;
+	Command.RecompiledStruct = RecompiledStruct;
+	Command.Payload = StructName;
+	Enqueue(MoveTemp(Command));
+}
+
 void FVaCuusUIThread::EnqueueDumpModel(uint32 ViewId, FName ModelName)
 {
 	FVaCuusUICommand Command;
@@ -648,6 +668,14 @@ void FVaCuusUIThread::EnqueueDumpModel(uint32 ViewId, FName ModelName)
 	// difference between an FName that stringifies to "None" and no name at all, and only one of
 	// those is a model somebody could have bound.
 	Command.Payload = ModelName.IsNone() ? FString() : ModelName.ToString();
+	Enqueue(MoveTemp(Command));
+}
+
+void FVaCuusUIThread::EnqueueDumpNodeCount(uint32 ViewId)
+{
+	FVaCuusUICommand Command;
+	Command.Kind = EVaCuusCommandKind::DumpNodeCount;
+	Command.ViewId = ViewId;
 	Enqueue(MoveTemp(Command));
 }
 
@@ -1270,6 +1298,23 @@ void FVaCuusUIThread::DrainCommands()
 			continue;
 		}
 
+		if (Command->Kind == EVaCuusCommandKind::MarkDefinitionsStale)
+		{
+			// THREAD-level like ClearAssetCaches; the registry is process-wide. Applied before
+			// the per-view routing so it lands whether or not any view is live.
+			FVaCuusDefinitionRegistry::MarkStale(Command->RecompiledStruct, Command->Payload);
+			continue;
+		}
+
+		if (Command->Kind == EVaCuusCommandKind::DropModelForRecompile)
+		{
+			// AHEAD OF THE HOST LOOKUP, for the reason the command kind states: the game
+			// thread is WAITING on this teardown inside PreChange, and a retired view must
+			// not turn it into a Verbose drop and a 100 ms timeout-leak.
+			DropModelForRecompile(Command->ViewId, Command->Model);
+			continue;
+		}
+
 		if (Command->Kind == EVaCuusCommandKind::DumpModel)
 		{
 			// AHEAD OF THE HOST LOOKUP, deliberately: the models are keyed on the view in
@@ -1341,6 +1386,10 @@ void FVaCuusUIThread::DrainCommands()
 				Host->SetVisible(Command->bVisible);
 				break;
 
+			case EVaCuusCommandKind::DumpNodeCount:
+				DumpNodeCount(Command->ViewId, *Host);
+				break;
+
 			case EVaCuusCommandKind::Resize:
 				// Nothing left to do: the view size was applied above.
 				break;
@@ -1397,6 +1446,14 @@ void FVaCuusUIThread::AddView(FVaCuusUICommand& Command)
 	if (!Command.Host.IsValid() || !Command.Status.IsValid())
 	{
 		UE_LOG(LogVaCuus, Error, TEXT("AddView for view %u carried no host"), Command.ViewId);
+
+		// Same eternal-pending hole as the Initialize() failure below: if there IS a status,
+		// its game-thread handle is waiting on this boot and must be told it will never come.
+		if (Command.Status.IsValid())
+		{
+			Command.Status->BootState.store(
+				static_cast<uint8>(EVaCuusViewBootState::Failed), std::memory_order_release);
+		}
 		return;
 	}
 
@@ -1412,6 +1469,11 @@ void FVaCuusUIThread::AddView(FVaCuusUICommand& Command)
 		// Contract: a host whose Initialize() failed has rolled itself back, so it
 		// can simply be dropped here (on this thread) with no Shutdown().
 		UE_LOG(LogVaCuus, Error, TEXT("View %u failed to boot; it will produce no frames"), Command.ViewId);
+
+		// The one channel back to the game thread (bead VaCuus-akj.13): without this stamp
+		// the handle CreateView already returned stays valid-looking forever -- see
+		// FVaCuusViewStatus::BootState for the full failure chain this line cuts.
+		Command.Status->BootState.store(static_cast<uint8>(EVaCuusViewBootState::Failed), std::memory_order_release);
 		return;
 	}
 
@@ -1422,6 +1484,9 @@ void FVaCuusUIThread::AddView(FVaCuusUICommand& Command)
 
 	Hosts.Add(Command.ViewId, MoveTemp(Host));
 	NumViews.store(Hosts.Num(), std::memory_order_release);
+
+	// Registered and reachable by every per-view command from here on: the boot is real.
+	Command.Status->BootState.store(static_cast<uint8>(EVaCuusViewBootState::Booted), std::memory_order_release);
 
 	// After the host is booted and registered: a script host that reacted by touching
 	// the view would find it in every map a frame can reach it through.
@@ -1477,9 +1542,11 @@ void FVaCuusUIThread::RemoveView(uint32 ViewId)
 	// references first could destroy a shadow the context is about to read while it tears down
 	// its element tree.
 	//
-	// The game thread normally holds the other reference (UVaCuusView's model map), so this is
-	// usually a refcount decrement rather than a destruction -- and either way the buffer is
-	// only reachable from VaCuus code by then.
+	// The game thread has normally let go already (UVaCuusView::Invalidate() empties its map,
+	// and every RemoveView is enqueued from a path that also invalidates), so this drop is
+	// usually the DESTRUCTION -- on this thread, with the property chains alive, which is the
+	// point of releasing game-side at retirement (the M6 recompile contract, Invalidate()'s
+	// comment). Either way the buffer is only reachable from VaCuus code by then.
 	TArray<TSharedRef<FVaCuusBoundModel>> RemovedModels;
 	if (Models.RemoveAndCopyValue(ViewId, RemovedModels))
 	{
@@ -1530,6 +1597,73 @@ void FVaCuusUIThread::BindModel(uint32 ViewId, IVaCuusDocumentHost& Host, const 
 	FVaCuusWriteRouter::RegisterModel(ViewId, Model->GetModelName(), Model.ToSharedRef());
 }
 
+void FVaCuusUIThread::DropModelForRecompile(uint32 ViewId, const TSharedPtr<FVaCuusBoundModel>& Model)
+{
+	check(IsInUIThread());
+
+	if (!Model.IsValid())
+	{
+		UE_LOG(LogVaCuus, Error, TEXT("DropModelForRecompile for view %u carried no model"), ViewId);
+		return;
+	}
+
+	// ORDER IS THE POINT, and it is the REVERSE of the bind's:
+	//
+	//  1. Out of this thread's registry, so this frame's ApplyModelUpdates and any later
+	//     DumpModel no longer reach the model.
+	//  2. Out of the write router, purging its pending reverts -- a revert flushed later this
+	//     frame must not DirtyVariable into the data model step 3 removes.
+	//  3. Context::RemoveDataModel, while the element tree is still up: it detaches every
+	//     root (SetDataModel(nullptr), Context.cpp:1106-1107) and destroys the DataModel
+	//     holding the raw void* into the UI shadow -- which is what makes step 4 legal at
+	//     all. It also erases the NAME (data_models.erase, :1111), so a recovery re-bind
+	//     under the same name is not refused by CreateDataModel.
+	//  4. The buffers, through the model's drop-state machine (Reset within the fence
+	//     window, Abandon past it).
+	if (TArray<TSharedRef<FVaCuusBoundModel>>* ViewModels = Models.Find(ViewId))
+	{
+		if (ViewModels->Remove(Model.ToSharedRef()) > 0)
+		{
+			NumBoundModels.fetch_sub(1, std::memory_order_release);
+		}
+		if (ViewModels->IsEmpty())
+		{
+			Models.Remove(ViewId);
+		}
+	}
+
+	FVaCuusWriteRouter::UnregisterModel(&*Model);
+
+	const bool bWasBound = Model->IsBoundToContext();
+	if (bWasBound)
+	{
+		IVaCuusDocumentHost* Host = FindHost(ViewId);
+		Rml::Context* Context = Host != nullptr ? Host->GetContext() : nullptr;
+		if (Context != nullptr)
+		{
+			// The exact-case string, converted the way BindToContext converted it -- RmlUi's
+			// data_models map is keyed on the UTF-8 form byte-for-byte.
+			Context->RemoveDataModel(Rml::String(TCHAR_TO_UTF8(*Model->GetModelNameString())));
+		}
+		else
+		{
+			// A bound model whose context is already gone can only mean the view was retired
+			// between the condemnation and this drain -- RemoveView has then already run
+			// Rml::RemoveContext, taking every data model with it. Nothing left to remove.
+			UE_LOG(LogVaCuus, Verbose,
+				TEXT("DropModelForRecompile: view %u has no context; its data models died with it"), ViewId);
+		}
+	}
+
+	Model->TearDownUISideForRecompile();
+
+	UE_LOG(LogVaCuus, Log,
+		TEXT("VaCuus model '%s' (view %u) dropped after a struct recompile (%s; data model %s)"),
+		*Model->GetModelNameString(), ViewId,
+		Model->GetDropState() == EVaCuusModelDropState::TornDown ? TEXT("buffers torn down") : TEXT("buffers NOT torn down"),
+		bWasBound ? TEXT("removed from the context") : TEXT("was never bound to a context"));
+}
+
 void FVaCuusUIThread::DumpModel(uint32 ViewId, FName ModelName)
 {
 	check(IsInUIThread());
@@ -1564,6 +1698,35 @@ void FVaCuusUIThread::DumpModel(uint32 ViewId, FName ModelName)
 		UE_LOG(LogVaCuus, Display,
 			TEXT("DumpModel:   UI thread (view %u): %d model(s) are registered, but none is called '%s'"), ViewId,
 			ViewModels->Num(), *ModelName.ToString());
+	}
+}
+
+void FVaCuusUIThread::DumpNodeCount(uint32 ViewId, IVaCuusDocumentHost& Host)
+{
+	check(IsInUIThread());
+
+	Rml::Context* Context = Host.GetContext();
+	if (Context == nullptr || Context->GetNumDocuments() == 0)
+	{
+		UE_LOG(LogVaCuus, Display, TEXT("NodeCount: view %u has no document to count"), ViewId);
+		return;
+	}
+
+	// Display, the M5 packaged-gate lesson: the count is a field observable and must
+	// survive the most stripped configuration a buyer ships. The method sentence is
+	// part of the line on purpose -- a bare number invites recounting by a different
+	// method (spec M6 2(g): the window is only meaningful with the method pinned).
+	for (int Index = 0; Index < Context->GetNumDocuments(); ++Index)
+	{
+		Rml::ElementDocument* Document = Context->GetDocument(Index);
+		if (Document == nullptr)
+		{
+			continue;
+		}
+		UE_LOG(LogVaCuus, Display,
+			TEXT("NodeCount: view %u document '%s': %d nodes (elements + text nodes, recursive; hidden data-for ")
+			TEXT("templates excluded; RmlUi-generated scrollbars included)"),
+			ViewId, UTF8_TO_TCHAR(Document->GetSourceURL().c_str()), VaCuusNodeCount::CountNodes(Document));
 	}
 }
 

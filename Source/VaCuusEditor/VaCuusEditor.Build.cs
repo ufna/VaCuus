@@ -14,6 +14,11 @@ public class VaCuusEditor : ModuleRules
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[] {
+			// UEdGraphSchema_K2::PC_Struct, the pin-category constant the recompile-refusal
+			// test's AddVariable needs (VaCuusModelRecompileTest.cpp). The alternative -- a
+			// literal FName("struct") -- would hardcode a schema constant as a magic string.
+			"BlueprintGraph",
+
 			"CoreUObject",
 
 			// The DevUI file watcher (controller decision D20). Unconditional, which is

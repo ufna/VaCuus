@@ -3,6 +3,7 @@
 #include "VaCuusWorldInputProcessor.h"
 
 #include "VaCuusDefines.h"
+#include "VaCuusEngineCompat.h"
 #include "VaCuusInputEvent.h"
 #include "VaCuusStats.h"
 #include "VaCuusView.h"
@@ -124,14 +125,12 @@ void FVaCuusWorldInputProcessor::AddInstallRef()
 
 	VaCuusWorldInput::GProcessor = MakeShared<FVaCuusWorldInputProcessor>();
 
-	// PreGame, through the registration-key overload (the CommonUI shape,
-	// CommonUIActionRouterBase.cpp:353-358): after the Engine/Editor buckets so PIE
-	// editor shortcuts stay ahead of us, before the Game bucket
-	// (SlateApplication.h:189-208 -- ascending order is earlier evaluation).
-	FInputPreprocessorRegistrationKey Key;
-	Key.Type = EInputPreProcessorType::PreGame;
-	Key.Priority = INDEX_NONE;
-	FSlateApplication::Get().RegisterInputPreProcessor(VaCuusWorldInput::GProcessor, Key);
+	// PreGame: after the Engine/Editor buckets so PIE editor shortcuts stay ahead of
+	// us, before the Game bucket (SlateApplication.h:189-208 -- ascending order is
+	// earlier evaluation; the CommonUI shape, CommonUIActionRouterBase.cpp:353-358).
+	// Routed through the engine-version seam because the registration-key overload is
+	// the newest of 5.8's four (VaCuusEngineCompat.h hotspot 2, M6 spec §2(f)).
+	VaCuusCompat::RegisterInputPreProcessor_PreGame(FSlateApplication::Get(), VaCuusWorldInput::GProcessor);
 
 	UE_LOG(LogVaCuus, Log, TEXT("World input processor installed (PreGame; first panel registered)"));
 }

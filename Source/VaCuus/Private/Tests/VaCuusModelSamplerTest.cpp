@@ -10,6 +10,7 @@
 #include "VaCuusModelSampler.h"
 #include "VaCuusModelShadow.h"
 
+#include "Containers/AnsiString.h"
 #include "HAL/PlatformTime.h"
 #include "UObject/SoftObjectPath.h"
 #include "UObject/UnrealType.h"

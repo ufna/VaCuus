@@ -13,6 +13,18 @@ IMPLEMENT_GLOBAL_SHADER(FVaCuusBlurPS, "/Plugin/VaCuus/Private/VaCuusBlur.usf", 
 IMPLEMENT_GLOBAL_SHADER(FVaCuusGlassPS, "/Plugin/VaCuus/Private/VaCuusBlur.usf", "MainGlassPS", SF_Pixel);
 IMPLEMENT_GLOBAL_SHADER(FVaCuusGradientPS, "/Plugin/VaCuus/Private/VaCuusGradient.usf", "MainGradientPS", SF_Pixel);
 
+bool VaCuusCompositeWantsLinearOutput(EPixelFormat OutputFormat)
+{
+	// IsFloatFormat (PixelFormat.h:382-399) covers every float RT the Slate viewport
+	// path can produce: PF_FloatRGBA from r.DefaultBackBufferPixelFormat=3
+	// (RendererSettings.cpp:37-43) or scRGB HDR (SlateRHIRenderer.cpp:763-766), and
+	// PF_FloatR11G11B10/PF_A32B32G32R32F should a host composite us into its own float
+	// target. PF_A2B10G10R10 — the desktop SDR default's 10-bit sibling AND the HDR10
+	// swapchain format — stays display-encoded on both branches and correctly reads
+	// false here (the HDR10 case is the out-of-scope ST2084 story, see the header).
+	return IsFloatFormat(OutputFormat);
+}
+
 namespace VaCuusBuiltinShaders
 {
 /**

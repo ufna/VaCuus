@@ -180,9 +180,10 @@ JSModuleDef* FVaCuusJsViewContext::ModuleLoaderThunk(JSContext* Ctx, const char*
 	// absolute passthrough) answer, and read through the pak-transparent
 	// IPlatformFile path, same as <script src> (VaCuusJsScriptSource).
 	const FString VfsPath = StripVfsScheme(FString(UTF8_TO_TCHAR(ModuleName)));
-	const FString Resolved = VaCuusContentPaths::ResolveExistingDocument(VfsPath);
+	// ReadScriptByVfsPath (M6): bundle-first, then the ordered roots -- see
+	// VaCuusJsScriptSource.h; a bundle-only Shipping build has no loose file here.
 	FString Source;
-	if (Resolved.IsEmpty() || !VaCuusJsScriptSource::ReadScriptFile(Resolved, Source))
+	if (!VaCuusJsScriptSource::ReadScriptByVfsPath(VfsPath, Source))
 	{
 		// Both diagnostics (spec 3.7): OUR Error names what was probed and where;
 		// the thrown ReferenceError -- the engine's own no-loader wording

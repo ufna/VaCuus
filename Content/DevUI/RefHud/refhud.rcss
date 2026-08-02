@@ -1,0 +1,497 @@
+/*
+ * VaCuus Reference HUD stylesheet (M6 Task 4).
+ *
+ * Layered over /M5Hud/vacuus-base.rcss (linked first by refhud.rml), so the
+ * block/inline layers and the LatoLatin default face come from there. Sized for
+ * a 1920x1080 reference frame; every piece is absolutely positioned against
+ * body (which vacuus-base sizes to the context).
+ *
+ * The ONLY animation machinery here is the buff-sweep keyframes block -- the
+ * spec 2(h) "RCSS keyframes only, no driver" surface: 18 sweeps animate with
+ * zero script cost. Tween name is from RmlUi's fixed keyword table
+ * (PropertyParserAnimation.cpp:58-77 -- there is no bare 'linear'; the
+ * -in-out suffix is required).
+ */
+
+body {
+	font-size: 14px;
+	color: #dfe6ee;
+}
+
+#vignette {
+	position: absolute;
+	left: 0; top: 0;
+	width: 100%; height: 100%;
+	background-color: #10001005;
+}
+
+/* ---------------------------------------------------------------- plate */
+
+#plate {
+	position: absolute;
+	left: 24px; top: 20px;
+	width: 320px; height: 84px;
+}
+
+#plate-frame {
+	position: absolute;
+	left: 0; top: 0;
+	width: 320px; height: 84px;
+	background-color: #0b1016a0;
+	border: 1px #2e3d4d;
+}
+
+#portrait {
+	position: absolute;
+	left: 8px; top: 10px;
+	width: 64px; height: 64px;
+	background-color: #17222e;
+	border: 1px #3d5266;
+}
+
+.portrait-glyph {
+	position: absolute;
+	left: 18px; top: 20px;
+	font-size: 22px;
+	color: #7fa8c9;
+}
+
+#level-badge {
+	position: absolute;
+	right: -6px; bottom: -6px;
+	width: 22px; height: 18px;
+	padding-top: 2px;
+	background-color: #c9a227;
+	color: #14100a;
+	font-size: 12px;
+	text-align: center;
+}
+
+#plate-right {
+	position: absolute;
+	left: 84px; top: 8px;
+	width: 228px; height: 70px;
+}
+
+#player-name {
+	font-size: 16px;
+	color: #ffffff;
+	margin-bottom: 4px;
+}
+
+.bar-row {
+	position: relative;
+	height: 18px;
+	margin-bottom: 4px;
+}
+
+.bar-label {
+	position: absolute;
+	left: 0; top: 2px;
+	font-size: 11px;
+	color: #8aa0b5;
+}
+
+.bar-track {
+	position: absolute;
+	left: 24px; top: 2px;
+	width: 150px; height: 12px;
+	background-color: #101820;
+	border: 1px #2e3d4d;
+}
+
+#hp-fill { position: absolute; left: 0; top: 0; height: 12px; width: 100%; background-color: #d03a3a; }
+#mp-fill { position: absolute; left: 0; top: 0; height: 12px; width: 100%; background-color: #2f6fd0; }
+
+.bar-value {
+	position: absolute;
+	left: 182px; top: 1px;
+	font-size: 12px;
+	color: #c8d4e0;
+}
+
+/* -------------------------------------------------------------- buff bar */
+
+#buffbar {
+	position: absolute;
+	left: 24px; top: 116px;
+	width: 320px;
+}
+
+.buff-slot {
+	display: inline-block;
+	position: relative;
+	width: 30px; height: 42px;
+	margin-right: 2px; margin-bottom: 2px;
+}
+
+.buff-icon {
+	position: absolute;
+	left: 0; top: 0;
+	width: 28px; height: 28px;
+	border: 1px #ffffff40;
+}
+
+.b0 { background-color: #553388; }
+.b1 { background-color: #2f6fd0; }
+.b2 { background-color: #2d8659; }
+.b3 { background-color: #b0632a; }
+.b4 { background-color: #8a2f4f; }
+.b5 { background-color: #4a7a8c; }
+
+/* The keyframes-only surface: a cooldown sweep rising and fading over each
+   icon, staggered by three phase classes. */
+@keyframes kf-buff-sweep {
+	from { height: 4px; opacity: 0.85; }
+	to { height: 28px; opacity: 0.15; }
+}
+
+.buff-sweep {
+	position: absolute;
+	left: 0; bottom: 14px;
+	width: 28px; height: 28px;
+	background-color: #0a0e14c0;
+	animation: 1.2s linear-in-out infinite alternate kf-buff-sweep;
+}
+
+.stag-1 { animation: 1.2s 0.4s linear-in-out infinite alternate kf-buff-sweep; }
+.stag-2 { animation: 1.2s 0.8s linear-in-out infinite alternate kf-buff-sweep; }
+
+.buff-stack {
+	position: absolute;
+	left: 1px; top: 29px;
+	font-size: 10px;
+	color: #e8d9a0;
+}
+
+.buff-timer {
+	position: absolute;
+	left: 1px; top: 29px;
+	margin-top: 0px;
+	padding-left: 16px;
+	font-size: 10px;
+	color: #93a7ba;
+}
+
+/* --------------------------------------------------------------- compass */
+
+#compass {
+	position: absolute;
+	left: 50%; top: 14px;
+	margin-left: -160px;
+	width: 320px; height: 26px;
+}
+
+#compass-window {
+	position: absolute;
+	left: 0; top: 0;
+	width: 320px; height: 22px;
+	overflow: hidden;
+	background-color: #0b101680;
+	border: 1px #2e3d4d;
+}
+
+#compass-strip {
+	position: absolute;
+	left: -40px; top: 2px;
+	width: 640px;
+}
+
+.cdir {
+	display: inline-block;
+	width: 60px;
+	text-align: center;
+	font-size: 13px;
+	color: #9fb4c8;
+}
+
+.cn { color: #ffffff; }
+
+#compass-needle {
+	position: absolute;
+	left: 158px; top: 20px;
+	width: 4px; height: 6px;
+	background-color: #c9a227;
+	transform: rotate(15deg);
+}
+
+/* ------------------------------------------------------------ scoreboard */
+
+.sb-panel {
+	position: absolute;
+	top: 60px;
+	width: 402px;
+	background-color: #0b1016a8;
+	border: 1px #2e3d4d;
+	padding: 4px;
+}
+
+#sb-alpha { right: 862px; }
+#sb-bravo { right: 448px; }
+
+.sb-row {
+	position: relative;
+	height: 17px;
+	margin-bottom: 1px;
+}
+
+.sb-head { border-bottom: 1px #3d5266; }
+.sb-head .sb-rank { color: #c9a227; }
+
+.sb-rank { position: absolute; left: 2px; top: 1px; width: 44px; font-size: 11px; color: #8aa0b5; }
+.sb-avatar { position: absolute; left: 48px; top: 2px; width: 12px; height: 12px; background-color: #22303e; }
+.sb-class { position: absolute; left: 63px; top: 2px; width: 12px; height: 12px; background-color: #35506b; }
+.sb-name { position: absolute; left: 80px; top: 1px; width: 120px; font-size: 11px; color: #d5dde5; }
+.sb-stat { position: absolute; top: 1px; width: 26px; font-size: 11px; color: #aebcc9; text-align: right; }
+
+/* The three K/D/A columns place by nth-child: 5th, 6th, 7th children of the row. */
+.sb-row > span:nth-child(5) { left: 200px; }
+.sb-row > span:nth-child(6) { left: 228px; }
+.sb-row > span:nth-child(7) { left: 256px; }
+
+.sb-score { position: absolute; left: 288px; top: 1px; width: 44px; font-size: 11px; color: #e0d5a8; text-align: right; }
+.sb-ping { position: absolute; left: 336px; top: 1px; width: 26px; font-size: 11px; color: #8aa0b5; text-align: right; }
+.sb-ping-track { position: absolute; left: 366px; top: 5px; width: 30px; height: 6px; background-color: #101820; }
+.sb-ping-fill { position: absolute; left: 366px; top: 5px; width: 12px; height: 6px; background-color: #4d8f5f; }
+
+/* -------------------------------------------------------------- killfeed */
+
+#kf-clip {
+	position: absolute;
+	right: 24px; top: 60px;
+	width: 400px; height: 246px;
+	overflow: hidden;
+}
+
+/* Bottom-anchored: the newest 12 rows fill the window, the 40 history rows
+   above them are laid out and CLIPPED -- the scrollback the count includes. */
+#kf-rows {
+	position: absolute;
+	left: 0; bottom: 0;
+	width: 100%;
+}
+
+.kf-row {
+	position: relative;
+	height: 19px;
+	margin-bottom: 1px;
+	background-color: #0b101690;
+	border-left: 3px #b0632a;
+	padding-left: 6px;
+}
+
+.kf-killer { font-size: 12px; color: #e8b56a; }
+.kf-victim { font-size: 12px; color: #c8d4e0; margin-left: 6px; }
+.kf-weapon { font-size: 11px; color: #7d92a5; margin-left: 6px; }
+
+.kf-pill {
+	display: inline-block;
+	width: 14px; height: 10px;
+	margin-left: 6px;
+}
+
+.kf-pill.hs { background-color: #d03a3a; }
+
+/* ----------------------------------------------------------- damage pool */
+
+#dmg-layer {
+	position: absolute;
+	left: 44%; top: 56%;
+	width: 300px; height: 300px;
+}
+
+.dmg {
+	display: inline-block;
+	margin-right: 8px; margin-bottom: 6px;
+	font-size: 15px;
+	color: #f0e6c8;
+}
+
+.dmg-crit { color: #ff5f4a; font-size: 18px; }
+
+/* ------------------------------------------------------------- crosshair */
+
+#crosshair {
+	position: absolute;
+	left: 50%; top: 50%;
+	margin-left: -20px; margin-top: -20px;
+	width: 40px; height: 40px;
+}
+
+.ch-line { position: absolute; background-color: #e8f0f8c0; }
+.ch-n { left: 19px; top: 0; width: 2px; height: 12px; }
+.ch-s { left: 19px; bottom: 0; width: 2px; height: 12px; }
+.ch-w { left: 0; top: 19px; width: 12px; height: 2px; }
+.ch-e { right: 0; top: 19px; width: 12px; height: 2px; }
+.ch-dot { position: absolute; left: 18px; top: 18px; width: 4px; height: 4px; background-color: #ffffff; }
+
+#hitmarker { position: absolute; left: 8px; top: 8px; width: 24px; height: 24px; }
+.hm-line { position: absolute; background-color: #ff5f4a90; }
+.hm-a { left: 11px; top: 0; width: 2px; height: 24px; transform: rotate(45deg); }
+.hm-b { left: 11px; top: 0; width: 2px; height: 24px; transform: rotate(-45deg); }
+
+/* ----------------------------------------------------------- ability bar */
+
+#abilitybar {
+	position: absolute;
+	left: 50%; bottom: 24px;
+	margin-left: -120px;
+	width: 240px; height: 58px;
+}
+
+.ab-slot {
+	display: inline-block;
+	position: relative;
+	width: 50px; height: 50px;
+	margin-right: 4px;
+	background-color: #101820e0;
+	border: 1px #3d5266;
+}
+
+.ab-icon { position: absolute; left: 4px; top: 4px; width: 40px; height: 40px; }
+.a0 { background-color: #553388; }
+.a1 { background-color: #2d8659; }
+.a2 { background-color: #b0632a; }
+.a3 { background-color: #8a2f4f; }
+
+.ab-cd { position: absolute; left: 4px; bottom: 4px; width: 40px; height: 0px; background-color: #0a0e14d0; }
+.cd-on { height: 26px; }
+
+.ab-key {
+	position: absolute;
+	right: 2px; bottom: 0px;
+	font-size: 11px;
+	color: #c8d4e0;
+}
+
+.ab-pip { position: absolute; left: 4px; top: -4px; width: 10px; height: 3px; background-color: #c9a227; }
+
+/* -------------------------------------------------------- ammo/objective */
+
+#ammo {
+	position: absolute;
+	right: 260px; bottom: 32px;
+}
+
+/*
+ * The Exp-GLYPH-WARMUP surface (M6 Task 5, spec plan 5.2): font-effect glyph
+ * generation is the measured 32.5 ms pathology class (research :94-95), and the
+ * reference workload must carry it (refhud-passport.md 4(c): "the passport asserts
+ * no hitch WITH EFFECTS PRESENT"). The glow forces an effect-glyph layer for the
+ * ammo digits and the objective line; generation runs inside the UI thread's first
+ * Record of the styled text -- BEFORE the first publish, off the game thread by
+ * architecture -- which is what the load-hitch row's A/B run measures (2026-08-02:
+ * first-Record max 5.81 ms with the glows vs 1.65 ms without; steady-state Record
+ * identical).
+ * Syntax per the vendored instancer (FontEffectGlow.cpp:122-126: width-outline /
+ * width-blur / offset-x / offset-y / color).
+ */
+#ammo-mag { font-size: 38px; color: #ffffff; font-effect: glow(2px 4px #f0c04066); }
+#ammo-res { font-size: 20px; color: #93a7ba; margin-left: 6px; }
+
+#objective {
+	position: absolute;
+	left: 50%; top: 56px;
+	margin-left: -220px;
+	width: 440px;
+	text-align: center;
+}
+
+/* Second glow surface, full-alphabet: the objective line touches far more of the
+ * face than the ammo digits, so its effect-glyph set is the load-window's real
+ * payload (same Exp-GLYPH-WARMUP note as #ammo-mag above). */
+#objective-text { font-size: 14px; color: #e0d5a8; font-effect: glow(1px 3px #e0d5a855); }
+
+/* -------------------------------------------------------------- settings */
+
+#settings {
+	position: absolute;
+	left: 24px; bottom: 24px;
+	width: 280px;
+	background-color: #0b1016c0;
+	border: 1px #2e3d4d;
+	padding: 10px;
+}
+
+#settings h1 { font-size: 16px; color: #ffffff; margin-bottom: 8px; }
+
+.set-row { position: relative; height: 20px; margin-bottom: 4px; }
+.set-row span { font-size: 12px; color: #aebcc9; }
+
+.set-track {
+	position: absolute;
+	right: 0; top: 5px;
+	width: 110px; height: 8px;
+	background-color: #101820;
+	border: 1px #2e3d4d;
+}
+
+.set-knob { position: absolute; top: -2px; width: 8px; height: 10px; background-color: #7fa8c9; }
+.k70 { left: 74px; }
+.k55 { left: 58px; }
+.k90 { left: 95px; }
+
+.set-toggle .toggle { position: absolute; right: 0; top: 0; font-size: 12px; }
+.toggle.on { color: #4d8f5f; }
+
+#settings-close {
+	display: block;
+	margin-top: 6px;
+	padding: 4px 10px;
+	background-color: #17222e;
+	border: 1px #3d5266;
+	color: #c8d4e0;
+	font-size: 12px;
+}
+
+/* --------------------------------------------------------------- minimap */
+
+#minimap {
+	position: absolute;
+	right: 24px; bottom: 24px;
+	width: 220px; height: 220px;
+	background-color: #0b1016c0;
+	border: 1px #2e3d4d;
+}
+
+.mm-ring {
+	position: absolute;
+	left: 10px; top: 10px;
+	width: 198px; height: 198px;
+	border: 1px #3d5266;
+	border-radius: 99px;
+}
+
+.mm-grid-h { position: absolute; left: 0; top: 109px; width: 220px; height: 1px; background-color: #2e3d4d80; }
+.mm-grid-v { position: absolute; left: 109px; top: 0; width: 1px; height: 220px; background-color: #2e3d4d80; }
+
+#mm-sweep {
+	position: absolute;
+	left: 109px; top: 10px;
+	width: 2px; height: 100px;
+	background-color: #4d8f5f80;
+}
+
+#mm-player { position: absolute; left: 107px; top: 107px; width: 6px; height: 6px; background-color: #ffffff; }
+#mm-north { position: absolute; left: 106px; top: 2px; width: 8px; height: 4px; background-color: #c9a227; }
+
+/* Blips are JS-built (refhud_logic.js): left/top pinned HERE to the container
+   origin so position is entirely the transform's job -- the rAF then writes a
+   single transform property per blip per frame, the Exp-BLIP-DRIVER idiom. */
+.blip {
+	position: absolute;
+	left: 0; top: 0;
+	width: 5px; height: 5px;
+	background-color: #e04f4f;
+}
+
+.blip.friendly { background-color: #4f9fe0; }
+
+/* ---------------------------------------------------------- perf overlay */
+
+#perf {
+	position: absolute;
+	right: 24px; bottom: 250px;
+	font-size: 11px;
+	color: #55687a;
+}

@@ -1,0 +1,5 @@
+# The planted violations must reach the working tree EXACTLY as authored: no LFS
+# (planted_lfs_pointer.txt must stay a raw pointer-shaped text file, and nothing here
+# may grow a real LFS pointer of its own), no eol rewriting. Deeper .gitattributes
+# win over the repo root's, so this unsets the filters for the whole fixture.
+* -filter -text

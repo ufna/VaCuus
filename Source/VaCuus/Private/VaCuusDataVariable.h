@@ -365,6 +365,13 @@ private:
 
 	/** Owned through StructDefinitions; built by the constructor's pass 3 (see GetRootStruct). */
 	FVaCuusStructDefinition* RootStruct = nullptr;
+
+	/**
+	 * Set by FVaCuusDefinitionRegistry::MarkStale when the struct behind this set is
+	 * recompiled; read by GetOrCreate, which then evicts and rebuilds instead of handing out
+	 * definitions full of deleted FProperty*s. UI thread, like everything else here.
+	 */
+	bool bStaleFromRecompile = false;
 };
 
 /**
@@ -394,6 +401,34 @@ public:
 
 	/** Cached model types. The registry's only observable, and what the cache-hit test asserts. */
 	static int32 Num();
+
+	/**
+	 * Marks the cached set for RecompiledStruct STALE: its FProperty* members are about to be
+	 * (or already have been) deleted by a Blueprint struct recompile
+	 * (DestroyChildPropertiesAndResetPropertyLinks via CleanAndSanitizeStruct,
+	 * UserDefinedStructureCompilerUtils.cpp:225), so GetOrCreate must rebuild instead of
+	 * handing the corpse out again. A miss is normal (the type was never bound). UI thread,
+	 * reached through the MarkDefinitionsStale command (VaCuus-akj.16).
+	 *
+	 * MARK-AND-EVICT-LATER RATHER THAN EVICT-NOW, and the delay is load-bearing: another
+	 * cached set may BORROW this one's root-struct definition as its array-element definition
+	 * (the array branch of the constructor), so freeing now would dangle that set. Deferring
+	 * the free to the next GetOrCreate over the SAME type is safe by the kill-rule invariant:
+	 * every model whose evaluation could reach a stale set was condemned in the same PreChange
+	 * transaction (the match rule covers roots and element types; the engine's dependent-
+	 * struct recompile covers the borrowers, which each get their own broadcast and their own
+	 * mark), so between the mark and the rebuild the stale definitions are unreachable.
+	 *
+	 * The KEY is compared, never dereferenced; StructName is for the log line.
+	 */
+	static void MarkStale(const UScriptStruct* RecompiledStruct, const FString& StructName);
+
+	/**
+	 * Stale sets evicted-and-rebuilt across the process's life. ANY thread (atomic, the
+	 * write-router counters' pattern) -- the eviction's one game-thread-readable observable,
+	 * which the recompile tests assert where a Log line cannot be counted.
+	 */
+	static uint64 GetNumStaleEvictions();
 
 	/**
 	 * Drops every cached definition set. Returns how many were released. UI thread only, and

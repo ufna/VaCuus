@@ -170,8 +170,10 @@ public:
 	 * (bead VaCuus-akj.6.34): while it was, a runtime hook that wanted a reload had nothing
 	 * correct to call.
 	 *
-	 * Returns how many views were reloaded. Static: it holds no state and vacuus.ReloadUI
-	 * calls it directly.
+	 * Returns how many views were reloaded. Static: it holds no state. (vacuus.ReloadUI no
+	 * longer routes through here -- the command moved to the runtime module,
+	 * VaCuusSubsystem.cpp, bead VaCuus-akj.6.18 -- so the callers left are the watcher's
+	 * flush and the tests.)
 	 */
 	static int32 ReloadAllLiveViews(const TCHAR* Reason);
 

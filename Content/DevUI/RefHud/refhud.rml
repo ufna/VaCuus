@@ -1,0 +1,190 @@
+<rml>
+<head>
+	<title>VaCuus Reference HUD</title>
+	<!-- Base sheet FIRST (the missing UA layer; div is inline without it). The
+	     leading slash is load-bearing: link hrefs are DOCUMENT-relative -- the
+	     head handler joins them against this document's own URL -- EXCEPT that a
+	     leading '/' short-circuits the join and hands the remainder to the VFS
+	     verbatim (SystemInterface::JoinPath, SystemInterface.cpp:54-58). That is
+	     the one spelling that reaches the M5Hud SIBLING directory without a '..'
+	     hop, and it shares the committed sheet instead of forking a third copy. -->
+	<link type="text/rcss" href="/M5Hud/vacuus-base.rcss"/>
+	<link type="text/rcss" href="refhud.rcss"/>
+	<!-- Bare name = document-relative, resolved from RefHud/ (the m5_hud.rml
+	     lesson: "RefHud/refhud_logic.js" here would double the directory and skip
+	     the script with one named Error). Captured at load, executed at
+	     OnDocumentReady; the read goes bundle-first through ReadScriptByVfsPath. -->
+	<script src="refhud_logic.js"></script>
+</head>
+
+<!--
+	THE COMPOSITION, HONESTLY COUNTED (spec M6 2(g), refhud-passport.md section 1).
+
+	Node = one Rml::Element, ElementText nodes included (RmlUi builds a #text
+	element per non-whitespace text run; whitespace-only runs are never
+	constructed -- Factory.cpp:339-342). The two data-for template rows are
+	display:none clone sources and are EXCLUDED, matching the count method
+	(vacuus.RefHud.Count). Rows marked [JS] are built by refhud_logic.js at
+	document-ready (the serial-deterministic warm-up: the HUD BOOTS at declared
+	steady state -- killfeed history saturated at 52 rows, damage pool full at 24
+	-- rather than reaching it after ~78 wall-clock seconds of feed).
+
+	piece            arithmetic                                              nodes
+	body             the document element itself                                 1
+	minimap          #minimap + 6 chrome + 64 blips [JS]         1 + 6 + 64     71
+	buff bar         #buffbar + 18 x (slot + icon + sweep
+	                 + stack span/text + timer span/text)        1 + 18*7      127
+	scoreboard       2 panels x (panel + 19-node header row
+	                 + 24 x 19-node rows)                        2 x 476       952
+	                 row = div + rank span/text + avatar + class icon
+	                 + name span/text + 4 stat cells (span/text)
+	                 + ping span/text + meter track + meter fill = 19
+	killfeed         #kf-clip + #kf-rows + 52 x (row + killer
+	                 span/text + victim span/text + weapon
+	                 span/text + pill) [JS]                      2 + 52*8      418
+	                 (12 rows in the clip window, 40 scrolled history
+	                 clipped above it -- overflow: hidden)
+	player plate     plate + frame + portrait(glyph, badge) + right
+	                 container + name
+	                 + 2 bar rows x (row+label/text+track+fill+value/text)      24
+	ability bar      #abilitybar + 4 x (slot + icon + cd + keycap
+	                 span/text + charge pip)                     1 + 4*6        25
+	damage pool      #dmg-layer + 24 x (span + text) [JS]        1 + 24*2       49
+	crosshair        #crosshair + 4 arms + dot + #hitmarker + 2 strokes          9
+	compass          #compass + window + strip + 8 x (span+text) + needle        20
+	ammo/objective   #ammo + 2 x span/text + #objective + span/text              8
+	settings         #settings + h1/text + 3 x slider row(5)
+	                 + toggle row(5) + button/text                              25
+	vignette/perf    #vignette + #perf + text                                    3
+	                                                            TOTAL       1,732
+
+	Exp-REF-COUNT asserts the steady-state count in [1,650, 1,850]; if a breach
+	route ever shrinks this document, the budgets win and this table follows
+	(spec M6 2(g): gate precedence).
+
+	DRIVER SPLIT (spec M6 2(h)): the scoreboard is TWO SEPARATE TOP-LEVEL ARRAYS
+	(TeamAlpha / TeamBravo) on model 'refhud' -- RmlUi dirties top-level names
+	only (DataModel.cpp:325-331), so a one-panel stat bump re-evaluates ONLY that
+	panel's ~192 bindings (24 rows x 8): ~0.10 ms per one-panel change at the
+	measured ~0.53 us/binding, ~0.20 worst-case both-panel churn. Plate bars,
+	ammo and objective ride the same model per frame; blips are a JS rAF writing
+	ONE transform property each; killfeed churn is JS createElement/remove;
+	damage numbers are JS timers over a fixed pool; the 18 buff sweeps are RCSS
+	keyframes with zero script cost.
+-->
+<body data-model="refhud">
+	<div id="vignette"/>
+
+	<!-- Player plate: 24 nodes. Health/Mana are floats rendered as GEOMETRY
+	     (data-style-width) AND text -- a stuck pipeline is visible at a glance. -->
+	<div id="plate">
+		<div id="plate-frame"/>
+		<div id="portrait"><span class="portrait-glyph">VC</span><div id="level-badge">{{Level}}</div></div>
+		<div id="plate-right">
+			<div id="player-name">{{PlayerName}}</div>
+			<div class="bar-row"><span class="bar-label">HP</span><div class="bar-track"><div id="hp-fill" data-style-width="Health + '%'"/></div><span class="bar-value">{{Health}}</span></div>
+			<div class="bar-row"><span class="bar-label">MP</span><div class="bar-track"><div id="mp-fill" data-style-width="Mana + '%'"/></div><span class="bar-value">{{Mana}}</span></div>
+		</div>
+	</div>
+
+	<!-- Buff bar: 18 x 7 static nodes; the sweep animates on RCSS keyframes
+	     alone (kf-buff-sweep), three stagger classes -- no driver, no script. -->
+	<div id="buffbar">
+		<div class="buff-slot"><div class="buff-icon b0"/><div class="buff-sweep stag-0"/><span class="buff-stack">x2</span><span class="buff-timer">12s</span></div>
+		<div class="buff-slot"><div class="buff-icon b1"/><div class="buff-sweep stag-1"/><span class="buff-stack">x1</span><span class="buff-timer">8s</span></div>
+		<div class="buff-slot"><div class="buff-icon b2"/><div class="buff-sweep stag-2"/><span class="buff-stack">x3</span><span class="buff-timer">31s</span></div>
+		<div class="buff-slot"><div class="buff-icon b3"/><div class="buff-sweep stag-0"/><span class="buff-stack">x1</span><span class="buff-timer">4s</span></div>
+		<div class="buff-slot"><div class="buff-icon b4"/><div class="buff-sweep stag-1"/><span class="buff-stack">x2</span><span class="buff-timer">19s</span></div>
+		<div class="buff-slot"><div class="buff-icon b5"/><div class="buff-sweep stag-2"/><span class="buff-stack">x1</span><span class="buff-timer">55s</span></div>
+		<div class="buff-slot"><div class="buff-icon b0"/><div class="buff-sweep stag-0"/><span class="buff-stack">x4</span><span class="buff-timer">7s</span></div>
+		<div class="buff-slot"><div class="buff-icon b1"/><div class="buff-sweep stag-1"/><span class="buff-stack">x1</span><span class="buff-timer">23s</span></div>
+		<div class="buff-slot"><div class="buff-icon b2"/><div class="buff-sweep stag-2"/><span class="buff-stack">x2</span><span class="buff-timer">3s</span></div>
+		<div class="buff-slot"><div class="buff-icon b3"/><div class="buff-sweep stag-0"/><span class="buff-stack">x1</span><span class="buff-timer">44s</span></div>
+		<div class="buff-slot"><div class="buff-icon b4"/><div class="buff-sweep stag-1"/><span class="buff-stack">x5</span><span class="buff-timer">16s</span></div>
+		<div class="buff-slot"><div class="buff-icon b5"/><div class="buff-sweep stag-2"/><span class="buff-stack">x1</span><span class="buff-timer">9s</span></div>
+		<div class="buff-slot"><div class="buff-icon b0"/><div class="buff-sweep stag-0"/><span class="buff-stack">x2</span><span class="buff-timer">27s</span></div>
+		<div class="buff-slot"><div class="buff-icon b1"/><div class="buff-sweep stag-1"/><span class="buff-stack">x1</span><span class="buff-timer">6s</span></div>
+		<div class="buff-slot"><div class="buff-icon b2"/><div class="buff-sweep stag-2"/><span class="buff-stack">x3</span><span class="buff-timer">38s</span></div>
+		<div class="buff-slot"><div class="buff-icon b3"/><div class="buff-sweep stag-0"/><span class="buff-stack">x1</span><span class="buff-timer">14s</span></div>
+		<div class="buff-slot"><div class="buff-icon b4"/><div class="buff-sweep stag-1"/><span class="buff-stack">x2</span><span class="buff-timer">2s</span></div>
+		<div class="buff-slot"><div class="buff-icon b5"/><div class="buff-sweep stag-2"/><span class="buff-stack">x1</span><span class="buff-timer">61s</span></div>
+	</div>
+
+	<!-- Compass: the m1_hud shape, 20 nodes. -->
+	<div id="compass">
+		<div id="compass-window">
+			<div id="compass-strip"><span class="cdir">W</span><span class="cdir">NW</span><span class="cdir cn">N</span><span class="cdir">NE</span><span class="cdir">E</span><span class="cdir">SE</span><span class="cdir">S</span><span class="cdir">SW</span></div>
+		</div>
+		<div id="compass-needle"/>
+	</div>
+
+	<!-- TWO team scoreboard panels over TWO separate top-level arrays -- the
+	     independent-dirty-scope design this document exists to prove. Each row
+	     is 19 nodes and 8 bindings: rank, name, K, D, A, score, ping text, ping
+	     meter width. The data-for row is the hidden template (display:none,
+	     DataViewDefault.cpp:474): excluded from the count, cloned 24 times. -->
+	<div id="sb-alpha" class="sb-panel">
+		<div class="sb-row sb-head"><span class="sb-rank">ALPHA</span><div class="sb-avatar"/><div class="sb-class"/><span class="sb-name">OPERATIVE</span><span class="sb-stat">K</span><span class="sb-stat">D</span><span class="sb-stat">A</span><span class="sb-score">SCORE</span><span class="sb-ping">PING</span><div class="sb-ping-track"/><div class="sb-ping-fill"/></div>
+		<div class="sb-row" data-for="row : TeamAlpha"><span class="sb-rank">{{row.Rank}}</span><div class="sb-avatar"/><div class="sb-class"/><span class="sb-name">{{row.Name}}</span><span class="sb-stat">{{row.Kills}}</span><span class="sb-stat">{{row.Deaths}}</span><span class="sb-stat">{{row.Assists}}</span><span class="sb-score">{{row.Score}}</span><span class="sb-ping">{{row.Ping}}</span><div class="sb-ping-track"/><div class="sb-ping-fill" data-style-width="row.Ping * 0.3 + 'px'"/></div>
+	</div>
+	<div id="sb-bravo" class="sb-panel">
+		<div class="sb-row sb-head"><span class="sb-rank">BRAVO</span><div class="sb-avatar"/><div class="sb-class"/><span class="sb-name">OPERATIVE</span><span class="sb-stat">K</span><span class="sb-stat">D</span><span class="sb-stat">A</span><span class="sb-score">SCORE</span><span class="sb-ping">PING</span><div class="sb-ping-track"/><div class="sb-ping-fill"/></div>
+		<div class="sb-row" data-for="row : TeamBravo"><span class="sb-rank">{{row.Rank}}</span><div class="sb-avatar"/><div class="sb-class"/><span class="sb-name">{{row.Name}}</span><span class="sb-stat">{{row.Kills}}</span><span class="sb-stat">{{row.Deaths}}</span><span class="sb-stat">{{row.Assists}}</span><span class="sb-score">{{row.Score}}</span><span class="sb-ping">{{row.Ping}}</span><div class="sb-ping-track"/><div class="sb-ping-fill" data-style-width="row.Ping * 0.3 + 'px'"/></div>
+	</div>
+
+	<!-- Killfeed: JS-built rows under overflow:hidden. #kf-rows is anchored to
+	     the clip's BOTTOM, so the newest 12 rows sit in the window and the 40
+	     older history rows overflow the top edge -- laid out, clipped, counted. -->
+	<div id="kf-clip">
+		<div id="kf-rows"/>
+	</div>
+
+	<!-- Damage pool: 24 recycled [JS] spans; timers rotate values through the
+	     pool instead of churning nodes, so the steady-state count is exact. -->
+	<div id="dmg-layer"/>
+
+	<!-- Crosshair + hitmarker: 9 nodes. -->
+	<div id="crosshair">
+		<div class="ch-line ch-n"/><div class="ch-line ch-s"/>
+		<div class="ch-line ch-w"/><div class="ch-line ch-e"/>
+		<div class="ch-dot"/>
+		<div id="hitmarker">
+			<div class="hm-line hm-a"/><div class="hm-line hm-b"/>
+		</div>
+	</div>
+
+	<!-- Ability bar: 4 x 6 nodes. -->
+	<div id="abilitybar">
+		<div class="ab-slot"><div class="ab-icon a0"/><div class="ab-cd"/><span class="ab-key">1</span><div class="ab-pip"/></div>
+		<div class="ab-slot"><div class="ab-icon a1"/><div class="ab-cd"/><span class="ab-key">2</span><div class="ab-pip"/></div>
+		<div class="ab-slot"><div class="ab-icon a2"/><div class="ab-cd cd-on"/><span class="ab-key">3</span><div class="ab-pip"/></div>
+		<div class="ab-slot"><div class="ab-icon a3"/><div class="ab-cd"/><span class="ab-key">4</span><div class="ab-pip"/></div>
+	</div>
+
+	<!-- Ammo + objective: 8 nodes, model-fed. -->
+	<div id="ammo"><span id="ammo-mag">{{Ammo}}</span><span id="ammo-res">/ {{AmmoReserve}}</span></div>
+	<div id="objective"><span id="objective-text">{{Objective}}</span></div>
+
+	<!-- Settings panel: 25 static nodes, visibly parked bottom-left. -->
+	<div id="settings">
+		<h1>SYSTEM // SETTINGS</h1>
+		<div class="set-row"><span>Master Volume</span><div class="set-track"><div class="set-knob k70"/></div></div>
+		<div class="set-row"><span>Field of View</span><div class="set-track"><div class="set-knob k55"/></div></div>
+		<div class="set-row"><span>HUD Opacity</span><div class="set-track"><div class="set-knob k90"/></div></div>
+		<div class="set-row set-toggle"><span>VaCuus Overlay</span><span class="toggle on">ON</span></div>
+		<button id="settings-close">RESUME [ESC]</button>
+	</div>
+
+	<!-- Minimap: container + 6 textless chrome + 64 [JS] blips. -->
+	<div id="minimap">
+		<div class="mm-ring"/>
+		<div class="mm-grid-h"/><div class="mm-grid-v"/>
+		<div id="mm-sweep"/>
+		<div id="mm-player"/>
+		<div id="mm-north"/>
+	</div>
+
+	<!-- Perf overlay: 1 element + 1 text. -->
+	<div id="perf">VaCuus RefHud</div>
+</body>
+</rml>
