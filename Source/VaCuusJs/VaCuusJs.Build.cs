@@ -70,11 +70,17 @@ public class VaCuusJs : ModuleRules
 			// the JavaScript `Atomics` global is absent on Win64 and present on Linux and
 			// macOS, where clang leaves __STDC_NO_ATOMICS__ undefined.
 			//
-			// DECIDED 2026-08-03 (owner, bead akj.10.4): ACCEPT THE SPLIT. We do NOT pass
-			// /experimental:c11atomics. It would opt a shipped module into an explicitly
+			// DECIDED 2026-08-03 (owner, bead akj.10.4): ACCEPT THE SPLIT, FOR NOW. We do NOT
+			// pass /experimental:c11atomics. It would opt a shipped module into an explicitly
 			// experimental MSVC switch to enable a builtin that no VaCuus document, test or
 			// buyer-facing API uses. This comment states the decision instead of asking the
 			// question, and the evidence below is why it is safe to state.
+			//
+			// "FOR NOW" IS THE OWNER'S WORD AND IT IS LOAD-BEARING: the decision is provisional
+			// on nothing needing `Atomics`. What overturns it is a buyer, a document or a test
+			// that does — at which point the flag is the answer and this comment is where the
+			// reasoning already sits. What must NOT happen is the decision quietly hardening
+			// into a rule because it was written down once.
 			//
 			// CONFIRMED AT RUNTIME, not just deduced from the preprocessor -- the check the
 			// first Win64 pass could not reach, because no session survived long enough.
