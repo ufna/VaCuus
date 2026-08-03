@@ -4,6 +4,7 @@
 
 #include "VaCuusCommandBuffer.h"
 #include "VaCuusEngine.h"
+#include "VaCuusProbeImages.h" // SaveVaCuusProbePng, shared with VaCuusUnsizedDrainTest
 #include "VaCuusRecordingRenderInterface.h"
 
 #include "HAL/FileManager.h"
@@ -39,31 +40,6 @@ struct FVaCuusRecorderTriangle
 	Rml::Span<const Rml::Vertex> VertexSpan() const { return Rml::Span<const Rml::Vertex>(Vertices, 3); }
 	Rml::Span<const int> IndexSpan() const { return Rml::Span<const int>(Indices, 3); }
 };
-
-/**
- * Writes an RGBA8 PNG of distinct byte values with Alpha stamped into every
- * texel's A byte, and hands back the exact pre-premultiply pixels so the caller
- * can predict what LoadTexture must produce. PNG is lossless and stores
- * straight (non-premultiplied) alpha, so the decoded bytes are these bytes.
- */
-bool SaveVaCuusProbePng(const FString& Path, FIntPoint Size, uint8 Alpha, TArray<uint8>& OutPixels)
-{
-	OutPixels.SetNumUninitialized(Size.X * Size.Y * 4);
-	for (int32 Index = 0; Index < OutPixels.Num(); ++Index)
-	{
-		OutPixels[Index] = (Index % 4 == 3) ? Alpha : uint8(Index * 7 + 3);
-	}
-
-	IImageWrapperModule& ImageWrapperModule = FModuleManager::LoadModuleChecked<IImageWrapperModule>("ImageWrapper");
-	const TSharedPtr<IImageWrapper> Encoder = ImageWrapperModule.CreateImageWrapper(EImageFormat::PNG);
-	if (!Encoder.IsValid() ||
-		!Encoder->SetRaw(OutPixels.GetData(), OutPixels.Num(), Size.X, Size.Y, ERGBFormat::RGBA, 8))
-	{
-		return false;
-	}
-
-	return FFileHelper::SaveArrayToFile(Encoder->GetCompressed(), *Path);
-}
 
 /**
  * Writes an opaque baseline JPEG. Lossy, so the caller cannot predict the decoded colour

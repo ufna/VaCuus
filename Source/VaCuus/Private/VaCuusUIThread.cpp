@@ -1145,6 +1145,18 @@ void FVaCuusUIThread::RunFrame()
 	// like a burst.
 	for (TPair<uint32, TUniquePtr<IVaCuusDocumentHost>>& Pair : Hosts)
 	{
+		// OUTSIDE THE GATE AND INSIDE THE SAME ITERATION (bead akj.6.27). Outside, because the
+		// off-thread work this takes delivery of is LAUNCHED by paths the gate does not cover:
+		// an image decode starts during Show() (see IVaCuusDocumentHost::DrainAsyncArrivals),
+		// which runs in DrainCommands above, and both a still-unsized view -- every UMG view
+		// until its first Slate tick -- and a view between its clearing frame and its next load
+		// fail HasView() while their payloads are already finishing. Inside the same iteration,
+		// because delivery must still PRECEDE this host's own record: a payload taken here lands
+		// in the pending buffer that this frame then publishes, instead of waiting a frame.
+		//
+		// Free for every host with nothing outstanding: an empty MPSC dequeue.
+		Pair.Value->DrainAsyncArrivals();
+
 		if (Pair.Value->HasView())
 		{
 			Pair.Value->RecordAndPublishFrame();

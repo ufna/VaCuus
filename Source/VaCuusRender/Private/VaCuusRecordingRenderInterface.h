@@ -60,6 +60,41 @@ struct FVaCuusTextureDecode
  * there is nothing to dangle. The recorder's destructor sets bAbandoned and
  * drops its reference; the last in-flight task frees the sink. Nobody blocks the
  * UI thread waiting for a decode, which is the entire point of the async path.
+ *
+ * MODULE UNLOAD IS THE OTHER TEARDOWN (bead VaCuus-akj.6.26), and the sink answers only for
+ * the recorder's. Two things were filed as able to dangle under a running decode; they are
+ * not the same kind of thing at all, and only one of them needed a change:
+ *
+ *  (a) THE TASK'S CODE, which lives in libUnrealEditor-VaCuusRender.so. NOT REACHABLE in any
+ *      supported configuration -- read rather than assumed.
+ *      FModuleManager::UnloadModulesAtShutdown unloads every module with bIsShutdown = true
+ *      (ModuleManager.cpp:1491-1492), and that flag is precisely what suppresses the free:
+ *      "If we're shutting down then don't bother actually unloading the DLL. We'll simply
+ *      abandon it in memory instead. This makes it much less likely that code will be
+ *      unloaded that could still be called by another module" (ModuleManager.cpp:1369-1381)
+ *      -- the OS reclaims it at process exit. The path that DOES call InternalFreeLibrary is
+ *      an UnloadModule with bIsShutdown = false (the default, ModuleManager.h:306); for a
+ *      plugin module that is FPluginManager::UnmountExplicitlyLoadedPlugin
+ *      (PluginManager.cpp:3650), which refuses any plugin whose descriptor does not set
+ *      bExplicitlyLoaded (:3660). VaCuus.uplugin does not. So there is no wait to write and
+ *      nothing to fix; what would make this live again is marking the plugin explicitly
+ *      loaded, and that is the line to re-read this paragraph from.
+ *
+ *  (b) THE CACHED IImageWrapperModule*, which was real and is now closed BY SHAPE. Unlike
+ *      the library, the module OBJECT is destroyed by every unload, shutdown or not --
+ *      "Release reference to module interface. This will actually destroy the module object"
+ *      (ModuleManager.cpp:1344-1348) -- so a captured raw module pointer dangles even while
+ *      its code stays mapped, and CreateImageWrapper is a virtual call through it. The task
+ *      no longer holds one: LoadTexture creates the wrapper on the frame-owning thread and
+ *      the worker receives the INSTANCE (see FVaCuusDecodeWork in the cpp, whose field-count
+ *      guard is what keeps it that way). An instance is a plain MakeShared owned by its
+ *      holder (ImageWrapperModule.cpp:79-158) and FImageWrapperModule::ShutdownModule is
+ *      empty (:529), so module teardown has nothing to take away from it.
+ *
+ * STILL NO WAIT AT TEARDOWN, deliberately, and that is why the answer to (b) had to be a
+ * shape: waiting on the task from the recorder's destructor would retract-and-execute the
+ * decode on the UI thread (FTaskBase::WaitImpl -> TryRetractAndExecute,
+ * TaskPrivate.cpp:246-251), which is the hitch the async path exists to remove.
  */
 struct FVaCuusTextureDecodeSink
 {
@@ -141,9 +176,27 @@ public:
 
 	/**
 	 * Opens a frame: subsequent draw-state calls are recorded into the pending
-	 * buffer. Also the drain point for finished async image decodes.
+	 * buffer. Also a drain point for finished async image decodes.
 	 */
 	void BeginFrame(FIntPoint ViewSize);
+
+	/**
+	 * Moves finished decodes into the pending buffer's NewTextures and forgets their
+	 * handles. Idempotent and cheap when nothing is outstanding (one empty MPSC dequeue).
+	 *
+	 * PUBLIC BECAUSE A FRAME IS NOT THE ONLY OCCASION TO DRAIN (bead akj.6.27):
+	 * BeginFrame() still calls it, but a recorder whose view is not currently RECORDABLE --
+	 * unsized, or between a close and the next load -- never reaches BeginFrame at all, and
+	 * its payloads would sit in the queue for the whole window. FVaCuusRmlDocumentHost::
+	 * DrainAsyncArrivals() is the second caller, driven once per UI frame for every live host.
+	 *
+	 * FRAME-OWNING THREAD ONLY (the VaCuus UI thread in production, the test thread in a unit
+	 * test): it writes the pending buffer and InFlightTextures, neither of which is
+	 * synchronised. It is legal outside a Begin/End pair -- that is what the second caller
+	 * does -- for the same reason the resource calls are (see the class comment); the
+	 * arrivals simply ride along with the next published frame.
+	 */
+	void DrainCompletedDecodes();
 
 	/**
 	 * Closes the frame and hands out the pending buffer with a strictly
@@ -157,10 +210,12 @@ public:
 	 * failure: the caller simply enqueues nothing, and the render thread keeps
 	 * compositing the render target it already has.
 	 *
-	 * The RECORDING is never skipped, only the publish. That is load-bearing: the
-	 * async image decodes are drained inside BeginFrame(), so a recorder that
-	 * stopped running frames would leave a loaded image on its transparent
-	 * placeholder forever.
+	 * The RECORDING is never skipped, only the publish. That is load-bearing: an arrival
+	 * drained into this frame is resource traffic, which is one of the gate's wake
+	 * conditions, so the frame carrying a late payload always publishes. A recorder that
+	 * stopped running FRAMES is a different matter and no longer strands anything -- the
+	 * drain has a second, frame-independent caller (see DrainCompletedDecodes) -- but its
+	 * payloads then wait in the pending buffer for the next frame that does run.
 	 */
 	TUniquePtr<FVaCuusCommandBuffer> EndFrameAndPublish();
 
@@ -194,8 +249,28 @@ public:
 	uint64 GetNumFramesSkipped() const { return NumFramesSkipped; }
 
 	/**
+	 * Finished decodes this recorder has taken delivery of, whatever became of them
+	 * afterwards -- installed, dropped because ReleaseTexture() got there first, or logged as
+	 * a failed decode. It counts DELIVERIES, not successes, because the property it exists to
+	 * make testable is "the queue was drained", not "the image decoded".
+	 *
+	 * The observable for bead akj.6.27, in the same spirit as GetNumFramesSkipped() being the
+	 * observable for the idle gate -- and here the invariant is invisible from EVERY other
+	 * angle, not merely from outside: during the window the bead is about, the view records no
+	 * frame and publishes no buffer, so both frame counters above and both FVaCuusViewStatus
+	 * counters stay at zero whether the payload was taken or left to rot in the queue.
+	 *
+	 * ATOMIC, UNLIKE THE TWO COUNTERS ABOVE, and for a reason that is theirs in reverse: they
+	 * have a cross-thread mirror in FVaCuusViewStatus and so never need to be read off the
+	 * frame-owning thread, while this one is read exactly when that mirror says nothing. One
+	 * relaxed-family add per decoded IMAGE (not per frame) is not a cost worth arguing about.
+	 */
+	uint64 GetNumDecodeArrivals() const { return NumDecodeArrivals.load(std::memory_order_acquire); }
+
+	/**
 	 * Resolves the ImageWrapper module ONCE from the game thread and caches it for
-	 * LoadTexture and the decode workers. Call from module startup.
+	 * LoadTexture. Call from module startup. NOT for the decode workers, which is a
+	 * lifetime rule rather than a convention -- see FVaCuusTextureDecodeSink (b).
 	 *
 	 * WHY THIS EXISTS: FModuleManager::GetOrLoadModule() refuses to load anything
 	 * off the game thread (ModuleManager.cpp:940-944 returns nullptr with
@@ -227,12 +302,6 @@ private:
 
 	/** Ensures the caller is the frame-owning thread while a frame is open. */
 	void CheckOwnerThread() const;
-
-	/**
-	 * Moves finished decodes into the pending buffer's NewTextures and forgets
-	 * their handles. Frame-owning thread only.
-	 */
-	void DrainCompletedDecodes();
 
 	/** Cached ImageWrapper module, or nullptr if it could not be resolved; see CacheImageWrapperModule. */
 	static IImageWrapperModule* GetImageWrapperModule();
@@ -319,6 +388,9 @@ private:
 
 	/** Frames the idle gate withheld; see GetNumFramesSkipped(). */
 	uint64 NumFramesSkipped = 0;
+
+	/** Finished decodes taken off the sink queue; see GetNumDecodeArrivals(). */
+	std::atomic<uint64> NumDecodeArrivals{0};
 
 	/** Thread that called BeginFrame(); only meaningful while bInFrame. */
 	uint32 OwnerThreadId = 0;

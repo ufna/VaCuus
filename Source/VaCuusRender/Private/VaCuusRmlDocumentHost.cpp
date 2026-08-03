@@ -398,6 +398,33 @@ bool FVaCuusRmlDocumentHost::HasView() const
 		ViewSize.X > 0 && ViewSize.Y > 0;
 }
 
+void FVaCuusRmlDocumentHost::DrainAsyncArrivals()
+{
+	check(FVaCuusUIThread::IsInUIThread());
+
+	// UNGATED ON HasView(), WHICH IS THE POINT (bead akj.6.27): the drain touches recorder
+	// state only -- it moves finished payloads into the pending command buffer -- so it needs
+	// neither a document nor a size, and the two states that fail HasView() while decodes are
+	// in flight (a view still waiting for its first size, a view between its clearing frame and
+	// its next load) are exactly the ones that used to strand them.
+	//
+	// The Recorder null-check is teardown, not an unsized view: Shutdown() drops the context
+	// but deliberately keeps the recorder alive for RmlUi, and a host that failed
+	// Initialize() has neither. A retired host is not in the UI thread's Hosts map anyway, so
+	// in practice this only guards the failed-Initialize case.
+	if (Recorder)
+	{
+		Recorder->DrainCompletedDecodes();
+	}
+}
+
+uint64 FVaCuusRmlDocumentHost::GetNumDecodeArrivals() const
+{
+	// No thread assert on purpose -- the counter is atomic precisely so a test (or a
+	// diagnostic) can read it from off the UI thread; see the recorder's accessor.
+	return Recorder ? Recorder->GetNumDecodeArrivals() : 0;
+}
+
 Rml::Context* FVaCuusRmlDocumentHost::GetContext() const
 {
 	// Handed to the UI thread's input drain, which owns every FKey/modifier/button
