@@ -73,8 +73,23 @@ TMap<FKey, KeyIdentifier> BuildKeyMap()
 	Map.Add(EKeys::Insert, KI_INSERT);
 	Map.Add(EKeys::Delete, KI_DELETE);
 
-	// The Mac/Linux "forward delete" alias for the same physical key.
-	Map.Add(EKeys::Platform_Delete, KI_DELETE);
+	// EKeys::Platform_Delete IS DELIBERATELY ABSENT, and this cost macOS its Backspace key
+	// until the first Mac run of VaCuus.Input.KeyMap found it (2026-08-03).
+	//
+	// It is not a physical key. It is "whichever key this platform's text shortcuts mean by
+	// delete": InputCoreTypes.cpp:166 initialises it from FPlatformInput::GetPlatformDeleteKey(),
+	// which is EKeys::Delete generically (GenericPlatformInput.h:37-40) but
+	// EKeys::BackSpace on macOS by default -- MacPlatformInput.cpp:86-97, config-overridable
+	// through [MacInput] bPlatformDeleteIsBackspace, defaulting true for "legacy behavior".
+	//
+	// So on Mac the line that used to stand here mapped EKeys::BackSpace onto KI_DELETE, and
+	// TMap::Add REPLACES: it silently overwrote the KI_BACK two dozen lines above, and every
+	// Backspace in every RmlUi text field arrived as forward-delete. Off Mac the same line was
+	// pure duplication of the EKeys::Delete entry directly above -- it never had a case where it
+	// added anything correct.
+	//
+	// Mac's real forward-delete key (fn-Delete) is unaffected: Slate reports it as EKeys::Delete,
+	// which the line above maps.
 
 	// Numpad operators and locks.
 	Map.Add(EKeys::Multiply, KI_MULTIPLY);
@@ -173,6 +188,29 @@ TMap<FKey, KeyIdentifier> BuildKeyMap()
 	// game-design decision (and RmlUi already exposes ElementDocument::FindNextTabElement
 	// publicly for anyone who wants it), not something a translation table should
 	// impose.
+
+	// THE OBSERVABLE FOR A COLLAPSED ENTRY, because there is no other one.
+	//
+	// TMap::Add on a key already present replaces the value and says nothing -- no warning, no
+	// return value anyone reads, no change in Num(). The ONLY trace a duplicate leaves is that
+	// the finished map is one entry short of the number of things this function asked for, which
+	// is what this compares. It is the runtime twin of the member-count static_asserts elsewhere
+	// in the plugin: sizeof and offsetof cannot see a field that fits in padding, and neither a
+	// compiler nor a test on ONE platform can see an FKey that is an alias of another FKey on a
+	// DIFFERENT one. The macOS Platform_Delete/BackSpace collapse above was invisible to every
+	// Linux build and every Linux test run for the whole life of this file; this line would have
+	// named it at first use on the Mac, before any test.
+	//
+	// 111 = 58 from the four runs (10 digits + 26 letters + 10 numpad + 12 function)
+	//     + 45 individually added keys
+	//     + 8 gamepad (4 DPad + 4 synthesized left-stick).
+	// Adding a key means bumping this number; that friction is the point.
+	constexpr int32 ExpectedEntries = 111;
+	ensureMsgf(Map.Num() == ExpectedEntries,
+		TEXT("VaCuus key map: %d entries, expected %d. Two FKeys in BuildKeyMap() are the same key ")
+		TEXT("on this platform and one silently replaced the other -- see the EKeys::Platform_Delete ")
+		TEXT("note above for the shape of that mistake."),
+		Map.Num(), ExpectedEntries);
 
 	return Map;
 }
