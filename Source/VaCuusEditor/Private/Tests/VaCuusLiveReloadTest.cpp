@@ -532,6 +532,62 @@ bool FVaCuusLiveReloadDebounceTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("(d) ...then it flushes"), Reload.GetNumPendingChanges(), 0);
 	}
 
+	//~ (e) THE PROOF'S 190 ms, AS ARITHMETIC (bead VaCuus-akj.6.24). M2 measured 191 ms against
+	//~ an acceptance step that said "~200 ms"; this reproduces the measured figure from the
+	//~ constants, so the number stops being a one-off observation someone can read 9 ms of
+	//~ headroom into. The batch is the shape the proof recorded -- one save, FOUR inotify
+	//~ events for one file, spanning 40 ms -- and the earliest legal flush is therefore
+	//~ LastChange + QuietSeconds, i.e. FirstChange + 190 ms. Trim QuietSeconds and this fails,
+	//~ pointing at docs/research/proofs/m2-t10-live-reload/README.md, which is where the
+	//~ trade-off (a shorter window reloads half-written files) is written down.
+	{
+		FVaCuusLiveReload Reload;
+		ON_SCOPE_EXIT
+		{
+			Reload.Shutdown();
+		};
+
+		const double BurstSpread = 0.040;
+		const double BurstAt[] = {T0, T0 + 0.013, T0 + 0.026, T0 + BurstSpread};
+		for (const double At : BurstAt)
+		{
+			Reload.NoteChangeAt(FFileChangeData(Rcss, EAction::FCA_Modified), At);
+		}
+		TestEqual(TEXT("(e) One save's four events are one pending path"), Reload.GetNumPendingChanges(), 1);
+
+		// The burst is NOT over the cap, so the quiet window is what decides -- which is the
+		// case the proof was in and the case every ordinary save is in.
+		TestTrue(TEXT("(e) The burst is far short of the hard cap"),
+			BurstSpread + FVaCuusLiveReload::QuietSeconds < FVaCuusLiveReload::MaxDeferSeconds);
+
+		const double EarliestFlush = T0 + BurstSpread + FVaCuusLiveReload::QuietSeconds;
+
+		// THE ABSOLUTE NUMBER, SPELLED OUT, and it is the only line here that pins anything:
+		// every other assertion in this case is computed from QuietSeconds and would follow it
+		// wherever it went -- a tautology dressed as a regression test. 190 is the figure the
+		// M2 proof recorded and the figure the "~200 ms" step was judged against, so THIS is
+		// what fails if the constant moves, and the failure is the prompt to re-read the
+		// trade-off in that proof rather than to re-baseline the number.
+		// RoundToInt32, not RoundToInt: the latter's return width makes the TestEqual overload
+		// set ambiguous against an int literal.
+		const int32 FloorMs = FMath::RoundToInt32((EarliestFlush - T0) * 1000.0);
+		TestEqual(TEXT("(e) The floor for this burst is the proof's 190 ms"), FloorMs, 190);
+
+		TestTrue(TEXT("(e) A tick one ms before that does NOT flush"),
+			Reload.TickDebounceAt(EarliestFlush - Epsilon));
+		TestEqual(TEXT("(e) ...the batch is still pending"), Reload.GetNumPendingChanges(), 1);
+
+		TestFalse(TEXT("(e) ...and at the boundary it flushes"), Reload.TickDebounceAt(EarliestFlush + Epsilon));
+		TestEqual(TEXT("(e) ...consuming the batch"), Reload.GetNumPendingChanges(), 0);
+
+		// The reported figure, which is what FlushAt() prints and what the proof recorded.
+		AddInfo(FString::Printf(
+			TEXT("(e) Earliest reportable latency for a %.0f ms save burst: %.0f ms ")
+			TEXT("(= QuietSeconds %.0f + burst %.0f), before poll granularity. M2's proof recorded 190 ms."),
+			BurstSpread * 1000.0, (EarliestFlush - T0) * 1000.0,
+			FVaCuusLiveReload::QuietSeconds * 1000.0, BurstSpread * 1000.0));
+	}
+
 	return true;
 }
 

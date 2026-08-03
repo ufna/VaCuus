@@ -298,14 +298,14 @@ void FVaCuusRmlDocumentHost::CloseDocument()
 		// withholds every frame that draws what the render thread already has, so the
 		// recorder will never resend them -- and FVaCuusSlateElement::Draw_RenderThread
 		// composites that RT unconditionally, outside its `PendingBuffers.Num() > 0` branch
-		// (VaCuusSlateElement.cpp:56-96). Any path that stops recording must therefore emit
+		// (VaCuusSlateElement.cpp:148-231). Any path that stops recording must therefore emit
 		// one CLEARING frame first: an empty command list hashes differently from the last
 		// published one, so it publishes, and the replayer opens its pass with
-		// ERenderTargetActions::Clear_Store (VaCuusReplayRenderer.cpp:233) -- that clear with
+		// ERenderTargetActions::Clear_Store (VaCuusReplayRenderer.cpp:263) -- that clear with
 		// no draws behind it is what wipes the view.
 		//
 		// Before this flag existed, HasView() went false the moment Document did, the UI
-		// thread's record loop skipped this view for good (VaCuusUIThread.cpp:812-818), and
+		// thread's record loop skipped this view for good (VaCuusUIThread.cpp:1160-1163), and
 		// the player was left with a pixel-perfect ghost of a dead document: clicks fall
 		// through (the empty snapshot below), the cursor reverts, focus is released, and
 		// nothing dismisses it short of loading another document, hiding the widget or
@@ -320,7 +320,7 @@ void FVaCuusRmlDocumentHost::CloseDocument()
 		// NOW, not one frame later, or the game thread keeps answering Handled from the
 		// closed document's geometry for a frame. It is also the only retraction that
 		// survives the one path where the clearing frame cannot run -- an in-band Shutdown
-		// closes every document and then leaves the loop (VaCuusUIThread.cpp:836-859) --
+		// closes every document and then leaves the loop (VaCuusUIThread.cpp:1222-1236) --
 		// and there the render side is retracted by Shutdown()'s
 		// ReleaseResources_RenderThread instead, which drops the RT outright.
 		PublishEmptyInteractiveSnapshot();
@@ -344,7 +344,7 @@ void FVaCuusRmlDocumentHost::SetVisible(bool bVisible)
 	// (ThirdParty/RmlUi/Source/Core/ElementDocument.cpp:406-419), so the next recorded frame's
 	// Render() emits nothing at all. An empty command list hashes differently from the last
 	// published frame's, so that ONE frame publishes; the replayer opens its render pass with
-	// ERenderTargetActions::Clear_Store (VaCuusReplayRenderer.cpp:233), and that clear with no
+	// ERenderTargetActions::Clear_Store (VaCuusReplayRenderer.cpp:263), and that clear with no
 	// draws behind it is what wipes this view's render target. Every hidden frame after it
 	// records the same empty list, hashes equal, and is WITHHELD by the idle gate.
 	//
@@ -360,7 +360,7 @@ void FVaCuusRmlDocumentHost::SetVisible(bool bVisible)
 	// the RT, because nothing would ever emit the empty frame that clears it. A hidden view
 	// therefore still pays a full Update() and a full record every frame; only the publish
 	// stops. It also stops claiming hit coverage without any extra work here, because the
-	// snapshot walk skips invisible elements (VaCuusInteractiveSnapshot.cpp:157-160).
+	// snapshot walk skips invisible elements (VaCuusInteractiveSnapshot.cpp:402-405).
 	if (bVisible)
 	{
 		// FocusFlag::Keep, not Document: Hide() ran UnfocusDocument() but left this
@@ -396,6 +396,33 @@ bool FVaCuusRmlDocumentHost::HasView() const
 	// the render target itself.
 	return Context != nullptr && (Document != nullptr || bOwesClearingFrame) &&
 		ViewSize.X > 0 && ViewSize.Y > 0;
+}
+
+void FVaCuusRmlDocumentHost::DrainAsyncArrivals()
+{
+	check(FVaCuusUIThread::IsInUIThread());
+
+	// UNGATED ON HasView(), WHICH IS THE POINT (bead akj.6.27): the drain touches recorder
+	// state only -- it moves finished payloads into the pending command buffer -- so it needs
+	// neither a document nor a size, and the two states that fail HasView() while decodes are
+	// in flight (a view still waiting for its first size, a view between its clearing frame and
+	// its next load) are exactly the ones that used to strand them.
+	//
+	// The Recorder null-check is teardown, not an unsized view: Shutdown() drops the context
+	// but deliberately keeps the recorder alive for RmlUi, and a host that failed
+	// Initialize() has neither. A retired host is not in the UI thread's Hosts map anyway, so
+	// in practice this only guards the failed-Initialize case.
+	if (Recorder)
+	{
+		Recorder->DrainCompletedDecodes();
+	}
+}
+
+uint64 FVaCuusRmlDocumentHost::GetNumDecodeArrivals() const
+{
+	// No thread assert on purpose -- the counter is atomic precisely so a test (or a
+	// diagnostic) can read it from off the UI thread; see the recorder's accessor.
+	return Recorder ? Recorder->GetNumDecodeArrivals() : 0;
 }
 
 Rml::Context* FVaCuusRmlDocumentHost::GetContext() const
@@ -501,7 +528,7 @@ void FVaCuusRmlDocumentHost::RecordAndPublishFrame()
 	// thread already has (FVaCuusRecordingRenderInterface::EndFrameAndPublish). The
 	// right response is to enqueue NOTHING: the Slate element re-composites its
 	// persistent render target every frame regardless of whether a buffer arrived
-	// (VaCuusSlateElement.cpp:106-146 -- the composite sits outside the
+	// (VaCuusSlateElement.cpp:148-231 -- the composite sits outside the
 	// PendingBuffers branch), and the world sink's copy destination keeps its last
 	// copy the same way -- which is the whole idle model.
 	const bool bPublished = Buffer.IsValid();

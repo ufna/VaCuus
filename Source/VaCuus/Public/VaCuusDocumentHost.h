@@ -6,6 +6,8 @@
 
 #include "Templates/SharedPointer.h"
 
+#include <type_traits> // std::is_same_v, for VACUUS_ASSERT_HOST_FORWARDS below
+
 struct FVaCuusViewStatus;
 
 namespace Rml
@@ -107,6 +109,37 @@ public:
 	virtual bool HasView() const = 0;
 
 	/**
+	 * Takes delivery of whatever off-thread work has finished for this host. Called once per
+	 * UI frame for EVERY live host, BEFORE the HasView() test above -- which is the whole
+	 * point of it existing separately from RecordAndPublishFrame().
+	 *
+	 * WHY IT CANNOT LIVE INSIDE THE RECORD (bead VaCuus-akj.6.27): the async image decodes are
+	 * drained by the recorder's BeginFrame(), so before this they were drained only on a
+	 * RECORDABLE frame -- and HasView() is a recordability test, not a liveness test: it also
+	 * demands a non-degenerate view size. The decode itself is launched from a size-INDEPENDENT
+	 * path (AdoptDocument -> Document->Show() -> layout -> ElementImage::GetIntrinsicDimensions
+	 * -> FileTextureDatabase::EnsureLoaded -> FVaCuusRecordingRenderInterface::LoadTexture), and
+	 * the shipped UMG route drives exactly that mismatch on every auto-loading widget:
+	 * UVaCuusWidget::RebuildWidget creates its view at FIntPoint::ZeroValue on purpose
+	 * (VaCuusUMGWidget.cpp:75-76) and SynchronizeProperties loads the document immediately
+	 * afterwards (:121-122), while the only correct size arrives on the first
+	 * SVaCuusWidget::Tick (SVaCuusWidget.cpp:253-256). Finished payloads decoded in that window
+	 * -- one measured at 144 MB for a single 6000x6000 PNG (bead akj.6.25) -- used to sit in the
+	 * recorder's queue for the whole unsized window, which for a widget that is never arranged
+	 * is the rest of the session.
+	 *
+	 * DEFAULT-EMPTY, the "a host with no render target of its own owes nothing" shape
+	 * CloseDocument() uses: a host with no off-thread work has nothing to take delivery of, and
+	 * the ~two dozen test probe hosts implement no decode path. A DECORATOR MUST STILL FORWARD
+	 * IT: inheriting this default would silently reinstate the bug for the host it wraps, so
+	 * FVaCuusLobbyDemoHost forwards it under a VACUUS_ASSERT_HOST_FORWARDS below, which fails
+	 * the BUILD if that forward is ever dropped.
+	 *
+	 * UI thread only, like everything else from Initialize() onwards.
+	 */
+	virtual void DrainAsyncArrivals() {}
+
+	/**
 	 * This view's RmlUi context, or null before Initialize() / after Shutdown().
 	 *
 	 * WHY THE HOST HANDS ITS CONTEXT OUT: input dispatch lives on the UI thread, in
@@ -128,3 +161,28 @@ public:
 	 */
 	virtual void RecordAndPublishFrame() = 0;
 };
+
+/**
+ * "This decorator really does override IVaCuusDocumentHost::Method itself", checked by the
+ * COMPILER rather than by review. Namespace scope, after the decorator's definition.
+ *
+ * WHY IT IS NEEDED AT ALL: every method above except DrainAsyncArrivals() is pure, so a
+ * decorator that forgets one does not compile. DrainAsyncArrivals() has a default body (the
+ * ~two dozen probe hosts in the test suites have no off-thread work and must not be forced to
+ * write one), and a default body is exactly what a decorator can silently inherit -- which for
+ * FVaCuusLobbyDemoHost would leave both lobby views draining nothing, i.e. bead akj.6.27
+ * reinstated for the one production host that is wrapped.
+ *
+ * HOW IT WORKS, because it is not obvious: the type of `&C::m` is pointer-to-member-of-the-
+ * class-that-DECLARES-m, not of the class it was named through ([expr.unary.op]/4). So
+ * `decltype(&FVaCuusLobbyDemoHost::DrainAsyncArrivals)` is `void (FVaCuusLobbyDemoHost::*)()`
+ * when the decorator declares its own override and `void (IVaCuusDocumentHost::*)()` when it
+ * merely inherits the default -- and comparing those two types is the question. Overloading a
+ * host method would break the `&C::m` form; none of them are overloaded, and this assert is
+ * where that would be noticed.
+ */
+#define VACUUS_ASSERT_HOST_FORWARDS(DecoratorClass, Method)                                        \
+	static_assert(                                                                                 \
+		!std::is_same_v<decltype(&DecoratorClass::Method), decltype(&IVaCuusDocumentHost::Method)>, \
+		#DecoratorClass " must declare and forward IVaCuusDocumentHost::" #Method                   \
+						"(): inheriting the default body silences it for the host it wraps")

@@ -34,7 +34,7 @@
  * is a SAME-FRAME claim: rows must appear in the very UI frame whose DataApply consumed the
  * publish. That needs, per recorded frame, both the rows and evidence of the apply, taken
  * together on the UI thread. So this host keeps a per-frame log: ApplyModelUpdates runs
- * before the per-view record loop inside one RunFrame (VaCuusUIThread.cpp:863-905), so the
+ * before the per-view record loop inside one RunFrame (VaCuusUIThread.cpp:1097-1106), so the
  * frame's record already includes its own apply, and "the frame whose cumulative
  * fields-applied counter moved also shows the rows" IS the same-frame property -- with no
  * race on how many frames a coalesced trigger actually granted.
@@ -303,9 +303,9 @@ static bool RunFrames(FVaCuusUIThread& UIThread, int32 NumFrames)
  * FrameLog must stay below this, and never trust FrameLog.Num() or Last().
  *
  * WHY WaitForFrameCount IS NOT ENOUGH: every Enqueue* ends in Trigger()
- * (VaCuusUIThread.cpp:640), the wake event is a binary AutoReset latch
- * (VaCuusUIThread.h:347), and FrameCount increments only AFTER RunFrame returns
- * (VaCuusUIThread.cpp:774-775). A trigger that lands mid-frame therefore leaves the event
+ * (VaCuusUIThread.cpp:549-555), the wake event is a binary AutoReset latch
+ * (VaCuusUIThread.h:473-474), and FrameCount increments only AFTER RunFrame returns
+ * (VaCuusUIThread.cpp:963-964). A trigger that lands mid-frame therefore leaves the event
  * set, and the worker runs ONE MORE frame concurrent with test-thread code that already saw
  * its awaited count -- a frame whose AddDefaulted_GetRef bumps ArrayNum BEFORE the record's
  * FStrings and TArrays are constructed, so FrameLog.Num()/Last() can name a record that is
@@ -716,7 +716,7 @@ bool FVaCuusDataForReloadTest::RunTest(const FString& Parameters)
  * definition virtual runs at all (spec 3.6). That is load-bearing for the exactness: a
  * data-for over a scalar or a struct evaluates FVaCuusScalarDefinition::Size /
  * FVaCuusStructDefinition::Size, and those overrides increment NOTHING
- * (VaCuusDataVariable.cpp:268-285, :432-446) -- so if idle merely meant "only cheap
+ * (VaCuusDataVariable.cpp:302-307, :466-470) -- so if idle merely meant "only cheap
  * evaluations run", uncounted virtuals could hide a regression under a delta of zero. The
  * window asserts the stronger fact: nothing was dirty, so nothing was evaluated at all,
  * counted or not.

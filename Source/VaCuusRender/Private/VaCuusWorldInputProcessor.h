@@ -57,7 +57,7 @@ struct FVaCuusWorldHitMath
 	 * has X = 0, VaCuusWorldComponent.cpp:99-102), UNBOUNDED: the result can be
 	 * outside [0, DrawSize), and that is the point. This is the latched-drag path's
 	 * analog of Slate handing a captor out-of-bounds local coordinates
-	 * (SVaCuusWidget.cpp:421-428's "a drag that started on a scrollbar must keep
+	 * (SVaCuusWidget.cpp:534-537's "a drag that started on a scrollbar must keep
 	 * being ours even after the pointer wanders off it") -- a box trace cannot
 	 * answer once the cursor leaves the quad, the plane always can.
 	 *
@@ -67,7 +67,7 @@ struct FVaCuusWorldHitMath
 	static bool RayToWidget(const FTransform& ComponentTransform, const FVector& RayOrigin, const FVector& RayDirection,
 		FIntPoint DrawSize, FVector2D Pivot, FVector2D& OutWidget);
 
-	/** FVector2D widget coords -> snapshot pixels: floored, not rounded, because a pixel spans [n, n+1) and so does FIntRect::Contains (SVaCuusWidget.cpp:317-324's convention). */
+	/** FVector2D widget coords -> snapshot pixels: floored, not rounded, because a pixel spans [n, n+1) and so does FIntRect::Contains (SVaCuusWidget.cpp:381-388's convention). */
 	static FIntPoint WidgetToPixel(FVector2D Widget)
 	{
 		return FIntPoint(FMath::FloorToInt(Widget.X), FMath::FloorToInt(Widget.Y));
@@ -118,7 +118,7 @@ struct FVaCuusWorldHitMath
  * thread).
  *
  * CONSUME = View->GetSnapshot().Contains(Pixel) -- the same one-frame-stale,
- * per-frame-stable answer the screen path gives Slate (VaCuusView.h:487-517);
+ * per-frame-stable answer the screen path gives Slate (VaCuusView.h:539-569);
  * pass-through is the absence of coverage, never an occluder
  * (VaCuusInteractiveSnapshot.h:259-265). Returning false hands the untouched event
  * to Slate, which routes it to the viewport and the game hears it.
@@ -149,12 +149,12 @@ struct FVaCuusWorldHitMath
  * (OnMouseUp, SlateApplication.cpp:6098-6118; the drag-drop synthesized up,
  * :7565-7581); the Remove inside ProcessMouseButtonUpEvent runs after the event
  * copy exists and cannot affect what a preprocessor sees -- exactly the widget's
- * rule and for the widget's reason (SVaCuusWidget.cpp:514-523 -- `<= 1` would
+ * rule and for the widget's reason (SVaCuusWidget.cpp:629-637 -- `<= 1` would
  * drop a two-button drag).
  *
  * MOUSE LEAVE IS MANDATORY: when the ray leaves a hovered panel (trace miss, a
  * different panel, or the occlusion rule disengaging), MouseLeave is sent or
- * RmlUi's `:hover` sticks forever (SVaCuusWidget.cpp:591-597; Context.cpp:839-846).
+ * RmlUi's `:hover` sticks forever (SVaCuusWidget.cpp:705-711; Context.cpp:839-846).
  * Event-driven only: Slate's synthesized moves skip preprocessors
  * (SlateApplication.cpp:6399 gates on !bIsSynthetic), so a panel occluded UNDER a
  * motionless cursor un-hovers on the next real pointer event, not the same frame.

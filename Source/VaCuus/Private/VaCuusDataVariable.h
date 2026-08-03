@@ -9,7 +9,7 @@
 #include "UObject/StrongObjectPtr.h"
 
 // PRIVATE HEADER, and that is what makes the RmlUi include legal here: VaCuus depends on
-// VaCuusRml privately (VaCuus.Build.cs:27-33), so an RmlUi type may appear in this
+// VaCuusRml privately (VaCuus.Build.cs:27-42), so an RmlUi type may appear in this
 // module's Private/ tree and nowhere else -- the same rule VaCuusSystemInterface.h and
 // VaCuusInputMap.h already follow, and the same reason
 // FVaCuusRecordingRenderInterface.h moved out of Public/ in M1.

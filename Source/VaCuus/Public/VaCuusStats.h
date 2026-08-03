@@ -31,9 +31,9 @@ DECLARE_STATS_GROUP(TEXT("VaCuus"), STATGROUP_VaCuus, STATCAT_Advanced);
 // no scope of its own at all, so the only measured parts of a UI frame were the two
 // inside RecordAndPublishFrame(). That left the two phases that run BEFORE them
 // unmeasured, and they are not small in the frames that matter: DrainCommands() performs
-// a full document parse plus the first layout on a load (VaCuusUIThread.cpp:900-906 ->
+// a full document parse plus the first layout on a load (VaCuusUIThread.cpp:1380-1386 ->
 // IVaCuusDocumentHost::LoadDocumentFrom*), and DrainInput() runs hit-testing, focus
-// resolution and the IME surface push per event (VaCuusUIThread.cpp:927+).
+// resolution and the IME surface push per event (VaCuusUIThread.cpp:1416+).
 //
 // DataApply is declared here with no sampler yet on purpose: the M3a data apply lands at
 // RunFrame()'s `(data snapshots: M3)` marker (spec 3.6), i.e. between the two phases

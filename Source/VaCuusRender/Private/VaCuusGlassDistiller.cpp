@@ -217,7 +217,7 @@ FVaCuusGlassMapping VaCuusMakeGlassMapping(
 {
 	FVaCuusGlassMapping Mapping;
 
-	// The same convention as the existing UI composite (VaCuusSlateElement.cpp:108-136):
+	// The same convention as the existing UI composite (VaCuusSlateElement.cpp:179-182):
 	// DestRect is window-space, the elements texture may host the window at an offset.
 	Mapping.Offset = FVector2f(float(DestRect.Min.X) + ElementsOffset.X, float(DestRect.Min.Y) + ElementsOffset.Y);
 	Mapping.Scale = FVector2f(

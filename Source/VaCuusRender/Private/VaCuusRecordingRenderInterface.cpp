@@ -58,7 +58,7 @@ static_assert(uint8(Rml::ClipMaskOperation::Set) == uint8(EVaCuusClipMaskOp::Set
  * only way to test that suspicion is to rebuild the plugin with the condition commented out.
  *
  * Read on the UI thread with GetValueOnAnyThread(), following FVaCuusPerfLog::IsEnabled()
- * (VaCuusStats.cpp:104-107). Flipping it at runtime is safe in both directions: turning it
+ * (VaCuusStats.cpp:214-216). Flipping it at runtime is safe in both directions: turning it
  * off just publishes every recorded frame from then on, and turning it back on compares
  * against the hash of whatever was published last, which is by definition what the render
  * target holds.
@@ -72,12 +72,68 @@ static TAutoConsoleVariable<int32> CVarVaCuusIdleGate(
 namespace
 {
 /**
- * Written once from the game thread (module startup), read from the UI thread and
- * from decode workers. Atomic rather than a plain pointer because the read side
- * is genuinely another thread; the module itself is immortal once loaded, so the
- * pointer never has to be un-cached.
+ * Written once from the game thread (module startup), read from the UI thread. Atomic
+ * rather than a plain pointer because the read side is genuinely another thread.
+ *
+ * NO LONGER READ FROM A DECODE WORKER, which is bead akj.6.26(b)'s fix: the module OBJECT is
+ * destroyed by any unload, shutdown or not, so a worker holding this pointer was a virtual
+ * call into freed memory. See FVaCuusTextureDecodeSink for the whole argument and for why
+ * the sibling risk (a) needs nothing. The pointer is never un-cached because the only thing
+ * that would justify it -- an unload -- happens when nothing is left to read it.
  */
 std::atomic<IImageWrapperModule*> GVaCuusImageWrapperModule{nullptr};
+
+/**
+ * EVERYTHING A DECODE WORKER MAY TOUCH, and nothing else: the task captures ONE of these and
+ * no other state, so a reader answers "what does the worker reach into?" from a declaration
+ * instead of from a capture clause seventy lines above the body.
+ *
+ * WHAT IS ABSENT IS THE POINT (bead akj.6.26(b)): there is no IImageWrapperModule* here. The
+ * worker used to hold one and call CreateImageWrapper through it; the wrapper INSTANCE is now
+ * built on the frame-owning thread and travels instead, which is what makes a module unload
+ * racing a decode uninteresting rather than merely unlikely.
+ */
+struct FVaCuusDecodeWork
+{
+	/** The task's only link back: refcounted, so it never dangles on the recorder. */
+	TSharedRef<FVaCuusTextureDecodeSink> Sink;
+
+	/** Built by LoadTexture on the frame-owning thread. Per-instance state, no aliasing. */
+	TSharedPtr<IImageWrapper> Wrapper;
+
+	/** The compressed file, moved in (a std::string byte buffer -- Config.h:108). */
+	Rml::String Bytes;
+
+	/** Kept only so a failed decode can name the file it choked on. */
+	FString Source;
+
+	FVaCuusTextureHandle Handle = 0;
+
+	/** What the synchronous probe reported and RmlUi has already laid out around. */
+	FIntPoint ProbedSize = FIntPoint::ZeroValue;
+
+	EImageFormat Format = EImageFormat::Invalid;
+};
+
+/**
+ * FIELD COUNT, not sizeof and not offsetof, for the reason the house rule gives: this guards
+ * against a field being ADDED BACK, and a pointer added to a struct with padding can leave
+ * sizeof unchanged while offsetof only catches reordering. A structured binding decomposes an
+ * aggregate into EXACTLY its fields, so the day someone puts an IImageWrapperModule* (or
+ * anything else) into the worker's world, this stops COMPILING and they have to read the
+ * comment above. Never called; it exists to be compiled.
+ */
+[[maybe_unused]] void VaCuusAssertDecodeWorkFieldCount(const FVaCuusDecodeWork& Work)
+{
+	const auto& [Sink, Wrapper, Bytes, Source, Handle, ProbedSize, Format] = Work;
+	(void)Sink;
+	(void)Wrapper;
+	(void)Bytes;
+	(void)Source;
+	(void)Handle;
+	(void)ProbedSize;
+	(void)Format;
+}
 } // namespace
 
 IImageWrapperModule* FVaCuusRecordingRenderInterface::CacheImageWrapperModule()
@@ -109,7 +165,7 @@ IImageWrapperModule* FVaCuusRecordingRenderInterface::GetImageWrapperModule()
 {
 	// A plain load, DELIBERATELY with no retry. CacheImageWrapperModule() runs from
 	// FVaCuusRenderModule::StartupModule (VaCuusRender.cpp:1018) and VaCuusRender's
-	// LoadingPhase is PostConfigInit (VaCuus.uplugin:31), so this value is already
+	// LoadingPhase is PostConfigInit (VaCuus.uplugin:34-36), so this value is already
 	// final before any document — hence any LoadTexture — can exist, and the static is
 	// never reset. A retry could therefore only ever re-run the failing path and
 	// re-emit the Error above once per image, which is exactly what LoadTexture's
@@ -378,6 +434,31 @@ Rml::TextureHandle FVaCuusRecordingRenderInterface::LoadTexture(Rml::Vector2i& O
 		return Rml::TextureHandle(0);
 	}
 
+	// THE DECODE'S WRAPPER, CREATED HERE ON THE FRAME-OWNING THREAD (bead akj.6.26(b)) rather
+	// than by the worker from a captured module pointer. The module OBJECT does not survive an
+	// unload -- UnloadModule destroys it whether or not the library is freed
+	// (ModuleManager.cpp:1344-1348) -- so calling the virtual CreateImageWrapper through a
+	// pointer captured at launch was a use-after-free waiting for an editor shutdown that
+	// overtook a decode. An instance carries no such link: CreateImageWrapper is a stateless
+	// per-call MakeShared (ImageWrapperModule.cpp:79-158) and FImageWrapperModule::
+	// ShutdownModule is empty (:529), so nothing in module teardown reaches this object.
+	//
+	// A SECOND WRAPPER RATHER THAN THE PROBE ABOVE, deliberately: the probe is dropped the
+	// moment the size is out (see there -- the JPEG one holds a libjpeg-turbo decompressor and
+	// a copy of the file), and the worker's own SetCompressed pass is what makes
+	// EVaCuusTextureDecodeFailure::SizeMismatch mean "the decoder contradicted itself".
+	// Creating it costs one small allocation on a thread that has just done two O(filesize)
+	// passes.
+	TSharedPtr<IImageWrapper> DecodeWrapper = ImageWrapperModule->CreateImageWrapper(Format);
+	if (!DecodeWrapper.IsValid())
+	{
+		// Unreachable in practice -- the probe above got one for the same format -- but this
+		// is the last point that can fail, so it fails here rather than handing the worker an
+		// empty wrapper to report as a decode failure.
+		UE_LOG(LogVaCuus, Warning, TEXT("LoadTexture: no image wrapper for '%s'"), UTF8_TO_TCHAR(Source.c_str()));
+		return Rml::TextureHandle(0);
+	}
+
 	// The out-parameter is satisfied HERE, at the last point that can fail, rather than
 	// after the task launch below: every remaining path returns a live handle, so an
 	// out-contract a reader has to trace past a 60-line lambda to confirm becomes one
@@ -408,10 +489,12 @@ Rml::TextureHandle FVaCuusRecordingRenderInterface::LoadTexture(Rml::Vector2i& O
 
 	InFlightTextures.Add(Handle);
 
-	// The bytes ride into the task as the Rml::String they were read into — that is
-	// a std::string byte buffer (Config.h:108), not an RmlUi object, and moving it
-	// spares the UI thread another O(filesize) copy. No RmlUi API is touched on the
-	// worker. The sink is captured by value, so the task keeps it alive on its own.
+	// ONE CAPTURE, AND IT IS A DECLARED TYPE: everything the worker may touch is in
+	// FVaCuusDecodeWork, whose comment says what is deliberately not in it (akj.6.26(b)) and
+	// whose field-count guard fails the build if that changes. The bytes ride in as the
+	// Rml::String they were read into — a std::string byte buffer (Config.h:108), not an RmlUi
+	// object, and moving it spares the UI thread another O(filesize) copy. No RmlUi API is
+	// touched on the worker. The sink rides in by value, so the task keeps it alive on its own.
 	//
 	// WHY THE IMAGEWRAPPER API IS SAFE TO USE FROM N ARBITRARY WORKERS, which is the
 	// premise of this whole change and not just of moving the bytes:
@@ -419,7 +502,9 @@ Rml::TextureHandle FVaCuusRecordingRenderInterface::LoadTexture(Rml::Vector2i& O
 	//    switch on the format (ImageWrapperModule.cpp:79-158) — no shared state, no
 	//    cache, nothing to serialise. Each wrapper instance therefore owns its own
 	//    libpng/libjpeg-turbo state, so SetCompressed/GetRaw on distinct instances do
-	//    not alias.
+	//    not alias. (The call itself now happens on this thread, for a lifetime reason
+	//    rather than a threading one; the statelessness is what makes handing the
+	//    resulting instance to another thread legal.)
 	//  - The wrappers are NOT unconditionally reentrant, and that is the part worth
 	//    writing down. JPEG: libjpeg-turbo >= 2.0.5 is thread-safe, so
 	//    JPEG_SCOPE_CRITSEC() compiles to `do {} while(0)`
@@ -484,27 +569,34 @@ Rml::TextureHandle FVaCuusRecordingRenderInterface::LoadTexture(Rml::Vector2i& O
 	// (UnixPlatformMisc.cpp:1695-1706) — 30 on the 16-core/32-thread box this was measured
 	// on, hence 28 background workers there. Nowhere near 42 either way.)
 	//
-	// SourcePath costs one small FString allocation on the UI thread, kept knowingly:
+	// Source costs one small FString allocation on the UI thread, kept knowingly:
 	// the only alternative is handing the worker a std::string copy of the path, which
 	// is the same allocation on the same thread, and this call has already done an
 	// O(filesize) read plus SetCompressed's O(filesize) memcpy here.
+	FVaCuusDecodeWork Work{DecodeSink};
+	Work.Wrapper = MoveTemp(DecodeWrapper);
+	Work.Bytes = MoveTemp(FileData);
+	Work.Source = FString(UTF8_TO_TCHAR(Source.c_str()));
+	Work.Handle = Handle;
+	Work.ProbedSize = Size;
+	Work.Format = Format;
+
 	UE::Tasks::FTask DecodeTask = UE::Tasks::Launch(UE_SOURCE_LOCATION,
-		[Sink = DecodeSink, Module = ImageWrapperModule, Handle, Format, ProbedSize = Size,
-			SourcePath = FString(UTF8_TO_TCHAR(Source.c_str())), Bytes = MoveTemp(FileData)]() mutable
+		[Work = MoveTemp(Work)]() mutable
 		{
 			TRACE_CPUPROFILER_EVENT_SCOPE(VaCuusTextureDecode);
 
-			if (Sink->bAbandoned.load(std::memory_order_acquire))
+			if (Work.Sink->bAbandoned.load(std::memory_order_acquire))
 			{
 				return; // The recorder is gone; the decode has no destination.
 			}
 
 			FVaCuusTextureDecode Result;
-			Result.Handle = Handle;
-			Result.Source = MoveTemp(SourcePath);
+			Result.Handle = Work.Handle;
+			Result.Source = MoveTemp(Work.Source);
 			Result.Failure = EVaCuusTextureDecodeFailure::Decode;
 
-			const TSharedPtr<IImageWrapper> ImageWrapper = Module->CreateImageWrapper(Format);
+			const TSharedPtr<IImageWrapper>& ImageWrapper = Work.Wrapper;
 			TArray<uint8> RawRGBA;
 
 			// GetRaw(ERGBFormat, int32, TArray<uint8>&) is the overload the engine
@@ -516,7 +608,7 @@ Rml::TextureHandle FVaCuusRecordingRenderInterface::LoadTexture(Rml::Vector2i& O
 			// satisfied anyway, for the three formats the whitelist in LoadTexture lets
 			// through and ONLY for those — see that comment for the per-wrapper reading and
 			// for why this is not migrated to GetRawImage(FImage&).
-			if (ImageWrapper.IsValid() && ImageWrapper->SetCompressed(Bytes.data(), Bytes.size()) &&
+			if (ImageWrapper.IsValid() && ImageWrapper->SetCompressed(Work.Bytes.data(), Work.Bytes.size()) &&
 				ImageWrapper->GetRaw(ERGBFormat::RGBA, 8, RawRGBA))
 			{
 				// VALIDATE BEFORE TOUCHING THE BUFFER. The probe already handed
@@ -533,8 +625,8 @@ Rml::TextureHandle FVaCuusRecordingRenderInterface::LoadTexture(Rml::Vector2i& O
 				// fit a 32-bit TArray, IImageWrapper.h:324) but int32 overflow is UB and
 				// the cast is free.
 				const FIntPoint DecodedSize(ImageWrapper->GetWidth(), ImageWrapper->GetHeight());
-				const int64 ExpectedBytes = int64(ProbedSize.X) * int64(ProbedSize.Y) * 4;
-				if (DecodedSize != ProbedSize || int64(RawRGBA.Num()) != ExpectedBytes)
+				const int64 ExpectedBytes = int64(Work.ProbedSize.X) * int64(Work.ProbedSize.Y) * 4;
+				if (DecodedSize != Work.ProbedSize || int64(RawRGBA.Num()) != ExpectedBytes)
 				{
 					// Two SetCompressed passes over the same bytes disagreeing means the
 					// DECODER disagreed with itself, which is a different bug report
@@ -553,7 +645,7 @@ Rml::TextureHandle FVaCuusRecordingRenderInterface::LoadTexture(Rml::Vector2i& O
 					// in principle disagree with what SetCompressed reported.
 					Result.Failure = EVaCuusTextureDecodeFailure::SizeMismatch;
 				}
-				else if (Sink->bAbandoned.load(std::memory_order_acquire))
+				else if (Work.Sink->bAbandoned.load(std::memory_order_acquire))
 				{
 					// Second abandon check, AFTER the expensive call. The destructor's
 					// flag used to be read only at task entry, so a view torn down
@@ -617,7 +709,7 @@ Rml::TextureHandle FVaCuusRecordingRenderInterface::LoadTexture(Rml::Vector2i& O
 					// UEJpegImageWrapper.cpp:144-146; Compress feeds NumComponents straight
 					// from the raw buffer, :232), so the general path below is the correct
 					// one for it and must not be short-circuited to opaque.
-					if (Format == EImageFormat::JPEG)
+					if (Work.Format == EImageFormat::JPEG)
 					{
 						for (uint8* Pixel = Begin; Pixel < End; Pixel += 4)
 						{
@@ -658,12 +750,12 @@ Rml::TextureHandle FVaCuusRecordingRenderInterface::LoadTexture(Rml::Vector2i& O
 			// destroys whatever is still queued when the last reference dies — but it
 			// keeps a whole decoded payload alive until then for no reason, so the
 			// cheap read is worth it. Losing the race is still harmless.
-			if (Sink->bAbandoned.load(std::memory_order_acquire))
+			if (Work.Sink->bAbandoned.load(std::memory_order_acquire))
 			{
 				return;
 			}
 
-			Sink->Completed.Enqueue(MoveTemp(Result));
+			Work.Sink->Completed.Enqueue(MoveTemp(Result));
 		},
 		UE::Tasks::ETaskPriority::BackgroundHigh);
 
@@ -1160,7 +1252,10 @@ void FVaCuusRecordingRenderInterface::BeginFrame(FIntPoint ViewSize)
 	NextLayerHandle = 1;
 
 	// Top of the frame, before any RmlUi call: a payload installed here is part of
-	// this frame's resource delta, so it publishes with this frame.
+	// this frame's resource delta, so it publishes with this frame. KEPT even though the
+	// UI thread now drains every live host once per frame (see DrainCompletedDecodes): this
+	// call is what makes the recorder's own Begin/End pair a complete contract on any
+	// thread, which is what VaCuusRecorderTest drives it as.
 	DrainCompletedDecodes();
 }
 
@@ -1171,21 +1266,26 @@ void FVaCuusRecordingRenderInterface::DrainCompletedDecodes()
 	// thread and only through published buffers, so an in-band arrival needs no
 	// weak-pointer dance against teardown.
 	//
-	// WHY A LATE PAYLOAD IS GUARANTEED TO REACH THE SCREEN: every UI frame is RECORDED
-	// — FVaCuusUIThread::RunFrame records for every host with HasView()
-	// (VaCuusUIThread.cpp:769-775) — and this drain runs at the top of each of them, so
-	// an arrival always lands in a live pending buffer. Whether that buffer is
-	// PUBLISHED is a separate decision, and since Task 12 it is a real one: the idle
-	// gate in EndFrameAndPublish() withholds a frame whose commands and ViewSize are
-	// unchanged. A non-empty NewTextures is one of its four required wake conditions,
-	// which is exactly what keeps this path working — an arrival is the one resource
-	// delta that can appear in a frame where nothing else moved, and withholding that
-	// publish would leave the transparent 1x1 placeholder on screen indefinitely.
+	// WHY A LATE PAYLOAD IS GUARANTEED TO REACH THE SCREEN, corrected (bead akj.6.27; this
+	// paragraph used to claim the guarantee came from "every UI frame is recorded", which was
+	// false in both directions -- not every live view records a frame, and the citation it
+	// gave for the record loop pointed at FVaCuusUIThread::Enqueue). The guarantee has two
+	// halves now:
+	//  - DELIVERY is unconditional. FVaCuusUIThread::RunFrame calls DrainAsyncArrivals() for
+	//    every live host BEFORE its HasView() test (VaCuusUIThread.cpp:1158-1160), so a payload
+	//    is taken off the queue even for a view that cannot be recorded at all -- one still
+	//    waiting for its first size, or one between its clearing frame and its next load.
+	//  - PUBLICATION follows on the next frame the view does record. Since Task 12 that is a
+	//    real decision: the idle gate in EndFrameAndPublish() withholds a frame whose commands
+	//    and ViewSize are unchanged, and a non-empty NewTextures is one of its wake
+	//    conditions. That is what keeps this path working -- an arrival is the one resource
+	//    delta that can appear in a frame where nothing else moved, and withholding that
+	//    publish would leave the transparent 1x1 placeholder on screen indefinitely.
 	//
 	// Note the ordering that makes the wake condition sufficient rather than merely
-	// stated: this drain runs BEFORE Context::Update() (see BeginFrame), so a payload
-	// is already sitting in the pending buffer's NewTextures by the time the gate
-	// inspects it at the end of the frame.
+	// stated: from BeginFrame this drain runs BEFORE Context::Update(), and from the UI
+	// thread it runs before that host's whole frame, so a payload is already sitting in the
+	// pending buffer's NewTextures by the time the gate inspects it at the end of the frame.
 	//
 	// Downstream of the gate the payload is unconditional again: the render thread
 	// draws whenever any buffer is pending, replaying the newest one in full
@@ -1196,13 +1296,18 @@ void FVaCuusRecordingRenderInterface::DrainCompletedDecodes()
 	//
 	// "Placeholder in frame N, payload in N+1" is the COMMON CASE, NOT AN INVARIANT.
 	// LoadTexture is reachable out of frame: AdoptDocument -> Document->Show()
-	// (VaCuusRmlDocumentHost.cpp:205) runs inside DrainCommands (VaCuusUIThread.cpp:762,
-	// dispatched at :856), i.e. before the record loop, and RmlUi loads file textures
-	// lazily from FileTextureDatabase::EnsureLoaded (TextureDatabase.cpp:118-130). So a
+	// (VaCuusRmlDocumentHost.cpp:225) runs inside DrainCommands, which RunFrame calls before
+	// the record loop (VaCuusUIThread.cpp:1091, the load dispatched from the drain's command
+	// switch at :1380-1387), and RmlUi loads file textures lazily from
+	// FileTextureDatabase::EnsureLoaded (TextureDatabase.cpp:118-130) during the layout
+	// Show() forces (ElementDocument.cpp:367 -> ElementImage::GetIntrinsicDimensions). So a
 	// load can happen with bInFrame == false, GetPending() lazily creates the buffer
 	// that this very drain then adds to, and a small fast PNG can overwrite its own
 	// placeholder in the SAME buffer. Benign: the buffer then simply carries the real
 	// payload and never the placeholder.
+	//
+	// That same out-of-frame reachability is bead akj.6.27's whole mechanism: the launch does
+	// not need a size, and until this function got its second caller the delivery did.
 	//
 	// NOTE THE ASYMMETRY, it is deliberate: the DECODE is async, the UPLOAD is not.
 	// The replayer still does its UpdateTexture2D memcpy on the render thread when
@@ -1210,6 +1315,13 @@ void FVaCuusRecordingRenderInterface::DrainCompletedDecodes()
 	// hitch the UI thread; async upload is filed separately.
 	while (TOptional<FVaCuusTextureDecode> Completed = DecodeSink->Completed.Dequeue())
 	{
+		// COUNTED HERE, BEFORE EVERY FILTER BELOW: the fact this counter exists to make
+		// observable is that the queue was drained at all (see GetNumDecodeArrivals), which is
+		// true of a payload for a released handle and of a failed decode just as much as of an
+		// installed one. Counting installs instead would make an unsized view's drain
+		// indistinguishable from no drain the moment a decode failed.
+		NumDecodeArrivals.fetch_add(1, std::memory_order_release);
+
 		// Zero here means ReleaseTexture() already retired the handle while the
 		// decode was running. Installing the payload now would leak; drop it.
 		if (InFlightTextures.Remove(Completed->Handle) == 0)
@@ -1309,12 +1421,12 @@ TUniquePtr<FVaCuusCommandBuffer> FVaCuusRecordingRenderInterface::EndFrameAndPub
 	//
 	// WHY DROPPING THIS BUFFER LOSES NOTHING: each buffer repaints the whole frame
 	// from scratch (that is why the replayer draws only the newest queued one and
-	// takes just the resource deltas from the rest, VaCuusSlateElement.cpp:79-83), so
+	// takes just the resource deltas from the rest, VaCuusSlateElement.cpp:130-140), so
 	// a buffer whose commands and ViewSize hash equal to the last PUBLISHED one draws
 	// exactly what the per-view render target already holds. The render thread then
 	// re-composites that render target unconditionally: Draw_RenderThread's replay is
 	// inside `if (PendingBuffers.Num() > 0)` but the composite that follows is outside
-	// it and reads Replayer.GetOutputRT() directly (VaCuusSlateElement.cpp:91-140), so
+	// it and reads Replayer.GetOutputRT() directly (VaCuusSlateElement.cpp:148-231), so
 	// the UI stays on screen with no buffer in flight at all.
 	//
 	// THE RESOURCE CONDITION IS NOT AN OPTIMISATION, IT IS CORRECTNESS: the four
@@ -1342,7 +1454,7 @@ TUniquePtr<FVaCuusCommandBuffer> FVaCuusRecordingRenderInterface::EndFrameAndPub
 
 	// THE FREEZE REMEDY, PRODUCTION SHAPE (M5 Task 5b; the fact is spec §2(f)): a live
 	// material decorator is GPU-evaluated state the hash and the traffic predicate
-	// cannot see — the composite only samples the RT (VaCuusSlateElement.cpp:141-204)
+	// cannot see — the composite only samples the RT (VaCuusSlateElement.cpp:174-231)
 	// and the RT is written only in this publish-gated replay branch, so a time-animated
 	// or MID-driven material would freeze on whatever publish last ran. PER VIEW: the
 	// term is this recorder's own live-shader table (LiveMaterialShaders — compiled

@@ -68,9 +68,21 @@ public:
 	virtual void CloseDocument() override;
 	virtual void SetVisible(bool bVisible) override;
 	virtual bool HasView() const override;
+	virtual void DrainAsyncArrivals() override;
 	virtual Rml::Context* GetContext() const override;
 	virtual void RecordAndPublishFrame() override;
 	//~ End IVaCuusDocumentHost
+
+	/**
+	 * Finished image decodes this view's recorder has taken delivery of, whatever became of
+	 * them afterwards (installed, dropped as already-released, or logged as a failed decode).
+	 *
+	 * THE ONLY OBSERVABLE FOR akj.6.27's WINDOW, and that is why it is here rather than only
+	 * inside the recorder: while a view is unsized it records nothing and publishes nothing, so
+	 * FVaCuusViewStatus's frame counters -- the game thread's usual readout -- both stay at
+	 * zero whether or not the arrival was taken. Any thread; see the recorder's accessor.
+	 */
+	uint64 GetNumDecodeArrivals() const;
 
 private:
 	/** Shared tail of both load paths: adopts and shows the new document, or logs the failure. */

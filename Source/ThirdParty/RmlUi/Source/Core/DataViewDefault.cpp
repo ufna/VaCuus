@@ -165,7 +165,28 @@ bool DataViewStyle::Update(DataModel& model)
 	{
 		const String value = variant.Get<String>();
 		const Property* p = element->GetLocalProperty(property_name);
-		if (!p || p->Get<String>() != value)
+		// VaCuus patch #1 (VENDORED_TAG.txt next to VENDORED_SHA.txt). Upstream compares
+		// `p->Get<String>() != value`, and Property::Get<T> forwards straight to the value
+		// Variant (Property.h:41-45) -- which does NOT hold the unit; that lives in the
+		// separate `unit` member (Property.h:50-51). So the property parsed out of "100px"
+		// reads back as "100", never equals the "100px" that produced it, and SetProperty
+		// fires on EVERY dirty of the bound variable, for a value that did not change. That
+		// costs a restyle and, for a layout property, a whole-document relayout. On a border
+		// or background property it also costs a PUBLISHED frame, because
+		// ElementBackgroundBorder::GenerateGeometry re-makes its mesh with no equality check
+		// (ElementBackgroundBorder.cpp:131-137) -- measured at 100 published frames in 100
+		// (VaCuus.Model.View.DataStyleIdle). The layout-only case is absorbed downstream: an
+		// unchanged box never reaches OnResize, and ElementText reuses its compiled geometry
+		// when the regenerated mesh compares equal (ElementText.cpp:530-536).
+		// ToString() re-appends the unit and maps a keyword back to its name
+		// (Property.cpp:12-20 -> PropertyDefinition::GetValue, PropertyDefinition.cpp:91-135),
+		// so this compares the incoming string against the string that produced the property.
+		// Strictly more comparisons succeed and none newly fails, because a property's
+		// ToString is what a re-parse of it would produce. Values whose ToString is not the
+		// authored spelling are simply unaffected -- colours other than lowercase #rrggbb
+		// (TypeConverter.cpp:267-273), and shorthands, which leave no local property under
+		// their own name at all: those compare unequal here exactly as they did before.
+		if (!p || p->ToString() != value)
 		{
 			element->SetProperty(property_name, value);
 			result = true;

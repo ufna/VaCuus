@@ -84,7 +84,7 @@ constexpr uint32 GVaCuusUIThreadStackSize = 2 * 1024 * 1024;
  * factory is registered, so no JS phase ever runs and quickjs is never created.
  * Read ONCE, at thread boot (Init()), which is the moment the host would be
  * created -- the cheap-any-thread read is the vacuus.IdleGate pattern
- * (VaCuusRecordingRenderInterface.cpp:47-52), but unlike the gate a later flip is
+ * (VaCuusRecordingRenderInterface.cpp:54-70), but unlike the gate a later flip is
  * a documented no-op until the next thread boot: the host either exists for the
  * thread's whole life or never does, because half-created JS state has no safe
  * mid-flight teardown point.
@@ -1145,6 +1145,18 @@ void FVaCuusUIThread::RunFrame()
 	// like a burst.
 	for (TPair<uint32, TUniquePtr<IVaCuusDocumentHost>>& Pair : Hosts)
 	{
+		// OUTSIDE THE GATE AND INSIDE THE SAME ITERATION (bead akj.6.27). Outside, because the
+		// off-thread work this takes delivery of is LAUNCHED by paths the gate does not cover:
+		// an image decode starts during Show() (see IVaCuusDocumentHost::DrainAsyncArrivals),
+		// which runs in DrainCommands above, and both a still-unsized view -- every UMG view
+		// until its first Slate tick -- and a view between its clearing frame and its next load
+		// fail HasView() while their payloads are already finishing. Inside the same iteration,
+		// because delivery must still PRECEDE this host's own record: a payload taken here lands
+		// in the pending buffer that this frame then publishes, instead of waiting a frame.
+		//
+		// Free for every host with nothing outstanding: an empty MPSC dequeue.
+		Pair.Value->DrainAsyncArrivals();
+
 		if (Pair.Value->HasView())
 		{
 			Pair.Value->RecordAndPublishFrame();

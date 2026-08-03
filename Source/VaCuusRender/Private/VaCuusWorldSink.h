@@ -42,7 +42,7 @@
  * interleaving: a publish that lands before its matching slot update copies into the
  * OLD destination and is SKIPPED on mismatch, then either the next matching publish
  * or the slot update's own repaint (below) heals it -- the same accepted transient
- * the screen path documents for resize (VaCuusSlateElement.cpp:192-200).
+ * the screen path documents for resize (VaCuusSlateElement.cpp:219-227).
  *
  * THE SLOT UPDATE COPIES IMMEDIATELY, and that is load-bearing, not polish: on an
  * idle view NO further publish is coming (the idle gate withholds them all), so a

@@ -89,7 +89,7 @@ class UScriptStruct;
  * no engine synchronisation whatsoever (research ue-reflection 6.3), so this reads gameplay
  * memory that only the game thread may be reading. The spec also requires it be driven from
  * UVaCuusSubsystem::Tick, because that is what lands it inside the existing GameTick perf
- * scope (VaCuusSubsystem.cpp:68); from an actor tick or a Blueprint node it would be outside
+ * scope (VaCuusSubsystem.cpp:117); from an actor tick or a Blueprint node it would be outside
  * every scope and the budget would become an inference on top of an inference.
  */
 class FVaCuusModelSampler

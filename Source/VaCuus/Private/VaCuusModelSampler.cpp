@@ -380,7 +380,7 @@ int32 FVaCuusModelSampler::Sample(const UScriptStruct* LiveType, const void* Liv
 	// synchronisation of any kind, and the shadow plus the channel's pending set are plain
 	// non-atomic state this shares with Publish(). The spec additionally requires the call to
 	// come from UVaCuusSubsystem::Tick so it lands inside the GameTick perf scope
-	// (VaCuusSubsystem.cpp:68) -- an assert cannot express that, so it is stated in the header
+	// (VaCuusSubsystem.cpp:117) -- an assert cannot express that, so it is stated in the header
 	// and enforced by there being no other caller.
 	check(IsInGameThread());
 

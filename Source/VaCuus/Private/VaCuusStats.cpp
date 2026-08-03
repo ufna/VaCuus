@@ -31,6 +31,8 @@ DEFINE_STAT(STAT_VaCuusCommands);
 static TAutoConsoleVariable<int32> CVarVaCuusPerfLog(
 	TEXT("vacuus.M1HUD.PerfLog"),
 	0,
+	TEXT("PROCESS-WIDE despite the M1HUD prefix (which is historical): one log covering every view and every ")
+	TEXT("thread, whichever document is up. ")
 	TEXT("1 = print every VaCuus scope's timings (avg/p50/p99/max, window + cumulative) to the log every 5 seconds: the UI thread's DrainCommands/DrainInput/DataApply/JsPump/Update/Record/JsGC, the render thread's Replay/Glass/Composite/WorldCopy, and the game thread's GameTick/SlateTick/OnPaint/Input/ModelSample."));
 
 namespace VaCuusPerfLogPrivate
@@ -478,7 +480,7 @@ void FVaCuusPerfLog::TickLog()
 	// mislead whoever reads the log on a busy UI. Draw_RenderThread emits ONE Replay scope per
 	// PAINT that found a buffer waiting, whatever the queue depth -- the older buffers
 	// surrender only their resource deltas, through a ConsumeResources call that has no scope
-	// (VaCuusSlateElement.cpp:70-84, VaCuusReplayRenderer.cpp:39-47). So a CHANGING UI at a
+	// (VaCuusSlateElement.cpp:136-139, VaCuusReplayRenderer.cpp:80-92). So a CHANGING UI at a
 	// ~220 Hz UI thread and a ~60 Hz paint reads published ~220/s, Replay samples ~60/s,
 	// skipped 0: that gap is COALESCING. The two numbers only track each other at the other
 	// extreme, an idle UI where the paint finds no buffer at all.

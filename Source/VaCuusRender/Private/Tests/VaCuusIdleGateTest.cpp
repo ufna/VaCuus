@@ -2,12 +2,24 @@
 
 #include "Misc/AutomationTest.h"
 
+#include "VaCuus.h"
 #include "VaCuusCommandBuffer.h"
 #include "VaCuusEngine.h"
 #include "VaCuusRecordingRenderInterface.h"
+#include "VaCuusRmlDocumentHost.h"
+#include "VaCuusSlateElement.h"
+#include "VaCuusUIThread.h"
+#include "VaCuusViewStatus.h"
 
+#include "HAL/FileManager.h"
 #include "HAL/IConsoleManager.h"
+#include "HAL/PlatformProcess.h"
+#include "IImageWrapper.h"
+#include "IImageWrapperModule.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Paths.h"
 #include "Misc/ScopeExit.h"
+#include "Modules/ModuleManager.h"
 #include "Templates/Function.h"
 
 #include <RmlUi/Core.h>
@@ -20,21 +32,29 @@
  * The idle short-circuit (M2 Task 12): a recorded frame that draws exactly what the
  * render thread already has is NOT published.
  *
- * All but the last of these are driven straight against FVaCuusRecordingRenderInterface,
- * with no Rml::Context in sight, because every property they assert is about the gate's
- * decision and none of them is about RmlUi. Two consequences worth naming:
+ * The first six are driven straight against FVaCuusRecordingRenderInterface, with no
+ * Rml::Context in sight, because every property they assert is about the gate's decision and
+ * none of them is about RmlUi. Two consequences worth naming:
  *  - the frames are byte-exact by construction, where a real document's are only
  *    "unchanged as far as anyone can tell";
  *  - "an unchanged frame is not published" needs an observable to be a test at all.
  *    GetNumFramesPublished()/GetNumFramesSkipped() are it: the screen looks identical
  *    whether the gate works or not.
  *
- * THE EXCEPTION IS DELIBERATE. VaCuus.Render.IdleGate.HoverRecolour at the bottom of this
- * file drives a real Rml::Context, because the one thing the gate's completeness rests on
- * that this file cannot synthesise is RmlUi's own behaviour: vertex colours are not in the
- * frame hash, so a colour-only restyle publishes solely because RmlUi has no way to change
- * a compiled geometry's colours except by compiling new geometry. See the argument next to
- * VaCuusHashFrameContent().
+ * THE THREE EXCEPTIONS AT THE BOTTOM OF THE FILE ARE DELIBERATE, and each is here because a
+ * synthesised frame cannot reach what it is about:
+ *  - HoverRecolour drives a real Rml::Context, because the gate's completeness rests on
+ *    RmlUi's own behaviour: vertex colours are not in the frame hash, so a colour-only
+ *    restyle publishes solely because RmlUi has no way to change a compiled geometry's
+ *    colours except by compiling new geometry. See the argument next to
+ *    VaCuusHashFrameContent().
+ *  - AsyncDecodeWake drives a real PNG through a real decode task, because the wake it
+ *    asserts arrives from DrainCompletedDecodes and nothing synthetic ever visits that
+ *    drain (VaCuus-akj.6.42(c)).
+ *  - LiveReload drives the real UI thread and the real FVaCuusRmlDocumentHost, because a
+ *    reload is a sequence of host decisions and the failure it guards -- an edit that never
+ *    reaches the screen -- is only visible from the game thread's counters
+ *    (VaCuus-akj.6.42(b)).
  *
  * VaCuus.Threading.MultiView carries the matching integration check -- the gate firing
  * on a real static RmlUi document driven by the real UI thread.
@@ -68,6 +88,61 @@ struct FTexel2x2
 };
 
 static const FIntPoint GViewSize(800, 600);
+
+/** The async-decode probe's real size; the placeholder LoadTexture records first is 1x1. */
+static const FIntPoint GProbeSize(4, 2);
+
+/** VFS path of the live-reload fixture; see Content/DevUI/Tests/idle_gate_reload.rml. */
+static const TCHAR* GReloadFixturePath = TEXT("Tests/idle_gate_reload.rml");
+
+/**
+ * Writes an RGBA8 PNG for the async-decode probe. PNG because it is one of the formats
+ * LoadTexture whitelists.
+ *
+ * DELIBERATELY NOT the shared pattern probe VaCuus.Render.Recorder.LoadTexture uses: that one
+ * exists so a test can PREDICT the decoded bytes, and this file asserts nothing about bytes --
+ * only that a payload of the right size arrived, and only because arrival is what wakes the
+ * gate. Sharing it would couple this test to a byte contract it does not make.
+ */
+static bool SaveIdleGateProbePng(const FString& Path, FIntPoint Size)
+{
+	TArray<uint8> Pixels;
+	Pixels.SetNumUninitialized(Size.X * Size.Y * 4);
+	for (int32 Index = 0; Index < Pixels.Num(); ++Index)
+	{
+		Pixels[Index] = (Index % 4 == 3) ? 255 : uint8(Index * 7 + 3);
+	}
+
+	IImageWrapperModule& ImageWrapperModule = FModuleManager::LoadModuleChecked<IImageWrapperModule>("ImageWrapper");
+	const TSharedPtr<IImageWrapper> Encoder = ImageWrapperModule.CreateImageWrapper(EImageFormat::PNG);
+	if (!Encoder.IsValid() || !Encoder->SetRaw(Pixels.GetData(), Pixels.Num(), Size.X, Size.Y, ERGBFormat::RGBA, 8))
+	{
+		return false;
+	}
+
+	return FFileHelper::SaveArrayToFile(Encoder->GetCompressed(), *Path);
+}
+
+/**
+ * Runs exactly NumFrames UI frames, one trigger at a time. Triggering N times does NOT give N
+ * frames: the wake event is an auto-reset binary latch, so triggers landing while a frame is in
+ * flight coalesce. VaCuusCloseDocumentTest.cpp's helper, restated because that file is another
+ * test's translation unit.
+ */
+static bool RunUIFrames(FVaCuusUIThread& UIThread, int32 NumFrames)
+{
+	for (int32 Index = 0; Index < NumFrames; ++Index)
+	{
+		const uint64 Before = UIThread.GetFrameCount();
+		UIThread.Trigger();
+		if (!UIThread.WaitForFrameCount(Before + 1, 5.0))
+		{
+			return false;
+		}
+	}
+
+	return true;
+}
 }	 // namespace VaCuusIdleGateTest
 
 /**
@@ -233,6 +308,11 @@ bool FVaCuusIdleGateResourceTrafficTest::RunTest(const FString& Parameters)
 	// 2. NewTextures -- the case that is not hypothetical: this is also the arrival
 	// channel for a finished async image decode, drained at the top of BeginFrame(). A
 	// gate that ignored it would leave a loaded image transparent forever.
+	//
+	// GenerateTexture is the SYNCHRONOUS font-atlas producer, so what this case pins is the
+	// gate's reading of the array and NOT the decode path that fills it -- the drain is
+	// never entered here. VaCuus.Render.IdleGate.AsyncDecodeWake drives that end
+	// (VaCuus-akj.6.42(c)); this one stays as the array-level control.
 	{
 		const TUniquePtr<FVaCuusCommandBuffer> Buffer = RecordFrame([&Recorder, &Texel]()
 			{ Recorder.GenerateTexture(Texel.Span(), FTexel2x2::Dimensions()); });
@@ -630,7 +710,7 @@ bool FVaCuusIdleGateHashPaddingTest::RunTest(const FString& Parameters)
  * and RmlUi therefore releases and re-compiles -- new handle in the command AND resource
  * traffic. The full citation trail is next to VaCuusHashFrameContent().
  *
- * The five tests above drive the recorder directly, so every one of them would keep passing
+ * The six tests above drive the recorder directly, so every one of them would keep passing
  * if RmlUi 6.x+1 started re-colouring in place, or if this recorder ever started handing an
  * existing handle back for changed content. This one would not: it asserts the end-to-end
  * property (a colour restyle reaches the render thread) rather than the mechanism.
@@ -784,6 +864,335 @@ bool FVaCuusIdleGateHoverRecolourTest::RunTest(const FString& Parameters)
 
 	// And it settles: the hovered document is static again, so the gate takes over.
 	TestNull(TEXT("The hovered state then goes idle again"), RecordFrame().Get());
+
+	return true;
+}
+
+/**
+ * THE ASYNC DECODE'S ARRIVAL, THROUGH THE DRAIN (VaCuus-akj.6.42(c)).
+ *
+ * VaCuus.Render.IdleGate.ResourceTraffic already asserts that NewTextures wakes the gate, and
+ * its own comment names the case that matters -- "this is also the arrival channel for a
+ * finished async image decode, drained at the top of BeginFrame()". But it produces that
+ * NewTextures entry with GenerateTexture(), which is the SYNCHRONOUS font-atlas path: it fills
+ * the pending buffer from inside the caller's frame and never launches a decode, never queues
+ * a completion, and never reaches DrainCompletedDecodes at all. So the one code path the
+ * comment is about was the one path not being driven.
+ *
+ * The difference is not cosmetic. The decode's payload does not arrive from the frame that
+ * asked for it -- it arrives from a task, into FVaCuusTextureDecodeSink::Completed, and is
+ * moved into the pending buffer by DrainCompletedDecodes at the top of some LATER BeginFrame().
+ * That later frame is, by construction, a frame whose drawing did not change: nothing in the
+ * document moved, only a picture finished loading. It is exactly the frame the idle gate exists
+ * to withhold, and withholding it leaves the loaded image transparent on screen forever with
+ * every counter looking healthy.
+ *
+ * So this drives the real thing: a real PNG on disk, a real LoadTexture, a real wait on the
+ * real task, and a command list that is byte-identical across all four frames -- the publish
+ * can have come from nothing but the drain.
+ *
+ * RESTORE-THE-BUG is the gap itself, run and recorded: swap the LoadTexture below for the
+ * GenerateTexture the old coverage used (and let the placeholder check through, since the
+ * synchronous path installs the real 2x2 immediately) and this reads "Expected 'The drained
+ * decode payload wakes the gate' to be not null." There is no decode to drain, so the frame is
+ * withheld -- which is the demonstration that the previous shape could not have caught this.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusIdleGateAsyncDecodeWakeTest, "VaCuus.Render.IdleGate.AsyncDecodeWake",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusIdleGateAsyncDecodeWakeTest::RunTest(const FString& Parameters)
+{
+	using namespace VaCuusIdleGateTest;
+
+	// LoadTexture resolves its source through Rml::GetFileInterface(), so the library must be
+	// booted -- and it must be OURS to boot: Initialize() while a live UI thread owns RmlUi
+	// trips FVaCuusEngine's owner-thread checkf (VaCuusEngine.cpp:250) instead of failing
+	// politely. VaCuus.Render.Recorder.LoadTexture states the same precondition for the same
+	// reason.
+	if (!TestFalse(TEXT("RmlUi is down before the test"), FVaCuusEngine::Get().IsInitialized()))
+	{
+		return false;
+	}
+
+	FVaCuusEngine& Engine = FVaCuusEngine::Get();
+	if (!TestTrue(TEXT("Initialized"), Engine.Initialize()))
+	{
+		return false;
+	}
+	ON_SCOPE_EXIT
+	{
+		Engine.Shutdown();
+	};
+
+	const FString TestDir = FPaths::ConvertRelativePathToFull(FPaths::ProjectSavedDir() / TEXT("VaCuusIdleGateTest"));
+	const FString PngPath = TestDir / TEXT("idle_gate_probe.png");
+	ON_SCOPE_EXIT
+	{
+		IFileManager::Get().Delete(*PngPath);
+		IFileManager::Get().DeleteDirectory(*TestDir);
+	};
+	if (!TestTrue(TEXT("Probe PNG saved"), SaveIdleGateProbePng(PngPath, GProbeSize)))
+	{
+		return false;
+	}
+
+	FVaCuusRecordingRenderInterface Recorder;
+	const FTriangle Triangle;
+
+	// ---- Frames 1-2: the steady state, and the proof that the gate is armed. ----
+	//
+	// The load deliberately does NOT happen yet. DrainCompletedDecodes runs at the top of
+	// BeginFrame(), so a frame that opens before LoadTexture is called cannot possibly be
+	// carrying a decode -- which is what makes "withheld" here mean the gate, and not luck
+	// about how fast a 4x2 PNG decodes.
+
+	Recorder.BeginFrame(GViewSize);
+	const Rml::CompiledGeometryHandle DrawHandle = Recorder.CompileGeometry(Triangle.VertexSpan(), Triangle.IndexSpan());
+	Recorder.RenderGeometry(DrawHandle, Rml::Vector2f(0.f, 0.f), Rml::TextureHandle(0));
+	if (!TestNotNull(TEXT("The steady-state frame published"), Recorder.EndFrameAndPublish().Get()))
+	{
+		return false;
+	}
+
+	Recorder.BeginFrame(GViewSize);
+	Recorder.RenderGeometry(DrawHandle, Rml::Vector2f(0.f, 0.f), Rml::TextureHandle(0));
+	if (!TestNull(TEXT("An unchanged frame is withheld: the gate is armed"), Recorder.EndFrameAndPublish().Get()))
+	{
+		return false;
+	}
+
+	// ---- Frame 3: the load. Publishes because of the placeholder it records. ----
+
+	Recorder.BeginFrame(GViewSize);
+	Rml::Vector2i Dimensions(0, 0);
+	const Rml::TextureHandle Texture = Recorder.LoadTexture(Dimensions, Rml::String(TCHAR_TO_UTF8(*PngPath)));
+	Recorder.RenderGeometry(DrawHandle, Rml::Vector2f(0.f, 0.f), Texture);
+	const TUniquePtr<FVaCuusCommandBuffer> Loading = Recorder.EndFrameAndPublish();
+
+	if (!TestTrue(TEXT("The probe loaded"), Texture != Rml::TextureHandle(0)) ||
+		!TestNotNull(TEXT("The loading frame published"), Loading.Get()))
+	{
+		return false;
+	}
+
+	// The placeholder is what proves the decode has NOT landed yet -- if LoadTexture were
+	// synchronous the payload would already be here and every assertion below would be
+	// measuring the wrong thing. It is also decisive that the decode CANNOT have been drained
+	// into this buffer: this frame's BeginFrame ran before LoadTexture existed.
+	const FVaCuusTextureData* Placeholder = Loading->NewTextures.Find(FVaCuusTextureHandle(Texture));
+	if (!TestNotNull(TEXT("...carrying a placeholder for the handle"), Placeholder))
+	{
+		return false;
+	}
+	if (!TestTrue(TEXT("...and the placeholder is 1x1, so the decode is still in flight"),
+			Placeholder->Size == FIntPoint(1, 1)))
+	{
+		return false;
+	}
+	TestTrue(TEXT("...while the header probe already reports the real size"),
+		Dimensions.x == GProbeSize.X && Dimensions.y == GProbeSize.Y);
+
+	// Every frame from here on draws exactly what frame 3 drew, so the content hash never
+	// moves again and any publish below is resource traffic by elimination.
+	const auto RecordIdenticalFrame = [&Recorder, DrawHandle, Texture]()
+	{
+		Recorder.BeginFrame(GViewSize);
+		Recorder.RenderGeometry(DrawHandle, Rml::Vector2f(0.f, 0.f), Texture);
+		return Recorder.EndFrameAndPublish();
+	};
+
+	// ---- Frame 4: the wake. ----
+	//
+	// Deterministic: wait on the decode TASK, then let the next BeginFrame() drain it. The UI
+	// thread must never do this (waiting on a decode is the hitch the async path removes) --
+	// WaitForTextureDecodes exists for exactly this and is compiled out of shipping builds.
+	if (!TestTrue(TEXT("The decode finished within the timeout"),
+			Recorder.WaitForTextureDecodes(FTimespan::FromSeconds(30.0))))
+	{
+		return false;
+	}
+
+	const TUniquePtr<FVaCuusCommandBuffer> Woken = RecordIdenticalFrame();
+	if (!TestNotNull(TEXT("The drained decode payload wakes the gate"), Woken.Get()))
+	{
+		return false;
+	}
+
+	// POSITIVE CONTROL. A non-null buffer alone would also be produced by a gate that had
+	// simply stopped working; this says WHAT woke it, and that the payload really is the
+	// decoded image rather than a second placeholder.
+	const FVaCuusTextureData* Payload = Woken->NewTextures.Find(FVaCuusTextureHandle(Texture));
+	if (TestNotNull(TEXT("...carrying the decoded payload under the same handle"), Payload))
+	{
+		TestTrue(TEXT("...at the image's real size, not the placeholder's"), Payload->Size == GProbeSize);
+		TestEqual(TEXT("...with RGBA8 bytes for every texel"), Payload->RGBA.Num(), GProbeSize.X * GProbeSize.Y * 4);
+	}
+
+	// THE POINT OF THE WHOLE TEST: the drawing did not change. This is what makes the publish
+	// attributable to the drain and nothing else.
+	TestEqual(TEXT("...while the command list is byte-identical to the withheld frame's"), Woken->Commands.Num(), 1);
+
+	// ---- Frame 5: back to sleep. The drain forgot the handle, so nothing is left to wake on,
+	// ---- and this is also what makes frame 4's publish attributable to the arrival alone.
+
+	TestNull(TEXT("The next frame is withheld again"), RecordIdenticalFrame().Get());
+
+	TestEqual(TEXT("Three publishes: the steady state, the load's placeholder, the decode's arrival"),
+		int32(Recorder.GetNumFramesPublished()), 3);
+	TestEqual(TEXT("Two withheld frames, one on each side of the load"),
+		int32(Recorder.GetNumFramesSkipped()), 2);
+
+	return true;
+}
+
+/**
+ * LIVE RELOAD, THROUGH THE GATE (VaCuus-akj.6.42(b)).
+ *
+ * Six VaCuus.LiveReload.* tests cover the watcher end -- what the debounce does, which files
+ * are tracked, how the fan-out re-arms -- and all of them stop at the dispatch. Nothing asserted
+ * what happens at the far end of that dispatch, which is where the risk actually is: a reload
+ * lands on a view that has gone IDLE, and on an idle view the render target is the only copy of
+ * the pixels. Withhold the reload's frame and the designer's edit is invisible -- the old
+ * document stays composited, the log says the load succeeded, FramesRecorded keeps climbing,
+ * and every counter looks healthy. That is the same failure shape as merge blocker B1, which
+ * VaCuus.Render.Close.ClearingFrame now pins for Close() and nothing pinned for reload.
+ *
+ * DRIVEN THROUGH THE PRODUCTION DOOR, on the real UI thread with the real
+ * FVaCuusRmlDocumentHost, observed through the same FVaCuusViewStatus counters the game thread
+ * reads. The two enqueues below are, in order, exactly what an editor live reload issues:
+ * UVaCuusSubsystem::ClearAssetCachesAndReloadAllViews() puts ONE
+ * FVaCuusUIThread::EnqueueClearAssetCaches() in front of the fan-out (VaCuusSubsystem.cpp:307-312)
+ * and then UVaCuusView::ReloadDocument() enqueues EnqueueLoadDocumentFile with a bumped load
+ * serial (VaCuusView.cpp:202-211). What is NOT driven here is the file watcher itself, which is
+ * what those six tests are for.
+ *
+ * A FILE FIXTURE, NOT AN INLINE STRING, because ReloadDocument() only opens for files: it
+ * refuses a view with an empty DocumentPath, and LoadDocumentFromMemory() clears that path
+ * deliberately (VaCuusView.cpp:188-191, :226-230). Reloading an inline document is not a thing
+ * this system can be asked to do.
+ *
+ * WHY THE RELOAD MUST PUBLISH, mechanically: FVaCuusRmlDocumentHost::AdoptDocument loads the
+ * new document and only then closes the old one (VaCuusRmlDocumentHost.cpp:192-207), so the
+ * recorded frame carries the new document's compiled geometry AND the old one's releases. Both
+ * are resource traffic, and the draws reference handles the replayer has never seen. A gate that
+ * hashed only the drawing would look at two identical-looking box draws and withhold the frame.
+ *
+ * RESTORE-THE-BUG, run and recorded: drop the EnqueueLoadDocumentFile below (and stand the
+ * completion guard down, so the publish assertion is the one that speaks) and this reads
+ * "Expected 'A reload onto an idle view publishes' to be true" -- the publish counter frozen
+ * exactly where the idle gate left it. From the game thread that is indistinguishable from a
+ * reload whose frame was withheld, which is precisely why the counter is the right observable.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusIdleGateLiveReloadTest, "VaCuus.Render.IdleGate.LiveReload",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusIdleGateLiveReloadTest::RunTest(const FString& Parameters)
+{
+	using namespace VaCuusIdleGateTest;
+
+	if (!FPlatformProcess::SupportsMultithreading())
+	{
+		AddInfo(TEXT("Skipped: no multithreading support, so there is no UI thread to drive"));
+		return true;
+	}
+
+	// The UI thread boots RmlUi itself and claims ownership of it, so nothing else may hold the
+	// library when this starts.
+	if (!TestFalse(TEXT("RmlUi is down before the test"), FVaCuusEngine::Get().IsInitialized()))
+	{
+		return false;
+	}
+
+	FVaCuusModule& Module = FVaCuusModule::Get();
+	FVaCuusUIThread* UIThread = Module.GetOrStartUIThread();
+	if (!TestNotNull(TEXT("UI thread"), UIThread))
+	{
+		return false;
+	}
+	ON_SCOPE_EXIT
+	{
+		Module.StopUIThread();
+	};
+
+	// A real Slate element, never painted: the published buffers simply queue up on it. The
+	// production host requires one, and everything under test happens on the UI thread.
+	const TSharedRef<FVaCuusSlateElement> Element = MakeShared<FVaCuusSlateElement>();
+	const TSharedRef<FVaCuusViewStatus> Status = MakeShared<FVaCuusViewStatus>();
+
+	const uint32 ViewId = UIThread->AllocateViewId();
+	UIThread->EnqueueAddView(ViewId, MakeUnique<FVaCuusRmlDocumentHost>(Element), GViewSize, Status);
+	UIThread->EnqueueLoadDocumentFile(ViewId, GReloadFixturePath, /*LoadSerial=*/1);
+
+	// Frame 1 drains the add and the load; frames 2-5 record the same static document and are
+	// withheld, which is the state a live reload has to break out of.
+	if (!TestTrue(TEXT("UI frames ran"), RunUIFrames(*UIThread, 5)))
+	{
+		return false;
+	}
+
+	if (!TestTrue(TEXT("The fixture loaded from the VFS"),
+			Status->LoadCompletedSerial.load(std::memory_order_acquire) == 1 &&
+				Status->LoadResult.load(std::memory_order_relaxed) == uint8(EVaCuusLoadResult::Succeeded)))
+	{
+		return false;
+	}
+
+	const uint64 RecordedBefore = Status->FramesRecorded.load(std::memory_order_acquire);
+	const uint64 PublishedBefore = Status->FramesPublished.load(std::memory_order_acquire);
+
+	// THE PRECONDITION THAT MAKES THE REST MEAN ANYTHING, and the same one
+	// VaCuus.Render.Close.ClearingFrame states: a view that republished every frame would pass
+	// the reload assertion below no matter what the gate did.
+	if (!TestTrue(TEXT("The idle gate is armed: fewer publishes than recorded frames"),
+			PublishedBefore < RecordedBefore))
+	{
+		return false;
+	}
+
+	// ---- The live reload, in the order the dispatcher issues it. ----
+
+	UIThread->EnqueueClearAssetCaches();
+	UIThread->EnqueueLoadDocumentFile(ViewId, GReloadFixturePath, /*LoadSerial=*/2);
+
+	if (!TestTrue(TEXT("UI frames ran after the reload"), RunUIFrames(*UIThread, 4)))
+	{
+		return false;
+	}
+
+	if (!TestTrue(TEXT("The reload completed"),
+			Status->LoadCompletedSerial.load(std::memory_order_acquire) == 2 &&
+				Status->LoadResult.load(std::memory_order_relaxed) == uint8(EVaCuusLoadResult::Succeeded)))
+	{
+		return false;
+	}
+
+	const uint64 PublishedAfterReload = Status->FramesPublished.load(std::memory_order_acquire);
+
+	// THE ASSERTION THE GAP WAS ABOUT. Not "how many" -- the release of the outgoing document's
+	// geometry may or may not share a frame with the incoming document's compile, and pinning
+	// that would be pinning RmlUi's unload scheduling rather than the gate. What must hold is
+	// that a reload onto an IDLE view reaches the render thread at all.
+	if (!TestTrue(TEXT("A reload onto an idle view publishes"), PublishedAfterReload > PublishedBefore))
+	{
+		return false;
+	}
+
+	// ---- And the other half: it wakes for the reload and goes straight back to sleep. ----
+	//
+	// Without this, "publishes" would also be satisfied by a reload that broke the gate
+	// outright and left the view republishing its pixels forever -- the opposite bug, and the
+	// one that costs a frame's upload per tick for the rest of the session.
+	if (!TestTrue(TEXT("More UI frames ran"), RunUIFrames(*UIThread, 4)))
+	{
+		return false;
+	}
+	TestEqual(TEXT("...and the gate re-arms immediately afterwards"),
+		Status->FramesPublished.load(std::memory_order_acquire), PublishedAfterReload);
+	TestTrue(TEXT("...on a view that is still being driven"),
+		Status->FramesRecorded.load(std::memory_order_acquire) > PublishedAfterReload);
+
+	UIThread->EnqueueRemoveView(ViewId);
+	RunUIFrames(*UIThread, 1);
 
 	return true;
 }

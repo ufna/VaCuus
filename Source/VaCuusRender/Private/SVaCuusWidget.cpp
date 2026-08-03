@@ -21,8 +21,10 @@
 #include "Widgets/SWindow.h"
 
 // Debug helper for headless verification: request a UI-inclusive screenshot
-// once the view has recorded N frames (0 = off). Set BEFORE toggling
-// vacuus.M1HUD on, e.g. -ExecCmds="vacuus.M1HUD.AutoShot 10, vacuus.M1HUD".
+// once the view has recorded N frames (0 = off). Serves whatever view the widget
+// hosts, not just the M1 HUD -- the name is historical and stays (see TickAutoShot's
+// declaration for why). Set BEFORE bringing a document up, e.g.
+// -ExecCmds="vacuus.M1HUD.AutoShot 10, vacuus.M5Glass".
 static TAutoConsoleVariable<int32> CVarVaCuusM1HUDAutoShot(
 	TEXT("vacuus.M1HUD.AutoShot"),
 	0,
@@ -84,7 +86,7 @@ void SVaCuusWidget::Construct(const FArguments& InArgs,
 	// is now the ONLY copy of an idle UI's pixels, and why the recorder will never resend them.
 	// FVaCuusSlateElement::Draw_RenderThread is what puts them on screen with no buffer in
 	// flight at all — its replay sits inside `if (PendingBuffers.Num() > 0)`, the composite
-	// after it does not (VaCuusSlateElement.cpp:56-96).
+	// after it does not (VaCuusSlateElement.cpp:113-146 and :148-231).
 	//
 	// WHAT VOLATILITY BUYS, checked against the engine rather than asserted.
 	// ForceVolatile(true) makes SWidget::IsVolatile() true, and that does two things:
@@ -300,7 +302,20 @@ void SVaCuusWidget::TickAutoShot()
 	}
 
 	bAutoShotDone = true;
-	UE_LOG(LogVaCuus, Log, TEXT("M1 HUD auto-screenshot after %llu recorded UI frames"), RecordedFrames);
+
+	// The view is named, not assumed: the cvar is process-wide and EVERY hosted widget
+	// services it, so with two views up the log has to say which one shot. ViewPtr cannot be
+	// null here -- without a view RecordedFrames is 0 and the threshold is at least 1.
+	//
+	// DISPLAY, NOT Log, and the choice is forced rather than cosmetic: the automation
+	// framework's capture only feeds Error/Warning/Display into the expected-message matcher
+	// (FAutomationTestFramework::FAutomationTestOutputDevice::Serialize,
+	// AutomationTest.cpp:232-234), so at Log this sentence could not be asserted by any test
+	// -- the same argument that already picked Display for console.log
+	// (VaCuusJsViewContext.cpp:475-482). It is also the level its sibling one-shot uses
+	// (-VaCuusRefHud's gate screenshot, VaCuusRender.cpp).
+	UE_LOG(LogVaCuus, Display, TEXT("VaCuus auto-screenshot: view %u after %llu recorded UI frames"),
+		ViewPtr->GetViewId(), RecordedFrames);
 	FScreenshotRequest::RequestScreenshot(/*bInShowUI=*/true);
 }
 
@@ -450,6 +465,56 @@ void SVaCuusWidget::SendInput(const FVaCuusInputEvent& Event)
 	}
 }
 
+/**
+ * WHICH SVaCuusWidget holds Slate's mouse capture, process-wide, or nothing.
+ *
+ * ONE WRITER BY CONSTRUCTION: FVaCuusMouseCaptureState::Set() below is the only mutator of the
+ * per-widget flag as well (SVaCuusWidget.h says why that cannot be bypassed), so the mirror
+ * and the flag are updated in the same statement or not at all.
+ *
+ * WEAK, not shared: a widget torn down while it still holds capture is the case
+ * ReleaseOwnPointerCapture() exists for, and a strong pointer here would keep the corpse
+ * alive past its owner. A stale entry simply pins to null.
+ *
+ * PROCESS-WIDE, WHICH IS EXACTLY AS WIDE AS ITS ONE CONSUMER NEEDS: Slate's capture is per
+ * FSlateUser, so in split-screen two widgets can hold capture for two users at once and this
+ * names only the most recent. The per-widget flag stays the truth for behaviour; this answers
+ * "did the UI take that synthesized press", a question only the single-user headless console
+ * commands ask.
+ *
+ * Game thread only, like every write site; Set() asserts it.
+ */
+static TWeakPtr<const SVaCuusWidget> GVaCuusMouseCaptureHolder;
+
+void FVaCuusMouseCaptureState::Set(const TSharedRef<const SVaCuusWidget>& Widget, bool bInHeld)
+{
+	check(IsInGameThread());
+
+	bHeld = bInHeld;
+
+	if (bInHeld)
+	{
+		GVaCuusMouseCaptureHolder = Widget;
+	}
+	else if (GVaCuusMouseCaptureHolder.Pin().Get() == &Widget.Get())
+	{
+		// Only OUR entry is cleared. Another widget may legitimately be the holder by the time
+		// we let go (split-screen, two views), and clearing unconditionally would then blame
+		// the game for a press that widget had just taken.
+		GVaCuusMouseCaptureHolder.Reset();
+	}
+}
+
+TSharedPtr<const SVaCuusWidget> SVaCuusWidget::GetMouseCaptureHolder_Debug()
+{
+	return GVaCuusMouseCaptureHolder.Pin();
+}
+
+void SVaCuusWidget::SetMouseCapture(bool bInCaptured)
+{
+	MouseCapture.Set(SharedThis(this), bInCaptured);
+}
+
 FReply SVaCuusWidget::OnMouseMove(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent)
 {
 	// THE "input" HALF OF THE SPEC'S GAME-THREAD BUDGET (Task 14), and every handler below
@@ -469,7 +534,7 @@ FReply SVaCuusWidget::OnMouseMove(const FGeometry& MyGeometry, const FPointerEve
 	// While we hold capture the answer is Handled regardless of coverage: a drag that
 	// started on a scrollbar must keep being ours even after the pointer wanders off
 	// it, which is exactly the case the snapshot cannot express.
-	if (bHasMouseCapture || GetSnapshot().Contains(Position))
+	if (MouseCapture.IsHeld() || GetSnapshot().Contains(Position))
 	{
 		return FReply::Handled();
 	}
@@ -497,9 +562,9 @@ FReply SVaCuusWidget::OnMouseButtonDown(const FGeometry& MyGeometry, const FPoin
 	// Capture on the FIRST button only, and release when the last one comes up --
 	// the idiom FWebBrowserViewport uses (WebBrowserViewport.cpp:52-78). Capture is
 	// what keeps a drag alive outside the rect it started in.
-	if (!bHasMouseCapture)
+	if (!MouseCapture.IsHeld())
 	{
-		bHasMouseCapture = true;
+		SetMouseCapture(true);
 		Reply.CaptureMouse(SharedThis(this));
 	}
 
@@ -559,7 +624,7 @@ FReply SVaCuusWidget::OnMouseButtonUp(const FGeometry& MyGeometry, const FPointe
 	SendInput(FVaCuusInputEvent::MouseButton(
 		/*bDown=*/false, Position, MouseEvent.GetEffectingButton(), ToModifierState(MouseEvent)));
 
-	const bool bWasCapturing = bHasMouseCapture;
+	const bool bWasCapturing = MouseCapture.IsHeld();
 
 	// GetPressedButtons() is the POST-release set: FSlateApplication::OnMouseUp removes
 	// the released button before it constructs the FPointerEvent, and says so in its
@@ -570,9 +635,9 @@ FReply SVaCuusWidget::OnMouseButtonUp(const FGeometry& MyGeometry, const FPointe
 	// capture with a button still held, breaking any drag that uses a second button.
 	// This is also exactly what the precedent does
 	// (FWebBrowserViewport::OnMouseButtonUp, WebBrowserViewport.cpp:52-78).
-	if (bHasMouseCapture && MouseEvent.GetPressedButtons().IsEmpty())
+	if (MouseCapture.IsHeld() && MouseEvent.GetPressedButtons().IsEmpty())
 	{
-		bHasMouseCapture = false;
+		SetMouseCapture(false);
 
 		// Handled AND releasing: an FReply that releases capture without being handled
 		// would leave Slate looking for another handler for an event we consumed.
@@ -651,9 +716,9 @@ void SVaCuusWidget::OnMouseCaptureLost(const FCaptureLostEvent& CaptureLostEvent
 	// window loses focus, another widget captures, the viewport changes input mode.
 	// Without this the flag would stay set forever and every later mouse move would
 	// answer Handled, silently eating the game's camera input.
-	if (bHasMouseCapture)
+	if (MouseCapture.IsHeld())
 	{
-		bHasMouseCapture = false;
+		SetMouseCapture(false);
 
 		// RmlUi is told the pointer is gone rather than left mid-drag: it has no
 		// "capture lost" concept, and a stuck :active/drag state is exactly what
@@ -1145,7 +1210,7 @@ void SVaCuusWidget::TickKeyboardFocusRelease()
 	// (ProcessKeyDownEvent -> SlateUser->GetFocusPath()), so the game viewport would stop
 	// receiving keys altogether -- the same class of bug as the one this fix is for.
 	// SetUserFocusToGameViewport is the engine's own idiom for this
-	// (UGameViewportClient.cpp:3354); it no-ops when there is no game viewport, which is
+	// (GameViewportClient.cpp:3354); it no-ops when there is no game viewport, which is
 	// why the clear below is the fallback rather than the default.
 	const bool bHasGameViewport = Slate.GetGameViewport().IsValid();
 	for (const int32 UserIndex : UsersToRelease)

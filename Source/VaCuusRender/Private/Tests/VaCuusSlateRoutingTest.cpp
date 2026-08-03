@@ -366,6 +366,22 @@ static FPointerEvent MakePointerEvent(const FVector2D& Position, const TSet<FKey
 		FModifierKeysState());
 }
 
+/**
+ * The process-wide capture holder as a raw pointer (bead VaCuus-akj.6.41).
+ *
+ * WHY IT IS ASSERTED BESIDE EVERY IsTrackingMouseCapture_Debug() BELOW: the static is what the
+ * headless click commands (vacuus.LobbyDemo.Click, vacuus.M1HUD.TypeShot, vacuus.M2Demo.Drag)
+ * attribute a press with -- SVaCuusWidget::GetMouseCaptureHolder_Debug carries the argument --
+ * and it is a MIRROR of the per-widget flag. A mirror that is right only sometimes is worse
+ * than none: the command would print "THE GAME (VaCuus declined…)" for a press the UI took,
+ * which is the exact wrong conclusion for an acceptance run to record. Pairing the two
+ * assertions is what makes the two halves provably one fact.
+ */
+static const SVaCuusWidget* CaptureHolder()
+{
+	return SVaCuusWidget::GetMouseCaptureHolder_Debug().Get();
+}
+
 /** A key event as FSlateApplication would build one for an unmodified press. */
 static FKeyEvent MakeKeyEvent(const FKey& Key)
 {
@@ -483,6 +499,9 @@ bool FVaCuusSlateRoutingTest::RunTest(const FString& Parameters)
 	const TSet<FKey> RightOnly = {EKeys::RightMouseButton};
 	const TSet<FKey> LeftAndRight = {EKeys::LeftMouseButton, EKeys::RightMouseButton};
 
+	// The subject of the GetMouseCaptureHolder_Debug() assertions below, spelled once.
+	const SVaCuusWidget* const ThisWidget = &Widget.Get();
+
 	// 0. CONTROLLER DECISION D11: ONE click on a focusable rect takes Slate focus.
 	//
 	// The premise is the state this runs in: nothing focusable holds RmlUi focus yet
@@ -516,6 +535,7 @@ bool FVaCuusSlateRoutingTest::RunTest(const FString& Parameters)
 		Widget->OnMouseButtonUp(Geometry, MakePointerEvent(GPanelPoint, NoButtons, EKeys::LeftMouseButton));
 
 		TestFalse(TEXT("Capture is back after both clicks"), Widget->IsTrackingMouseCapture_Debug());
+		TestNull(TEXT("...and the process-wide holder names nobody"), CaptureHolder());
 	}
 
 	// 1. Pass-through: a press where the snapshot reports nothing must be Unhandled,
@@ -527,6 +547,9 @@ bool FVaCuusSlateRoutingTest::RunTest(const FString& Parameters)
 		TestFalse(TEXT("A pass-through press takes no capture"), Reply.GetMouseCaptor().IsValid());
 		TestFalse(TEXT("A pass-through press does not start tracking capture"),
 			Widget->IsTrackingMouseCapture_Debug());
+		TestNull(TEXT("...and does not put this widget in the holder either -- a click command ")
+				 TEXT("must report THE GAME for exactly this press"),
+			CaptureHolder());
 
 		// And the matching release must fall through too: swallowing it would leave the
 		// game holding a button down forever.
@@ -544,6 +567,7 @@ bool FVaCuusSlateRoutingTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("The press captures the mouse to this widget"),
 			LeftDown.GetMouseCaptor().Get(), static_cast<SWidget*>(&Widget.Get()));
 		TestTrue(TEXT("The widget is tracking capture"), Widget->IsTrackingMouseCapture_Debug());
+		TestSamePtr(TEXT("...and the process-wide holder names THIS widget"), CaptureHolder(), ThisWidget);
 
 		// Second button while the first is held: already captured, so no new request.
 		const FReply RightDown = Widget->OnMouseButtonDown(
@@ -551,6 +575,7 @@ bool FVaCuusSlateRoutingTest::RunTest(const FString& Parameters)
 		TestTrue(TEXT("A second press is Handled"), RightDown.IsEventHandled());
 		TestFalse(TEXT("A second press does not re-request capture"), RightDown.GetMouseCaptor().IsValid());
 		TestTrue(TEXT("The widget still tracks capture"), Widget->IsTrackingMouseCapture_Debug());
+		TestSamePtr(TEXT("...and the holder still names it"), CaptureHolder(), ThisWidget);
 
 		// Releasing Left leaves {Right} in the POST-release set, which is what
 		// FSlateApplication::OnMouseUp hands us (SlateApplication.cpp:6098-6106). Capture
@@ -561,6 +586,8 @@ bool FVaCuusSlateRoutingTest::RunTest(const FString& Parameters)
 		TestFalse(TEXT("Releasing one of two buttons does NOT release capture"), LeftUp.ShouldReleaseMouse());
 		TestTrue(TEXT("The widget still tracks capture with a button still down"),
 			Widget->IsTrackingMouseCapture_Debug());
+		TestSamePtr(TEXT("...and so does the holder, or a two-button drag would be blamed on the game"),
+			CaptureHolder(), ThisWidget);
 
 		// The last button up: now capture goes back.
 		const FReply RightUp = Widget->OnMouseButtonUp(
@@ -568,6 +595,7 @@ bool FVaCuusSlateRoutingTest::RunTest(const FString& Parameters)
 		TestTrue(TEXT("Releasing the last button is Handled"), RightUp.IsEventHandled());
 		TestTrue(TEXT("Releasing the last button releases capture"), RightUp.ShouldReleaseMouse());
 		TestFalse(TEXT("The widget stops tracking capture"), Widget->IsTrackingMouseCapture_Debug());
+		TestNull(TEXT("...and the holder is cleared with it"), CaptureHolder());
 	}
 
 	// 3. Those presses were real events on a real queue, so RmlUi must have seen them.
@@ -585,9 +613,15 @@ bool FVaCuusSlateRoutingTest::RunTest(const FString& Parameters)
 	{
 		Widget->OnMouseButtonDown(Geometry, MakePointerEvent(GButtonPoint, LeftOnly, EKeys::LeftMouseButton));
 		TestTrue(TEXT("Tracking capture again"), Widget->IsTrackingMouseCapture_Debug());
+		TestSamePtr(TEXT("...and the holder names it again"), CaptureHolder(), ThisWidget);
 
 		Widget->OnMouseCaptureLost(FCaptureLostEvent(0, FSlateApplicationBase::CursorPointerIndex));
 		TestFalse(TEXT("Losing capture clears the tracking flag"), Widget->IsTrackingMouseCapture_Debug());
+
+		// THE THIRD WRITE SITE, and the one a mirror is most likely to be forgotten at: this
+		// path has no button-up to hang a release off. Drop the mirror update from
+		// SVaCuusWidget::OnMouseCaptureLost and this is the assertion that fails -- alone.
+		TestNull(TEXT("Losing capture clears the process-wide holder too"), CaptureHolder());
 
 		// And a move over a pass-through point is Unhandled again rather than stuck.
 		const FReply Move = Widget->OnMouseMove(Geometry, MakePointerEvent(GEmptyPoint, NoButtons, FKey()));
@@ -845,6 +879,42 @@ bool FVaCuusSlateRoutingTest::RunTest(const FString& Parameters)
 		}
 		TestEqual(TEXT("A C0 control character produces no text"),
 			Host->FieldValueUtf8Hex, FString(TEXT("F09F9880C3A9")));
+	}
+
+	// 5b. THE AUTOSHOT LINE SAYS WHAT IT SERVES (bead VaCuus-akj.6.41c). It used to open "M1
+	// HUD auto-screenshot" although TickAutoShot fires for WHATEVER view the widget hosts --
+	// the cvar is process-wide and every hosted widget services it -- so the sentence named
+	// one demo out of ten. Reachable from here because this test owns a live view whose
+	// GetFramesRecorded() has been advancing since the first RunFrames().
+	//
+	// THE ASSERTION IS AddExpectedMessagePlain ITSELF, not anything below it: the framework
+	// counts matches and turns a count that is not exactly one into a test Error at the end
+	// (FAutomationTestBase::HasMetExpectedMessages, AutomationTest.cpp:1826-1838). It only
+	// works because the line is Display -- Log-verbosity messages never reach the matcher at
+	// all (AutomationTest.cpp:232-234); see the log site for the whole argument.
+	{
+		IConsoleVariable* const AutoShotVar =
+			IConsoleManager::Get().FindConsoleVariable(TEXT("vacuus.M1HUD.AutoShot"));
+		if (TestNotNull(TEXT("The AutoShot cvar is registered"), AutoShotVar))
+		{
+			const int32 RestoreAutoShot = AutoShotVar->GetInt();
+			AutoShotVar->Set(1, ECVF_SetByCode);
+
+			TestTrue(TEXT("The view has recorded a frame for AutoShot to fire on"),
+				View->GetFramesRecorded() >= 1);
+
+			AddExpectedMessagePlain(TEXT("VaCuus auto-screenshot: view "), ELogVerbosity::Display,
+				EAutomationExpectedMessageFlags::Contains, 1);
+
+			// ONE Tick is all it takes and all it may take: the threshold is one recorded
+			// frame, and bAutoShotDone makes the whole thing one-shot, which is what keeps the
+			// expected count at exactly 1. The line also fires
+			// FScreenshotRequest::RequestScreenshot -- inert with no viewport to service it
+			// under -nullrhi, but not free, which is why the cvar goes straight back.
+			Widget->Tick(Geometry, 9000.0, 0.016f);
+
+			AutoShotVar->Set(RestoreAutoShot, ECVF_SetByCode);
+		}
 	}
 
 	// 6. Detaching the view makes every handler fall through, which is what a widget
@@ -1358,7 +1428,7 @@ bool FVaCuusNavEntryTest::RunTest(const FString& Parameters)
 		Widget->OnKeyUp(Geometry, MakeKeyEvent(EKeys::Gamepad_DPad_Right));
 
 		// DRAINED BEFORE THE NEXT LOAD, and it is not tidiness: commands and input are two
-		// queues and the UI frame drains COMMANDS FIRST (VaCuusUIThread.cpp:807-808), so a
+		// queues and the UI frame drains COMMANDS FIRST (VaCuusUIThread.cpp:1080-1092), so a
 		// press left in flight here would be delivered to the document loaded below rather
 		// than to this one -- and a stale Tab landing on the next document would silently
 		// pre-focus it and invalidate every assertion in STATE 4.

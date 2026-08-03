@@ -192,7 +192,34 @@ public:
 	//~ timing contract against these very numbers rather than a hard-coded copy of them --
 	//~ the poll INTERVAL is not one of them and is private below.
 
-	/** Quiet time before a flush. One editor save is a BURST of IN_MODIFY events. */
+	/**
+	 * Quiet time before a flush. One editor save is a BURST of IN_MODIFY events.
+	 *
+	 * 0.15 s IS THE DECISION, RE-TAKEN AND DELIBERATELY UNCHANGED (bead VaCuus-akj.6.24). M2's
+	 * acceptance step asked for "within ~200 ms" and the proof measured 191
+	 * (docs/research/proofs/m2-t10-live-reload/README.md), and 9 ms of apparent headroom
+	 * invites a trim. It should not be trimmed, for three reasons that are all checkable:
+	 *
+	 *  - THE MEASUREMENT IS NOT THIS NUMBER PLUS SLACK, it is this number plus the burst.
+	 *    FlushAt() reports Now - FirstChangeSeconds, while the earliest a batch may flush is
+	 *    LastChange + QuietSeconds -- so the save the proof recorded, 4 inotify events spanning
+	 *    ~40 ms, cannot report under 190 ms however fast the rest of the machine is. Trimming
+	 *    the window buys 1:1 against the 150 and nothing against the 40.
+	 *    VaCuus.LiveReload.Debounce (e) pins that arithmetic to these constants.
+	 *  - THE JITTER IS WIDER THAN THE HEADROOM. The armed ticker asks every
+	 *    DebouncePollSeconds (50 ms) and FTSTicker only fires from the engine loop, so the same
+	 *    code on the same machine legitimately reports anywhere across a ~50 ms band plus a
+	 *    frame. A 9 ms margin measured once is inside its own measurement's noise; treating it
+	 *    as headroom is a number chasing itself.
+	 *  - AND A SHORTER WINDOW DOES NOT FAIL "slightly early". It fails by flushing BETWEEN the
+	 *    writes of one save and reloading a half-written file, which surfaces as a parse error
+	 *    on a document the developer just fixed.
+	 *
+	 * "~200 ms" was never a budget either: it is a plan step's own wording, with a tilde on it.
+	 * No spec row, passport row or test states a live-reload latency at all -- and the honest
+	 * place to spend effort, if the figure ever does matter, is the 50 ms poll rather than the
+	 * quiet window, because that part is pure latency with no correctness attached.
+	 */
 	static constexpr double QuietSeconds = 0.15;
 
 	/**

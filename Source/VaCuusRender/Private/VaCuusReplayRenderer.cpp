@@ -285,7 +285,7 @@ void FVaCuusReplayRenderer::ReplayCommands(FRHICommandList& RHICmdList, const FV
 		// once and never switches, and N consecutive DrawShaders cost one switch, not N.
 		// Scissor and viewport survive the switch — they are command-list state, not PSO
 		// state (the glass draw's own pattern: set once, draw through PSO binds,
-		// VaCuusSlateElement.cpp:522-536).
+		// VaCuusSlateElement.cpp:556-584).
 		//
 		// Material (M5 Task 5b) is the odd one out: a material draw is a FULL pipeline
 		// (its VS differs too) bound inside DrawMaterial_RenderThread, so its enum value
@@ -619,7 +619,7 @@ void FVaCuusReplayRenderer::ReplayCommands(FRHICommandList& RHICmdList, const FV
 	// SET, not INC, and no longer "one replay per frame so these read as per-frame". Since the
 	// M2 Task 12 idle gate there are frames with NO replay at all, and what saves these two
 	// numbers from latching stale values is that both are declared
-	// DECLARE_DWORD_COUNTER_STAT_EXTERN (VaCuusStats.h:18-19), i.e. EStatFlags::ClearEveryFrame
+	// DECLARE_DWORD_COUNTER_STAT_EXTERN (VaCuusStats.h:76-77), i.e. EStatFlags::ClearEveryFrame
 	// (Stats/Stats.h:180-182). So `stat vacuus` honestly reads 0 draw calls / 0 commands on a
 	// withheld frame rather than the last replay's figures.
 	//
