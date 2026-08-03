@@ -1,0 +1,110 @@
+RmlUi, vendored for VaCuusRml
+=============================
+
+upstream: https://github.com/mikke89/RmlUi
+commit:   0ae381e00d7426762bb5ed897973366358b16642
+vendored: 2026-07-29
+
+VENDORED_SHA.txt NEXT TO THIS FILE HOLDS THAT SHA AND NOTHING ELSE, and must keep
+holding nothing else: Tools/gen_rcss_matrix.py:34,134 reads the whole file and
+.strip()s it into the generated docs/buyer/rcss-matrix.md header. This file is the
+human half -- what is here, and the local patches. Read both before re-vendoring.
+
+What is here, and why exactly this
+----------------------------------
+Vendored per docs/superpowers/plans/2026-07-29-vacuus-m1-render-spike.md:114-122:
+
+    cp -r Include Source Backends LICENSE.txt readme.md $DEST/
+    rm -rf $DEST/Source/Lua $DEST/Source/SVG $DEST/Source/Lottie
+    echo "<sha>" > $DEST/VENDORED_SHA.txt
+
+Backends/ is reference material and is never compiled. Only Source/Core and
+Source/Debugger are built, through the per-file relay .cpp files that
+Source/VaCuusRml/Private/Gen/ generates.
+
+Local patches
+-------------
+This tree was byte-identical to the upstream commit above until 2026-08-03.
+Re-vendoring procedure: copy the file list above from the pinned commit, reapply
+the patch(es) below, then run the verification named with each one -- a patch
+that is silently lost re-introduces a defect nobody can see on screen.
+
+Patch #1 -- data-style compares against the unit-less variant (bead VaCuus-akj.17).
+
+Source/Core/DataViewDefault.cpp, DataViewStyle::Update. Upstream decides whether a
+data-style binding needs re-applying by comparing the incoming string against
+`p->Get<String>()`, and Property::Get<T> forwards straight to the property's value
+Variant (Include/RmlUi/Core/Property.h:41-45), which does not carry the unit -- that
+is a separate member (Property.h:50-51). So the property parsed out of "100px" reads
+back as "100" and never compares equal to the string that produced it. Every dirty of
+the bound variable therefore called Element::SetProperty with an unchanged value, and
+SetProperty does not compare either (ElementStyle.cpp:606-618 -> PropertyDictionary
+::SetProperty + DirtyProperty, unconditional), nor does ComputeValues, which returns
+the DIRTY set rather than a changed-value set (ElementStyle.cpp:1022-1026). So the
+element restyles, and a layout property relayouts the whole document, every time.
+
+Whether that also costs a PUBLISHED frame depends on which property is bound, and the
+first version of the test below got this wrong -- it bound `width`, and passed with
+the patch reverted. Two RmlUi shortcuts absorb the layout-only path: an unchanged box
+never reaches OnResize, and ElementText reuses its compiled geometry when the
+regenerated mesh compares equal (ElementText.cpp:530-536). The border/background path
+has no such check -- ElementBackgroundBorder::GenerateGeometry releases and re-makes
+its mesh unconditionally (ElementBackgroundBorder.cpp:131-137) -- so a no-op write to
+border-*-width, border-radius or box-shadow is a fresh handle plus resource traffic,
+both legs of VaCuus's publish gate. A HUD whose model dirties a coarse top-level name
+each tick (FVaCuusBoundModel::ApplyUpdate dirties the ROOT of a nested field) then
+published EVERY frame while nothing on it changed: measured 100 of 100.
+
+Not fixed at the VaCuus layer, because it cannot be: the plugin never sees this
+call. Factory::RegisterDataViewInstancer refuses a duplicate name and logs a warning
+(Source/Core/Factory.cpp:561-567), so "style" cannot be shadowed by our own view;
+Element::SetProperty is not virtual (Include/RmlUi/Core/Element.h:177), so no custom
+element instancer can intercept it; and DataModel::DirtyVariable takes top-level
+names only, so the coarse dirty that exposes this cannot be narrowed either.
+
+Verification: automation test VaCuus.Model.View.DataStyleIdle
+(Source/VaCuusRender/Private/Tests/VaCuusDataStyleIdleTest.cpp) drives a real view
+whose model dirties a sibling field every frame while the bound style values stay
+"4px" (border-left-width) and "120px" (width), and asserts ZERO published frames over
+100. Revert this hunk and it fails with exactly the numbers a re-vendor that dropped
+the patch would produce:
+
+  Expected 'and the unit-bearing data-style bindings published NOT ONE of them
+  (akj.17)' to be 0, but it was 100.
+  Expected 'the new values settle back to zero published frames' to be 0, but it
+  was 20.
+
+The hunk, ABRIDGED -- the in-file comment is long enough that reproducing it here
+twice would be the thing that rots. One line changes:
+
+--- a/Source/Core/DataViewDefault.cpp
++++ b/Source/Core/DataViewDefault.cpp
+@@ bool DataViewStyle::Update(DataModel& model)
+ 	if (element && GetExpression().Run(expr_interface, variant))
+ 	{
+ 		const String value = variant.Get<String>();
+ 		const Property* p = element->GetLocalProperty(property_name);
+-		if (!p || p->Get<String>() != value)
++		/* VaCuus patch #1 comment -- see the file for the full text */
++		if (!p || p->ToString() != value)
+ 		{
+ 			element->SetProperty(property_name, value);
+ 			result = true;
+ 		}
+ 	}
+
+Property::ToString() re-appends the unit and maps a keyword back to its name
+(Source/Core/Property.cpp:12-20 -> PropertyDefinition::GetValue,
+Source/Core/PropertyDefinition.cpp:91-135), so the comparison is now against the
+string that produced the property. It is a strict widening of the equal case: it can
+only make MORE comparisons succeed, never fewer, because a property's ToString is
+the string a re-parse would produce. Values whose ToString is not the authored
+spelling still compare unequal exactly as they did before, and re-set exactly as
+often: colours other than lowercase #rrggbb (TypeConverter.cpp:267-273 spells a
+Colourb that way), shorthands (no local property exists under the shorthand's own
+name), and spellings that "%.3f" with trimmed trailing zeros cannot reproduce
+("120.50px"). Those residues are documented for buyers in docs/buyer/perf-guide.md.
+
+NOT yet offered upstream -- that is a maintainer action and nobody has taken it.
+It should be: the hunk is upstream-shaped on purpose, and until it lands there
+every re-vendor has to carry it by hand.

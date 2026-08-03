@@ -74,13 +74,41 @@ driver: transform pump 0.235 ms mean / 0.318 p99 vs left+top 0.379 / 0.675
 (Exp-BLIP-DRIVER). Two reasons: each facade style write costs ~2.4 µs, and transform
 does not force layout. This is the shipped idiom for anything that moves every frame.
 
-**A unit-bearing data-style binding never goes idle.** The data-style compare reads
-the unit-less variant of the old value, so a value carrying its unit never compares
-equal — `SetProperty` fires every Update and the surface re-publishes every frame
-even when nothing visibly changed (vendored DataViewDefault.cpp:168-170 with
-Property.h:41-45; bead akj.17, deliberately not patched in the vendored tree).
-Bind unit-less numbers and keep units in the stylesheet. Check yourself with the
-PerfLog publish ratio: an "idle" HUD publishing 100% has one of these somewhere.
+**A unit-bearing data-style binding goes idle — because we patched RmlUi for it.**
+Upstream's data-style compare reads the unit-LESS variant of the old value
+(`Property::Get<String>()`, Property.h:41-45, where the unit is a separate member),
+so a value carrying its unit never compared equal and `SetProperty` fired on every
+dirty of the bound variable — every dirty, not every change: one field of a nested
+struct or one row of a `data-for` array re-evaluates every binding under that name.
+Since a percentage health bar cannot be written without its unit, "bind unit-less
+numbers" was advice nobody could take, our own reference HUD included. The vendored
+copy now compares `Property::ToString()` (Source/ThirdParty/RmlUi/VENDORED_TAG.txt,
+patch #1; bead akj.17), pinned by VaCuus.Model.View.DataStyleIdle: 100 frames of a
+dirtied model whose bound values stand still, **0 published** — and **100 of 100
+published** with the patch reverted.
+
+**What that cost, exactly, and it is not the same for every property.** A no-op
+re-write always costs a restyle, and a whole-document relayout if the property
+affects layout — UI-thread time, on the budget the passport measures. It costs a
+PUBLISHED frame on top of that only for border and background properties
+(`border-*-width`, `border-radius`, `box-shadow`, `background-color`, `opacity`),
+whose geometry is re-made with no equality check. A layout-only binding such as
+`width` is absorbed by the gate: the box comes out the same, and RmlUi reuses a text
+element's compiled geometry when the mesh compares equal. Measured both ways — the
+same test bound to `width` alone publishes 0 of 100 with the defect still in.
+
+The compare is now against the property's own spelling, so **write the spelling it
+uses**. Numbers and units round-trip (`%.3f` with trailing zeros trimmed, then the
+unit — `120px`, `27.9px`, `42%`, and any expression that builds one, which is what
+the reference HUD's `Health + '%'` and `row.Ping * 0.3 + 'px'` do). Three things
+still re-set on every dirty, exactly as they did before: **colours other than
+lowercase `#rrggbb`** (the stored `Colourb` spells itself that way, so `#FF8000`,
+`rgba(255,128,0,255)` and named colours all miss — prefer `data-class`);
+**shorthands** (`margin`, `padding`, `border` leave no local property under their
+own name, so there is nothing to compare against — bind longhands); and literal
+spellings a float cannot reproduce (`120.50px`, `1.23456px`). Check yourself with
+the PerfLog publish ratio: an "idle" HUD publishing 100% still means something is
+re-writing the DOM every frame.
 
 **Font-effect glyphs are a load cost — pay them at load.** `font-effect: glow` added
 ~4.2 ms to the reference HUD's FIRST Record (5.81 vs 1.65 ms A/B) and nothing to
