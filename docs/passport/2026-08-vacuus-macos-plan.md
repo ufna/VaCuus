@@ -225,15 +225,21 @@ is ~20 s, not the ~5 s it was at Linux's offscreen 227 fps.
 "view pixels" and "Slate absolute pixels" were the same numbers. On Mac they are not, and the
 plugin does not compensate: `HoverShot`/`TypeShot` feed their `x y` straight to
 `FSlateApplication::SetCursorPos` and into a synthesized `FPointerEvent` at that **absolute**
-position (`VaCuusRender.cpp:1350-1379`), while the widget converts back with
-`AbsoluteToLocal(...) * Geometry.Scale` (`SVaCuusWidget.cpp:366-372`). The delta is the window
+position (`VaCuusRender.cpp:1357-1397`), while the widget converts back with
+`AbsoluteToLocal(...) * Geometry.Scale` (`SVaCuusWidget.cpp:381-388`). The delta is the window
 origin plus the title bar. Procedure: (1) move the window to the top-left of the main display, or
 run fullscreen; (2) run `vacuus.M2Demo.Rects 5` first — its output is in **view pixels** and is
 window-position-immune; (3) `vacuus.M2Demo.Hit 120 115 6` is also pure view-pixel space
-(`:1323-1336`) so it answers correctly regardless of placement; (4) for `HoverShot`/`TypeShot`,
-add the window origin. Built-in self-check: `MoveMouseTo` logs `…the event handled by a widget |
-unhandled (it fell through)` (`:1376-1378`) — `unhandled` means fix the offset and re-run, not
-record a FAIL. Note `FMacCursor::SetPosition` warps the **real system cursor** via
+(`:1311-1343`) so it answers correctly regardless of placement; (4) for `HoverShot`/`TypeShot`,
+add the window origin. Built-in self-check: `MoveMouseTo` logs `…the event handled somewhere on
+the bubble path (Slate does not say by whom) | unhandled (it fell through)` (`:1394-1397`) —
+`unhandled` means fix the offset and re-run, not record a FAIL. The **`unhandled` token is the
+decision and is unchanged**; the handled branch stopped naming a culprit in bead
+`VaCuus-akj.6.41` because it never could (SViewport is our ancestor, so a pass-through move also
+reports handled). For "did the UI actually take it", use a command that CLICKS —
+`vacuus.LobbyDemo.Click` or `vacuus.M1HUD.TypeShot` — which now prints `the press was taken by
+THE UI (VaCuus captured the mouse) | THE GAME (VaCuus declined…)` from Slate's mouse capture,
+the same attribution `vacuus.M2Demo.Drag` has always had. Note `FMacCursor::SetPosition` warps the **real system cursor** via
 `CGWarpMouseCursorPosition` and defeats Apple's 0.25 s post-warp suppression
 (`MacCursor.cpp:491-506`): the pointer jumps on the desktop and the game window must be frontmost.
 Row 4's own evidence line must read **absent=no, registered=yes** — the opposite of the Linux

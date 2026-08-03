@@ -24,6 +24,27 @@ Log excerpt from the run (`VcHost.log`, since rotated):
 :2617 [07:55:31:813] BeginTearingDown for /Temp/UEDPIE_0_Untitled_1
 ```
 
+### The 9 ms of "headroom", decided (bead `VaCuus-akj.6.24`)
+
+**Nothing changed, and that is the decision.** 191 vs "~200" is not a margin about to be lost;
+it is a number chasing itself:
+
+- The reported figure is `Now - FirstChangeSeconds`, and the earliest a batch may flush is
+  `LastChange + QuietSeconds`. This save's **four** events spanned ~40 ms, so **190 ms is the
+  floor** for it — `0.150 + 0.040` — however fast the machine is. Trimming `QuietSeconds` buys
+  1:1 against the 150 and nothing against the 40.
+- The remainder is sampling noise **wider than the headroom**: the armed ticker polls every
+  50 ms and `FTSTicker` only fires from the engine loop, so the same code legitimately reports
+  across a ~50 ms band plus a frame.
+- A shorter window does not fail "slightly early"; it flushes **between the writes of one save**
+  and reloads a half-written file.
+- And "~200 ms" was never a budget — it is the plan step's own wording, tilde included. No spec
+  row, passport row or test states a live-reload latency.
+
+`VaCuus.LiveReload.Debounce` case **(e)** now pins that arithmetic to the constants, so the
+190 stops being an observation and becomes a derivation: change `QuietSeconds` and it fails,
+pointing back here.
+
 Three things this proves beyond the latency:
 
 - **The burst is real and the debounce works.** One editor save produced **4** file-change

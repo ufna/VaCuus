@@ -1041,7 +1041,13 @@ static void Stats(const TArray<FString>& Args)
 			TSharedPtr<FVaCuusWorldSink> Sink = Component ? Component->GetWorldSink() : nullptr;
 			if (!Sink)
 			{
-				UE_LOG(LogVaCuus, Display, TEXT("vacuus.WorldDemo.Stats: no live world demo panel"));
+				// Error, like .Decode's and .Mips' identical refusal above (:994, :1016): "the
+				// command did nothing because there is no panel" is the same fact at all three
+				// sites, and it is a REFUSAL rather than a report. Display made this one the
+				// odd one out for any sweep that filters the log on Error/Warning to find the
+				// commands that quietly did nothing -- which is how a mis-ordered -ExecCmds
+				// line reads as "the demo has no stats" instead of "the demo was not up".
+				UE_LOG(LogVaCuus, Error, TEXT("vacuus.WorldDemo.Stats: no live world demo panel"));
 				return;
 			}
 			UE_LOG(LogVaCuus, Display,

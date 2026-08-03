@@ -31,6 +31,8 @@ DEFINE_STAT(STAT_VaCuusCommands);
 static TAutoConsoleVariable<int32> CVarVaCuusPerfLog(
 	TEXT("vacuus.M1HUD.PerfLog"),
 	0,
+	TEXT("PROCESS-WIDE despite the M1HUD prefix (which is historical): one log covering every view and every ")
+	TEXT("thread, whichever document is up. ")
 	TEXT("1 = print every VaCuus scope's timings (avg/p50/p99/max, window + cumulative) to the log every 5 seconds: the UI thread's DrainCommands/DrainInput/DataApply/JsPump/Update/Record/JsGC, the render thread's Replay/Glass/Composite/WorldCopy, and the game thread's GameTick/SlateTick/OnPaint/Input/ModelSample."));
 
 namespace VaCuusPerfLogPrivate

@@ -128,8 +128,9 @@ div { display: block; position: absolute; }
  * FSlateApplication routes every pointer event straight to the captor (the SViewport)
  * and never runs a hit test; SVaCuusWidget's handlers are simply never called, no
  * matter what its visibility says. This was observed, not assumed: with GameOnly, a
- * synthesized move over the demo button reported "handled by a widget" (the captor)
- * and RmlUi's hover never changed.
+ * synthesized move over the demo button was reported HANDLED -- by the captor -- while
+ * RmlUi's hover never changed. That run is also why the move/wheel/key commands below no
+ * longer name a culprit on their handled branch: Slate's answer there was true and useless.
  *
  * GameAndUI rather than UIOnly, because Task 6's contract is that clicks the UI does
  * not claim still reach the game -- which is exactly what GameAndUI means.
@@ -993,7 +994,13 @@ static void Toggle(const TCHAR* DocumentVfsPath)
 	{
 		// Logged in detail by the subsystem/module; the element never touched the RHI,
 		// so letting everything die here is safe.
-		UE_LOG(LogVaCuus, Error, TEXT("vacuus.M1HUD: no view could be created; HUD not shown"));
+		//
+		// THE DOCUMENT IS INTERPOLATED, NOT SPELLED: this is Toggle()'s SHARED path, reached
+		// by nine console toggles and two Shipping launch flags over ten documents, and its two
+		// neighbours above already say the generic thing. A literal here goes stale the next
+		// time a document is added, and it names the wrong one every time it fires today.
+		UE_LOG(LogVaCuus, Error, TEXT("VaCuus demo: no view could be created; '%s' not shown"),
+			GDocumentVfsPath);
 		return;
 	}
 
@@ -1203,23 +1210,6 @@ static FString DescribeNavDirections(EVaCuusNavDirection Directions)
 }
 
 /**
- * Prints the interactive-region snapshot the game thread is currently answering Slate
- * from (Task 14).
- *
- * WHY THIS EXISTS RATHER THAN COORDINATES IN A SCRIPT: every other headless check here
- * takes an <x> <y> the author read off a stylesheet, and that is a guess about layout --
- * it is wrong the moment a padding value changes, and when it is wrong the failure looks
- * like "input is broken" rather than "the coordinate missed". This prints the rects RmlUi
- * actually produced, with their flags, so an acceptance run can aim at measured geometry
- * and can assert the two facts a screenshot cannot show: that a region IS covered and
- * flagged the way the document intended, and that the `vacuus-passthrough` region is NOT
- * in the list at all.
- *
- * READS THE VIEW'S CACHED SNAPSHOT, i.e. exactly what SVaCuusWidget's handlers see this
- * frame (UVaCuusView::GetSnapshot), not a fresh query -- there is no such thing as a
- * fresh query from this thread, which is the whole design.
- */
-/**
  * Runs Work after DelaySeconds, or immediately when it is not positive.
  *
  * WHY THE DELAY EXISTS AT ALL: every `-ExecCmds` command runs on the SAME early tick, before
@@ -1248,6 +1238,23 @@ void ScheduleAfter(float DelaySeconds, TFunction<void()> Work)
 		DelaySeconds);
 }
 
+/**
+ * Prints the interactive-region snapshot the game thread is currently answering Slate
+ * from (Task 14).
+ *
+ * WHY THIS EXISTS RATHER THAN COORDINATES IN A SCRIPT: every other headless check here
+ * takes an <x> <y> the author read off a stylesheet, and that is a guess about layout --
+ * it is wrong the moment a padding value changes, and when it is wrong the failure looks
+ * like "input is broken" rather than "the coordinate missed". This prints the rects RmlUi
+ * actually produced, with their flags, so an acceptance run can aim at measured geometry
+ * and can assert the two facts a screenshot cannot show: that a region IS covered and
+ * flagged the way the document intended, and that the `vacuus-passthrough` region is NOT
+ * in the list at all.
+ *
+ * READS THE VIEW'S CACHED SNAPSHOT, i.e. exactly what SVaCuusWidget's handlers see this
+ * frame (UVaCuusView::GetSnapshot), not a fresh query -- there is no such thing as a
+ * fresh query from this thread, which is the whole design.
+ */
 static void DumpRects()
 {
 	if (!GState || !GState->View.IsValid())
@@ -1288,6 +1295,11 @@ static void DumpRects()
 	}
 }
 
+static void Rects(const TArray<FString>& Args)
+{
+	ScheduleAfter(Args.Num() > 0 ? FCString::Atof(*Args[0]) : 0.0f, &DumpRects);
+}
+
 /**
  * Answers "is this point covered, and how" the way the widget's handlers would.
  *
@@ -1296,11 +1308,6 @@ static void DumpRects()
  * pass-through region, because "not in the list" and "Contains() is false" are two
  * different statements and only the second is what SVaCuusWidget returns Unhandled from.
  */
-static void Rects(const TArray<FString>& Args)
-{
-	ScheduleAfter(Args.Num() > 0 ? FCString::Atof(*Args[0]) : 0.0f, &DumpRects);
-}
-
 static void HitTestAt(FIntPoint Point)
 {
 	if (!GState || !GState->View.IsValid())
@@ -1374,8 +1381,20 @@ bool MoveMouseTo(const FVector2D& Position)
 
 	const bool bHandled = Slate.ProcessMouseMoveEvent(MouseEvent);
 
+	// NO CULPRIT ON THE HANDLED BRANCH, and that is the honest reading rather than a
+	// downgrade: the return is true if ANY widget on the bubble path took the move, and
+	// SViewport is our ancestor, so "handled" has always included the case where the UI never
+	// saw it (the GameOnly observation at the top of this file). A move takes no capture, so
+	// unlike a press there is nothing here that could attribute it -- see
+	// SVaCuusWidget::GetMouseCaptureHolder_Debug and ClickWhereThePointerIs below.
+	//
+	// THE UNHANDLED BRANCH IS BYTE-IDENTICAL ON PURPOSE: docs/passport's macOS plan uses this
+	// exact token as the coordinate self-check ("unhandled means fix the window offset and
+	// re-run, not record a FAIL").
 	UE_LOG(LogVaCuus, Log, TEXT("Pointer moved to (%.0f, %.0f); Slate reports the event %s"),
-		Position.X, Position.Y, bHandled ? TEXT("handled by a widget") : TEXT("unhandled (it fell through)"));
+		Position.X, Position.Y,
+		bHandled ? TEXT("handled somewhere on the bubble path (Slate does not say by whom)")
+				 : TEXT("unhandled (it fell through)"));
 	return bHandled;
 }
 
@@ -1416,10 +1435,23 @@ bool ClickWhereThePointerIs(const FVector2D& Position)
 		EKeys::LeftMouseButton, /*WheelDelta=*/0.0f, FModifierKeysState());
 
 	const bool bDownHandled = Slate.ProcessMouseButtonDownEvent(nullptr, DownEvent);
+
+	// WHOSE press was it? Not something bDownHandled can say -- the whole argument, and why
+	// capture is the answer, is on SVaCuusWidget::GetMouseCaptureHolder_Debug.
+	//
+	// SAMPLED BETWEEN THE PRESS AND THE RELEASE, and the order is load-bearing: the release
+	// hands capture back, so a sample after ProcessMouseButtonUpEvent always reads "nobody"
+	// and every click would be blamed on the game.
+	const bool bVaCuusTookPress = SVaCuusWidget::GetMouseCaptureHolder_Debug().IsValid();
+
 	Slate.ProcessMouseButtonUpEvent(UpEvent);
 
-	UE_LOG(LogVaCuus, Log, TEXT("Left click at (%.0f, %.0f); Slate reports the press %s"),
-		Position.X, Position.Y, bDownHandled ? TEXT("handled by a widget") : TEXT("unhandled (it fell through)"));
+	UE_LOG(LogVaCuus, Log,
+		TEXT("Left click at (%.0f, %.0f); Slate says the press was %s, and the press was taken by %s"),
+		Position.X, Position.Y,
+		bDownHandled ? TEXT("handled") : TEXT("unhandled"),
+		bVaCuusTookPress ? TEXT("THE UI (VaCuus captured the mouse)")
+						 : TEXT("THE GAME (VaCuus declined, so it bubbled past us to SViewport)"));
 	return bDownHandled;
 }
 
@@ -1452,9 +1484,13 @@ static bool WheelAt(const FVector2D& Position, float Delta)
 
 	const bool bHandled = Slate.ProcessMouseWheelOrGestureEvent(WheelEvent, /*InGestureEvent=*/nullptr);
 
+	// Same reading as MoveMouseTo's: a wheel takes no capture either, so there is nothing here
+	// that could name the widget, and the unhandled branch is byte-identical for the same
+	// reason (the macOS coordinate self-check reads that token).
 	UE_LOG(LogVaCuus, Log, TEXT("Wheel %+.1f at (%.0f, %.0f); Slate reports the event %s"),
 		Delta, Position.X, Position.Y,
-		bHandled ? TEXT("handled by a widget") : TEXT("unhandled (it fell through)"));
+		bHandled ? TEXT("handled somewhere on the bubble path (Slate does not say by whom)")
+				 : TEXT("unhandled (it fell through)"));
 	return bHandled;
 }
 
@@ -1490,18 +1526,13 @@ static void DragFromTo(const FVector2D& From, const FVector2D& To, int32 NumStep
 		EKeys::LeftMouseButton, /*WheelDelta=*/0.0f, FModifierKeysState());
 	const bool bDownHandled = Slate.ProcessMouseButtonDownEvent(nullptr, DownEvent);
 
-	// WHOSE press was it? ProcessMouseButtonDownEvent's return cannot say: it is true if ANY
-	// widget on the bubble path handled the event, and SViewport -- the game's own widget, and
-	// our ancestor (GameViewportClient.cpp:1326) -- handles what we decline. So a pass-through
-	// press and a UI press BOTH report "handled", which is exactly the distinction an acceptance
-	// run needs and the one Slate will not give.
+	// WHOSE press was it? The same question ClickWhereThePointerIs asks, answered from the same
+	// place -- SVaCuusWidget::GetMouseCaptureHolder_Debug carries the argument, and ONE source
+	// is the point: this used to reach GState->Widget, which the lobby demo does not have, so
+	// the two commands could not have agreed even in principle.
 	//
-	// Capture does give it. SVaCuusWidget takes Slate's mouse capture on the first press it
-	// answers Handled (OnMouseButtonDown), and takes none at all when the snapshot does not
-	// cover the point -- so this flag, sampled between the press and the release, is a direct
-	// readout of the FReply the widget produced.
-	const bool bVaCuusTookPress = GState.IsValid() && GState->Widget.IsValid() &&
-		GState->Widget->IsTrackingMouseCapture_Debug();
+	// Sampled between the press and the release, because the release hands capture back.
+	const bool bVaCuusTookPress = SVaCuusWidget::GetMouseCaptureHolder_Debug().IsValid();
 
 	const int32 Steps = FMath::Max(NumSteps, 1);
 	int32 NumMovesHandled = 0;
@@ -1620,8 +1651,13 @@ static bool SendKeyToFocusedWidget(const FKey& Key)
 	const bool bHandled = Slate.ProcessKeyDownEvent(KeyEvent);
 	Slate.ProcessKeyUpEvent(KeyEvent);
 
+	// A key press takes no mouse capture, so the same limit applies: ProcessKeyDownEvent's
+	// return says the FOCUS path consumed it, not who did, and the pass-through key set
+	// (D12) is a case where the widget declines on purpose. Unhandled branch byte-identical.
 	UE_LOG(LogVaCuus, Log, TEXT("Key '%s' sent; Slate reports the press %s"),
-		*Key.ToString(), bHandled ? TEXT("handled by a widget") : TEXT("unhandled (it fell through)"));
+		*Key.ToString(),
+		bHandled ? TEXT("handled somewhere on the focus path (Slate does not say by whom)")
+				 : TEXT("unhandled (it fell through)"));
 	return bHandled;
 }
 

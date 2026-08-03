@@ -10,10 +10,39 @@
 
 class FNavigationConfig;
 class FVaCuusSlateElement;
+class SVaCuusWidget;
 class UVaCuusView;
 struct FVaCuusInputEvent;
 struct FVaCuusInteractiveSnapshot;
 struct FVaCuusModifierState;
+
+/**
+ * One widget's Slate mouse-capture flag and the process-wide "who holds it" mirror behind
+ * SVaCuusWidget::GetMouseCaptureHolder_Debug(), welded into one object.
+ *
+ * ENFORCEMENT BY SHAPE RATHER THAN BY COMMENT (bead VaCuus-akj.6.41): bHeld is private and
+ * SVaCuusWidget is deliberately NOT a friend, so `bHasMouseCapture = true` -- what the three
+ * capture sites used to be -- no longer compiles. Set(), one definition in SVaCuusWidget.cpp
+ * writing both halves, is the only way in. That makes "a fourth capture write site cannot
+ * forget the mirror" a compile error rather than a review note; there are three today (the
+ * press that takes capture, the last button-up that hands it back, and OnMouseCaptureLost),
+ * and an attribution that silently stopped tracking one of them would report "THE GAME" for a
+ * press the UI took -- the exact wrong conclusion for an acceptance run to record.
+ *
+ * A FREE CLASS RATHER THAN A NESTED ONE only so that Set() can be defined out of line without
+ * naming a private nested type from namespace scope.
+ */
+class FVaCuusMouseCaptureState
+{
+public:
+	bool IsHeld() const { return bHeld; }
+
+	/** Sets this widget's flag and the process-wide holder in one statement. Game thread. */
+	void Set(const TSharedRef<const SVaCuusWidget>& Widget, bool bInHeld);
+
+private:
+	bool bHeld = false;
+};
 
 /**
  * The Slate face of one VaCuus view: composites the UI thread's frames and routes
@@ -181,7 +210,31 @@ public:
 	 * rule against the bookkeeping and not only against the returned FReply -- the two
 	 * can disagree, and a stuck flag makes every later mouse move answer Handled.
 	 */
-	bool IsTrackingMouseCapture_Debug() const { return bHasMouseCapture; }
+	bool IsTrackingMouseCapture_Debug() const { return MouseCapture.IsHeld(); }
+
+	/**
+	 * WHICH VaCuus widget holds Slate's mouse capture right now, process-wide, or null.
+	 *
+	 * THE ONE WIDGET-AGNOSTIC ANSWER TO "WHOSE PRESS WAS IT" (bead VaCuus-akj.6.41).
+	 * FSlateApplication::ProcessMouseButtonDownEvent returns true when ANY widget on the
+	 * bubble path handled the press, and SViewport -- the game's own widget -- is our
+	 * ancestor: UGameViewportClient::AddAssociation puts SGameLayerManager (whose overlay
+	 * hosts us) inside the SViewport as its content (GameViewportClient.cpp:1312-1326). So a
+	 * pass-through press and a UI press BOTH report "handled" and the console commands cannot
+	 * tell them apart from that return alone. Capture can: this widget takes Slate's mouse
+	 * capture on the first press it answers Handled and takes NONE at all when the snapshot
+	 * does not cover the point, so the holder is a direct readout of the FReply produced.
+	 *
+	 * STATIC RATHER THAN "ASK THE WIDGET" because the commands that need the answer are
+	 * shared: ClickWhereThePointerIs is called by vacuus.M1HUD.TypeShot AND by
+	 * vacuus.LobbyDemo.Click (which reaches it by forward declaration inside the module), and
+	 * the lobby demo has no VaCuusM1HUD::GState to reach a widget through at all.
+	 * vacuus.M2Demo.Drag asks the same question and now reads the same answer.
+	 *
+	 * SAMPLE IT BETWEEN A PRESS AND ITS RELEASE: the release hands capture back, so a sample
+	 * afterwards always reads "nobody".
+	 */
+	static TSharedPtr<const SVaCuusWidget> GetMouseCaptureHolder_Debug();
 
 	/**
 	 * Whether this widget currently has Slate's navigation config replaced with
@@ -285,8 +338,21 @@ private:
 	/** Queues one event for this view, if there still is one. */
 	void SendInput(const FVaCuusInputEvent& Event);
 
-	/** Services the vacuus.M1HUD.AutoShot debug screenshot on the game thread. */
+	/**
+	 * Services the AutoShot debug screenshot for WHATEVER view this widget hosts, on the
+	 * game thread.
+	 *
+	 * THE `vacuus.M1HUD.*` COMMAND AND CVAR NAMES STAY AS THEY ARE, deliberately: the prefix
+	 * is historical (the toggle became a variable over ten documents in M2 Task 14 -- see
+	 * GDocumentVfsPath in VaCuusRender.cpp) but every recipe in docs/passport spells the
+	 * names out, and the -VaCuusPerfLog launch flag looks `vacuus.M1HUD.PerfLog` up BY STRING
+	 * (VaCuusRender.cpp, FindConsoleVariable). Renaming them would silently break both. What
+	 * gets fixed is the WORDING of what they print, which no recipe depends on.
+	 */
 	void TickAutoShot();
+
+	/** The only writer of MouseCapture; FVaCuusMouseCaptureState above says why it is the only one. */
+	void SetMouseCapture(bool bInCaptured);
 
 	/** The left stick's latched deflection as a direction, or None inside the dead zone. */
 	EAnalogNavDirection ResolveAnalogNavDirection() const;
@@ -365,8 +431,11 @@ private:
 	 * interactive region so a drag that wanders off it keeps being delivered here, and
 	 * released when the last button comes up. It is also why a drag's moves keep
 	 * answering Handled after the pointer has left every rect.
+	 *
+	 * Only SetMouseCapture() may write it, and only through FVaCuusMouseCaptureState::Set();
+	 * that type's comment says why the bool is not a plain member any more.
 	 */
-	bool bHasMouseCapture = false;
+	FVaCuusMouseCaptureState MouseCapture;
 
 	/**
 	 * Pending UTF-16 high surrogate from a previous OnKeyChar, or 0.
