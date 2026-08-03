@@ -61,7 +61,7 @@ class UVaCuusView;
  */
 /**
  * VACUUSRENDER_API: the same VaCuus-dgl defect as UVaCuusWidget, found by the same audit
- * -- this class is BlueprintSpawnableComponent and perf-guide.md:107,113 tells buyers to
+ * -- this class is BlueprintSpawnableComponent and perf-guide.md:132-141 tells buyers to
  * set bGenerateMips / call SetGenerateMips() on it, but with the header in Private/ and no
  * export macro, a buyer with precompiled binaries could only reach it from Blueprint.
  * `CreateDefaultSubobject<UVaCuusWorldComponent>` in an actor's constructor -- the ordinary

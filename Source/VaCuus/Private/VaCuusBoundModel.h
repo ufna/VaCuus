@@ -10,7 +10,7 @@
 #include "VaCuusModelShadow.h"
 
 // PRIVATE HEADER, and that is what makes the RmlUi includes legal here: VaCuus depends on
-// VaCuusRml privately (VaCuus.Build.cs:27-33), so an RmlUi type may appear in this module's
+// VaCuusRml privately (VaCuus.Build.cs:27-42), so an RmlUi type may appear in this module's
 // Private/ tree and nowhere else -- the same rule VaCuusDataVariable.h, VaCuusInputMap.h and
 // VaCuusSystemInterface.h already follow.
 #include <RmlUi/Core/DataModelHandle.h>

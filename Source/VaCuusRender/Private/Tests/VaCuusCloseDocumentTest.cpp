@@ -25,7 +25,7 @@
  * of the pixels -- the idle gate withholds every frame that draws what the render thread
  * already has, so the recorder never resends them, and
  * FVaCuusSlateElement::Draw_RenderThread composites that RT unconditionally, outside its
- * `PendingBuffers.Num() > 0` branch (VaCuusSlateElement.cpp:56-96). So ANY path that stops
+ * `PendingBuffers.Num() > 0` branch (VaCuusSlateElement.cpp:148-231). So ANY path that stops
  * recording must emit one clearing frame first, or the last thing it drew stays on screen
  * for good.
  *
@@ -40,7 +40,7 @@
  *    released geometry -- driving a real Rml::Context through the real recorder.
  *
  * WHAT NEITHER ESTABLISHES, said out loud: that the render target ends up blank. The clear
- * is ERenderTargetActions::Clear_Store on the replay pass (VaCuusReplayRenderer.cpp:233)
+ * is ERenderTargetActions::Clear_Store on the replay pass (VaCuusReplayRenderer.cpp:263)
  * and there is no RHI under -nullrhi to execute it, let alone read back. What is proved is
  * everything up to that instruction: the frame is recorded, it publishes, and the buffer
  * that reaches the render thread has no draws in it -- which is exactly the input that
@@ -284,7 +284,7 @@ bool FVaCuusCloseUnloadDrainTest::RunTest(const FString& Parameters)
 	}
 
 	// THE CLEARING FRAME: no draws. This is precisely the input that makes the replayer's
-	// ERenderTargetActions::Clear_Store pass (VaCuusReplayRenderer.cpp:233) wipe the view
+	// ERenderTargetActions::Clear_Store pass (VaCuusReplayRenderer.cpp:263) wipe the view
 	// instead of redrawing it.
 	TestEqual(TEXT("The post-close frame draws nothing"), Clearing->Commands.Num(), 0);
 

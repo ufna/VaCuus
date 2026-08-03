@@ -1428,7 +1428,7 @@ bool FVaCuusNavEntryTest::RunTest(const FString& Parameters)
 		Widget->OnKeyUp(Geometry, MakeKeyEvent(EKeys::Gamepad_DPad_Right));
 
 		// DRAINED BEFORE THE NEXT LOAD, and it is not tidiness: commands and input are two
-		// queues and the UI frame drains COMMANDS FIRST (VaCuusUIThread.cpp:807-808), so a
+		// queues and the UI frame drains COMMANDS FIRST (VaCuusUIThread.cpp:1080-1092), so a
 		// press left in flight here would be delivered to the document loaded below rather
 		// than to this one -- and a stale Tab landing on the next document would silently
 		// pre-focus it and invalidate every assertion in STATE 4.

@@ -100,7 +100,7 @@ static const TCHAR* GDocument = TEXT(R"(<rml>
  *
  * WHY A HOST AND NOT A BARE CONTEXT ON THE TEST THREAD. FVaCuusDefinitionRegistry asserts
  * FVaCuusUIThread::IsInUIThread(), and that is backed by GVaCuusUIThreadId, which only the
- * UI thread's own boot publishes (VaCuusUIThread.cpp:665-669). Booting RmlUi from an
+ * UI thread's own boot publishes (VaCuusUIThread.cpp:913). Booting RmlUi from an
  * automation thread -- what VaCuus.Core.Boot does -- claims the LIBRARY without ever
  * making that thread the UI thread, so the assert would fire. Driving a real UI thread is
  * therefore not ceremony: it is the only configuration in which this code is allowed to

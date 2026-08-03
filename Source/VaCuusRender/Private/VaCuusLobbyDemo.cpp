@@ -196,7 +196,7 @@ static const FBuyItem GBuyItems[] = {
  * documents put tab-index only on <button>, so every DIV/SPAN control -- the top-bar
  * plates, the overlay dims, the settings chips, the current battle-pass tier -- would
  * read as pass-through: functionally alive (input is enqueued whatever the FReply,
- * SVaCuusWidget.cpp:466-467) but answered Unhandled, so the click would ALSO fall
+ * SVaCuusWidget.cpp:549-557) but answered Unhandled, so the click would ALSO fall
  * through to whatever sits underneath. Under a modal dim that is a real misroute: the
  * dim click would close the overlay AND press the content button beneath it. The host
  * therefore opts these in with the plugin's own marker, once per document load.
@@ -1362,7 +1362,7 @@ public:
 	//~ End SWidget
 
 private:
-	/** SVaCuusWidget::ToViewPixels is private; same two steps, same floor (SVaCuusWidget.cpp:366-373). */
+	/** SVaCuusWidget::ToViewPixels is private; same two steps, same floor (SVaCuusWidget.cpp:381-388). */
 	static FIntPoint ToContentPixels(const FGeometry& Geometry, const UE::Slate::FDeprecateVector2DResult& ScreenPosition)
 	{
 		const FVector2f Local = FVector2f(Geometry.AbsoluteToLocal(ScreenPosition));

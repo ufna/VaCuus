@@ -58,7 +58,7 @@ static_assert(uint8(Rml::ClipMaskOperation::Set) == uint8(EVaCuusClipMaskOp::Set
  * only way to test that suspicion is to rebuild the plugin with the condition commented out.
  *
  * Read on the UI thread with GetValueOnAnyThread(), following FVaCuusPerfLog::IsEnabled()
- * (VaCuusStats.cpp:104-107). Flipping it at runtime is safe in both directions: turning it
+ * (VaCuusStats.cpp:214-216). Flipping it at runtime is safe in both directions: turning it
  * off just publishes every recorded frame from then on, and turning it back on compares
  * against the hash of whatever was published last, which is by definition what the render
  * target holds.
@@ -165,7 +165,7 @@ IImageWrapperModule* FVaCuusRecordingRenderInterface::GetImageWrapperModule()
 {
 	// A plain load, DELIBERATELY with no retry. CacheImageWrapperModule() runs from
 	// FVaCuusRenderModule::StartupModule (VaCuusRender.cpp:1018) and VaCuusRender's
-	// LoadingPhase is PostConfigInit (VaCuus.uplugin:31), so this value is already
+	// LoadingPhase is PostConfigInit (VaCuus.uplugin:34-36), so this value is already
 	// final before any document — hence any LoadTexture — can exist, and the static is
 	// never reset. A retry could therefore only ever re-run the failing path and
 	// re-emit the Error above once per image, which is exactly what LoadTexture's
@@ -1421,12 +1421,12 @@ TUniquePtr<FVaCuusCommandBuffer> FVaCuusRecordingRenderInterface::EndFrameAndPub
 	//
 	// WHY DROPPING THIS BUFFER LOSES NOTHING: each buffer repaints the whole frame
 	// from scratch (that is why the replayer draws only the newest queued one and
-	// takes just the resource deltas from the rest, VaCuusSlateElement.cpp:79-83), so
+	// takes just the resource deltas from the rest, VaCuusSlateElement.cpp:130-140), so
 	// a buffer whose commands and ViewSize hash equal to the last PUBLISHED one draws
 	// exactly what the per-view render target already holds. The render thread then
 	// re-composites that render target unconditionally: Draw_RenderThread's replay is
 	// inside `if (PendingBuffers.Num() > 0)` but the composite that follows is outside
-	// it and reads Replayer.GetOutputRT() directly (VaCuusSlateElement.cpp:91-140), so
+	// it and reads Replayer.GetOutputRT() directly (VaCuusSlateElement.cpp:148-231), so
 	// the UI stays on screen with no buffer in flight at all.
 	//
 	// THE RESOURCE CONDITION IS NOT AN OPTIMISATION, IT IS CORRECTNESS: the four
@@ -1454,7 +1454,7 @@ TUniquePtr<FVaCuusCommandBuffer> FVaCuusRecordingRenderInterface::EndFrameAndPub
 
 	// THE FREEZE REMEDY, PRODUCTION SHAPE (M5 Task 5b; the fact is spec §2(f)): a live
 	// material decorator is GPU-evaluated state the hash and the traffic predicate
-	// cannot see — the composite only samples the RT (VaCuusSlateElement.cpp:141-204)
+	// cannot see — the composite only samples the RT (VaCuusSlateElement.cpp:174-231)
 	// and the RT is written only in this publish-gated replay branch, so a time-animated
 	// or MID-driven material would freeze on whatever publish last ran. PER VIEW: the
 	// term is this recorder's own live-shader table (LiveMaterialShaders — compiled

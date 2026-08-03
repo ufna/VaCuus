@@ -84,7 +84,7 @@ constexpr uint32 GVaCuusUIThreadStackSize = 2 * 1024 * 1024;
  * factory is registered, so no JS phase ever runs and quickjs is never created.
  * Read ONCE, at thread boot (Init()), which is the moment the host would be
  * created -- the cheap-any-thread read is the vacuus.IdleGate pattern
- * (VaCuusRecordingRenderInterface.cpp:47-52), but unlike the gate a later flip is
+ * (VaCuusRecordingRenderInterface.cpp:54-70), but unlike the gate a later flip is
  * a documented no-op until the next thread boot: the host either exists for the
  * thread's whole life or never does, because half-created JS state has no safe
  * mid-flight teardown point.

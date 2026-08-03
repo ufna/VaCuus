@@ -21,7 +21,7 @@ void FVaCuusWorldSink::SetPendingBuffer_RenderThread(FRHICommandList& RHICmdList
 	NumArrivals.fetch_add(1, std::memory_order_relaxed);
 
 	// EnsureOutputRT BEFORE Replay, the Slate element's own order
-	// (VaCuusSlateElement.cpp:108-134): Replay's mid-pass-recreate tripwire
+	// (VaCuusSlateElement.cpp:113-141): Replay's mid-pass-recreate tripwire
 	// (VaCuusReplayRenderer.cpp:56-64) ensure()s the RT already matches the buffer's
 	// ViewSize -- the tripwire protects a composite that registered the texture at
 	// graph-build time, which this path does not have, but tripping an ensure per

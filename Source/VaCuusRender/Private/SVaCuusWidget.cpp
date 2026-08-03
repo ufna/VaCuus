@@ -86,7 +86,7 @@ void SVaCuusWidget::Construct(const FArguments& InArgs,
 	// is now the ONLY copy of an idle UI's pixels, and why the recorder will never resend them.
 	// FVaCuusSlateElement::Draw_RenderThread is what puts them on screen with no buffer in
 	// flight at all — its replay sits inside `if (PendingBuffers.Num() > 0)`, the composite
-	// after it does not (VaCuusSlateElement.cpp:56-96).
+	// after it does not (VaCuusSlateElement.cpp:113-146 and :148-231).
 	//
 	// WHAT VOLATILITY BUYS, checked against the engine rather than asserted.
 	// ForceVolatile(true) makes SWidget::IsVolatile() true, and that does two things:
@@ -1210,7 +1210,7 @@ void SVaCuusWidget::TickKeyboardFocusRelease()
 	// (ProcessKeyDownEvent -> SlateUser->GetFocusPath()), so the game viewport would stop
 	// receiving keys altogether -- the same class of bug as the one this fix is for.
 	// SetUserFocusToGameViewport is the engine's own idiom for this
-	// (UGameViewportClient.cpp:3354); it no-ops when there is no game viewport, which is
+	// (GameViewportClient.cpp:3354); it no-ops when there is no game viewport, which is
 	// why the clear below is the fallback rather than the default.
 	const bool bHasGameViewport = Slate.GetGameViewport().IsValid();
 	for (const int32 UserIndex : UsersToRelease)

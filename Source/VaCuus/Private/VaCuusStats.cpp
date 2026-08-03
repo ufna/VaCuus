@@ -480,7 +480,7 @@ void FVaCuusPerfLog::TickLog()
 	// mislead whoever reads the log on a busy UI. Draw_RenderThread emits ONE Replay scope per
 	// PAINT that found a buffer waiting, whatever the queue depth -- the older buffers
 	// surrender only their resource deltas, through a ConsumeResources call that has no scope
-	// (VaCuusSlateElement.cpp:70-84, VaCuusReplayRenderer.cpp:39-47). So a CHANGING UI at a
+	// (VaCuusSlateElement.cpp:136-139, VaCuusReplayRenderer.cpp:80-92). So a CHANGING UI at a
 	// ~220 Hz UI thread and a ~60 Hz paint reads published ~220/s, Replay samples ~60/s,
 	// skipped 0: that gap is COALESCING. The two numbers only track each other at the other
 	// extreme, an idle UI where the paint finds no buffer at all.

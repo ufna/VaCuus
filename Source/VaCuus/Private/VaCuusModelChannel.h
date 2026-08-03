@@ -99,8 +99,8 @@ struct FVaCuusModelUpdate
  *                Pending | Unacked, so a field keeps being republished, WITH ITS CURRENT
  *                VALUE, until the UI says it got it.
  *  - AppliedGeneration -- the UI thread's echo, release/acquire, exactly the shape of the
- *                document loader's load-serial (VaCuusRmlDocumentHost.cpp:226-231 stores,
- *                VaCuusView.cpp:584 and :662 load). Unacked clears only when the echo is >= the
+ *                document loader's load-serial (VaCuusRmlDocumentHost.cpp:263 stores,
+ *                VaCuusView.cpp:747 and :864 load). Unacked clears only when the echo is >= the
  *                generation of the LAST publish, never an earlier one: a publish that
  *                superseded it may carry values the older applied generation never saw.
  *
@@ -120,8 +120,8 @@ struct FVaCuusModelUpdate
  *
  * There is no pointer to FVaCuusUIThread here, and that is the enforcement of "enqueue, never
  * Trigger()": a publish cannot wake the UI thread because it has nothing to wake it with. The
- * one per-frame pulse is UVaCuusSubsystem::Tick (VaCuusSubsystem.cpp:57, and the Trigger() is
- * at :106) and waking per model update would turn a changing HUD into one UI frame per changed
+ * one per-frame pulse is UVaCuusSubsystem::Tick (VaCuusSubsystem.cpp:106, and the Trigger() is
+ * at :167) and waking per model update would turn a changing HUD into one UI frame per changed
  * field.
  *
  * There is also no Write() call -- TTripleBuffer::Write takes `const BufferType` BY VALUE
@@ -352,7 +352,7 @@ private:
 
 	/**
 	 * The echo. Written by the consumer with release AFTER its apply, read by the producer
-	 * with acquire -- the load-serial protocol (VaCuusRmlDocumentHost.cpp:226-231 stores,
+	 * with acquire -- the load-serial protocol (VaCuusRmlDocumentHost.cpp:263 stores,
 	 * VaCuusView.cpp:584 and :662 load), and the release is what makes "the values are in the
 	 * UI shadow" visible to the thread that decides whether to send them again.
 	 */

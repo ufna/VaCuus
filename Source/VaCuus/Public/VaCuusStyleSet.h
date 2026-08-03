@@ -24,7 +24,7 @@ class UMaterialInterface;
  * TSoftObjectPtr would hand every consumer a "maybe loaded" it can only resolve with a
  * sync load or an async dance, on threads where neither is legal (module/asset
  * resolution off the game thread is a known hard crash class,
- * VaCuusRecordingRenderInterface.h:200-206). A hard TObjectPtr makes the preload true by
+ * VaCuusRecordingRenderInterface.h:270-280). A hard TObjectPtr makes the preload true by
  * construction: loading the style set loads its materials, and registration — the only
  * door into the tier — can then run entirely on objects that already exist.
  *

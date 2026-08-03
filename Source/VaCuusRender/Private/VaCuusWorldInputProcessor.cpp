@@ -86,7 +86,7 @@ namespace VaCuusWorldInput
 static int32 GInstallRefCount = 0;
 static TSharedPtr<FVaCuusWorldInputProcessor> GProcessor;
 
-/** FInputEvent's five observable modifiers; the same conversion the Slate widget makes (SVaCuusWidget.cpp:371-380). */
+/** FInputEvent's five observable modifiers; the same conversion the Slate widget makes (SVaCuusWidget.cpp:435-444). */
 static FVaCuusModifierState ToModifiers(const FInputEvent& Event)
 {
 	FVaCuusModifierState State;
@@ -347,7 +347,7 @@ void FVaCuusWorldInputProcessor::SendLeaveIfHovering(const UVaCuusWorldComponent
 	}
 
 	// Mandatory, or `:hover` sticks forever -- the widget's OnMouseLeave contract
-	// (SVaCuusWidget.cpp:591-597; Context.cpp:839-846). The next MouseMove re-arms
+	// (SVaCuusWidget.cpp:705-711; Context.cpp:839-846). The next MouseMove re-arms
 	// the context on its own.
 	if (UVaCuusView* View = Panel->GetView())
 	{
@@ -381,7 +381,7 @@ bool FVaCuusWorldInputProcessor::HandleMouseMoveEvent(FSlateApplication& SlateAp
 				Panel->GetView()->SendInput(FVaCuusInputEvent::MouseMove(Pixel, VaCuusWorldInput::ToModifiers(MouseEvent)));
 			}
 			// Consumed regardless of coverage while latched -- the widget's capture
-			// rule (SVaCuusWidget.cpp:421-428): a drag that started on a scrollbar
+			// rule (SVaCuusWidget.cpp:534-537): a drag that started on a scrollbar
 			// keeps being ours after the pointer wanders off it.
 			++NumConsumed;
 			return true;
@@ -467,7 +467,7 @@ bool FVaCuusWorldInputProcessor::HandleMouseButtonDownEvent(FSlateApplication& S
 	SendLeaveIfHovering(Hit.Component);
 	HoveredPanel = Hit.Component;
 
-	// Sent BEFORE the verdict -- the widget's own order (SVaCuusWidget.cpp:432-444):
+	// Sent BEFORE the verdict -- the widget's own order (SVaCuusWidget.cpp:549-557):
 	// RmlUi sees the press either way (it may close a dropdown); coverage only
 	// decides whether the game ALSO hears it.
 	UVaCuusView* View = Hit.Component->GetView();
@@ -513,7 +513,7 @@ bool FVaCuusWorldInputProcessor::HandleMouseButtonUpEvent(FSlateApplication& Sla
 		// event copy exists (a no-op for the OnMouseUp path, kept for touch) and
 		// cannot affect what this handler sees. So IsEmpty() -- not Num() <= 1 -- is
 		// "the last button just came up". The widget's exact rule and reason
-		// (SVaCuusWidget.cpp:514-523): `<= 1` would drop the latch with a second
+		// (SVaCuusWidget.cpp:629-637): `<= 1` would drop the latch with a second
 		// button still held mid-drag.
 		if (MouseEvent.GetPressedButtons().IsEmpty())
 		{
@@ -544,7 +544,7 @@ bool FVaCuusWorldInputProcessor::HandleMouseButtonUpEvent(FSlateApplication& Sla
 
 	// An unlatched up means the press was not ours (it passed through, or predates
 	// the processor). Forwarded, and consumed only on coverage -- the widget's
-	// no-capture rule (SVaCuusWidget.cpp:533-541): swallowing a release whose press
+	// no-capture rule (SVaCuusWidget.cpp:647-654): swallowing a release whose press
 	// the game heard would leave the game holding a button down forever.
 	UVaCuusView* View = Hit.Component->GetView();
 	View->SendInput(FVaCuusInputEvent::MouseButton(
@@ -566,7 +566,7 @@ bool FVaCuusWorldInputProcessor::HandleMouseButtonDoubleClickEvent(FSlateApplica
 	// only for a captor) -- and this processor never holds Slate capture. Forwarded
 	// as a plain press: RmlUi synthesises its own `dblclick` from consecutive
 	// presses, so it needs the press, not a special event -- the widget's argument
-	// verbatim (SVaCuusWidget.cpp:543-556).
+	// verbatim (SVaCuusWidget.cpp:659-669).
 	return HandleMouseButtonDownEvent(SlateApp, MouseEvent);
 }
 
@@ -621,7 +621,7 @@ bool FVaCuusWorldInputProcessor::HandleMouseWheelOrGestureEvent(
 	// UE's sign and unit carried through unchanged; the flip to RmlUi's convention
 	// happens at dispatch (VaCuusUIThread.cpp:175-192). Consume on coverage, not on
 	// "is anything scrollable" -- the widget's wheel rule and its stated visible
-	// consequence (SVaCuusWidget.cpp:560-576).
+	// consequence (SVaCuusWidget.cpp:682-686).
 	UVaCuusView* View = Hit.Component->GetView();
 	View->SendInput(FVaCuusInputEvent::MouseWheel(
 		Hit.Pixel, InWheelEvent.GetWheelDelta(), VaCuusWorldInput::ToModifiers(InWheelEvent)));
