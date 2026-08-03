@@ -539,6 +539,12 @@ signpost and not a second tracker.
    which is why the two loads are read in that order. Restore-the-bug both ways on Linux: a
    fabricated retroactive record fails the ceiling and leaves the publish assertion passing exactly
    as Win64 saw it; removing the record bump fails the floor. Suite 198/198.
+   **Confirmed on this machine the same evening**, which is the venue that matters because this is
+   where it failed twice: `DESKTOP-590NICV`, editor rebuilt at `6b82e4a` (325 actions, 670 s,
+   Succeeded), suite `198 tests performed`, **198 Success, 0 Fail** — the first all-green Win64
+   run there has ever been, against §5's 196/1. The export gate re-run on those fresh DLLs is
+   also clean and reports the same counts as §6, so nothing in `master` since the pass moved the
+   supported surface.
 4. **DEFERRED, by owner decision, until it can be measured.** Bead `akj.10.4`. The flag is not
    added: §4's answer is deduced from the preprocessor guard, and sessions now survive long enough
    to evaluate `typeof Atomics` on Win64 and decide against an observation instead.
