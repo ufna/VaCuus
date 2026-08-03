@@ -8,6 +8,7 @@
 #include "VaCuusEngine.h"
 #include "VaCuusRecordingRenderInterface.h"
 #include "VaCuusStyleSet.h"
+#include "VaCuusTestDocumentHost.h"
 #include "VaCuusUIThread.h"
 #include "VaCuusViewStatus.h"
 
@@ -275,87 +276,24 @@ struct FMaterialProbe
 	std::atomic<bool> bShutdown{false};
 };
 
-class FMaterialProbeHost final : public IVaCuusDocumentHost
+class FMaterialProbeHost final : public FVaCuusTestDocumentHost
 {
 public:
 	explicit FMaterialProbeHost(const TSharedRef<FMaterialProbe>& InProbe)
-		: Probe(InProbe)
+		: FVaCuusTestDocumentHost(TEXT("vacuus_material_probe"), "vacuus://material_probe.rml", Rml::FocusFlag::Auto)
+		, Probe(InProbe)
 	{
 	}
 
-	virtual bool Initialize(uint32 InViewId, const TSharedRef<FVaCuusViewStatus>& InStatus) override
+	/** Retained by Shutdown(), the production host's rule: Rml::Shutdown() releases font
+	 *  textures through it. */
+	virtual Rml::RenderInterface* CreateRenderInterface() override
 	{
-		check(FVaCuusUIThread::IsInUIThread());
-		Status = InStatus;
 		Recorder = MakeUnique<FVaCuusRecordingRenderInterface>();
-		ContextName = FString::Printf(TEXT("vacuus_material_probe_%u"), InViewId);
-		Context = Rml::CreateContext(Rml::String(TCHAR_TO_UTF8(*ContextName)), Rml::Vector2i(1, 1), Recorder.Get());
-		return Context != nullptr;
+		return Recorder.Get();
 	}
 
-	virtual void Shutdown() override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-		CloseDocument();
-		if (Context)
-		{
-			Rml::RemoveContext(Rml::String(TCHAR_TO_UTF8(*ContextName)));
-			Context = nullptr;
-		}
-		// Recorder deliberately retained — Rml::Shutdown() releases font textures
-		// through it (the production host's rule).
-		Probe->bShutdown.store(true, std::memory_order_release);
-	}
-
-	virtual void SetViewSize(FIntPoint InViewSize) override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-		if (InViewSize == ViewSize || InViewSize.X <= 0 || InViewSize.Y <= 0)
-		{
-			return;
-		}
-		ViewSize = InViewSize;
-		if (Context)
-		{
-			Context->SetDimensions(Rml::Vector2i(ViewSize.X, ViewSize.Y));
-		}
-	}
-
-	virtual void LoadDocumentFromFile(const FString&, uint64 LoadSerial) override
-	{
-		Report(LoadSerial, false); // the probe only loads from memory
-	}
-
-	virtual void LoadDocumentFromMemory(const FString& RmlSource, uint64 LoadSerial) override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-		if (!Context)
-		{
-			Report(LoadSerial, false);
-			return;
-		}
-		Rml::ElementDocument* NewDocument =
-			Context->LoadDocumentFromMemory(Rml::String(TCHAR_TO_UTF8(*RmlSource)), "vacuus://material_probe.rml");
-		if (!NewDocument)
-		{
-			Report(LoadSerial, false);
-			return;
-		}
-		CloseDocument();
-		RmlDocument = NewDocument;
-		RmlDocument->Show();
-		Report(LoadSerial, true);
-	}
-
-	virtual void CloseDocument() override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-		if (RmlDocument)
-		{
-			RmlDocument->Close();
-			RmlDocument = nullptr;
-		}
-	}
+	virtual void OnShutdown() override { Probe->bShutdown.store(true, std::memory_order_release); }
 
 	virtual void SetVisible(bool bVisible) override
 	{
@@ -364,18 +302,6 @@ public:
 		{
 			bVisible ? RmlDocument->Show() : RmlDocument->Hide();
 		}
-	}
-
-	virtual bool HasView() const override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-		return Context != nullptr && RmlDocument != nullptr && ViewSize.X > 0 && ViewSize.Y > 0;
-	}
-
-	virtual Rml::Context* GetContext() const override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-		return Context;
 	}
 
 	virtual void RecordAndPublishFrame() override
@@ -399,24 +325,8 @@ public:
 	}
 
 private:
-	void Report(uint64 LoadSerial, bool bSuccess)
-	{
-		if (Status.IsValid() && LoadSerial != 0)
-		{
-			Status->LoadResult.store(
-				static_cast<uint8>(bSuccess ? EVaCuusLoadResult::Succeeded : EVaCuusLoadResult::Failed),
-				std::memory_order_relaxed);
-			Status->LoadCompletedSerial.store(LoadSerial, std::memory_order_release);
-		}
-	}
-
 	TSharedRef<FMaterialProbe> Probe;
-	TSharedPtr<FVaCuusViewStatus> Status;
 	TUniquePtr<FVaCuusRecordingRenderInterface> Recorder;
-	FString ContextName;
-	Rml::Context* Context = nullptr;
-	Rml::ElementDocument* RmlDocument = nullptr;
-	FIntPoint ViewSize = FIntPoint::ZeroValue;
 };
 
 /** One-at-a-time frame stepping — the M3b pattern (the wake event coalesces, so N triggers != N frames). */

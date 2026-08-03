@@ -8,6 +8,7 @@
 #include "VaCuusEngine.h"
 #include "VaCuusModelLayout.h"
 #include "VaCuusModelShadow.h"
+#include "VaCuusTestDocumentHost.h"
 #include "VaCuusUIThread.h"
 #include "VaCuusViewStatus.h"
 
@@ -110,22 +111,19 @@ static const TCHAR* GDocument = TEXT(R"(<rml>
  * after WaitForFrameCount() saw the frame counter advance, which the UI thread stores with
  * release ordering after RunFrame() returns.
  */
-class FProbeHost final : public IVaCuusDocumentHost
+class FProbeHost final : public FVaCuusTestDocumentHost
 {
 public:
-	virtual bool Initialize(uint32 InViewId, const TSharedRef<FVaCuusViewStatus>& InStatus) override
+	FProbeHost()
+		: FVaCuusTestDocumentHost(TEXT("vacuus_databind_view"), "vacuus://databind.rml", Rml::FocusFlag::Document)
 	{
-		check(FVaCuusUIThread::IsInUIThread());
+	}
 
-		Status = InStatus;
-		ContextName = FString::Printf(TEXT("vacuus_databind_view_%u"), InViewId);
-
-		Context = Rml::CreateContext(Rml::String(TCHAR_TO_UTF8(*ContextName)), Rml::Vector2i(1, 1));
-		if (Context == nullptr)
-		{
-			return false;
-		}
-
+	/** The bind, and it must happen HERE: `data-model` is read exactly once, in
+	 *  Element::SetParent (Element.cpp:2203-2219), with no retry, so a model created after a
+	 *  document parses attaches to nothing. OnInitialized() runs before any load. */
+	virtual bool OnInitialized() override
+	{
 		Layout = FVaCuusModelLayout(FVaCuusLayoutTestModel::StaticStruct());
 		Shadow = FVaCuusModelShadow(FVaCuusLayoutTestModel::StaticStruct());
 		SeedShadow();
@@ -153,70 +151,10 @@ public:
 		return true;
 	}
 
-	virtual void Shutdown() override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-
-		CloseDocument();
-		if (Context)
-		{
-			Rml::RemoveContext(Rml::String(TCHAR_TO_UTF8(*ContextName)));
-			Context = nullptr;
-		}
-
-		// The shadow outlives nothing: RmlUi holds a raw void* into it and there is no unbind
-		// API, so the context has to go first. That ordering is the whole reason the shadow is
-		// a member of the host rather than of the test.
-		Shadow.Reset();
-	}
-
-	virtual void SetViewSize(FIntPoint InViewSize) override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-
-		ViewSize = InViewSize;
-		if (Context)
-		{
-			Context->SetDimensions(Rml::Vector2i(ViewSize.X, ViewSize.Y));
-		}
-	}
-
-	virtual void LoadDocumentFromFile(const FString& VfsPath, uint64 LoadSerial) override { Report(LoadSerial, /*bSuccess=*/false); }
-
-	virtual void LoadDocumentFromMemory(const FString& RmlSource, uint64 LoadSerial) override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-
-		if (Context == nullptr)
-		{
-			Report(LoadSerial, /*bSuccess=*/false);
-			return;
-		}
-
-		Rml::ElementDocument* NewDocument =
-			Context->LoadDocumentFromMemory(Rml::String(TCHAR_TO_UTF8(*RmlSource)), "vacuus://databind.rml");
-		if (NewDocument == nullptr)
-		{
-			Report(LoadSerial, /*bSuccess=*/false);
-			return;
-		}
-
-		CloseDocument();
-		RmlDocument = NewDocument;
-		RmlDocument->Show(Rml::ModalFlag::None, Rml::FocusFlag::Document);
-		Report(LoadSerial, /*bSuccess=*/true);
-	}
-
-	virtual void CloseDocument() override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-
-		if (RmlDocument)
-		{
-			RmlDocument->Close();
-			RmlDocument = nullptr;
-		}
-	}
+	/** The context is already gone when this runs, and that ordering is the whole reason the
+	 *  shadow is a member of the host rather than of the test: RmlUi holds a raw void* into it
+	 *  and there is no unbind API. */
+	virtual void OnShutdown() override { Shadow.Reset(); }
 
 	virtual void SetVisible(bool bVisible) override
 	{
@@ -226,18 +164,6 @@ public:
 		{
 			bVisible ? RmlDocument->Show() : RmlDocument->Hide();
 		}
-	}
-
-	virtual bool HasView() const override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-		return Context != nullptr && RmlDocument != nullptr && ViewSize.X > 0 && ViewSize.Y > 0;
-	}
-
-	virtual Rml::Context* GetContext() const override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-		return Context;
 	}
 
 	virtual void RecordAndPublishFrame() override
@@ -326,16 +252,6 @@ private:
 		}
 	}
 
-	void Report(uint64 LoadSerial, bool bSuccess)
-	{
-		if (Status.IsValid() && LoadSerial != 0)
-		{
-			Status->LoadResult.store(
-				static_cast<uint8>(bSuccess ? EVaCuusLoadResult::Succeeded : EVaCuusLoadResult::Failed), std::memory_order_relaxed);
-			Status->LoadCompletedSerial.store(LoadSerial, std::memory_order_release);
-		}
-	}
-
 	/**
 	 * Fills the shadow the way the game thread will: build the value, then hand the whole
 	 * struct to CopyScriptStruct. Per-property writes would be testing this test.
@@ -419,13 +335,8 @@ private:
 		return Out;
 	}
 
-	TSharedPtr<FVaCuusViewStatus> Status;
-	FString ContextName;
-	Rml::Context* Context = nullptr;
-	Rml::ElementDocument* RmlDocument = nullptr;
 	Rml::DataModelHandle ModelHandle;
 	FVaCuusModelShadow Shadow;
-	FIntPoint ViewSize = FIntPoint::ZeroValue;
 };
 
 /** One UI frame at a time; the wake event coalesces, so N triggers are not N frames. */

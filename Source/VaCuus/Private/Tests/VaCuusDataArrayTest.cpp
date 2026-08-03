@@ -8,6 +8,7 @@
 #include "VaCuusEngine.h"
 #include "VaCuusModelLayout.h"
 #include "VaCuusModelShadow.h"
+#include "VaCuusTestDocumentHost.h"
 #include "VaCuusUIThread.h"
 #include "VaCuusViewStatus.h"
 #include "VaCuusWriteRouter.h"
@@ -74,27 +75,19 @@ struct FCaptured
  * thread and read on the test thread only after CompletedPhase (release) was seen
  * (acquire) -- the VaCuus.Model.Binding pattern, verbatim.
  */
-class FArrayProbeHost final : public IVaCuusDocumentHost
+class FArrayProbeHost final : public FVaCuusTestDocumentHost
 {
 public:
 	explicit FArrayProbeHost(const TCHAR* InContextPrefix)
-		: ContextPrefix(InContextPrefix)
+		: FVaCuusTestDocumentHost(InContextPrefix, "vacuus://data_array.rml", Rml::FocusFlag::Document)
 	{
 	}
 
-	virtual bool Initialize(uint32 InViewId, const TSharedRef<FVaCuusViewStatus>& InStatus) override
+	/** The bind, and it must happen HERE: `data-model` is read exactly once, in
+	 *  Element::SetParent (Element.cpp:2203-2219), so a model created after a document parses
+	 *  attaches to nothing. OnInitialized() runs with the context live and before any load. */
+	virtual bool OnInitialized() override
 	{
-		check(FVaCuusUIThread::IsInUIThread());
-
-		Status = InStatus;
-		ContextName = FString::Printf(TEXT("%s_%u"), *ContextPrefix, InViewId);
-
-		Context = Rml::CreateContext(Rml::String(TCHAR_TO_UTF8(*ContextName)), Rml::Vector2i(1, 1));
-		if (Context == nullptr)
-		{
-			return false;
-		}
-
 		Layout = FVaCuusModelLayout(FVaCuusArrayBindModel::StaticStruct());
 		Shadow = FVaCuusModelShadow(FVaCuusArrayBindModel::StaticStruct());
 		if (Seed)
@@ -140,83 +133,12 @@ public:
 		return true;
 	}
 
-	virtual void Shutdown() override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-
-		CloseDocument();
-		if (Context)
-		{
-			Rml::RemoveContext(Rml::String(TCHAR_TO_UTF8(*ContextName)));
-			Context = nullptr;
-		}
-
-		// The context goes first: RmlUi holds a raw void* into the shadow and there is no
-		// unbind API. Same ordering argument as VaCuus.Model.Binding's host.
-		Shadow.Reset();
-	}
-
-	virtual void SetViewSize(FIntPoint InViewSize) override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-
-		ViewSize = InViewSize;
-		if (Context)
-		{
-			Context->SetDimensions(Rml::Vector2i(ViewSize.X, ViewSize.Y));
-		}
-	}
-
-	virtual void LoadDocumentFromFile(const FString& VfsPath, uint64 LoadSerial) override { Report(LoadSerial, /*bSuccess=*/false); }
-
-	virtual void LoadDocumentFromMemory(const FString& RmlSource, uint64 LoadSerial) override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-
-		if (Context == nullptr)
-		{
-			Report(LoadSerial, /*bSuccess=*/false);
-			return;
-		}
-
-		Rml::ElementDocument* NewDocument =
-			Context->LoadDocumentFromMemory(Rml::String(TCHAR_TO_UTF8(*RmlSource)), "vacuus://data_array.rml");
-		if (NewDocument == nullptr)
-		{
-			Report(LoadSerial, /*bSuccess=*/false);
-			return;
-		}
-
-		CloseDocument();
-		RmlDocument = NewDocument;
-		RmlDocument->Show(Rml::ModalFlag::None, Rml::FocusFlag::Document);
-		Report(LoadSerial, /*bSuccess=*/true);
-	}
-
-	virtual void CloseDocument() override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-
-		if (RmlDocument)
-		{
-			RmlDocument->Close();
-			RmlDocument = nullptr;
-		}
-	}
+	/** The context is already gone when this runs, which is the ordering the shadow needs: RmlUi
+	 *  holds a raw void* into it and there is no unbind API. Same argument as
+	 *  VaCuus.Model.Binding's host. */
+	virtual void OnShutdown() override { Shadow.Reset(); }
 
 	virtual void SetVisible(bool bVisible) override {}
-
-	virtual bool HasView() const override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-		return Context != nullptr && RmlDocument != nullptr && ViewSize.X > 0 && ViewSize.Y > 0;
-	}
-
-	virtual Rml::Context* GetContext() const override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-		return Context;
-	}
 
 	virtual void RecordAndPublishFrame() override
 	{
@@ -255,7 +177,6 @@ public:
 
 	void Dirty(const char* Name) { ModelHandle.DirtyVariable(Name); }
 	void UpdateContext() { Context->Update(); }
-	Rml::ElementDocument* GetDocument() { return RmlDocument; }
 	const void* GetShadowData() const { return Shadow.GetData(); }
 	int32 GetShadowSize() const { return Shadow.GetStruct()->GetStructureSize(); }
 
@@ -358,16 +279,6 @@ private:
 		Captures[Phase] = Capture();
 	}
 
-	void Report(uint64 LoadSerial, bool bSuccess)
-	{
-		if (Status.IsValid() && LoadSerial != 0)
-		{
-			Status->LoadResult.store(
-				static_cast<uint8>(bSuccess ? EVaCuusLoadResult::Succeeded : EVaCuusLoadResult::Failed), std::memory_order_relaxed);
-			Status->LoadCompletedSerial.store(LoadSerial, std::memory_order_release);
-		}
-	}
-
 	FString Attribute(const char* ElementId) const
 	{
 		if (RmlDocument == nullptr)
@@ -428,15 +339,9 @@ private:
 		return Out;
 	}
 
-	TSharedPtr<FVaCuusViewStatus> Status;
-	FString ContextPrefix;
-	FString ContextName;
-	Rml::Context* Context = nullptr;
-	Rml::ElementDocument* RmlDocument = nullptr;
 	Rml::DataModelHandle ModelHandle;
 	FVaCuusModelLayout Layout;
 	FVaCuusModelShadow Shadow;
-	FIntPoint ViewSize = FIntPoint::ZeroValue;
 };
 
 /**

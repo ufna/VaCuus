@@ -7,6 +7,7 @@
 #include "VaCuusDocumentHost.h"
 #include "VaCuusEngine.h"
 #include "VaCuusRecordingRenderInterface.h"
+#include "VaCuusTestDocumentHost.h"
 #include "VaCuusUIThread.h"
 #include "VaCuusViewStatus.h"
 
@@ -50,106 +51,32 @@ struct FProbe
  * claim: N contexts on ONE UI thread, each recording its own commands, and
  * removing one leaves the others running.
  */
-class FProbeHost final : public IVaCuusDocumentHost
+class FProbeHost final : public FVaCuusTestDocumentHost
 {
 public:
 	explicit FProbeHost(const TSharedRef<FProbe>& InProbe)
-		: Probe(InProbe)
+		: FVaCuusTestDocumentHost(TEXT("vacuus_probe_view"), "vacuus://probe.rml", Rml::FocusFlag::Auto)
+		, Probe(InProbe)
 	{
 	}
 
-	virtual bool Initialize(uint32 InViewId, const TSharedRef<FVaCuusViewStatus>& InStatus) override
+	/** Its own recorder, exactly like the production host -- that is the structural claim under
+	 *  test. Retained by Shutdown() for the production host's reason: Rml::Shutdown() releases
+	 *  this view's font textures THROUGH it. A context that fails to create leaves the recorder
+	 *  owned by the TUniquePtr below, which the dropped host destroys. */
+	virtual Rml::RenderInterface* CreateRenderInterface() override
 	{
-		check(FVaCuusUIThread::IsInUIThread());
-
-		ViewId = InViewId;
-		Status = InStatus;
 		Recorder = MakeUnique<FVaCuusRecordingRenderInterface>();
-		ContextName = FString::Printf(TEXT("vacuus_probe_view_%u"), ViewId);
+		return Recorder.Get();
+	}
 
-		Context = Rml::CreateContext(Rml::String(TCHAR_TO_UTF8(*ContextName)), Rml::Vector2i(1, 1), Recorder.Get());
-		if (!Context)
-		{
-			Recorder.Reset();
-			return false;
-		}
-
+	virtual bool OnInitialized() override
+	{
 		Probe->bBooted.store(true, std::memory_order_release);
 		return true;
 	}
 
-	virtual void Shutdown() override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-
-		if (RmlDocument)
-		{
-			RmlDocument->Close();
-			RmlDocument = nullptr;
-		}
-		if (Context)
-		{
-			Rml::RemoveContext(Rml::String(TCHAR_TO_UTF8(*ContextName)));
-			Context = nullptr;
-		}
-
-		// Recorder deliberately retained -- same reason as the production host:
-		// Rml::Shutdown() releases this view's font textures through it.
-		Probe->bShutdown.store(true, std::memory_order_release);
-	}
-
-	virtual void SetViewSize(FIntPoint InViewSize) override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-		if (InViewSize == ViewSize || InViewSize.X <= 0 || InViewSize.Y <= 0)
-		{
-			return;
-		}
-		ViewSize = InViewSize;
-		if (Context)
-		{
-			Context->SetDimensions(Rml::Vector2i(ViewSize.X, ViewSize.Y));
-		}
-	}
-
-	virtual void LoadDocumentFromFile(const FString& VfsPath, uint64 LoadSerial) override
-	{
-		// Not exercised: the probe only ever loads from memory.
-		Report(LoadSerial, /*bSuccess=*/false);
-	}
-
-	virtual void LoadDocumentFromMemory(const FString& RmlSource, uint64 LoadSerial) override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-		if (!Context)
-		{
-			Report(LoadSerial, /*bSuccess=*/false);
-			return;
-		}
-
-		Rml::ElementDocument* NewDocument =
-			Context->LoadDocumentFromMemory(Rml::String(TCHAR_TO_UTF8(*RmlSource)), "vacuus://probe.rml");
-		if (!NewDocument)
-		{
-			Report(LoadSerial, /*bSuccess=*/false);
-			return;
-		}
-
-		CloseDocument();
-		RmlDocument = NewDocument;
-		RmlDocument->Show();
-		Report(LoadSerial, /*bSuccess=*/true);
-	}
-
-	virtual void CloseDocument() override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-		if (RmlDocument)
-		{
-			RmlDocument->Close();
-			RmlDocument = nullptr;
-		}
-	}
+	virtual void OnShutdown() override { Probe->bShutdown.store(true, std::memory_order_release); }
 
 	virtual void SetVisible(bool bVisible) override
 	{
@@ -167,18 +94,6 @@ public:
 		{
 			RmlDocument->Hide();
 		}
-	}
-
-	virtual bool HasView() const override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-		return Context != nullptr && RmlDocument != nullptr && ViewSize.X > 0 && ViewSize.Y > 0;
-	}
-
-	virtual Rml::Context* GetContext() const override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-		return Context;
 	}
 
 	virtual void RecordAndPublishFrame() override
@@ -212,25 +127,8 @@ public:
 	}
 
 private:
-	void Report(uint64 LoadSerial, bool bSuccess)
-	{
-		if (Status.IsValid() && LoadSerial != 0)
-		{
-			Status->LoadResult.store(
-				static_cast<uint8>(bSuccess ? EVaCuusLoadResult::Succeeded : EVaCuusLoadResult::Failed),
-				std::memory_order_relaxed);
-			Status->LoadCompletedSerial.store(LoadSerial, std::memory_order_release);
-		}
-	}
-
 	TSharedRef<FProbe> Probe;
-	TSharedPtr<FVaCuusViewStatus> Status;
 	TUniquePtr<FVaCuusRecordingRenderInterface> Recorder;
-	FString ContextName;
-	Rml::Context* Context = nullptr;
-	Rml::ElementDocument* RmlDocument = nullptr;
-	FIntPoint ViewSize = FIntPoint::ZeroValue;
-	uint32 ViewId = 0;
 };
 
 /**

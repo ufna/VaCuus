@@ -9,6 +9,7 @@
 #include "VaCuusJsRuntime.h"
 #include "VaCuusJsScriptHost.h"
 #include "VaCuusJsViewContext.h"
+#include "VaCuusTestNullDocumentHost.h"
 #include "VaCuusUIThread.h"
 #include "VaCuusViewStatus.h"
 
@@ -643,29 +644,10 @@ bool FVaCuusJsPumpLifecycleTest::RunTest(const FString& Parameters)
 
 namespace VaCuusJsPumpTest
 {
-/**
- * A view with no Rml context: enough for AddView to register it (Initialize
- * succeeds) while HasView() keeps it out of the record loop -- Task 3's pump
- * needs a REGISTERED view, not a rendered one, and `document` is null either
- * way until Task 6.
- */
-class FNullDocumentHost final : public IVaCuusDocumentHost
-{
-public:
-	virtual bool Initialize(uint32 /*InViewId*/, const TSharedRef<FVaCuusViewStatus>& /*InStatus*/) override
-	{
-		return true;
-	}
-	virtual void Shutdown() override {}
-	virtual void SetViewSize(FIntPoint /*ViewSize*/) override {}
-	virtual void LoadDocumentFromFile(const FString& /*VfsPath*/, uint64 /*LoadSerial*/) override {}
-	virtual void LoadDocumentFromMemory(const FString& /*RmlSource*/, uint64 /*LoadSerial*/) override {}
-	virtual void CloseDocument() override {}
-	virtual void SetVisible(bool /*bVisible*/) override {}
-	virtual bool HasView() const override { return false; }
-	virtual Rml::Context* GetContext() const override { return nullptr; }
-	virtual void RecordAndPublishFrame() override {}
-};
+//~ THE VIEW BELOW USES FVaCuusTestNullDocumentHost, i.e. a view with no Rml context: enough for
+//~ AddView to register it (Initialize succeeds) while HasView() keeps it out of the record loop
+//~ -- Task 3's pump needs a REGISTERED view, not a rendered one, and `document` is null either
+//~ way until Task 6.
 
 /**
  * The REAL FVaCuusJsScriptHost wrapped for observability: forwards every seam
@@ -790,7 +772,7 @@ bool FVaCuusJsPumpUIThreadIntegrationTest::RunTest(const FString& Parameters)
 
 	// A real view, through the real command queue.
 	const uint32 ViewId = Thread->AllocateViewId();
-	Thread->EnqueueAddView(ViewId, MakeUnique<FNullDocumentHost>(), FIntPoint::ZeroValue,
+	Thread->EnqueueAddView(ViewId, MakeUnique<FVaCuusTestNullDocumentHost>(), FIntPoint::ZeroValue,
 		MakeShared<FVaCuusViewStatus>());
 	if (!TestTrue(TEXT("the AddView frame ran"), PumpRealFrames(*Thread, 1)))
 	{

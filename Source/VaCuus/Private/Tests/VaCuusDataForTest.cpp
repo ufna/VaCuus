@@ -7,6 +7,7 @@
 #include "VaCuusDataVariable.h"
 #include "VaCuusDocumentHost.h"
 #include "VaCuusEngine.h"
+#include "VaCuusTestDocumentHost.h"
 #include "VaCuusUIThread.h"
 #include "VaCuusViewStatus.h"
 
@@ -68,112 +69,15 @@ struct FFrameRecord
 	TArray<FString> Rows;
 };
 
-class FDataForProbeHost final : public IVaCuusDocumentHost
+class FDataForProbeHost final : public FVaCuusTestDocumentHost
 {
 public:
 	explicit FDataForProbeHost(const TCHAR* InContextPrefix)
-		: ContextPrefix(InContextPrefix)
+		: FVaCuusTestDocumentHost(InContextPrefix, "vacuus://data_for.rml", Rml::FocusFlag::Document)
 	{
-	}
-
-	virtual bool Initialize(uint32 InViewId, const TSharedRef<FVaCuusViewStatus>& InStatus) override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-
-		Status = InStatus;
-		ContextName = FString::Printf(TEXT("%s_%u"), *ContextPrefix, InViewId);
-		Context = Rml::CreateContext(Rml::String(TCHAR_TO_UTF8(*ContextName)), Rml::Vector2i(1, 1));
-
-		// RESERVED ONCE, NEVER REALLOCATED: the test thread reads earlier records while the
-		// UI thread may still append one more (a coalesced trigger can grant a frame after
-		// WaitForFrameCount returns), and Reserve is what keeps those EARLIER-record reads
-		// valid -- a growth realloc would move the buffer out from under them. Reserve does
-		// NOT make the newest record readable: AddDefaulted_GetRef bumps ArrayNum before the
-		// record is constructed, so only the settled-count clamp (SettledFrames) may name
-		// it. Both halves are needed. 1024 covers the largest window here (idle: ~310
-		// frames) three times over.
-		FrameLog.Reserve(1024);
-
-		return Context != nullptr;
-	}
-
-	virtual void Shutdown() override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-
-		CloseDocument();
-		if (Context)
-		{
-			Rml::RemoveContext(Rml::String(TCHAR_TO_UTF8(*ContextName)));
-			Context = nullptr;
-		}
-	}
-
-	virtual void SetViewSize(FIntPoint InViewSize) override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-
-		ViewSize = InViewSize;
-		if (Context)
-		{
-			Context->SetDimensions(Rml::Vector2i(ViewSize.X, ViewSize.Y));
-		}
-	}
-
-	virtual void LoadDocumentFromFile(const FString& VfsPath, uint64 LoadSerial) override { Report(LoadSerial, /*bSuccess=*/false); }
-
-	virtual void LoadDocumentFromMemory(const FString& RmlSource, uint64 LoadSerial) override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-
-		if (Context == nullptr)
-		{
-			Report(LoadSerial, /*bSuccess=*/false);
-			return;
-		}
-
-		Rml::ElementDocument* NewDocument =
-			Context->LoadDocumentFromMemory(Rml::String(TCHAR_TO_UTF8(*RmlSource)), "vacuus://data_for.rml");
-		if (NewDocument == nullptr)
-		{
-			Report(LoadSerial, /*bSuccess=*/false);
-			return;
-		}
-
-		// LOAD FIRST, CLOSE SECOND, exactly as FVaCuusRmlDocumentHost::AdoptDocument -- the
-		// ordering that makes "do nothing to the model on reload" safe: the new document is
-		// parented, and therefore resolves `data-model`, while the model is fully live.
-		CloseDocument();
-		RmlDocument = NewDocument;
-		RmlDocument->Show(Rml::ModalFlag::None, Rml::FocusFlag::Document);
-		++NumDocumentsLoaded;
-		Report(LoadSerial, /*bSuccess=*/true);
-	}
-
-	virtual void CloseDocument() override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-
-		if (RmlDocument)
-		{
-			RmlDocument->Close();
-			RmlDocument = nullptr;
-		}
 	}
 
 	virtual void SetVisible(bool bVisible) override {}
-
-	virtual bool HasView() const override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-		return Context != nullptr && RmlDocument != nullptr && ViewSize.X > 0 && ViewSize.Y > 0;
-	}
-
-	virtual Rml::Context* GetContext() const override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-		return Context;
-	}
 
 	virtual void RecordAndPublishFrame() override
 	{
@@ -205,17 +109,25 @@ public:
 	TArray<FFrameRecord> FrameLog;
 	int32 NumDocumentsLoaded = 0;
 
-private:
-	void Report(uint64 LoadSerial, bool bSuccess)
+protected:
+	/**
+	 * RESERVED ONCE, NEVER REALLOCATED: the test thread reads earlier records while the UI
+	 * thread may still append one more (a coalesced trigger can grant a frame after
+	 * WaitForFrameCount returns), and Reserve is what keeps those EARLIER-record reads valid --
+	 * a growth realloc would move the buffer out from under them. Reserve does NOT make the
+	 * newest record readable: AddDefaulted_GetRef bumps ArrayNum before the record is
+	 * constructed, so only the settled-count clamp (SettledFrames) may name it. Both halves are
+	 * needed. 1024 covers the largest window here (idle: ~310 frames) three times over.
+	 */
+	virtual bool OnInitialized() override
 	{
-		if (Status.IsValid() && LoadSerial != 0)
-		{
-			Status->LoadResult.store(
-				static_cast<uint8>(bSuccess ? EVaCuusLoadResult::Succeeded : EVaCuusLoadResult::Failed), std::memory_order_relaxed);
-			Status->LoadCompletedSerial.store(LoadSerial, std::memory_order_release);
-		}
+		FrameLog.Reserve(1024);
+		return true;
 	}
 
+	virtual void OnDocumentAdopted() override { ++NumDocumentsLoaded; }
+
+private:
 	FString Attribute(const char* ElementId) const
 	{
 		if (RmlDocument == nullptr)
@@ -256,13 +168,6 @@ private:
 
 		return Out;
 	}
-
-	TSharedPtr<FVaCuusViewStatus> Status;
-	FString ContextPrefix;
-	FString ContextName;
-	Rml::Context* Context = nullptr;
-	Rml::ElementDocument* RmlDocument = nullptr;
-	FIntPoint ViewSize = FIntPoint::ZeroValue;
 };
 
 /**

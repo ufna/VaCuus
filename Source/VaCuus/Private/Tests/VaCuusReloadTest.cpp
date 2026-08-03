@@ -6,6 +6,7 @@
 #include "VaCuusDocumentHost.h"
 #include "VaCuusEngine.h"
 #include "VaCuusSubsystem.h"
+#include "VaCuusTestNullDocumentHost.h"
 #include "VaCuusUIThread.h"
 #include "VaCuusView.h"
 #include "VaCuusViewStatus.h"
@@ -21,28 +22,11 @@
 
 namespace VaCuusReloadTest
 {
-/**
- * A document host that does nothing at all -- no context, no RmlUi.
- *
- * ENOUGH, AND DELIBERATELY SO: what this file asserts is a GAME-THREAD fact (the reload
- * entry point enqueued a cache clear, and re-issued a load for this view) plus a counter
- * the UI thread bumps. Giving the host a real context would add an RmlUi boot and a
- * document parse to a test that would assert nothing more.
- */
-class FStubHost final : public IVaCuusDocumentHost
-{
-public:
-	virtual bool Initialize(uint32 InViewId, const TSharedRef<FVaCuusViewStatus>& InStatus) override { return true; }
-	virtual void Shutdown() override {}
-	virtual void SetViewSize(FIntPoint ViewSize) override {}
-	virtual void LoadDocumentFromFile(const FString& VfsPath, uint64 LoadSerial) override {}
-	virtual void LoadDocumentFromMemory(const FString& RmlSource, uint64 LoadSerial) override {}
-	virtual void CloseDocument() override {}
-	virtual void SetVisible(bool bVisible) override {}
-	virtual bool HasView() const override { return false; }
-	virtual Rml::Context* GetContext() const override { return nullptr; }
-	virtual void RecordAndPublishFrame() override {}
-};
+//~ THE VIEWS BELOW USE FVaCuusTestNullDocumentHost -- no context, no RmlUi -- and that is enough
+//~ deliberately: what this file asserts is a GAME-THREAD fact (the reload entry point enqueued a
+//~ cache clear, and re-issued a load for this view) plus a counter the UI thread bumps. Giving
+//~ the host a real context would add an RmlUi boot and a document parse to a test that would
+//~ assert nothing more.
 
 /**
  * A standalone UGameInstance carrying a live UVaCuusSubsystem, torn down in the order the
@@ -242,8 +226,8 @@ bool FVaCuusReloadAssetCachesTest::RunTest(const FString& Parameters)
 			return false;
 		}
 
-		UVaCuusView* FirstView = Subsystem->CreateView(MakeUnique<FStubHost>(), FIntPoint(320, 200));
-		UVaCuusView* SecondView = Subsystem->CreateView(MakeUnique<FStubHost>(), FIntPoint(320, 200));
+		UVaCuusView* FirstView = Subsystem->CreateView(MakeUnique<FVaCuusTestNullDocumentHost>(), FIntPoint(320, 200));
+		UVaCuusView* SecondView = Subsystem->CreateView(MakeUnique<FVaCuusTestNullDocumentHost>(), FIntPoint(320, 200));
 		if (!TestNotNull(TEXT("First view"), FirstView) || !TestNotNull(TEXT("Second view"), SecondView))
 		{
 			return false;

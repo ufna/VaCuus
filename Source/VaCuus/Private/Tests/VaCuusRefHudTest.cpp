@@ -10,6 +10,7 @@
 #include "VaCuusNodeCount.h"
 #include "VaCuusScriptHost.h"
 #include "VaCuusStats.h"
+#include "VaCuusTestDocumentHost.h"
 #include "VaCuusUIThread.h"
 #include "VaCuusViewStatus.h"
 
@@ -65,140 +66,66 @@ struct FRefHudFrameRecord
 };
 
 /**
- * File-loading probe host: FDataForProbeHost's frame log + the JsDoc seam calls
- * (OnDocumentReady after Show, OnDocumentClosing before Close -- refhud_logic.js
+ * File-loading probe host: the shared base with FDataForProbeHost's frame log + the JsDoc
+ * seam calls (OnDocumentReady after Show, OnDocumentClosing before Close -- refhud_logic.js
  * must actually run) + the router test's numbered-phase actions, which run at the
  * top of RecordAndPublishFrame -- i.e. against the tree exactly as the PREVIOUS
  * frame's Update left it.
  */
-class FRefHudProbeHost final : public IVaCuusDocumentHost
+class FRefHudProbeHost final : public FVaCuusTestDocumentHost
 {
 public:
 	explicit FRefHudProbeHost(const TCHAR* InContextPrefix)
-		: ContextPrefix(InContextPrefix)
+		: FVaCuusTestDocumentHost(InContextPrefix, "vacuus://refhud_test.rml", Rml::FocusFlag::Document)
 	{
 	}
 
-	virtual bool Initialize(uint32 InViewId, const TSharedRef<FVaCuusViewStatus>& InStatus) override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-		ViewId = InViewId;
-		Status = InStatus;
-		ContextName = FString::Printf(TEXT("%s_%u"), *ContextPrefix, InViewId);
-		Context = Rml::CreateContext(Rml::String(TCHAR_TO_UTF8(*ContextName)), Rml::Vector2i(1, 1));
-
-		// Reserved once, never reallocated (the M3b straggler rule): the test thread
-		// reads settled records while a coalesced trigger may append one more.
-		FrameLog.Reserve(8192);
-		return Context != nullptr;
-	}
-
-	virtual void Shutdown() override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-		CloseDocument();
-		if (Context != nullptr)
-		{
-			Rml::RemoveContext(Rml::String(TCHAR_TO_UTF8(*ContextName)));
-			Context = nullptr;
-		}
-	}
-
-	virtual void SetViewSize(FIntPoint InViewSize) override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-		ViewSize = InViewSize;
-		if (Context != nullptr)
-		{
-			Context->SetDimensions(Rml::Vector2i(ViewSize.X, ViewSize.Y));
-		}
-	}
-
+	/**
+	 * THE ONLY OVERRIDE OF THE FILE LOAD IN THIS SUITE'S RUNTIME MODULE, and the point of the
+	 * test: the production FVaCuusRmlDocumentHost::LoadDocumentFromFile shape, through
+	 * Rml::GetFileInterface(), so links and rcss resolve against the DevUI roots / mounted
+	 * bundles exactly as they do in the shipping path. AdoptDocument() supplies the rest of the
+	 * production order (load first, close second, Show, then the seam call).
+	 */
 	virtual void LoadDocumentFromFile(const FString& VfsPath, uint64 LoadSerial) override
 	{
 		check(FVaCuusUIThread::IsInUIThread());
 		if (Context == nullptr)
 		{
-			Report(LoadSerial, /*bSuccess=*/false);
+			ReportLoadResult(LoadSerial, /*bSuccess=*/false);
 			return;
 		}
 
-		// The production FVaCuusRmlDocumentHost::LoadDocumentFromFile shape: through
-		// Rml::GetFileInterface() -- links and rcss resolve against the DevUI roots /
-		// mounted bundles exactly as they do in the shipping path. Load FIRST, close
-		// second (the AdoptDocument order), then the spec 2(f) seam call that runs
-		// the document's captured scripts.
-		Rml::ElementDocument* NewDocument = Context->LoadDocument(Rml::String(TCHAR_TO_UTF8(*VfsPath)));
-		if (NewDocument == nullptr)
-		{
-			Report(LoadSerial, /*bSuccess=*/false);
-			return;
-		}
+		AdoptDocument(Context->LoadDocument(Rml::String(TCHAR_TO_UTF8(*VfsPath))), LoadSerial);
+	}
 
-		CloseDocument();
-		RmlDocument = NewDocument;
-		RmlDocument->Show(Rml::ModalFlag::None, Rml::FocusFlag::Document);
+	//~ The spec 2(f) seam calls -- refhud_logic.js must actually run -- at the production
+	//~ placements the base guarantees.
+	virtual void OnDocumentAdopted() override
+	{
 		if (IVaCuusScriptHost* ScriptHost = FVaCuusUIThread::GetActiveScriptHost())
 		{
 			ScriptHost->OnDocumentReady(ViewId, RmlDocument);
 		}
-		Report(LoadSerial, /*bSuccess=*/true);
 	}
 
-	virtual void LoadDocumentFromMemory(const FString& RmlSource, uint64 LoadSerial) override
+	virtual void OnDocumentClosing() override
 	{
-		check(FVaCuusUIThread::IsInUIThread());
-		if (Context == nullptr)
-		{
-			Report(LoadSerial, /*bSuccess=*/false);
-			return;
-		}
-
-		Rml::ElementDocument* NewDocument =
-			Context->LoadDocumentFromMemory(Rml::String(TCHAR_TO_UTF8(*RmlSource)), "vacuus://refhud_test.rml");
-		if (NewDocument == nullptr)
-		{
-			Report(LoadSerial, /*bSuccess=*/false);
-			return;
-		}
-
-		CloseDocument();
-		RmlDocument = NewDocument;
-		RmlDocument->Show(Rml::ModalFlag::None, Rml::FocusFlag::Document);
 		if (IVaCuusScriptHost* ScriptHost = FVaCuusUIThread::GetActiveScriptHost())
 		{
-			ScriptHost->OnDocumentReady(ViewId, RmlDocument);
+			ScriptHost->OnDocumentClosing(ViewId);
 		}
-		Report(LoadSerial, /*bSuccess=*/true);
 	}
 
-	virtual void CloseDocument() override
+	/** Reserved once, never reallocated (the M3b straggler rule): the test thread reads settled
+	 *  records while a coalesced trigger may append one more. */
+	virtual bool OnInitialized() override
 	{
-		check(FVaCuusUIThread::IsInUIThread());
-		if (RmlDocument != nullptr)
-		{
-			if (IVaCuusScriptHost* ScriptHost = FVaCuusUIThread::GetActiveScriptHost())
-			{
-				ScriptHost->OnDocumentClosing(ViewId);
-			}
-			RmlDocument->Close();
-			RmlDocument = nullptr;
-		}
+		FrameLog.Reserve(8192);
+		return true;
 	}
 
 	virtual void SetVisible(bool /*bVisible*/) override {}
-
-	virtual bool HasView() const override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-		return Context != nullptr && RmlDocument != nullptr && ViewSize.X > 0 && ViewSize.Y > 0;
-	}
-
-	virtual Rml::Context* GetContext() const override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-		return Context;
-	}
 
 	virtual void RecordAndPublishFrame() override
 	{
@@ -232,13 +159,6 @@ public:
 		Status->FramesRecorded.fetch_add(1, std::memory_order_release);
 	}
 
-	/** UI-thread only (phase actions). */
-	Rml::ElementDocument* GetDocument() const
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-		return RmlDocument;
-	}
-
 	//~ Configured on the test thread BEFORE EnqueueAddView; immutable after.
 	TSharedPtr<FVaCuusBoundModel> ObservedModel;
 	TArray<TUniqueFunction<void(FRefHudProbeHost&)>> Actions;
@@ -252,26 +172,6 @@ public:
 	//~ Phase-action results; read after the phase's CompletedPhase was acquired.
 	int32 PhaseNodeCount[4] = {0, 0, 0, 0};
 	FString PhaseProbeValue[4];
-
-private:
-	void Report(uint64 LoadSerial, bool bSuccess)
-	{
-		if (Status.IsValid() && LoadSerial != 0)
-		{
-			Status->LoadResult.store(
-				static_cast<uint8>(bSuccess ? EVaCuusLoadResult::Succeeded : EVaCuusLoadResult::Failed),
-				std::memory_order_relaxed);
-			Status->LoadCompletedSerial.store(LoadSerial, std::memory_order_release);
-		}
-	}
-
-	TSharedPtr<FVaCuusViewStatus> Status;
-	FString ContextPrefix;
-	FString ContextName;
-	uint32 ViewId = 0;
-	Rml::Context* Context = nullptr;
-	Rml::ElementDocument* RmlDocument = nullptr;
-	FIntPoint ViewSize = FIntPoint::ZeroValue;
 };
 
 /** One UI frame at a time; the wake event coalesces (the M3b idiom, verbatim). */

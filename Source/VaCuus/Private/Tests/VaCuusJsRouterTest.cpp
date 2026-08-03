@@ -10,6 +10,7 @@
 #include "VaCuusEngine.h"
 #include "VaCuusGameBridge.h"
 #include "VaCuusScriptHost.h"
+#include "VaCuusTestDocumentHost.h"
 #include "VaCuusUIThread.h"
 #include "VaCuusView.h"
 #include "VaCuusViewStatus.h"
@@ -69,111 +70,34 @@ struct FRouterCaptured
  * after; phase results are plain members written on the UI thread and read on the test
  * thread only after CompletedPhase (release) was seen (acquire).
  */
-class FRouterProbeHost final : public IVaCuusDocumentHost
+class FRouterProbeHost final : public FVaCuusTestDocumentHost
 {
 public:
 	explicit FRouterProbeHost(const TCHAR* InContextPrefix)
-		: ContextPrefix(InContextPrefix)
+		: FVaCuusTestDocumentHost(InContextPrefix, "vacuus://router_test.rml", Rml::FocusFlag::Document)
 	{
 	}
 
-	virtual bool Initialize(uint32 InViewId, const TSharedRef<FVaCuusViewStatus>& InStatus) override
+	//~ The spec 2(f) script-host seam, at the production AdoptDocument/CloseDocument
+	//~ placements the base guarantees: ready AFTER the old close and the Show(), closing
+	//~ while the outgoing document is still current. FJsDocProbeHost mirrors the same pair.
+	virtual void OnDocumentAdopted() override
 	{
-		check(FVaCuusUIThread::IsInUIThread());
-
-		ViewId = InViewId;
-		Status = InStatus;
-		ContextName = FString::Printf(TEXT("%s_%u"), *ContextPrefix, InViewId);
-		Context = Rml::CreateContext(Rml::String(TCHAR_TO_UTF8(*ContextName)), Rml::Vector2i(1, 1));
-		return Context != nullptr;
-	}
-
-	virtual void Shutdown() override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-
-		CloseDocument();
-		if (Context != nullptr)
-		{
-			Rml::RemoveContext(Rml::String(TCHAR_TO_UTF8(*ContextName)));
-			Context = nullptr;
-		}
-	}
-
-	virtual void SetViewSize(FIntPoint InViewSize) override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-
-		ViewSize = InViewSize;
-		if (Context != nullptr)
-		{
-			Context->SetDimensions(Rml::Vector2i(ViewSize.X, ViewSize.Y));
-		}
-	}
-
-	virtual void LoadDocumentFromFile(const FString& /*VfsPath*/, uint64 LoadSerial) override
-	{
-		Report(LoadSerial, /*bSuccess=*/false);
-	}
-
-	virtual void LoadDocumentFromMemory(const FString& RmlSource, uint64 LoadSerial) override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-
-		if (Context == nullptr)
-		{
-			Report(LoadSerial, /*bSuccess=*/false);
-			return;
-		}
-
-		Rml::ElementDocument* NewDocument =
-			Context->LoadDocumentFromMemory(Rml::String(TCHAR_TO_UTF8(*RmlSource)), "vacuus://router_test.rml");
-		if (NewDocument == nullptr)
-		{
-			Report(LoadSerial, /*bSuccess=*/false);
-			return;
-		}
-
-		// Load first, close second, seam call after old-close and Show() -- the
-		// production AdoptDocument order (FJsDocProbeHost mirrors it line for line).
-		CloseDocument();
-		RmlDocument = NewDocument;
-		RmlDocument->Show(Rml::ModalFlag::None, Rml::FocusFlag::Document);
 		if (IVaCuusScriptHost* ScriptHost = FVaCuusUIThread::GetActiveScriptHost())
 		{
 			ScriptHost->OnDocumentReady(ViewId, RmlDocument);
 		}
-		Report(LoadSerial, /*bSuccess=*/true);
 	}
 
-	virtual void CloseDocument() override
+	virtual void OnDocumentClosing() override
 	{
-		check(FVaCuusUIThread::IsInUIThread());
-
-		if (RmlDocument != nullptr)
+		if (IVaCuusScriptHost* ScriptHost = FVaCuusUIThread::GetActiveScriptHost())
 		{
-			if (IVaCuusScriptHost* ScriptHost = FVaCuusUIThread::GetActiveScriptHost())
-			{
-				ScriptHost->OnDocumentClosing(ViewId);
-			}
-			RmlDocument->Close();
-			RmlDocument = nullptr;
+			ScriptHost->OnDocumentClosing(ViewId);
 		}
 	}
 
 	virtual void SetVisible(bool /*bVisible*/) override {}
-
-	virtual bool HasView() const override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-		return Context != nullptr && RmlDocument != nullptr && ViewSize.X > 0 && ViewSize.Y > 0;
-	}
-
-	virtual Rml::Context* GetContext() const override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-		return Context;
-	}
 
 	virtual void RecordAndPublishFrame() override
 	{
@@ -274,16 +198,6 @@ public:
 	bool bKillerElementIntact = false;
 
 private:
-	void Report(uint64 LoadSerial, bool bSuccess)
-	{
-		if (Status.IsValid() && LoadSerial != 0)
-		{
-			Status->LoadResult.store(
-				static_cast<uint8>(bSuccess ? EVaCuusLoadResult::Succeeded : EVaCuusLoadResult::Failed), std::memory_order_relaxed);
-			Status->LoadCompletedSerial.store(LoadSerial, std::memory_order_release);
-		}
-	}
-
 	FRouterCaptured Capture() const
 	{
 		FRouterCaptured Out;
@@ -314,14 +228,6 @@ private:
 		}
 		return Out;
 	}
-
-	TSharedPtr<FVaCuusViewStatus> Status;
-	FString ContextPrefix;
-	FString ContextName;
-	uint32 ViewId = 0;
-	Rml::Context* Context = nullptr;
-	Rml::ElementDocument* RmlDocument = nullptr;
-	FIntPoint ViewSize = FIntPoint::ZeroValue;
 };
 
 /**

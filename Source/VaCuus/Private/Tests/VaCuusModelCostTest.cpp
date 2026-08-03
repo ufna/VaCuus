@@ -8,6 +8,7 @@
 #include "VaCuusDocumentHost.h"
 #include "VaCuusEngine.h"
 #include "VaCuusModelLayout.h"
+#include "VaCuusTestDocumentHost.h"
 #include "VaCuusUIThread.h"
 #include "VaCuusViewStatus.h"
 
@@ -83,99 +84,28 @@ static constexpr int32 NumMeasuredFrames = 200;
  * A probe host that owns one bound model, binds it to its own context before any document
  * loads, and brackets the two UI-thread phases spec 9 budgets.
  */
-class FCostHost final : public IVaCuusDocumentHost
+class FCostHost final : public FVaCuusTestDocumentHost
 {
 public:
 	FCostHost(const TCHAR* InContextName, TSharedRef<FVaCuusBoundModel> InModel, FString InRml)
-		: ContextName(InContextName)
+		: FVaCuusTestDocumentHost(InContextName, "vacuus://model_cost.rml", Rml::FocusFlag::Document)
 		, Model(MoveTemp(InModel))
 		, Rml(MoveTemp(InRml))
 	{
 	}
 
-	virtual bool Initialize(uint32 InViewId, const TSharedRef<FVaCuusViewStatus>& InStatus) override
+	/**
+	 * BOUND HERE, WHICH IS BEFORE ANY DOCUMENT EXISTS -- the ordering `data-model` requires.
+	 * Element::SetParent resolves the attribute exactly once, when the body is parented into the
+	 * context (Element.cpp:2202-2219); a model created after that attaches to nothing.
+	 */
+	virtual bool OnInitialized() override
 	{
-		check(FVaCuusUIThread::IsInUIThread());
-
-		Status = InStatus;
-		Context = Rml::CreateContext(Rml::String(TCHAR_TO_UTF8(*ContextName)), Rml::Vector2i(1, 1));
-		if (Context == nullptr)
-		{
-			return false;
-		}
-
-		// BOUND HERE, WHICH IS BEFORE ANY DOCUMENT EXISTS -- the ordering `data-model` requires.
-		// Element::SetParent resolves the attribute exactly once, when the body is parented into
-		// the context (Element.cpp:2202-2219); a model created after that attaches to nothing.
 		bBound = Model->BindToContext(*Context);
 		return bBound;
 	}
 
-	virtual void Shutdown() override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-
-		CloseDocument();
-		if (Context)
-		{
-			Rml::RemoveContext(Rml::String(TCHAR_TO_UTF8(*ContextName)));
-			Context = nullptr;
-		}
-	}
-
-	virtual void SetViewSize(FIntPoint InViewSize) override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-
-		ViewSize = InViewSize;
-		if (Context)
-		{
-			Context->SetDimensions(Rml::Vector2i(ViewSize.X, ViewSize.Y));
-		}
-	}
-
-	virtual void LoadDocumentFromFile(const FString& VfsPath, uint64 LoadSerial) override {}
-
-	virtual void LoadDocumentFromMemory(const FString& RmlSource, uint64 LoadSerial) override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-
-		if (Context == nullptr)
-		{
-			return;
-		}
-
-		Document = Context->LoadDocumentFromMemory(Rml::String(TCHAR_TO_UTF8(*RmlSource)), "vacuus://model_cost.rml");
-		if (Document)
-		{
-			Document->Show(Rml::ModalFlag::None, Rml::FocusFlag::Document);
-		}
-	}
-
-	virtual void CloseDocument() override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-
-		if (Document)
-		{
-			Document->Close();
-			Document = nullptr;
-		}
-	}
-
 	virtual void SetVisible(bool bVisible) override {}
-
-	virtual bool HasView() const override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-		return Context != nullptr && Document != nullptr && ViewSize.X > 0 && ViewSize.Y > 0;
-	}
-
-	virtual Rml::Context* GetContext() const override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-		return Context;
-	}
 
 	virtual void RecordAndPublishFrame() override
 	{
@@ -195,9 +125,9 @@ public:
 		// OUTSIDE BOTH BRACKETS. Reading the DOM is the guard that REDRAWN really is a
 		// no-DOM-change case, and folding its cost into Update's would corrupt the very number
 		// the guard protects.
-		if (Document)
+		if (RmlDocument)
 		{
-			if (const Rml::Element* Probe = Document->GetElementById("f00"))
+			if (const Rml::Element* Probe = RmlDocument->GetElementById("f00"))
 			{
 				const FString Now(UTF8_TO_TCHAR(Probe->GetInnerRML().c_str()));
 				if (NumFrames > 0 && Now != ProbeText)
@@ -234,15 +164,9 @@ public:
 	bool bBound = false;
 
 private:
-	FString ContextName;
 	TSharedRef<FVaCuusBoundModel> Model;
 	FString Rml;
 	FString ProbeText;
-
-	TSharedPtr<FVaCuusViewStatus> Status;
-	Rml::Context* Context = nullptr;
-	Rml::ElementDocument* Document = nullptr;
-	FIntPoint ViewSize = FIntPoint::ZeroValue;
 
 	double ApplySeconds = 0.0;
 	double UpdateSeconds = 0.0;
@@ -711,108 +635,40 @@ struct FArrayFrameRecord
 /**
  * The probe host for the array rows: FCostHost's bracketing (the model is bound by the
  * host and applied by the host, so this test's apply is not ALSO run by the UI thread's
- * own loop -- one applier, one measurement) plus the per-frame log described above.
+ * own loop -- one applier, one measurement) plus the per-frame log described above. A
+ * SIBLING of FCostHost under the shared base, not a subclass of it: the bracket around
+ * ApplyPendingUpdate/Update IS the measurement in both, and one more virtual between them
+ * would be inside the number.
  */
-class FArrayCostHost final : public IVaCuusDocumentHost
+class FArrayCostHost final : public FVaCuusTestDocumentHost
 {
 public:
 	FArrayCostHost(FString InContextName, TSharedRef<FVaCuusBoundModel> InModel, bool bInCaptureProbeRows)
-		: ContextName(MoveTemp(InContextName))
+		: FVaCuusTestDocumentHost(*InContextName, "vacuus://array_cost.rml", Rml::FocusFlag::Document)
 		, Model(MoveTemp(InModel))
 		, bCaptureProbeRows(bInCaptureProbeRows)
 	{
 	}
 
-	virtual bool Initialize(uint32 InViewId, const TSharedRef<FVaCuusViewStatus>& InStatus) override
+	/**
+	 * RESERVED ONCE, NEVER REALLOCATED, for the FDataForProbeHost reason: the test thread reads
+	 * settled records while a coalesced trigger may still append one more, and Reserve is what
+	 * keeps those EARLIER-record reads valid -- a growth realloc would move the buffer out from
+	 * under them. Reserve does NOT make the newest record readable: AddDefaulted_GetRef bumps
+	 * ArrayNum before the record is constructed, so only the settled-count clamp (SettledFrames)
+	 * may name it. Both halves are needed. The longest run here is ~210 frames.
+	 *
+	 * The bind runs here too, i.e. before any document, as `data-model` requires
+	 * (Element.cpp:2202-2219).
+	 */
+	virtual bool OnInitialized() override
 	{
-		check(FVaCuusUIThread::IsInUIThread());
-
-		Status = InStatus;
-		Context = Rml::CreateContext(Rml::String(TCHAR_TO_UTF8(*ContextName)), Rml::Vector2i(1, 1));
-		if (Context == nullptr)
-		{
-			return false;
-		}
-
-		// RESERVED ONCE, NEVER REALLOCATED, for the FDataForProbeHost reason: the test
-		// thread reads settled records while a coalesced trigger may still append one more,
-		// and Reserve is what keeps those EARLIER-record reads valid -- a growth realloc
-		// would move the buffer out from under them. Reserve does NOT make the newest record
-		// readable: AddDefaulted_GetRef bumps ArrayNum before the record is constructed, so
-		// only the settled-count clamp (SettledFrames) may name it. Both halves are needed.
-		// The longest run here is ~210 frames.
 		FrameLog.Reserve(1024);
-
-		// Before any document, as `data-model` requires (Element.cpp:2202-2219).
 		bBound = Model->BindToContext(*Context);
 		return bBound;
 	}
 
-	virtual void Shutdown() override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-
-		CloseDocument();
-		if (Context)
-		{
-			Rml::RemoveContext(Rml::String(TCHAR_TO_UTF8(*ContextName)));
-			Context = nullptr;
-		}
-	}
-
-	virtual void SetViewSize(FIntPoint InViewSize) override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-
-		ViewSize = InViewSize;
-		if (Context)
-		{
-			Context->SetDimensions(Rml::Vector2i(ViewSize.X, ViewSize.Y));
-		}
-	}
-
-	virtual void LoadDocumentFromFile(const FString& VfsPath, uint64 LoadSerial) override {}
-
-	virtual void LoadDocumentFromMemory(const FString& RmlSource, uint64 LoadSerial) override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-
-		if (Context == nullptr)
-		{
-			return;
-		}
-
-		Document = Context->LoadDocumentFromMemory(Rml::String(TCHAR_TO_UTF8(*RmlSource)), "vacuus://array_cost.rml");
-		if (Document)
-		{
-			Document->Show(Rml::ModalFlag::None, Rml::FocusFlag::Document);
-		}
-	}
-
-	virtual void CloseDocument() override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-
-		if (Document)
-		{
-			Document->Close();
-			Document = nullptr;
-		}
-	}
-
 	virtual void SetVisible(bool bVisible) override {}
-
-	virtual bool HasView() const override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-		return Context != nullptr && Document != nullptr && ViewSize.X > 0 && ViewSize.Y > 0;
-	}
-
-	virtual Rml::Context* GetContext() const override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-		return Context;
-	}
 
 	virtual void RecordAndPublishFrame() override
 	{
@@ -861,7 +717,7 @@ public:
 private:
 	void CaptureRows(FArrayFrameRecord& Frame) const
 	{
-		Rml::Element* Container = Document != nullptr ? Document->GetElementById("rows") : nullptr;
+		Rml::Element* Container = RmlDocument != nullptr ? RmlDocument->GetElementById("rows") : nullptr;
 		if (Container == nullptr)
 		{
 			return;
@@ -897,14 +753,8 @@ private:
 		Frame.NumRows = RowIndex;
 	}
 
-	FString ContextName;
 	TSharedRef<FVaCuusBoundModel> Model;
 	bool bCaptureProbeRows = false;
-
-	TSharedPtr<FVaCuusViewStatus> Status;
-	Rml::Context* Context = nullptr;
-	Rml::ElementDocument* Document = nullptr;
-	FIntPoint ViewSize = FIntPoint::ZeroValue;
 
 	double ApplySeconds = 0.0;
 	double UpdateSeconds = 0.0;

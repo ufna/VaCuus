@@ -10,6 +10,7 @@
 #include "VaCuusDocumentHost.h"
 #include "VaCuusEngine.h"
 #include "VaCuusFileInterface.h"
+#include "VaCuusTestDocumentHost.h"
 #include "VaCuusUIThread.h"
 #include "VaCuusViewStatus.h"
 
@@ -509,86 +510,34 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusBundleRoundTripTest, "VaCuus.Bundle.Roun
 
 namespace VaCuusBundleTest
 {
-/** FProbeHost's shape (VaCuusModelTestHost.h) reduced to the one thing this test needs: a FILE load. */
-class FFileLoadProbeHost final : public IVaCuusDocumentHost
+/** The shared probe base reduced to the one thing this test needs: a FILE load. */
+class FFileLoadProbeHost final : public FVaCuusTestDocumentHost
 {
 public:
-	virtual bool Initialize(uint32 InViewId, const TSharedRef<FVaCuusViewStatus>& InStatus) override
+	FFileLoadProbeHost()
+		: FVaCuusTestDocumentHost(TEXT("vacuus_bundle_roundtrip"), "vacuus://bundle_roundtrip.rml", Rml::FocusFlag::Auto)
 	{
-		check(FVaCuusUIThread::IsInUIThread());
-		Status = InStatus;
-		ContextName = FString::Printf(TEXT("vacuus_bundle_roundtrip_%u"), InViewId);
-		Context = Rml::CreateContext(Rml::String(TCHAR_TO_UTF8(*ContextName)), Rml::Vector2i(640, 360));
-		return Context != nullptr;
 	}
 
-	virtual void Shutdown() override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-		CloseDocument();
-		if (Context)
-		{
-			Rml::RemoveContext(Rml::String(TCHAR_TO_UTF8(*ContextName)));
-			Context = nullptr;
-		}
-	}
-
-	virtual void SetViewSize(FIntPoint InViewSize) override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-		if (Context)
-		{
-			Context->SetDimensions(Rml::Vector2i(InViewSize.X, InViewSize.Y));
-		}
-	}
-
+	/** Through Rml::GetFileInterface(), which is the point: the mounted bundle is what serves it.
+	 *  AdoptDocument() supplies the production close/show/report order. */
 	virtual void LoadDocumentFromFile(const FString& VfsPath, uint64 LoadSerial) override
 	{
 		check(FVaCuusUIThread::IsInUIThread());
-		Rml::ElementDocument* Document = Context ? Context->LoadDocument(Rml::String(TCHAR_TO_UTF8(*VfsPath))) : nullptr;
-		if (Document)
-		{
-			CloseDocument();
-			RmlDocument = Document;
-			RmlDocument->Show();
-		}
-		if (Status.IsValid() && LoadSerial != 0)
-		{
-			Status->LoadResult.store(
-				static_cast<uint8>(Document ? EVaCuusLoadResult::Succeeded : EVaCuusLoadResult::Failed),
-				std::memory_order_relaxed);
-			Status->LoadCompletedSerial.store(LoadSerial, std::memory_order_release);
-		}
+		AdoptDocument(Context != nullptr ? Context->LoadDocument(Rml::String(TCHAR_TO_UTF8(*VfsPath))) : nullptr, LoadSerial);
 	}
 
-	virtual void LoadDocumentFromMemory(const FString& RmlSource, uint64 LoadSerial) override {}
-	virtual void CloseDocument() override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-		if (RmlDocument)
-		{
-			RmlDocument->Close();
-			RmlDocument = nullptr;
-		}
-	}
 	virtual void SetVisible(bool bVisible) override {}
-	virtual bool HasView() const override { return false; }
-	virtual Rml::Context* GetContext() const override { return Context; }
-	virtual void RecordAndPublishFrame() override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-		if (Context)
-		{
-			Context->Update();
-		}
-		Status->FramesRecorded.fetch_add(1, std::memory_order_release);
-	}
 
-private:
-	TSharedPtr<FVaCuusViewStatus> Status;
-	FString ContextName;
-	Rml::Context* Context = nullptr;
-	Rml::ElementDocument* RmlDocument = nullptr;
+	/**
+	 * FALSE ALWAYS, and that is the assertion's shape: everything this test observes -- the
+	 * bundle's ServedOpens counter -- happens during the LoadDocument command drain, so the view
+	 * must never record a frame. If it did, an Update() would sit between the two ServedOpens
+	 * reads and could serve files of its own.
+	 */
+	virtual bool HasView() const override { return false; }
+
+	virtual void RecordAndPublishFrame() override { checkNoEntry(); }
 };
 }	 // namespace VaCuusBundleTest
 

@@ -6,6 +6,7 @@
 #include "VaCuusDocumentHost.h"
 #include "VaCuusEngine.h"
 #include "VaCuusSubsystem.h"
+#include "VaCuusTestNullDocumentHost.h"
 #include "VaCuusUIThread.h"
 #include "VaCuusView.h"
 #include "VaCuusViewStatus.h"
@@ -21,30 +22,12 @@
 
 namespace VaCuusBootFailureTest
 {
-/**
- * A host whose Initialize() FAILS -- the whole point of this file. Per the AddView
- * contract (FVaCuusUIThread::AddView) a host that fails Initialize has rolled itself
- * back and is simply dropped; this one has nothing to roll back.
- */
-class FFailingHost final : public IVaCuusDocumentHost
-{
-public:
-	virtual bool Initialize(uint32 InViewId, const TSharedRef<FVaCuusViewStatus>& InStatus) override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-		return false;
-	}
-
-	virtual void Shutdown() override {}
-	virtual void SetViewSize(FIntPoint ViewSize) override {}
-	virtual void LoadDocumentFromFile(const FString& VfsPath, uint64 LoadSerial) override {}
-	virtual void LoadDocumentFromMemory(const FString& RmlSource, uint64 LoadSerial) override {}
-	virtual void CloseDocument() override {}
-	virtual void SetVisible(bool bVisible) override {}
-	virtual bool HasView() const override { return false; }
-	virtual Rml::Context* GetContext() const override { return nullptr; }
-	virtual void RecordAndPublishFrame() override {}
-};
+//~ THE HOST BELOW IS FVaCuusTestNullDocumentHost(EVaCuusTestHostBoot::FailsInitialize) -- a host
+//~ whose Initialize() FAILS, which is the whole point of this file. Per the AddView contract
+//~ (VaCuusDocumentHost.h:53-55) a host that fails Initialize has rolled itself back and is simply
+//~ dropped; that one has nothing to roll back. The failure is an ARGUMENT at the construction
+//~ site rather than a buried `return false`, so the difference from the four passing stubs is
+//~ visible where it is chosen.
 
 /**
  * A standalone UGameInstance carrying a live UVaCuusSubsystem -- the VaCuusReloadTest.cpp
@@ -171,7 +154,8 @@ bool FVaCuusBootFailureTest::RunTest(const FString& Parameters)
 	AddExpectedError(TEXT("failed to boot; it will produce no frames"), EAutomationExpectedErrorFlags::Contains, 1);
 	AddExpectedError(TEXT("never booted"), EAutomationExpectedErrorFlags::Contains, 1);
 
-	UVaCuusView* View = Subsystem->CreateView(MakeUnique<FFailingHost>(), FIntPoint(320, 200));
+	UVaCuusView* View = Subsystem->CreateView(
+		MakeUnique<FVaCuusTestNullDocumentHost>(EVaCuusTestHostBoot::FailsInitialize), FIntPoint(320, 200));
 	if (!TestNotNull(TEXT("CreateView returned a handle"), View))
 	{
 		return false;

@@ -12,6 +12,7 @@
 #include "VaCuusSlateElement.h"
 #include "VaCuusSubsystem.h"
 #include "Engine/GameInstance.h"
+#include "VaCuusTestDocumentHost.h"
 #include "VaCuusUIThread.h"
 #include "VaCuusView.h"
 #include "VaCuusViewStatus.h"
@@ -35,99 +36,20 @@ namespace VaCuusSlateRoutingTest
 /**
  * A document host that reports the RmlUi state the widget's events produced.
  *
- * Same shape as VaCuusInputRoutingTest's probe, plus the focused field's value as a
- * UTF-8 HEX STRING. Hex on purpose: the surrogate assertion below is about an exact
- * code point above the BMP, and comparing hex bytes cannot be confused by an
- * FString round-trip re-splitting the character back into a surrogate pair.
+ * The shared probe base plus a snapshot publish and the focused field's value as a UTF-8 HEX
+ * STRING. Hex on purpose: the surrogate assertion below is about an exact code point above the
+ * BMP, and comparing hex bytes cannot be confused by an FString round-trip re-splitting the
+ * character back into a surrogate pair.
  *
- * THREAD HAND-OFF: the observations are plain members written on the UI thread and
- * read on the test thread. Sound because the test only reads them after
- * WaitForFrameCount() has seen the frame counter advance, and the UI thread stores
- * that counter with release ordering after RunFrame() returns.
+ * THREAD HAND-OFF: the base's rule -- plain members written on the UI thread, read on the test
+ * thread only after WaitForFrameCount() has seen the frame counter advance.
  */
-class FProbeHost final : public IVaCuusDocumentHost
+class FProbeHost final : public FVaCuusTestDocumentHost
 {
 public:
-	virtual bool Initialize(uint32 InViewId, const TSharedRef<FVaCuusViewStatus>& InStatus) override
+	FProbeHost()
+		: FVaCuusTestDocumentHost(TEXT("vacuus_slate_routing_view"), "vacuus://slate_routing.rml", Rml::FocusFlag::Auto)
 	{
-		check(FVaCuusUIThread::IsInUIThread());
-
-		ViewId = InViewId;
-		Status = InStatus;
-		ContextName = FString::Printf(TEXT("vacuus_slate_routing_view_%u"), ViewId);
-
-		Context = Rml::CreateContext(Rml::String(TCHAR_TO_UTF8(*ContextName)), Rml::Vector2i(1, 1));
-		return Context != nullptr;
-	}
-
-	virtual void Shutdown() override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-
-		if (RmlDocument)
-		{
-			RmlDocument->Close();
-			RmlDocument = nullptr;
-		}
-		if (Context)
-		{
-			Rml::RemoveContext(Rml::String(TCHAR_TO_UTF8(*ContextName)));
-			Context = nullptr;
-		}
-	}
-
-	virtual void SetViewSize(FIntPoint InViewSize) override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-
-		if (InViewSize == ViewSize || InViewSize.X <= 0 || InViewSize.Y <= 0)
-		{
-			return;
-		}
-
-		ViewSize = InViewSize;
-		if (Context)
-		{
-			Context->SetDimensions(Rml::Vector2i(ViewSize.X, ViewSize.Y));
-		}
-	}
-
-	virtual void LoadDocumentFromFile(const FString& VfsPath, uint64 LoadSerial) override
-	{
-		Report(LoadSerial, /*bSuccess=*/false);
-	}
-
-	virtual void LoadDocumentFromMemory(const FString& RmlSource, uint64 LoadSerial) override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-		if (!Context)
-		{
-			Report(LoadSerial, /*bSuccess=*/false);
-			return;
-		}
-
-		Rml::ElementDocument* NewDocument =
-			Context->LoadDocumentFromMemory(Rml::String(TCHAR_TO_UTF8(*RmlSource)), "vacuus://slate_routing.rml");
-		if (!NewDocument)
-		{
-			Report(LoadSerial, /*bSuccess=*/false);
-			return;
-		}
-
-		CloseDocument();
-		RmlDocument = NewDocument;
-		RmlDocument->Show();
-		Report(LoadSerial, /*bSuccess=*/true);
-	}
-
-	virtual void CloseDocument() override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-		if (RmlDocument)
-		{
-			RmlDocument->Close();
-			RmlDocument = nullptr;
-		}
 	}
 
 	virtual void SetVisible(bool bVisible) override
@@ -137,18 +59,6 @@ public:
 		{
 			bVisible ? RmlDocument->Show() : RmlDocument->Hide();
 		}
-	}
-
-	virtual bool HasView() const override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-		return Context != nullptr && RmlDocument != nullptr && ViewSize.X > 0 && ViewSize.Y > 0;
-	}
-
-	virtual Rml::Context* GetContext() const override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-		return Context;
 	}
 
 	virtual void RecordAndPublishFrame() override
@@ -197,23 +107,6 @@ public:
 	bool bHoverIsActive = false;
 
 private:
-	void Report(uint64 LoadSerial, bool bSuccess)
-	{
-		if (Status.IsValid() && LoadSerial != 0)
-		{
-			Status->LoadResult.store(
-				static_cast<uint8>(bSuccess ? EVaCuusLoadResult::Succeeded : EVaCuusLoadResult::Failed),
-				std::memory_order_relaxed);
-			Status->LoadCompletedSerial.store(LoadSerial, std::memory_order_release);
-		}
-	}
-
-	TSharedPtr<FVaCuusViewStatus> Status;
-	FString ContextName;
-	Rml::Context* Context = nullptr;
-	Rml::ElementDocument* RmlDocument = nullptr;
-	FIntPoint ViewSize = FIntPoint::ZeroValue;
-	uint32 ViewId = 0;
 	uint64 SnapshotGeneration = 0;
 };
 
