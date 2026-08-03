@@ -41,7 +41,6 @@
 set -euo pipefail
 
 SCRIPT_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
-SCRIPT_DIR="$(dirname "${SCRIPT_PATH}")"
 PLAN_REL="docs/passport/2026-08-vacuus-macos-plan.md"
 
 # ---------------------------------------------------------------------------------------
@@ -522,7 +521,7 @@ check_platform_and_arch() {
 }
 
 check_macos_version() {
-	local v major sm6_capable chip
+	local v sm6_capable chip
 	v="$(sw_vers -productVersion 2>/dev/null || echo "0")"
 	chip="$(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo "unknown")"
 
@@ -939,7 +938,7 @@ detect_half_built() {
 	local has_inter=0 has_bin=0
 	[ -d "${PROJ_DIR}/Intermediate/Build" ] && has_inter=1
 	if ls "${PROJ_DIR}/Binaries/Mac"/*.dylib >/dev/null 2>&1 || \
-	   ls "${PROJ_DIR}/Binaries/Mac"/UnrealEditor-"${PROJECT_NAME}"* >/dev/null 2>&1; then
+	   ls "${PROJ_DIR}/Binaries/Mac/UnrealEditor-${PROJECT_NAME}"* >/dev/null 2>&1; then
 		has_bin=1
 	fi
 	if [ "${has_inter}" = "1" ] && [ "${has_bin}" = "0" ]; then
@@ -972,7 +971,7 @@ create_project_from_template() {
 		-path './Media' -prune -o -type f -print ) | while IFS= read -r rel; do
 			case "${rel}" in
 				./Config/TemplateDefs.ini|./Config/config.ini|./manifest.json|./contents.txt|./Manifest.json) continue ;;
-				./${TEMPLATE}.uproject) continue ;;
+				"./${TEMPLATE}.uproject") continue ;;
 			esac
 			mkdir -p "${PROJ_DIR}/$(dirname "${rel}")"
 			cp "${tpl_dir}/${rel}" "${PROJ_DIR}/${rel}"
@@ -1133,6 +1132,14 @@ build_editor() {
 		rep "- **a missing-include class** like the one \`-StrictIncludes\` found on Linux (plan §5.5):"
 		rep "  Mac's wave is a header-set difference (\`Mac/MacPlatform*.h\` instead of"
 		rep "  \`Unix/UnixPlatform*.h\`) and should be small."
+		rep "- **unresolved \`_png_*\` linking \`libUnrealEditor-VaCuusRml.dylib\`** — the shape the"
+		rep "  first real Mac build actually hit (~23 \`Undefined symbols for architecture arm64\`,"
+		rep "  from \`_Load_SBit_Png\` in \`libfreetype.a\`). Not in the plan's risk table, and"
+		rep "  **already fixed in-tree**: \`VaCuusRml.Build.cs\` now names zlib and UElibPNG itself,"
+		rep "  because \`AddEngineThirdPartyPrivateStaticDependencies\` is a no-op for a precompiled"
+		rep "  engine module in a modular target (\`ModuleRules.cs:1601-1607\`), so FreeType2's own"
+		rep "  request (\`FreeType2.Build.cs:66-68\`) vanishes on a **Launcher** engine. If it"
+		rep "  reappears, the clone predates that fix. A source engine never shows it."
 		rep ""
 		rep "Full build log: \`${log}\`"
 		say ""
@@ -1213,6 +1220,9 @@ run_session() {
 
 	editor_bin
 	mkdir -p "${shots_src}" "$(dirname "${proj_log}")"
+	# `ls` rather than `find` on purpose: the engine names screenshots ScreenShot%05d.png
+	# (FScreenshotRequest), so there are no awkward characters, and the sorted flat listing is
+	# exactly what the comm(1) diff below needs to attribute new files to this session.
 	shots_before="$(mktmp)"; ls -1 "${shots_src}" 2>/dev/null | LC_ALL=C sort > "${shots_before}"
 
 	# Remove the previous session's log BEFORE launching. The engine rotates its own log at
@@ -1428,7 +1438,11 @@ run_gpu_pair() {
 # 7. THE SCRIPTED MATRIX ROWS (plan block 5, plus block 6's window-immune half and block
 #    8's -game legs). Windowed, real Metal RHI — there is no offscreen mode on Mac.
 # ---------------------------------------------------------------------------------------
-GAME_FLAGS="-game -windowed -ForceRes -resx=1920 -resy=1080 -nosplash"
+# An array, not a string: the flags reach the editor as separate argv entries without
+# relying on word splitting. `-ForceRes` is what keeps `-resx/-resy` from being ignored
+# (plan §3 (d): without it the engine clamps to a "convenient windowed resolution",
+# GameEngine.cpp:414-440, and every perf row stops being comparable).
+GAME_FLAGS=(-game -windowed -ForceRes -resx=1920 -resy=1080 -nosplash)
 
 row_header() {
 	rep ""
@@ -1462,7 +1476,7 @@ run_rows() {
 
 	# ---- Row 1 ---------------------------------------------------------------------
 	row_header "Row 1 — screen-space HUD composite"
-	run_session "row01-refhud" 150 "-" "vacuus.RefHud, vacuus.M1HUD.AutoShot 1200" ${GAME_FLAGS}
+	run_session "row01-refhud" 150 "-" "vacuus.RefHud, vacuus.M1HUD.AutoShot 1200" "${GAME_FLAGS[@]}"
 	rep "Command: \`vacuus.RefHud, vacuus.M1HUD.AutoShot 1200\`"
 	rep ""
 	rep "**Look for:** the full 1,732-node HUD — two 24-row scoreboards with distinct K/D/A/score/ping"
@@ -1475,7 +1489,7 @@ run_rows() {
 
 	# ---- Row 2 ---------------------------------------------------------------------
 	row_header "Row 2 — steady-state node count (an assertion the script CAN check)"
-	run_session "row02-count" 90 "-" "vacuus.RefHud, vacuus.RefHud.Count 12" ${GAME_FLAGS}
+	run_session "row02-count" 90 "-" "vacuus.RefHud, vacuus.RefHud.Count 12" "${GAME_FLAGS[@]}"
 	rep "Command: \`vacuus.RefHud, vacuus.RefHud.Count 12\` — assertion: the count is in [1650, 1850]."
 	grep_report "${LAST_SESSION_LOG}" "NodeCount:" "node count"
 	rep "Linux recorded 1732, equal to the automation twin \`VaCuus.RefHud.Count\`."
@@ -1485,7 +1499,7 @@ run_rows() {
 	row_header "Rows 3 and 4 — the window-position-IMMUNE half only (plan block 6)"
 	run_session "row0304-hit" 90 "-" \
 		"vacuus.M2Demo, vacuus.M2Demo.Rects 5, vacuus.M2Demo.Hit 120 115 6, vacuus.M1HUD.TypeShot 710 113 vacuus" \
-		${GAME_FLAGS}
+		"${GAME_FLAGS[@]}"
 	rep "On Linux the window sat at the desktop origin, so \"view pixels\" and \"Slate absolute pixels\""
 	rep "were the same numbers. **On Mac they are not, and the plugin does not compensate**:"
 	rep "\`HoverShot\`/\`TypeShot\` feed their x y straight to \`FSlateApplication::SetCursorPos\`"
@@ -1512,7 +1526,7 @@ run_rows() {
 	# ---- Row 6 ---------------------------------------------------------------------
 	row_header "Row 6 — gamepad spatial navigation"
 	run_session "row06-nav" 90 "-" \
-		"vacuus.M2Demo, vacuus.M1HUD.NavShot Gamepad_DPad_Down Gamepad_DPad_Right" ${GAME_FLAGS}
+		"vacuus.M2Demo, vacuus.M1HUD.NavShot Gamepad_DPad_Down Gamepad_DPad_Right" "${GAME_FLAGS[@]}"
 	rep "This row needs no human despite appearances: \`NavShot\` defers to \`OnBeginFrame\` and then"
 	rep "synthesizes the FKey sequence through \`FSlateApplication\` (\`VaCuusRender.cpp:1851-1890\` at"
 	rep "this HEAD — the plan cites :1814-1856, which is \`HoverShot\`'s twin of the same deferral;"
@@ -1527,7 +1541,7 @@ run_rows() {
 	# ---- Row 7 ---------------------------------------------------------------------
 	row_header "Row 7 — world-space panel + raycast input"
 	run_session "row07-world" 150 "-" \
-		"vacuus.M5World 1, vacuus.M5World.InputSmoke 5, vacuus.WorldDemo.Shot" ${GAME_FLAGS}
+		"vacuus.M5World 1, vacuus.M5World.InputSmoke 5, vacuus.WorldDemo.Shot" "${GAME_FLAGS[@]}"
 	grep_report "${LAST_SESSION_LOG}" "InputSmoke: all [0-9]+ assertion\(s\) passed|InputSmoke.*FAIL" \
 		"InputSmoke result (Linux: all 16 assertions passed)"
 	rep "**Look for:** the quad in-scene running the JS demo, with the raycast click's routed write"
@@ -1543,7 +1557,7 @@ run_rows() {
 	# ---- Row 8 ---------------------------------------------------------------------
 	row_header "Row 8 — glass (backdrop blur) over the scene"
 	run_session "row08-glass" 120 "-" \
-		"vacuus.M5Glass, vacuus.M1HUD.PerfLog 1, vacuus.M1HUD.HoverShot" ${GAME_FLAGS}
+		"vacuus.M5Glass, vacuus.M1HUD.PerfLog 1, vacuus.M1HUD.HoverShot" "${GAME_FLAGS[@]}"
 	rep "**Look for:** the ROUNDED blur panel and the SQUARE blur panel both smearing the scene"
 	rep "behind them, and the CONTROL panel with the same fill and NO blur (the scene reads sharp"
 	rep "through it)."
@@ -1559,7 +1573,7 @@ run_rows() {
 
 	# ---- Row 9 ---------------------------------------------------------------------
 	row_header "Row 9 — gradient and builtin decorators"
-	run_session "row09-deco" 90 "-" "vacuus.M5Deco, vacuus.M1HUD.AutoShot 10" ${GAME_FLAGS}
+	run_session "row09-deco" 90 "-" "vacuus.M5Deco, vacuus.M1HUD.AutoShot 10" "${GAME_FLAGS[@]}"
 	rep "**Look for:** all six cells — linear 90° red→blue, repeating 45° gold/black hazard stripes,"
 	rep "radial white-core→deep-blue rim, conic full hue wheel, builtin \`shader(glass-panel)\`"
 	rep "translucent fill + border glow, and a plain-fill control."
@@ -1568,7 +1582,7 @@ run_rows() {
 
 	# ---- Row 10 --------------------------------------------------------------------
 	row_header "Row 10 — material decorators (UMaterial in the UI pass)"
-	run_session "row10-matspike" 90 "-" "vacuus.M5MatSpike, vacuus.M1HUD.AutoShot 10" ${GAME_FLAGS}
+	run_session "row10-matspike" 90 "-" "vacuus.M5MatSpike, vacuus.M1HUD.AutoShot 10" "${GAME_FLAGS[@]}"
 	rep "**Look for:** TRANSLUCENT (brown, text over), ADDITIVE (cyan), OPAQUE (replaces the cell box),"
 	rep "MID base (textured), TIME-ANIMATED (gradient bars mid-motion); the control cell stays a plain"
 	rep "fill and the refused cells are named in the log."
@@ -1584,7 +1598,7 @@ run_rows() {
 	# ---- Row 11 --------------------------------------------------------------------
 	row_header "Row 11 — M5 acceptance demo (TSX + translation + glass + world quad)"
 	run_session "row11-m5demo" 120 "-" \
-		"vacuus.M5Demo, vacuus.M1HUD.AutoShot 10, vacuus.M5Glass.Shot 8" ${GAME_FLAGS}
+		"vacuus.M5Demo, vacuus.M1HUD.AutoShot 10, vacuus.M5Glass.Shot 8" "${GAME_FLAGS[@]}"
 	grep_report "${LAST_SESSION_LOG}" "LogVaCuusJS: Error" "JS errors (the assertion is ZERO)"
 	if LC_ALL=C grep -q "LogVaCuusJS: Error" "${LAST_SESSION_LOG}"; then
 		issue "matrix row 11: LogVaCuusJS: Error lines present — the row asserts zero."
@@ -1604,14 +1618,14 @@ run_rows() {
 	rep "The plan (§5, \"staleness items\") recommends running it as a **row 16 candidate marked"
 	rep "Mac-first** rather than quietly extending or quietly omitting the matrix."
 	run_session "row16-lobby" 120 "-" \
-		"vacuus.LobbyDemo, vacuus.LobbyDemo.Rects, vacuus.LobbyDemo.Stats, vacuus.LobbyDemo.Shot" ${GAME_FLAGS}
+		"vacuus.LobbyDemo, vacuus.LobbyDemo.Rects, vacuus.LobbyDemo.Stats, vacuus.LobbyDemo.Shot" "${GAME_FLAGS[@]}"
 	grep_report "${LAST_SESSION_LOG}" "LobbyRects\[|LobbyDemo:" "lobby demo lines (the \`size=WxH\` here is also risk 11's evidence — see below)"
 	row_shots "row16-lobby"
 	teardown_tail_check "${LAST_SESSION_LOG}"
 
 	row_header "Row 17 (candidate, Mac-first) — world-panel mip chain and its off-switch"
 	run_session "row17-mips" 120 "-" \
-		"vacuus.WorldDemo, vacuus.WorldDemo.Mips 1, vacuus.WorldDemo.Stats, vacuus.WorldDemo.Shot" ${GAME_FLAGS}
+		"vacuus.WorldDemo, vacuus.WorldDemo.Mips 1, vacuus.WorldDemo.Stats, vacuus.WorldDemo.Shot" "${GAME_FLAGS[@]}"
 	grep_report "${LAST_SESSION_LOG}" "WorldMips|mip" "mip-chain lines"
 	row_shots "row17-mips"
 	teardown_tail_check "${LAST_SESSION_LOG}"
@@ -1653,14 +1667,14 @@ row_12_ab() {
 	rep ""
 
 	# Control leg (whatever the project's current default is — normally no override at all).
-	run_session "row12-control" 120 "-" "vacuus.RefHud, vacuus.M1HUD.AutoShot 300" ${GAME_FLAGS}
+	run_session "row12-control" 120 "-" "vacuus.RefHud, vacuus.M1HUD.AutoShot 300" "${GAME_FLAGS[@]}"
 	grep_report "${LAST_SESSION_LOG}" "elements texture is" "control leg permutation line"
 	local control_shots="${LAST_SESSION_SHOTS}"
 
 	# Forced-FloatRGBA leg.
 	ini_set "${eng}" "/Script/Engine.RendererSettings" "r.DefaultBackBufferPixelFormat" "3"
 	say "row 12: set r.DefaultBackBufferPixelFormat=3 in ${eng}"
-	run_session "row12-floatrgba" 120 "-" "vacuus.RefHud, vacuus.M1HUD.AutoShot 300" ${GAME_FLAGS}
+	run_session "row12-floatrgba" 120 "-" "vacuus.RefHud, vacuus.M1HUD.AutoShot 300" "${GAME_FLAGS[@]}"
 	grep_report "${LAST_SESSION_LOG}" "elements texture is" "FloatRGBA leg permutation line"
 	rep "- Control shots:${control_shots:- none}"
 	rep "- FloatRGBA shots:${LAST_SESSION_SHOTS:- none}"
@@ -1699,19 +1713,19 @@ run_soaks() {
 	rep "the frame count, the window selection (exclude the boot window) and which scopes were summed."
 	rep ""
 
-	run_session "soak-refhud-100s" 160 "-" "vacuus.M1HUD.PerfLog 1, vacuus.RefHud" ${GAME_FLAGS}
+	run_session "soak-refhud-100s" 160 "-" "vacuus.M1HUD.PerfLog 1, vacuus.RefHud" "${GAME_FLAGS[@]}"
 	rep "### RefHud, ~100 s → passport rows 1, 2a, 2b, 3, 4, 7, 8"
 	grep_report "${LAST_SESSION_LOG}" "PerfLog|published=|recorded" "PerfLog windows"
 
-	run_session "soak-idle-35s" 80 "-" "vacuus.M1HUD.PerfLog 1, vacuus.M1HUD" ${GAME_FLAGS}
+	run_session "soak-idle-35s" 80 "-" "vacuus.M1HUD.PerfLog 1, vacuus.M1HUD" "${GAME_FLAGS[@]}"
 	rep "### Static idle, ~35 s → row 4's confirmed idle venue and row 8's idle gate"
 	grep_report "${LAST_SESSION_LOG}" "PerfLog|published=|recorded" "PerfLog windows"
 
-	run_session "soak-glass-25s" 70 "-" "vacuus.M1HUD.PerfLog 1, vacuus.M5Glass" ${GAME_FLAGS}
+	run_session "soak-glass-25s" 70 "-" "vacuus.M1HUD.PerfLog 1, vacuus.M5Glass" "${GAME_FLAGS[@]}"
 	rep "### Glass idle, ~25 s → row 8's glass line"
 	grep_report "${LAST_SESSION_LOG}" "PerfLog|published=|recorded|Glass" "PerfLog windows"
 
-	run_session "soak-m2-60s" 110 "-" "vacuus.M1HUD.PerfLog 1, vacuus.M2Demo" ${GAME_FLAGS}
+	run_session "soak-m2-60s" 110 "-" "vacuus.M1HUD.PerfLog 1, vacuus.M2Demo" "${GAME_FLAGS[@]}"
 	rep "### M2 demo, ~60 s → row 2's typical-scale figures"
 	grep_report "${LAST_SESSION_LOG}" "PerfLog|published=|recorded" "PerfLog windows"
 	rep ""
