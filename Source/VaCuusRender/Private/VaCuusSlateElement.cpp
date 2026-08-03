@@ -117,6 +117,29 @@ void FVaCuusSlateElement::Draw_RenderThread(FRDGBuilder& GraphBuilder, const FVa
 		// the RHI texture, and the replay pass lambda runs too late for that.
 		Replayer.EnsureOutputRT(GraphBuilder.RHICmdList, PendingBuffers.Last()->ViewSize);
 
+		// 1b. Setup-time again, and it HAS to be (bead akj.6.25): start the parallel-command-list
+		// upload for every large texture payload. QueueAsyncCommandListSubmit dispatches whatever
+		// the immediate list has already recorded (RHICommandList.cpp:1482-1510), which is legal
+		// here and is not legal from inside the pass lambda below — see
+		// FVaCuusReplayRenderer::BeginAsyncTextureUploads. In buffer order, because a payload
+		// taken out of buffer N must be skipped by the UploadNewResources of buffer N and no
+		// other, and because the async lists then sit in the stream in the same order their
+		// buffers are consumed in.
+		//
+		// WHAT THIS DOES TO THE PerfLog NUMBERS, said here so nobody reads the improvement as
+		// bigger than it is: this call is OUTSIDE the Replay scope (which measures the pass), so
+		// the render-thread cost that remains for a large image — the texture create plus the
+		// command-list and task setup — is not in the Replay line. Its observable is the ASYNC
+		// START column of VaCuus.Render.Upload.Cost, 0.32 ms for a 137 MB payload against the
+		// 40+ ms that used to sit inside Replay. Deliberately not given a scope of its own: a
+		// scope entered on every published frame would sample ~0 ms on the overwhelming majority
+		// of them (nothing is ever over the threshold on a static HUD) and its percentiles would
+		// describe the early-out rather than the work.
+		for (const TUniquePtr<FVaCuusCommandBuffer>& Buffer : PendingBuffers)
+		{
+			Replayer.BeginAsyncTextureUploads(GraphBuilder.RHICmdList, *Buffer);
+		}
+
 		// 2. Raw-RHI replay wrapped in an RDG pass. The parameterless AddPass
 		// overload implies SkipRenderPass, so the replayer's own
 		// BeginRenderPass/Transitions are legal inside the lambda (engine

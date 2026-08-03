@@ -14,6 +14,34 @@
 #include "RHIResourceUtils.h"
 #include "RHIStaticStates.h"
 #include "ShaderParameterStruct.h"
+#include "Tasks/Task.h"
+
+/**
+ * The size at which a texture payload stops being uploaded inline on the render thread and
+ * starts going through a parallel command list (bead VaCuus-akj.6.25).
+ *
+ * THE DEFAULT IS THE MEASUREMENT, not a guess. VaCuus.Render.Upload.Cost times the two calls
+ * UploadNewResources issues, on the real RHI, at six sizes; on Vulkan / RTX 3090 / Linux
+ * (2026-08-03) it reported render-thread totals of
+ *
+ *   256^2   0.2 MB   0.071 ms      2048^2   16.0 MB    1.257 ms
+ *   512^2   1.0 MB   0.107 ms      4096^2   64.0 MB   23.741 ms
+ *   1024^2  4.0 MB   0.256 ms      6000^2  137.3 MB   42.922 ms
+ *
+ * of which CreateTexture is never more than 0.26 ms -- the cost is the staging memcpy inside
+ * UpdateTexture2D, and it collapses from ~13 GB/s to ~3 GB/s once the payload stops fitting
+ * whatever the driver was keeping close. 4 MB is the first size whose inline cost (0.26 ms) is
+ * clearly above the noise floor of the two smallest rows, and is one 1024x1024 image.
+ *
+ * 0 disables the async path entirely -- the one-cvar way to rule it out when an image looks
+ * wrong -- and every payload takes the inline route it took before this bead.
+ */
+static TAutoConsoleVariable<int32> CVarVaCuusAsyncTextureUploadBytes(
+	TEXT("vacuus.AsyncTextureUploadBytes"),
+	4 * 1024 * 1024,
+	TEXT("Texture payloads of at least this many bytes upload through a parallel RHI command list ")
+	TEXT("recorded on a worker, instead of memcpy'ing into staging on the render thread. ")
+		TEXT("0 = always upload inline (the pre-akj.6.25 behaviour)."));
 
 namespace VaCuusReplay
 {
@@ -34,6 +62,25 @@ FMatrix44f MakePixelToClipMatrix(FIntPoint ViewSize)
 	M.M[3][1] = 1.0f;
 	M.M[3][2] = 0.5f;
 	return M;
+}
+
+/**
+ * The create desc for a recorded UI texture, in ONE place because two paths now issue it and a
+ * disagreement between them would be a format bug visible only on whichever path a given image
+ * happened to take. PF_R8G8B8A8: the payload is RmlUi RGBA memory order (premultiplied alpha)
+ * for both generated and loaded textures -- see FVaCuusTextureData.
+ */
+static FRHITextureCreateDesc MakeUITextureDesc(FIntPoint Size)
+{
+	return FRHITextureCreateDesc::Create2D(TEXT("VaCuusUITexture"), Size, PF_R8G8B8A8)
+		.SetFlags(ETextureCreateFlags::ShaderResource)
+		.SetInitialState(ERHIAccess::SRVMask);
+}
+
+/** Does this payload describe exactly Size.X * Size.Y RGBA8 texels? Both upload paths refuse anything else. */
+static bool IsWellFormedPayload(const FVaCuusTextureData& Data)
+{
+	return Data.Size.X > 0 && Data.Size.Y > 0 && int64(Data.RGBA.Num()) == int64(Data.Size.X) * int64(Data.Size.Y) * 4;
 }
 } // namespace VaCuusReplay
 
@@ -143,6 +190,12 @@ void FVaCuusReplayRenderer::ReleaseResources()
 	Shaders.Empty();
 	OutputRT.SafeRelease();
 
+	// Textures created for a buffer that never reached its replay pass -- teardown between graph
+	// build and pass execution. Nothing dangles either way (the upload task holds its own payload
+	// and its own reference to the texture); dropping them here stops a fresh recorder, whose
+	// handles restart at 1, from inheriting a parked texture that belongs to a dead one.
+	PendingAsyncTextures.Empty();
+
 	// Reset the guard: after teardown this replayer can only be paired with a fresh
 	// recorder, whose generations restart from 1.
 	//
@@ -178,6 +231,94 @@ void FVaCuusReplayRenderer::EnsureOutputRT(FRHICommandList& RHICmdList, FIntPoin
 	OutputRT = RHICmdList.CreateTexture(Desc);
 }
 
+void FVaCuusReplayRenderer::BeginAsyncTextureUploads(FRHICommandListImmediate& RHICmdList, FVaCuusCommandBuffer& Buffer)
+{
+	check(IsInRenderingThread());
+
+	const int32 ThresholdBytes = CVarVaCuusAsyncTextureUploadBytes.GetValueOnRenderThread();
+	if (ThresholdBytes <= 0 || Buffer.NewTextures.Num() == 0)
+	{
+		return;
+	}
+
+	// The same idempotence rule ShouldConsume() applies, applied one phase earlier: this runs at
+	// graph-build time and the pass that consumes the buffer runs later, so a buffer that was
+	// already consumed (a second paint of one UI frame) must not have its payloads taken again.
+	// Deliberately NOT ShouldConsume() itself -- that one ensure()s on a backwards generation and
+	// would fire here as well as at the real consumption point, doubling one report into two.
+	if (Buffer.Generation <= LastConsumedGeneration)
+	{
+		return;
+	}
+
+	for (TPair<FVaCuusTextureHandle, FVaCuusTextureData>& Pair : Buffer.NewTextures)
+	{
+		FVaCuusTextureData& Data = Pair.Value;
+		if (Data.RGBA.Num() < ThresholdBytes || !VaCuusReplay::IsWellFormedPayload(Data))
+		{
+			// A malformed payload is left for UploadNewResources: that is where the ensure that
+			// names the handle and the byte count lives, and it should fire once, in one place.
+			continue;
+		}
+
+		// CREATED HERE, ON THE RENDER THREAD, and that is the half that must stay synchronous:
+		// every draw the replay pass records later binds this FRHITexture*, so it has to exist
+		// before the pass is built. It is also the cheap half -- VaCuus.Render.Upload.Cost
+		// measures CreateTexture at 0.248 ms for the 137 MB case against 42.674 ms for the
+		// UpdateTexture2D that follows it, i.e. under 1% of the cost this bead is about.
+		FTextureRHIRef Texture = RHICmdList.CreateTexture(VaCuusReplay::MakeUITextureDesc(Data.Size));
+
+		// Queued BEFORE the task is launched, deliberately: the queue is what fixes this list's
+		// POSITION in the immediate stream, and it must be taken while the render thread is still
+		// the only writer. The engine's own order (SkeletalMeshUpdater.cpp:437-440: new
+		// FRHICommandList, then QueueAsyncCommandListSubmit, then record from tasks).
+		FRHICommandList* UploadCmdList = new FRHICommandList(FRHIGPUMask::All());
+		RHICmdList.QueueAsyncCommandListSubmit(UploadCmdList);
+
+		// FOREGROUND PRIORITY, WHICH IS THE EXACT OPPOSITE OF THE DECODE'S CHOICE, and the
+		// difference is not taste: nothing waits for a decode (see
+		// FVaCuusRecordingRenderInterface::LoadTexture's BackgroundHigh argument), while the RHI
+		// thread DOES wait for this task -- it cannot replay the list until FinishRecording()
+		// (RHICommandList.h:4448-4453). A background task here would be a latency-critical
+		// dependency parked on the pool the engine lets be preempted. High rather than Normal for
+		// the same reason: this is the tail of a frame's submission.
+		//
+		// A WORKERLESS PROCESS (-onethread, or any run where the scheduler never started) IS THE
+		// ONE CASE THAT COULD DEADLOCK -- the RHI thread waits for FinishRecording() and nothing
+		// would ever run the task -- AND IT CANNOT HAPPEN, which is why there is no cvar guard
+		// for it. FScheduler::LaunchInternal branches on ActiveWorkers, and with none it EXECUTES
+		// THE TASK INLINE on the launching thread (Scheduler.cpp:533, :622-630). So the upload
+		// degrades to exactly the pre-akj.6.25 behaviour -- a memcpy on the render thread -- and
+		// the list is finished before this line returns.
+		UE::Tasks::Launch(
+			UE_SOURCE_LOCATION,
+			[UploadCmdList, Texture, Payload = MoveTemp(Data.RGBA), Size = Data.Size]() mutable
+			{
+				TRACE_CPUPROFILER_EVENT_SCOPE(VaCuusTextureUpload);
+
+				// THE MEMCPY THIS BEAD EXISTS TO MOVE. On Vulkan this acquires a staging buffer
+				// and copies the payload into it on THIS thread, then enqueues the buffer->image
+				// copy (VulkanTexture.cpp:1664-1696); the enqueued half rides the command list
+				// below. Payload is moved in, so it outlives the command buffer that carried it.
+				const FUpdateTextureRegion2D Region(0, 0, 0, 0, uint32(Size.X), uint32(Size.Y));
+				UploadCmdList->UpdateTexture2D(Texture, 0, Region, uint32(Size.X) * 4u, Payload.GetData());
+
+				// Last statement, and the RHI thread is blocked until it runs: "Must be called as
+				// the last command in a parallel rendering task. It is not safe to continue using
+				// the command list after FinishRecording() has been called"
+				// (RHICommandList.h:511-519). The list frees itself once replayed.
+				UploadCmdList->FinishRecording();
+			},
+			UE::Tasks::ETaskPriority::High);
+
+		// PARKED, NOT INSTALLED -- see PendingAsyncTextures for the buffer-ordering bug that
+		// installing straight into Textures here caused. UploadNewResources of this same buffer
+		// does the install, which is still before any draw that could sample it.
+		PendingAsyncTextures.Add(Pair.Key, MoveTemp(Texture));
+		NumAsyncTextureUploads.fetch_add(1, std::memory_order_release);
+	}
+}
+
 void FVaCuusReplayRenderer::UploadNewResources(FRHICommandList& RHICmdList, const FVaCuusCommandBuffer& Buffer)
 {
 	for (const TPair<FVaCuusGeometryHandle, FVaCuusGeometryData>& Pair : Buffer.NewGeometry)
@@ -202,25 +343,32 @@ void FVaCuusReplayRenderer::UploadNewResources(FRHICommandList& RHICmdList, cons
 
 	for (const TPair<FVaCuusTextureHandle, FVaCuusTextureData>& Pair : Buffer.NewTextures)
 	{
+		// THE ASYNC HANDOVER, and it happens BEFORE the payload check because
+		// BeginAsyncTextureUploads MOVED this payload into its task: what is left in NewTextures
+		// is a zero-byte entry the ensure below would report as a corrupt buffer. Installing the
+		// ref HERE rather than at graph-build time is what keeps two buffers carrying the same
+		// handle in order -- see PendingAsyncTextures.
+		if (FTextureRHIRef* Parked = PendingAsyncTextures.Find(Pair.Key))
+		{
+			Textures.Add(Pair.Key, MoveTemp(*Parked));
+			PendingAsyncTextures.Remove(Pair.Key);
+			continue;
+		}
+
 		const FVaCuusTextureData& Data = Pair.Value;
-		if (!ensureMsgf(Data.Size.X > 0 && Data.Size.Y > 0 && Data.RGBA.Num() == Data.Size.X * Data.Size.Y * 4,
-				TEXT("Texture %llu payload mismatch: %dx%d, %d bytes"), Pair.Key, Data.Size.X, Data.Size.Y, Data.RGBA.Num()))
+		if (!ensureMsgf(VaCuusReplay::IsWellFormedPayload(Data), TEXT("Texture %llu payload mismatch: %dx%d, %d bytes"),
+				Pair.Key, Data.Size.X, Data.Size.Y, Data.RGBA.Num()))
 		{
 			continue;
 		}
 
-		// PF_R8G8B8A8: the payload is RmlUi RGBA memory order (premultiplied
-		// alpha) for both generated and loaded textures — see FVaCuusTextureData.
-		const FRHITextureCreateDesc Desc =
-			FRHITextureCreateDesc::Create2D(TEXT("VaCuusUITexture"), Data.Size, PF_R8G8B8A8)
-				.SetFlags(ETextureCreateFlags::ShaderResource)
-				.SetInitialState(ERHIAccess::SRVMask);
-		FTextureRHIRef Texture = RHICmdList.CreateTexture(Desc);
+		FTextureRHIRef Texture = RHICmdList.CreateTexture(VaCuusReplay::MakeUITextureDesc(Data.Size));
 
 		const FUpdateTextureRegion2D Region(0, 0, 0, 0, uint32(Data.Size.X), uint32(Data.Size.Y));
 		RHICmdList.UpdateTexture2D(Texture, 0, Region, uint32(Data.Size.X) * 4u, Data.RGBA.GetData());
 
 		Textures.Add(Pair.Key, MoveTemp(Texture));
+		NumSyncTextureUploads.fetch_add(1, std::memory_order_release);
 	}
 
 	// Shaders: the "upload" is the map insert — see the member's declaration. Add on an
