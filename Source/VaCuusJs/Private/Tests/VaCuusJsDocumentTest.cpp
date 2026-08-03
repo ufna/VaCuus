@@ -141,7 +141,7 @@ bool FVaCuusJsDocHeadScriptsTest::RunTest(const FString& /*Parameters*/)
  * context on a replace (materialized on demand for a first load) -- and to skip
  * the post-recycle run, exactly the design v1 prescribed. The recycle then
  * frees everything the scripts just built, on first load and reload alike.
- * This test went red with (verbatim, VcHost.log):
+ * This test went red with (verbatim, from the editor log):
  *
  *   Error: Expected 'the A->B burst left the fresh context's script run
  *     intact' to be "1", but it was "undefined".

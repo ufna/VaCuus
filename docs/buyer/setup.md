@@ -5,6 +5,35 @@ loop, then wire the one asset that ships your UI. The shipping section is the pa
 that is NOT like other plugins — read the mount predicate table and the
 cook-inclusion rule before your first packaged build.
 
+## 0. What is in the box — read this before you install
+
+**This plugin ships as SOURCE. There are no binaries in the package, and there is no
+`Binaries/` directory in it at all.** That is Fab's rule for UE-facing code, not a
+packaging accident, and it has one consequence that decides whether the next ten minutes
+work:
+
+> **Your project must be a C++ project.** A Blueprint-only project has no build target
+> and no toolchain, so nothing compiles the four runtime modules and the plugin cannot
+> load. Converting is a two-minute job and permanent: in the editor, **Tools → New C++
+> Class → None → Create Class**. That adds `Source/` and a target, and from then on the
+> project builds plugins like any other C++ project.
+
+You also need the platform toolchain the engine already requires to compile anything:
+Visual Studio 2022 with the C++ workload on Win64, Xcode on macOS, the bundled clang
+toolchain on Linux. First launch after dropping the plugin in takes a few minutes — that
+is the plugin compiling, once.
+
+Two more properties of the shipped copy, both of which differ from the repository and
+neither of which the engine tells you about:
+
+- **It is not enabled by default.** `RunUAT BuildPlugin` rewrites the descriptor it
+  packages: `bEnabledByDefault` is cleared and `bInstalled` is set to true
+  (`BuildPluginCommand.Automation.cs:434-445`). So step 2 below is not optional
+  housekeeping — without it the plugin sits in your `Plugins/` folder doing nothing.
+- **It is stamped with an engine version.** The same rewrite writes `EngineVersion` from
+  the engine that built the package. A different engine version will warn on load; that is
+  a compatibility marker, not a hard block.
+
 ## 1. Install and enable
 
 1. Drop the plugin into `<Project>/Plugins/VaCuus` (Fab install does the same).
@@ -200,6 +229,27 @@ LogVaCuus: Mounted bundle '<name>': 24 entries, 461881 bytes, resident buffer (.
 `vacuus.Bundle.Enable 0` (e.g. via `-dpcvars`) suppresses the cooked auto-mount for
 loose-vs-bundle A/B runs. `vacuus.DumpBundle` prints any mounted bundle's index,
 provenance and content hash.
+
+**Your own DevUI files and the loose-file leg — one config line, and only for
+non-Shipping packages.** The bundle packer walks *both* document roots
+(`VaCuusContentPaths::GetDocumentRoots()`), so everything under
+`<Project>/Content/DevUI` is inside the bundle and Shipping needs nothing from you. The
+loose copies are a different story: the plugin's staging globs are anchored at
+`$(PluginDir)/Content/DevUI` (`Source/VaCuus/VaCuus.Build.cs`), which is the plugin's own
+tree and not yours — nothing in the plugin can stage files from your project. So a
+packaged **Development** build stages the plugin's demo documents and none of yours, and
+`vacuus.Bundle.Enable 0` in that build finds an empty loose root. If you want that A/B leg,
+add your directory yourself:
+
+```ini
+[/Script/UnrealEd.ProjectPackagingSettings]
++DirectoriesToAlwaysStageAsUFS=(Path="DevUI")
+```
+
+The path is relative to your project's `Content` directory
+(`ProjectPackagingSettings.h:585-591`, resolved at
+`CopyBuildToStagingDirectory.Automation.cs:837`), so `DevUI` means
+`<Project>/Content/DevUI`.
 
 **The staging gate that makes Shipping bundle-only:** the plugin's loose-file
 staging rules gate on configuration — `Source/VaCuus/VaCuus.Build.cs:138-146` adds

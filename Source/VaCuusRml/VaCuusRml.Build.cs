@@ -18,7 +18,8 @@ public class VaCuusRml : ModuleRules
 		// LogOutputLevel = LogEventType.Log, which is LogLevel.Debug --
 		// EpicGames.Core/Logging/Log.cs:52; the filter is `logLevel >= OutputLevel`
 		// at Log.cs:1244, and LogTrace is LogLevel.Trace, below Debug.)
-		// Measured on this tree, not assumed: a LinuxArm64 game target for VcHost -- a
+		// Measured on this tree, not assumed: a LinuxArm64 game target for this plugin's
+		// own host project -- a
 		// platform outside the declared list, standing in for Android -- exits 0, builds
 		// a target with zero VaCuus modules, and mentions the plugin nowhere in the UBT
 		// log unless -VeryVerbose is passed. Nothing this file can do reaches that case.

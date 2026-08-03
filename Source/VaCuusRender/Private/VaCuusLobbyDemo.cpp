@@ -1578,7 +1578,8 @@ static void Toggle()
 	}
 
 	// THE NAMED REFUSAL, FIRST -- before any viewport or subsystem requirement, so a
-	// content-less host (VcHost, automation) hears exactly what is missing and nothing
+	// content-less host (an automation run, or any project without the demo content)
+	// hears exactly what is missing and nothing
 	// is half-created. chrome.rml and lobby.rml are the boot set; the other four
 	// screens fail later, by name, through OnViewLoadCompleted if absent.
 	for (const TCHAR* RequiredVfsPath : {GChromeVfsPath, GLobbyVfsPath})
@@ -1851,7 +1852,7 @@ static FAutoConsoleCommand GLobbyDemoCommand(
  * long enough for the chrome and content documents to have loaded and laid out.
  *
  * OWED FOR SHIPPING (not this change): VaCuusDemo.Target.cs has no
- * `bUseLoggingInShipping`, unlike VcHost.Target.cs:20-24, so a Shipping VaCuusDemo
+ * `bUseLoggingInShipping`, unlike the plugin's own host-project target, so a Shipping VaCuusDemo
  * would ignite here and produce no log to prove it -- only the screenshot.
  */
 static FDelegateHandle GLobbyDemoLaunchFlagHandle = FCoreUObjectDelegates::PostLoadMapWithWorld.AddLambda(

@@ -51,7 +51,7 @@ static const TCHAR* GAfterShot = TEXT("m2t10_after");
  *
  * HOW TO DRIVE IT:
  *
- *   UnrealEditor VcHost.uproject -RenderOffscreen -resx=1920 -resy=1080 -ForceRes \
+ *   UnrealEditor <YourProject>.uproject -RenderOffscreen -resx=1920 -resy=1080 -ForceRes \
  *     -nosplash -vacuusproof -ExecCmds="Automation RunTests Proof.LiveReload.PIE" \
  *     -testexit="Automation Test Queue Empty"
  *

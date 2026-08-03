@@ -100,7 +100,7 @@ public:
 	 *
 	 * NOT COSMETIC. The FFileChangeData constructor runs FPaths::MakeStandardFilename
 	 * (IDirectoryWatcher.h:23), so what arrives is typically RELATIVE
-	 * ('../../../VcHost/Content/DevUI/x.rml') -- while a path that cannot be made relative
+	 * ('../../../YourProject/Content/DevUI/x.rml') -- while a path that cannot be made relative
 	 * to the engine root stays absolute (FPaths::CreateStandardFilename, which
 	 * MakeStandardFilename delegates to: Paths.cpp:1445-1455, called from :1510-1513). Both
 	 * forms turn up in the same session here, because the plugin root is outside the project

@@ -186,7 +186,7 @@ private:
  * font-family IS LOAD-BEARING, and it is here because leaving it out was a real cost, not a
  * stylistic one (VaCuus-akj.21). A fontless text element logs "No font face defined" once per
  * layout pass per element, and CHANGING relays out all 64 every measured frame: this test alone
- * emitted 27,008 of them, which reach Saved/Logs/VcHost.log as 54,016 lines (the automation
+ * emitted 27,008 of them, which reach Saved/Logs/<Project>.log as 54,016 lines (the automation
  * controller mirrors every Warning) -- 96% of every "No font face" line in a full-suite log, in
  * the file this project reads its test results out of. LatoLatin is registered by
  * FVaCuusEngine::Initialize (VaCuusEngine.cpp:139-144), which the UI thread has already run by
@@ -529,7 +529,7 @@ bool FVaCuusModelUICostTest::RunTest(const FString& Parameters)
 		ReevaluationPlusDomMs));
 
 	// Logged as well as added: AddInfo lands in the automation report, and a headless acceptance
-	// run reads Saved/Logs/VcHost.log.
+	// run reads Saved/Logs/<Project>.log.
 	UE_LOG(LogVaCuus, Display,
 		TEXT("VaCuus M3a UI cost (%d frames): apply still=%.5f redrawn(%d)=%.5f changing(%d)=%.5f ms | ")
 		TEXT("Update still=%.5f redrawn=%.5f changing=%.5f ms | re-evaluation=%.5f ms (%.3f us/var) | ")

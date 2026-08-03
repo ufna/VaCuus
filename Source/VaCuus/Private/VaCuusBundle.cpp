@@ -388,9 +388,11 @@ namespace VaCuusBundleCook
  * full cook unless `-CookIncremental` is passed), and skipping is class-gated to an
  * allowlist that stock config fills with engine script packages only
  * (BaseEditor.ini:475); a project plugin's class repacks on EVERY cook -- safe, never
- * skipped -- until the project opts it in, as the host does
- * (VcHost/Config/DefaultEditor.ini:14, `+IncrementalClassAllowList=
- * /Script/VaCuus.VaCuusBundle`). Once both doors are open: a changed hash
+ * skipped -- until the project opts it in with one line in its own
+ * `Config/DefaultEditor.ini` (`[CookSettings]` / `+IncrementalClassAllowList=
+ * /Script/VaCuus.VaCuusBundle`; docs/buyer/setup.md §3 step 3 is the buyer-facing
+ * copy of it, and this plugin's own host project carries the same line). Once both
+ * doors are open: a changed hash
  * invalidates the package, PreSave runs again, the tree repacks -- and an unchanged
  * hash is what lets the cooker skip it, which errata row Z2b shows the legacy
  * `-legacyiterative` path can NEVER honestly decide (no ZenStore storage for

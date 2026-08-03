@@ -188,7 +188,7 @@ bool FVaCuusLiveReloadFilterTest::RunTest(const FString& Parameters)
 	//~ what the delegate receives is usually relative -- comparing or reloading it as-is
 	//~ is the bug this exists to prevent.
 	{
-		const FString Relative = TEXT("../../../VcHost/Content/DevUI/m1_hud.rcss");
+		const FString Relative = TEXT("../../../YourProject/Content/DevUI/m1_hud.rcss");
 		const FString Normalized = FVaCuusLiveReload::NormalizeChangedPath(Relative);
 		TestFalse(TEXT("A relative change path normalises to absolute"), FPaths::IsRelative(Normalized));
 		TestTrue(TEXT("Normalisation keeps the file name"), Normalized.EndsWith(TEXT("m1_hud.rcss")));
