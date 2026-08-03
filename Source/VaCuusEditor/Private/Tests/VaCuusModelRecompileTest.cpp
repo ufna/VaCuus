@@ -7,6 +7,7 @@
 #include "VaCuusEngine.h"
 #include "VaCuusModelLayout.h"
 #include "VaCuusSubsystem.h"
+#include "VaCuusTestNullDocumentHost.h"
 #include "VaCuusUIThread.h"
 #include "VaCuusView.h"
 #include "VaCuusViewStatus.h"
@@ -264,28 +265,12 @@ bool FVaCuusModelBlueprintRecompileTest::RunTest(const FString& Parameters)
 
 namespace VaCuusModelRecompileTest
 {
-/**
- * The no-context stub, VaCuusLiveReloadTest's shape: what THIS file asserts about the refusal
- * is the ENGINE-HOOK half -- a real UUserDefinedStruct recompile reaching the runtime walk
- * through FVaCuusStructRecompileGuard -- plus every game-thread observable. The real-context
- * half (RemoveDataModel, the registry eviction, the recovered document) is
- * VaCuus.Model.RecompileDrop in the runtime module, which can name a native struct but can
- * never recompile one; the two tests are one feature split along the module boundary.
- */
-class FStubHost final : public IVaCuusDocumentHost
-{
-public:
-	virtual bool Initialize(uint32 InViewId, const TSharedRef<FVaCuusViewStatus>& InStatus) override { return true; }
-	virtual void Shutdown() override {}
-	virtual void SetViewSize(FIntPoint ViewSize) override {}
-	virtual void LoadDocumentFromFile(const FString& VfsPath, uint64 LoadSerial) override {}
-	virtual void LoadDocumentFromMemory(const FString& RmlSource, uint64 LoadSerial) override {}
-	virtual void CloseDocument() override {}
-	virtual void SetVisible(bool bVisible) override {}
-	virtual bool HasView() const override { return false; }
-	virtual Rml::Context* GetContext() const override { return nullptr; }
-	virtual void RecordAndPublishFrame() override {}
-};
+//~ THE VIEW BELOW USES FVaCuusTestNullDocumentHost (no context, no RmlUi): what THIS file
+//~ asserts about the refusal is the ENGINE-HOOK half -- a real UUserDefinedStruct recompile
+//~ reaching the runtime walk through FVaCuusStructRecompileGuard -- plus every game-thread
+//~ observable. The real-context half (RemoveDataModel, the registry eviction, the recovered
+//~ document) is VaCuus.Model.RecompileDrop in the runtime module, which can name a native struct
+//~ but can never recompile one; the two tests are one feature split along the module boundary.
 
 /** The standalone-instance fixture, shared with VaCuusLiveReloadTest for its reason: only a game instance with a WORLD CONTEXT is visible to the walk under test. */
 struct FStandaloneInstance
@@ -432,7 +417,7 @@ bool FVaCuusModelRecompileRefusalTest::RunTest(const FString& Parameters)
 		return false;
 	}
 
-	UVaCuusView* View = Instance.Subsystem->CreateView(MakeUnique<FStubHost>(), FIntPoint(320, 200));
+	UVaCuusView* View = Instance.Subsystem->CreateView(MakeUnique<FVaCuusTestNullDocumentHost>(), FIntPoint(320, 200));
 	if (!TestNotNull(TEXT("the subsystem created a view"), View))
 	{
 		return false;

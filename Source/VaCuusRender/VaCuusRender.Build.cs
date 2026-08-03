@@ -36,10 +36,16 @@ using UnrealBuildTool;
 // a view that this plugin does not host -- headless, offscreen, a test probe. That seam is
 // genuinely reachable already, because IVaCuusDocumentHost is a pure interface in
 // VaCuus/Public with no exported members to link against: implement it and call CreateView.
-// The plugin does it from three other modules already -- VaCuusMultiViewTest.cpp:53,
-// VaCuusJs/Private/Tests/VaCuusJsDocumentTestHost.h:31,
-// VaCuusEditor/Private/Tests/VaCuusLiveReloadTest.cpp:41 -- so the seam is load-bearing, not
-// theoretical. docs/buyer/setup.md says the same thing in buyer words.
+// The plugin does it from all four modules already, through the two shared test fixtures the
+// probes now derive from -- VaCuus/Internal/VaCuusTestDocumentHost.h:44 (real context) and
+// VaCuus/Internal/VaCuusTestNullDocumentHost.h:67 (no context at all, which is what VaCuusEditor
+// uses, since it does not link VaCuusRml) -- plus their subclasses, e.g.
+// VaCuusMultiViewTest.cpp:54 and VaCuusJs/Private/Tests/VaCuusJsDocumentTestHost.h:32. So the
+// seam is load-bearing, not theoretical. docs/buyer/setup.md says the same thing in buyer words.
+//
+// AND THOSE FIXTURES ARE NOT PART OF THIS SURFACE, which is the point of Internal/ rather than
+// Public/: UBT hands an Internal/ directory only to modules in the same Rules.Context.Scope
+// (UEBuildModule.cs:736-740), i.e. to this plugin's own modules. A buyer cannot include them.
 //
 // LEFT ALONE, AND SAID SO RATHER THAN QUIETLY KEPT: VaCuusCommandBuffer.h and
 // VaCuusReplayRenderer.h are in Public/ by history, not by decision -- nothing outside this

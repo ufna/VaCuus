@@ -8,6 +8,7 @@
 #include "VaCuusEngine.h"
 #include "VaCuusLiveReload.h"
 #include "VaCuusSubsystem.h"
+#include "VaCuusTestNullDocumentHost.h"
 #include "VaCuusUIThread.h"
 #include "VaCuusView.h"
 #include "VaCuusViewStatus.h"
@@ -29,29 +30,13 @@
 
 namespace VaCuusLiveReloadTest
 {
-/**
- * A document host that does nothing at all -- no context, no RmlUi.
- *
- * ENOUGH, AND DELIBERATELY SO: what the dispatch test asserts is a GAME-THREAD fact
- * ("the reload dispatcher re-issued a load for this view"), observed through
- * UVaCuusView::GetLastRequestedLoadSerial(), which the view stamps before the command
- * ever reaches the UI thread. Giving the host a real context would add an RmlUi boot and
- * a document parse to a test that would assert nothing more.
- */
-class FStubHost final : public IVaCuusDocumentHost
-{
-public:
-	virtual bool Initialize(uint32 InViewId, const TSharedRef<FVaCuusViewStatus>& InStatus) override { return true; }
-	virtual void Shutdown() override {}
-	virtual void SetViewSize(FIntPoint ViewSize) override {}
-	virtual void LoadDocumentFromFile(const FString& VfsPath, uint64 LoadSerial) override {}
-	virtual void LoadDocumentFromMemory(const FString& RmlSource, uint64 LoadSerial) override {}
-	virtual void CloseDocument() override {}
-	virtual void SetVisible(bool bVisible) override {}
-	virtual bool HasView() const override { return false; }
-	virtual Rml::Context* GetContext() const override { return nullptr; }
-	virtual void RecordAndPublishFrame() override {}
-};
+//~ EVERY VIEW BELOW IS BUILT ON FVaCuusTestNullDocumentHost -- no context, no RmlUi -- and that
+//~ is enough deliberately: what the dispatch tests assert is a GAME-THREAD fact ("the reload
+//~ dispatcher re-issued a load for this view"), observed through
+//~ UVaCuusView::GetLastRequestedLoadSerial(), which the view stamps before the command ever
+//~ reaches the UI thread. Giving the host a real context would add an RmlUi boot and a document
+//~ parse to a test that would assert nothing more. (VaCuusEditor could not have a real-context
+//~ host anyway: it does not link VaCuusRml.)
 
 /**
  * A standalone UGameInstance carrying a live UVaCuusSubsystem, torn down in the order the
@@ -642,8 +627,8 @@ bool FVaCuusLiveReloadDispatchTest::RunTest(const FString& Parameters)
 		return false;
 	}
 
-	UVaCuusView* FileView = Subsystem->CreateView(MakeUnique<FStubHost>(), FIntPoint(320, 200));
-	UVaCuusView* EmptyView = Subsystem->CreateView(MakeUnique<FStubHost>(), FIntPoint(320, 200));
+	UVaCuusView* FileView = Subsystem->CreateView(MakeUnique<FVaCuusTestNullDocumentHost>(), FIntPoint(320, 200));
+	UVaCuusView* EmptyView = Subsystem->CreateView(MakeUnique<FVaCuusTestNullDocumentHost>(), FIntPoint(320, 200));
 	if (!TestNotNull(TEXT("View with a document"), FileView) || !TestNotNull(TEXT("View without one"), EmptyView))
 	{
 		return false;
@@ -756,7 +741,7 @@ bool FVaCuusLiveReloadRearmTest::RunTest(const FString& Parameters)
 		return false;
 	}
 
-	UVaCuusView* View = Subsystem->CreateView(MakeUnique<FStubHost>(), FIntPoint(320, 200));
+	UVaCuusView* View = Subsystem->CreateView(MakeUnique<FVaCuusTestNullDocumentHost>(), FIntPoint(320, 200));
 	if (!TestNotNull(TEXT("View"), View))
 	{
 		return false;
@@ -1013,7 +998,7 @@ bool FVaCuusLiveReloadWatcherEventTest::RunTest(const FString& Parameters)
 		return false;
 	}
 
-	State->View = Subsystem->CreateView(MakeUnique<FStubHost>(), FIntPoint(320, 200));
+	State->View = Subsystem->CreateView(MakeUnique<FVaCuusTestNullDocumentHost>(), FIntPoint(320, 200));
 	if (!TestNotNull(TEXT("View"), State->View))
 	{
 		State->Reload.Shutdown();

@@ -8,6 +8,7 @@
 #include "VaCuusStats.h"
 
 #include "VaCuusContentPaths.h"
+#include "VaCuusTestDocumentHost.h"
 
 #include "HAL/PlatformTime.h"
 #include "Misc/FileHelper.h"
@@ -67,124 +68,56 @@ struct FJsCostFrameRecord
 };
 
 /**
- * FJsDocProbeHost (VaCuusJsDocumentTestHost.h) with the M3b cost bracket: the seam
- * calls stay (OnDocumentReady after Show, OnDocumentClosing before Close -- document
- * scripts must actually run here), and RecordAndPublishFrame gains the per-frame log
- * above. A copy rather than a subclass because the original is final for the reason
- * its own comment states, and because this host's RecordAndPublishFrame IS the
- * measurement -- hiding the bracket under an override seam would put a virtual call
- * inside it.
+ * FJsDocProbeHost's seam calls (OnDocumentReady after Show, OnDocumentClosing before Close --
+ * document scripts must actually run here) with the M3b cost bracket in
+ * RecordAndPublishFrame.
+ *
+ * A SIBLING OF FJsDocProbeHost RATHER THAN A SUBCLASS OF IT: both derive from the shared
+ * FVaCuusTestDocumentHost, but this host's RecordAndPublishFrame IS the measurement, and
+ * hiding the bracket under a further override seam would put a virtual call inside it. The
+ * base is careful to leave RecordAndPublishFrame pure for exactly this reason.
  */
-class FJsCostProbeHost final : public IVaCuusDocumentHost
+class FJsCostProbeHost final : public FVaCuusTestDocumentHost
 {
 public:
 	explicit FJsCostProbeHost(const TCHAR* InContextPrefix)
-		: ContextPrefix(InContextPrefix)
+		: FVaCuusTestDocumentHost(InContextPrefix, "vacuus://js_cost_test.rml", Rml::FocusFlag::Document)
 	{
 	}
 
-	virtual bool Initialize(uint32 InViewId, const TSharedRef<FVaCuusViewStatus>& InStatus) override
+	/**
+	 * RESERVED ONCE, NEVER REALLOCATED (the FArrayCostHost rule): the test thread reads settled
+	 * records while a coalesced trigger may still append one more, and Reserve keeps those
+	 * earlier-record reads valid. The longest soak here is ~7000 frames; hitting the capacity
+	 * would start reallocating under the reader, so the soak length is capped well below it
+	 * (MaxSoakFrames).
+	 */
+	virtual bool OnInitialized() override
 	{
-		check(FVaCuusUIThread::IsInUIThread());
-		ViewId = InViewId;
-		Status = InStatus;
-		ContextName = FString::Printf(TEXT("%s_%u"), *ContextPrefix, InViewId);
-		Context = Rml::CreateContext(Rml::String(TCHAR_TO_UTF8(*ContextName)), Rml::Vector2i(1, 1));
-
-		// RESERVED ONCE, NEVER REALLOCATED (the FArrayCostHost rule): the test thread
-		// reads settled records while a coalesced trigger may still append one more, and
-		// Reserve keeps those earlier-record reads valid. The longest soak here is ~7000
-		// frames; hitting the capacity would start reallocating under the reader, so the
-		// soak length is capped well below it (MaxSoakFrames).
 		FrameLog.Reserve(16384);
-		return Context != nullptr;
+		return true;
 	}
 
-	virtual void Shutdown() override
+	//~ The spec 2(f) seam calls at the production AdoptDocument/CloseDocument placements: this is
+	//~ what runs the document's captured scripts, external src resolved through the DevUI roots
+	//~ -- the cost documents below lean on both.
+	virtual void OnDocumentAdopted() override
 	{
-		check(FVaCuusUIThread::IsInUIThread());
-		CloseDocument();
-		if (Context != nullptr)
-		{
-			Rml::RemoveContext(Rml::String(TCHAR_TO_UTF8(*ContextName)));
-			Context = nullptr;
-		}
-	}
-
-	virtual void SetViewSize(FIntPoint InViewSize) override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-		ViewSize = InViewSize;
-		if (Context != nullptr)
-		{
-			Context->SetDimensions(Rml::Vector2i(ViewSize.X, ViewSize.Y));
-		}
-	}
-
-	virtual void LoadDocumentFromFile(const FString& /*VfsPath*/, uint64 LoadSerial) override
-	{
-		Report(LoadSerial, /*bSuccess=*/false);
-	}
-
-	virtual void LoadDocumentFromMemory(const FString& RmlSource, uint64 LoadSerial) override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-		if (Context == nullptr)
-		{
-			Report(LoadSerial, /*bSuccess=*/false);
-			return;
-		}
-
-		Rml::ElementDocument* NewDocument =
-			Context->LoadDocumentFromMemory(Rml::String(TCHAR_TO_UTF8(*RmlSource)), "vacuus://js_cost_test.rml");
-		if (NewDocument == nullptr)
-		{
-			Report(LoadSerial, /*bSuccess=*/false);
-			return;
-		}
-
-		CloseDocument();
-		RmlDocument = NewDocument;
-		RmlDocument->Show(Rml::ModalFlag::None, Rml::FocusFlag::Document);
-
-		// The spec 2(f) seam call, the production AdoptDocument placement: this is what
-		// runs the document's captured scripts, external src resolved through the DevUI
-		// roots -- the cost documents below lean on both.
 		if (IVaCuusScriptHost* ScriptHost = FVaCuusUIThread::GetActiveScriptHost())
 		{
 			ScriptHost->OnDocumentReady(ViewId, RmlDocument);
 		}
-
-		Report(LoadSerial, /*bSuccess=*/true);
 	}
 
-	virtual void CloseDocument() override
+	virtual void OnDocumentClosing() override
 	{
-		check(FVaCuusUIThread::IsInUIThread());
-		if (RmlDocument != nullptr)
+		if (IVaCuusScriptHost* ScriptHost = FVaCuusUIThread::GetActiveScriptHost())
 		{
-			if (IVaCuusScriptHost* ScriptHost = FVaCuusUIThread::GetActiveScriptHost())
-			{
-				ScriptHost->OnDocumentClosing(ViewId);
-			}
-			RmlDocument->Close();
-			RmlDocument = nullptr;
+			ScriptHost->OnDocumentClosing(ViewId);
 		}
 	}
 
 	virtual void SetVisible(bool /*bVisible*/) override {}
-
-	virtual bool HasView() const override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-		return Context != nullptr && RmlDocument != nullptr && ViewSize.X > 0 && ViewSize.Y > 0;
-	}
-
-	virtual Rml::Context* GetContext() const override
-	{
-		check(FVaCuusUIThread::IsInUIThread());
-		return Context;
-	}
 
 	virtual void RecordAndPublishFrame() override
 	{
@@ -216,25 +149,6 @@ public:
 	//~ Post-frame observations; the FArrayFrameRecord hand-off rule.
 	TArray<FJsCostFrameRecord> FrameLog;
 
-private:
-	void Report(uint64 LoadSerial, bool bSuccess)
-	{
-		if (Status.IsValid() && LoadSerial != 0)
-		{
-			Status->LoadResult.store(
-				static_cast<uint8>(bSuccess ? EVaCuusLoadResult::Succeeded : EVaCuusLoadResult::Failed),
-				std::memory_order_relaxed);
-			Status->LoadCompletedSerial.store(LoadSerial, std::memory_order_release);
-		}
-	}
-
-	TSharedPtr<FVaCuusViewStatus> Status;
-	FString ContextPrefix;
-	FString ContextName;
-	uint32 ViewId = 0;
-	Rml::Context* Context = nullptr;
-	Rml::ElementDocument* RmlDocument = nullptr;
-	FIntPoint ViewSize = FIntPoint::ZeroValue;
 };
 
 /** FrameLog records the test thread may read; the M3b SettledFrames rule verbatim. */
