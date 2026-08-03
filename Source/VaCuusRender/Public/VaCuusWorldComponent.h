@@ -6,6 +6,8 @@
 
 #include "VaCuusWorldComponent.generated.h"
 
+// FVaCuusWorldSink stays in Private/ and stays FORWARD-DECLARED here; see
+// GetWorldSink() for what that costs and why it is the right trade.
 class FVaCuusWorldSink;
 class UBodySetup;
 class UMaterialInstanceDynamic;
@@ -57,9 +59,18 @@ class UVaCuusView;
  * The panel hears pointer events only; keys and IME stay with the screen path
  * (decision D17).
  */
+/**
+ * VACUUSRENDER_API: the same VaCuus-dgl defect as UVaCuusWidget, found by the same audit
+ * -- this class is BlueprintSpawnableComponent and perf-guide.md:107,113 tells buyers to
+ * set bGenerateMips / call SetGenerateMips() on it, but with the header in Private/ and no
+ * export macro, a buyer with precompiled binaries could only reach it from Blueprint.
+ * `CreateDefaultSubobject<UVaCuusWorldComponent>` in an actor's constructor -- the ordinary
+ * way anyone adds a component from C++ -- could neither include the header nor link. The
+ * whole mechanism (why the UCLASS still registered) is on UVaCuusWidget.
+ */
 UCLASS(Blueprintable, ClassGroup = "UserInterface", meta = (BlueprintSpawnableComponent, DisplayName = "VaCuus World Panel"),
 	hidecategories = (Object, Activation, "Components|Activation", Sockets, Base, Lighting, LOD, Mesh))
-class UVaCuusWorldComponent : public UMeshComponent
+class VACUUSRENDER_API UVaCuusWorldComponent : public UMeshComponent
 {
 	GENERATED_BODY()
 
@@ -147,7 +158,18 @@ public:
 	/** The pixel size everything below is currently built at (== DrawSize once registered). */
 	FIntPoint GetCurrentDrawSize() const { return CurrentDrawSize; }
 
-	/** Diagnostics/tests: the sink and its copy/skip counters. Null before registration. */
+	/**
+	 * Diagnostics/tests: the sink and its copy/skip counters. Null before registration.
+	 *
+	 * DELIBERATELY NOT PART OF THE SUPPORTED SURFACE, even though it is declared in a
+	 * public header. FVaCuusWorldSink is the render backend's own type and stays in
+	 * Private/; a buyer can call this and hold the handle (TSharedPtr needs no complete
+	 * type -- see the note over UVaCuusWidget's members) but cannot do anything with it,
+	 * which is the intent. It is here because the world-panel tests are in this module and
+	 * the counters are WS-COPY-COST's only observable; exporting the sink to make it
+	 * usable would drag FVaCuusReplayRenderer's whole command-buffer contract into the
+	 * supported ABI for no buyer-facing gain (VaCuusRender.Build.cs carries that decision).
+	 */
 	TSharedPtr<FVaCuusWorldSink> GetWorldSink() const { return Sink; }
 
 	//~ Begin UActorComponent

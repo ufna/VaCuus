@@ -89,6 +89,15 @@ the `-/Binaries/...` `-/Intermediate/...` filter fix). Steps:
    with the platforms Fab requires.
 3. `bash Tools/fab_scan.sh <out>` — it must FAIL its planted fixture first, then
    report CLEAN on the package.
+3b. **If a channel ever gets PRECOMPILED binaries** (Fab's is source-only, so this is
+   the "some day" step): re-run BuildPlugin with `FilterPlugin.ini`'s `-/Binaries/...`
+   rule commented out, then `bash Tools/api_export_check.sh <out>`. It `nm -D`s the
+   delivered `.so`s and fails if a class the docs tell buyers to use has zero exported
+   members. This is not paranoia — it is exactly how VaCuus-dgl shipped: `UVaCuusWidget`
+   and `UVaCuusWorldComponent` registered fine (Blueprint worked) and exported **0**
+   members each, so no buyer's C++ could link either one, and nothing in this repo
+   could see it because every in-tree consumer compiles the plugin from source. The
+   check is Linux-only; a Win64 drop needs the same thing against `dumpbin /exports`.
 4. Upload with the third-party disclosure list from
    `docs/research/m6-api-notes/buildplugin-fab-dryrun.md` §4 (every entry points at
    an in-tree license file the package includes; HarfBuzz is NOT USED — do not

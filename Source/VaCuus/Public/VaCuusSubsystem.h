@@ -78,6 +78,17 @@ public:
 	 * The host comes from the caller because building one needs the render-side
 	 * pieces (the Slate element), which live in VaCuusRender -- a module that
 	 * depends on this one. Returns null if the UI thread is unavailable.
+	 *
+	 * THIS IS AN EXTENSION SEAM, NOT THE WAY TO PUT A DOCUMENT ON SCREEN (bead
+	 * VaCuus-dgl). Being public and exported made it look like a buyer entry point, and
+	 * docs/buyer/setup.md advertised it as one; it never was, because the plugin's own
+	 * host is not constructible from outside VaCuusRender -- its argument is a frame
+	 * sink, and every sink is render-backend internal. To SHOW something, use
+	 * UVaCuusWidget (screen) or UVaCuusWorldComponent (world), both exported from
+	 * VaCuusRender, both of which call this for you. Call it directly only when you are
+	 * bringing your own IVaCuusDocumentHost -- headless, offscreen, a test probe -- which
+	 * is a real and supported thing to do: that interface is pure virtual and needs
+	 * nothing linked. VaCuusRender.Build.cs carries the whole argument.
 	 */
 	UVaCuusView* CreateView(TUniquePtr<IVaCuusDocumentHost> Host, FIntPoint InitialViewSize);
 
