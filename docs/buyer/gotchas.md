@@ -154,22 +154,34 @@ recooks everything (ZenStore off, default full cook — slow but correct).
 Do: with `bUseZenStore=False`, do not pass `-legacyiterative` on a project that cooks
 UI bundles. The safe default full cook is what you get without it.
 
-**20. Group stats can kill the EDITOR binary on bleeding-edge glibc (Linux dev loop only).**
-Symptom: your editor or `-game` session exits instantly and silently — no
-callstack, no crash dialog, exit status 127 — the moment you enable a stat
-GROUP (`stat vacuus`, `stat slate`, `stat scenerendering`).
-Scope, measured rather than assumed (each a separate 60-second run): the
-modular editor binary dies on a group stat **even with VaCuus disabled**;
-`stat fps` is unaffected (it draws its own counter and never master-enables
-collection); and a **packaged monolithic build survives `stat vacuus`** — no
-dlopen, no static-TLS pressure. So your shipped game is not affected, and
-this is not a plugin defect; it is the development binary on a
-rolling-release glibc (seen on Arch, glibc 2.43, 2026-08). Under gdb the
-death is an ld.so TLS allocation failure on the first stat message after
-master-enable; the root cause is still open at the time of writing.
-Do: measure VaCuus with its own instrument — `vacuus.M1HUD.PerfLog 1` (all
-scopes, publish/skip ratios, per-window means and p99, in every
-configuration including packaged Shipping via `-VaCuusPerfLog`). It is what
-the performance passport was measured with. If you meet the silent-127 death
-on a rolling-release distro, that is the signature — and it will not follow
-you into a packaged build.
+**20. A silent `exit 127` when you enable a stat GROUP means a STALE module binary, not a
+stat bug.**
+Symptom: your editor or `-game` session exits instantly — no callstack, no crash dialog,
+exit status 127 — the moment you enable a stat GROUP (`stat vacuus`, `stat slate`,
+`stat scenerendering`), while `stat fps` is fine (it draws its own counter and never
+master-enables collection).
+Cause, and it is neither this plugin nor your machine's libc: in a
+**built-from-source engine tree**, a module `.so` left over from an older build can import
+symbols the current `libUnrealEditor-Core.so` no longer exports. The dynamic linker binds
+lazily, so nothing fails at load — the process dies at the first *call* into that module,
+and enabling a stat group is a reliable way to make that call happen, because engine
+modules tick `SCOPE_CYCLE_COUNTER` scopes and a master-enable is what first sends those
+messages. On the machine this was diagnosed on (2026-08-03) it was
+`libUnrealEditor-XMPP.so` from four months earlier, importing `FLLMScope`'s constructor and
+destructor, which today's Core exports only as `FLLMScopeDynamic`.
+Do: **read stderr, not the log.** The `.log` file ends mid-line and shows nothing, but the
+process prints one line to the terminal that names the culprit exactly:
+
+```
+symbol lookup error: .../libUnrealEditor-XMPP.so: undefined symbol: _ZN9FLLMScopeD1Ev
+```
+
+Compare that `.so`'s date with `libUnrealEditor-Core.so`; if it is older, delete it and
+rebuild. Deleting it was enough here — the module was not part of the current target at
+all, only left behind in the manifest. **An Installed (Launcher) engine cannot hit this**,
+because you never rebuild Core underneath its modules; it is a from-source dev-loop
+hazard, and a packaged build is immune by construction.
+Do also: measure VaCuus with its own instrument regardless — `vacuus.M1HUD.PerfLog 1` (all
+scopes, publish/skip ratios, per-window means and p99, in every configuration including
+packaged Shipping via `-VaCuusPerfLog`). It is what the performance passport was measured
+with, and it does not depend on the stats system being enabled at all.

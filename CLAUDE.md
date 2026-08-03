@@ -109,19 +109,28 @@ cd /w/Unreal/UnrealEngine && ./Engine/Build/BatchFiles/Linux/Build.sh \
 - **`BuildPlugin`'s HostProject editor leg rewrites `Engine/Binaries/**/UnrealEditor.modules`**
   and can resurrect stale platform modules; the next editor launch dies on `!bIsRunningPlatform`
   (TargetPlatformManagerModule.cpp:1070). Fix: delete the stale `.so`s and the manifest.
-- **A GROUP stat (`stat vacuus`, `stat slate`, …) kills the MODULAR editor binary on this
-  machine; `stat fps` and packaged monolithic builds are fine.** Four runs, each "survive 60 s"
-  (bead 68h): modular `-game` + `stat slate` **with VaCuus disabled** → dead; modular + `stat
-  vacuus` → dead; modular + **`stat fps` → lives** (it draws its own counter, it does not
-  master-enable collection); **staged monolithic + `stat vacuus` → lives** (no dlopen, no
-  TLS pressure). So this is not a VaCuus defect and not a packaged-game problem — it is the
-  dev-loop editor binary. Death is silent: `exit(127)`, log ends mid-line, no core, no
-  callstack, because CrashReportClient is not built here — **grep nothing; suspect exit 127**.
-  Mechanism seen under gdb: `_dl_fatal_printf` under the first stat message after
-  master-enable (ld.so TLS allocation). ROOT CAUSE STILL OPEN — the owner reports group stats
-  working here before, and glibc updated 2026-06-30; whether that is the trigger is
-  unverified. Meanwhile: **`vacuus.M1HUD.PerfLog 1` is the instrument** the passport was
-  measured with anyway.
+- **`exit 127` with no callstack = a STALE ENGINE MODULE, and the message is on stderr, not
+  in the log.** SOLVED 2026-08-03 (bead 68h), after two earlier investigations blamed glibc
+  and static TLS. `libUnrealEditor-XMPP.so` was four months old, not part of the current
+  target — a rebuild after deleting it took 2 s and did not recreate it — yet still listed in
+  `Engine/Binaries/Linux/UnrealEditor.modules`. It imports `FLLMScope`'s ctor and dtor, which
+  today's `libUnrealEditor-Core.so` no longer exports (it exports `FLLMScopeDynamic::*`
+  instead). Lazy binding defers the failure to the first CALL, so nothing fails at load and
+  the whole process looks healthy until something touches that module.
+  **Enabling a stat GROUP is what pulls the trigger** — `FXmppModule::Tick` runs
+  `SCOPE_CYCLE_COUNTER`, and a master-enable is what first makes those scopes send messages —
+  which is why this looked for two rounds like a stats or a TLS bug. `stat fps` never
+  master-enables collection, so it never fires; a packaged monolithic build has no dlopen at
+  all. Four-run evidence chain, each "survive 60 s": stale `.so` + `stat slate` → dead 127;
+  moved aside → **lives, 743 frames**; restored → dead 127 again; removed + `vacuus.RefHud,
+  stat vacuus` (the owner's original report) → **lives**.
+  **Diagnosis, in one step:** run in a terminal and read STDERR — the log ends mid-line but
+  the process prints `symbol lookup error: <path>.so: undefined symbol: <mangled>`. Compare
+  that `.so`'s mtime with `libUnrealEditor-Core.so`; older means stale, delete it. This is
+  the same family as the `BuildPlugin` manifest hazard below, and CrashReportClient not being
+  built here is what hid the message from every earlier run.
+  **`vacuus.M1HUD.PerfLog 1` is still the instrument** the passport was measured with — it
+  does not depend on the stats system at all — but group stats now work here.
 
 ## Architecture Overview
 
