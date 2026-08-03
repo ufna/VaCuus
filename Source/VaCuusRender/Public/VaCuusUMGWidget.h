@@ -8,6 +8,17 @@
 
 #include "VaCuusUMGWidget.generated.h"
 
+// FORWARD DECLARATIONS, NOT INCLUDES, AND THAT IS LOAD-BEARING NOW THAT THIS HEADER IS
+// PUBLIC. FVaCuusSlateElement and SVaCuusWidget live in Private/ and are staying there
+// (VaCuusRender.Build.cs carries the surface decision); a public header that included
+// them would not compile in a buyer's module at all, because UBT only puts a
+// dependency's Public/ on the consumer's include path. They appear here solely as
+// TSharedPtr members, and a TSharedPtr never needs its pointee complete to be declared,
+// copied or destroyed: it stores an FSharedReferencer (SharedPointer.h:653), which holds
+// nothing but a TReferenceControllerBase<Mode>*, and the controller's DestroyObject() is
+// a VIRTUAL bound to the concrete deleter at construction time
+// (SharedPointerInternals.h:69, :461-463) -- i.e. in our .cpp, where the definitions are.
+// The buyer's compiler is therefore never asked what these types are.
 class FVaCuusSlateElement;
 class SVaCuusWidget;
 class UGameInstance;
@@ -70,8 +81,24 @@ class UVaCuusView;
  * transient case (the subsystem is a UGameInstanceSubsystem, so it exists before any widget
  * a game can create).
  */
+/**
+ * VACUUSRENDER_API IS THE FIX FOR VaCuus-dgl, AND THE BUG IT FIXES WAS INVISIBLE FROM
+ * INSIDE THIS REPOSITORY. Without the macro this class still REGISTERS -- UHT stamps the
+ * module's API macro on the generated registrar whatever the class says
+ * (VaCuusUMGWidget.gen.cpp:22, `VACUUSRENDER_API UClass* Z_Construct_UClass_UVaCuusWidget`),
+ * so Blueprint and UMG found it fine -- while every hand-written member stayed hidden.
+ * On Linux UBT compiles modular targets with `-fvisibility-ms-compat`
+ * (LinuxToolChain.cs:437-440), which is "global TYPES default, global functions and
+ * variables hidden": the vtable and typeinfo are exported, the methods are not. The
+ * delivered libUnrealEditor-VaCuusRender.so proved it -- `Z_Construct_UClass_UVaCuusWidget`
+ * and `_ZTV13UVaCuusWidget` present, `UVaCuusWidget::` members zero -- so a buyer who got
+ * precompiled binaries could place this widget in a blueprint and could not link one line
+ * of C++ against it. Nothing in-tree could ever notice: every consumer so far compiles the
+ * plugin from source, where Private/ is on the include path and visibility is irrelevant.
+ * The observable is `nm -D`, and it is what the fix is checked against.
+ */
 UCLASS(meta = (DisplayName = "VaCuus View"))
-class UVaCuusWidget : public UWidget
+class VACUUSRENDER_API UVaCuusWidget : public UWidget
 {
 	GENERATED_BODY()
 

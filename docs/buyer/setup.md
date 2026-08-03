@@ -27,12 +27,72 @@ against two ordered roots, **plugin first** (`Source/VaCuus/Public/VaCuusContent
    point: a project file cannot shadow a same-named plugin file.
 
 Make `Content/DevUI/MyHud/myhud.rml` + `.rcss` in your project, link
-`vacuus-base.rcss` first (gotchas.md #1 — there is no UA stylesheet), then either:
+`vacuus-base.rcss` first (gotchas.md #1 — there is no UA stylesheet), then pick a host.
+**Two classes host a document, and each works from Blueprint and from C++:**
 
-- **UMG:** add the "VaCuus View" widget (`UVaCuusWidget`) to any UMG tree, set its
-  `Document` to `MyHud/myhud.rml` (`bAutoLoadDocument` loads it at construction), or
-- **Code:** `UVaCuusSubsystem::CreateView(...)` then `View->LoadDocument("MyHud/myhud.rml")`
-  — bind data models BEFORE LoadDocument (gotchas.md #9).
+- **`UVaCuusWidget`** — "VaCuus View" in the palette, `VaCuusUMGWidget.h`. Screen space.
+  Drop it into any UMG tree and set its `Document` to `MyHud/myhud.rml`
+  (`bAutoLoadDocument` loads it when the widget is built).
+- **`UVaCuusWorldComponent`** — "VaCuus World Panel", `VaCuusWorldComponent.h`. A `DrawSize`
+  pixel panel on a quad in the world; same `Document` / `bAutoLoadDocument` properties.
+
+Either way you get a `UVaCuusView*` from `GetView()`, and that is what you feed and drive:
+`LoadDocument`, `Close`, the data-model bindings, the input and status surface. **Bind data
+models BEFORE LoadDocument** (gotchas.md #9).
+
+### From C++
+
+Add both runtime modules to your module's `.Build.cs` —
+
+```csharp
+PublicDependencyModuleNames.AddRange(new string[] { "VaCuus", "VaCuusRender" });
+```
+
+— then `#include "VaCuusUMGWidget.h"` (or `"VaCuusWorldComponent.h"`) and `"VaCuusView.h"`.
+`UVaCuusWidget` is not UMG-only: `UWidget::TakeWidget()` builds the view and hands back a
+plain `SWidget`, so it drops into a raw Slate tree or straight onto the viewport.
+
+```cpp
+UGameViewportClient* Viewport = GameInstance->GetGameViewportClient();
+
+UVaCuusWidget* Hud = NewObject<UVaCuusWidget>(GameInstance);
+Hud->DocumentPath = TEXT("MyHud/myhud.rml");
+
+// TakeWidget() is what creates the view and queues the load.
+TSharedRef<SWidget> SlateWidget = Hud->TakeWidget();
+Viewport->AddViewportWidgetContent(SlateWidget, /*ZOrder=*/100);
+
+UVaCuusView* View = Hud->GetView();   // bind models, read status, drive it
+
+// Teardown, in this order: out of the tree first, then release.
+// ReleaseSlateResources() is the call that drops mouse capture, hands Slate's
+// navigation config back and retires the view.
+Viewport->RemoveViewportWidgetContent(SlateWidget);
+Hud->ReleaseSlateResources(/*bReleaseChildren=*/true);
+```
+
+Keep a reference to the `UVaCuusWidget` (a `UPROPERTY`, or `TStrongObjectPtr` if it lives
+outside a widget tree) — nothing else roots it. The plugin ships this exact sequence as a
+runnable reference: `vacuus.UMGDemo` (`Source/VaCuusRender/Private/VaCuusUMGWidget.cpp`,
+namespace `VaCuusUMGDemo`).
+
+### What is and is not a C++ entry point
+
+| Route | Blueprint | C++ |
+|---|---|---|
+| `UVaCuusWidget` — screen | yes | **yes** |
+| `UVaCuusWorldComponent` — world panel | yes | **yes** |
+| `UVaCuusView` — load, bind, drive, status | yes | **yes** |
+| `UVaCuusSubsystem::CreateView(host, size)` | no | **only with your own host** — see below |
+| the render backend (recorder, replayer, Slate element, frame sinks) | no | no — internal |
+
+`UVaCuusSubsystem::CreateView` is an **extension seam, not the way to show a document**.
+Releases up to 0.1 advertised it as "the code route"; it never was one, because the argument
+is an `IVaCuusDocumentHost` and the plugin's own host publishes into a render-backend frame
+sink that is not part of the supported surface. Call it only when you are supplying your own
+`IVaCuusDocumentHost` (`VaCuusDocumentHost.h`) — a headless, offscreen or test view. That is
+supported and needs nothing linked: the interface is pure virtual. To put pixels on screen,
+use one of the two host classes above.
 
 Edit the `.rcss` while PIE runs: the watcher reloads the document in place. That
 loop — plus `vacuus dev` from `Web/` if you author in TSX — is the whole dev story.
