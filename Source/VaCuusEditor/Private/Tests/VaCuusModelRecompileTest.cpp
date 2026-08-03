@@ -128,6 +128,29 @@ bool FVaCuusModelBlueprintRecompileTest::RunTest(const FString& Parameters)
 	}
 	const FGuid VarGuid = VarDescs[0].VarGuid;
 
+	// ---- THE CONTROL: A RECOMPILE THAT IS EXEMPT FROM THE TEARDOWN. ----
+	//
+	// Here so that the generation counter FACT 2 asserts on is a MEASUREMENT and not a
+	// constant. DefaultValueChanged is the one change reason CleanAndSanitizeStruct skips the
+	// property teardown for (UserDefinedStructureCompilerUtils.cpp:221-232), and CreateVariables
+	// then FINDS the existing property instead of creating one (:271-281) -- so this is a real
+	// OnStructureChanged -> CompileStructure round trip (ChangeVariableDefaultValue guards
+	// ActiveChange and calls it, StructureEditorUtils.cpp:478-484) that leaves the FProperty
+	// chain, and therefore the layout's cached pointers, entirely alone. The serial must NOT
+	// move across it; it must move across the rename below. One observable, both directions.
+	const int32 SerialBeforeControl = Struct->FieldPathSerialNumber;
+	if (!TestTrue(TEXT("a default-value edit recompiled the struct"),
+			FStructureEditorUtils::ChangeVariableDefaultValue(Struct.Get(), VarGuid, TEXT("true"))))
+	{
+		return false;
+	}
+	TestEqual(TEXT("...and that exempt recompile did NOT destroy the property chain"),
+		Struct->FieldPathSerialNumber, SerialBeforeControl);
+	TestTrue(TEXT("...so the layout's FProperty* is still the struct's own property"),
+		Struct->PropertyLink == PropertyBefore);
+
+	const int32 SerialBeforeRecompile = Struct->FieldPathSerialNumber;
+
 	// ---- THE RECOMPILE. ----
 	//
 	// RenameVariable rather than AddVariable, only because it needs no FEdGraphPinType and
@@ -153,21 +176,74 @@ bool FVaCuusModelBlueprintRecompileTest::RunTest(const FString& Parameters)
 
 	// ---- FACT 2: EVERY FProperty THE LAYOUT RESOLVED IS GONE. ----
 	//
-	// Compared by POINTER VALUE ONLY. PropertyBefore has been `delete`d, so dereferencing it --
-	// including calling GetName() on it for a nicer message -- is a use-after-free. The whole
-	// question is whether the address the layout is still holding is one of the struct's
-	// properties, and address comparison answers exactly that.
-	bool bOldPropertyStillPresent = false;
+	// ASSERTED ON A GENERATION COUNTER, NOT ON AN ADDRESS (VaCuus-akj.20). This used to compare
+	// PropertyBefore against the post-recompile chain by POINTER VALUE, and a pointer value is
+	// not an identity: an FProperty is destroyed with a plain `delete` (Class.cpp:2117-2126,
+	// the delete at :2122) and its replacement is `new`ed a moment later through the module's
+	// replaced global operator new, which is FMemory (ModuleBoilerplate.h:47). A LIFO free list
+	// may hand the new property the freed one's exact address -- and then the assertion failed
+	// for a reason that had nothing to do with the property under test. That is not a
+	// hypothetical: it happened once, and passed on rerun with identical binaries.
+	//
+	// UStruct::FieldPathSerialNumber is the identity that survives reuse. A process-wide
+	// monotonic counter (Class.cpp:636-640) is stamped into the struct at construction and
+	// RE-stamped by DestroyChildPropertiesAndResetPropertyLinks -- "Unique id incremented each
+	// time this class properties get destroyed" (Class.h:569-570), the re-stamp at
+	// Class.cpp:2136 -- which is the exact call CleanAndSanitizeStruct makes
+	// (UserDefinedStructureCompilerUtils.cpp:225). The engine keeps it for one purpose: telling
+	// an FFieldPath that its cached raw FProperty* has gone stale
+	// (FFieldPath::IsFieldPathSerialNumberIdentical, FieldPath.cpp:427-430). That is this
+	// test's question about FVaCuusModelLayout's cached FProperty*, asked in the engine's own
+	// terms. It cannot be defeated by an allocator, because it never names an address.
+	//
+	// (No #if WITH_EDITORONLY_DATA around it, deliberately: the member only exists in an
+	// editor-only build, this module is one, and a build where it is not fails to COMPILE here
+	// rather than silently losing the assertion.)
+	//
+	// RESTORE-THE-BUG, run and recorded: swap the RenameVariable above for a second
+	// ChangeVariableDefaultValue -- a recompile that is real but exempt from the teardown -- and
+	// this line reads "the recompile destroyed the struct's whole FProperty chain: The two values
+	// are equal." The property the layout points at is then genuinely still alive, which is the
+	// state the old address comparison could report either way.
+	TestNotEqual(TEXT("the recompile destroyed the struct's whole FProperty chain"),
+		Struct->FieldPathSerialNumber, SerialBeforeRecompile);
+
+	// The old assertion's SUBJECT, kept as an observation rather than an assertion, because
+	// either outcome is legal and neither says anything about the rebuild. PropertyBefore has
+	// been `delete`d, so dereferencing it -- including calling GetName() on it for a nicer
+	// message -- is a use-after-free; comparing the pointer is not.
+	bool bAddressReused = false;
 	int32 NumPropertiesAfter = 0;
 	for (const FProperty* Property = Struct->PropertyLink; Property != nullptr; Property = Property->PropertyLinkNext)
 	{
 		++NumPropertiesAfter;
-		bOldPropertyStillPresent |= (Property == PropertyBefore);
+		bAddressReused |= (Property == PropertyBefore);
 	}
 
 	TestEqual(TEXT("the struct still has one property afterwards"), NumPropertiesAfter, 1);
-	TestFalse(TEXT("but it is NOT the one the layout resolved -- the layout's FProperty* is dangling"),
-		bOldPropertyStillPresent);
+
+	// AND THE WEAKNESS ITSELF, MEASURED RATHER THAN ARGUED -- with the measurement REPORTED and
+	// not asserted, which is the whole point. Nothing about the recompile is involved here: free
+	// one block of an FProperty's size class and take another straight back, and whether the
+	// same address comes out is a property of the allocator's state at that instant. Both
+	// answers are legal, so neither can be a test. (Observed on this machine: the bare round
+	// trip did NOT come back, and neither did the recompile -- which is exactly why the old
+	// assertion passed for months and then failed once, in M3b, with identical binaries. A
+	// probe that reproduced the reuse on demand would have made the flake easy; a probe that
+	// does not is the honest report, and it is printed every run so the next reader can see
+	// which way this one went.)
+	{
+		void* const FirstBlock = FMemory::Malloc(sizeof(FBoolProperty), alignof(FBoolProperty));
+		FMemory::Free(FirstBlock);
+		void* const SecondBlock = FMemory::Malloc(sizeof(FBoolProperty), alignof(FBoolProperty));
+		AddInfo(FString::Printf(
+			TEXT("allocator probe: a %d-byte FProperty-sized block freed and immediately re-taken %s the same ")
+			TEXT("address (%p / %p). This is why address inequality could never prove a rebuild. The recompile ")
+			TEXT("above %s the layout's old address."),
+			int32(sizeof(FBoolProperty)), FirstBlock == SecondBlock ? TEXT("CAME BACK AT") : TEXT("did not come back at"),
+			FirstBlock, SecondBlock, bAddressReused ? TEXT("HAPPENED to reuse") : TEXT("did not reuse")));
+		FMemory::Free(SecondBlock);
+	}
 
 	// The layout is now describing a type it no longer matches, and says nothing about it. Both
 	// of these read fine because they are the layout's own copies; that is the point.
@@ -177,11 +253,11 @@ bool FVaCuusModelBlueprintRecompileTest::RunTest(const FString& Parameters)
 		FString(TEXT("RenamedByTheTest")));
 
 	AddInfo(FString::Printf(
-		TEXT("Blueprint struct recompile: type object %s (same instance), size %d -> %d, layout's FProperty* %s. ")
-		TEXT("The layout holds a strong ref to the TYPE, which survives; it holds RAW pointers to the PROPERTIES, ")
-		TEXT("which do not. There is no rebuild hook in M3a."),
+		TEXT("Blueprint struct recompile: type object %s (same instance), size %d -> %d, field-path serial %d -> %d ")
+		TEXT("(unmoved across the exempt default-value edit at %d). The layout holds a strong ref to the TYPE, which ")
+		TEXT("survives; it holds RAW pointers to the PROPERTIES, which do not. There is no rebuild hook in M3a."),
 		Layout.GetStruct() == TypeBefore ? TEXT("SURVIVED") : TEXT("REPLACED"), SizeBefore, Struct->GetStructureSize(),
-		bOldPropertyStillPresent ? TEXT("still valid") : TEXT("DANGLING")));
+		SerialBeforeRecompile, Struct->FieldPathSerialNumber, SerialBeforeControl));
 
 	return true;
 }

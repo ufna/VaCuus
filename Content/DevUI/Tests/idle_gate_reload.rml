@@ -1,0 +1,28 @@
+<rml>
+<head>
+<style>
+/*
+	The live-reload gate fixture (VaCuus.Render.IdleGate.LiveReload, bead VaCuus-akj.6.42(b)).
+
+	A FILE and not an inline string, because the door under test only opens for files:
+	UVaCuusView::ReloadDocument() refuses a view whose DocumentPath is empty, and
+	LoadDocumentFromMemory() clears that path on purpose (VaCuusView.cpp:188-191, :226-230).
+	An inline document is not live-reloadable, so an inline fixture would test nothing.
+
+	One opaque box, no text and no image: text would need a font face (a fontless element
+	logs "No font face defined" per layout pass -- bead VaCuus-akj.21), and an image would
+	put an async decode into a test that is about the reload. What is left is geometry, which
+	is exactly what a reload has to release and re-compile.
+
+	Static on purpose: no animation, no transition, no :hover. The test's first assertion is
+	that the idle gate ARMS -- fewer publishes than recorded frames -- and anything that moved
+	on its own would keep republishing and make the reload's publish unattributable.
+*/
+body { display: block; width: 100%; height: 100%; }
+#box { display: block; position: absolute; left: 12px; top: 12px; width: 120px; height: 90px; background-color: #2050C0; }
+</style>
+</head>
+<body>
+	<div id="box"/>
+</body>
+</rml>

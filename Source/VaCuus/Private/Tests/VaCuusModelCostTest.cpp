@@ -15,9 +15,12 @@
 
 #include "HAL/PlatformProcess.h"
 #include "HAL/PlatformTime.h"
+#include "Misc/OutputDeviceRedirector.h"
 #include "Misc/ScopeExit.h"
 
 #include <RmlUi/Core.h>
+
+#include <atomic>
 
 #if WITH_DEV_AUTOMATION_TESTS
 
@@ -256,9 +259,27 @@ private:
  * no real document does. Separate elements give RmlUi's name_view_map one view per name
  * (DataView.cpp:82-83), which is the O(views under every dirtied name) the spec budgets.
  *
- * No font-family, deliberately: RmlUi lays out no text without a font, so this measures the data
- * path rather than the glyph cache -- and every view here is identical in that respect, so the
- * subtraction is unaffected either way.
+ * font-family IS LOAD-BEARING, and it is here because leaving it out was a real cost, not a
+ * stylistic one (VaCuus-akj.21). A fontless text element logs "No font face defined" once per
+ * layout pass per element, and CHANGING relays out all 64 every measured frame: this test alone
+ * emitted 27,008 of them, which reach Saved/Logs/VcHost.log as 54,016 lines (the automation
+ * controller mirrors every Warning) -- 96% of every "No font face" line in a full-suite log, in
+ * the file this project reads its test results out of. LatoLatin is registered by
+ * FVaCuusEngine::Initialize (VaCuusEngine.cpp:139-144), which the UI thread has already run by
+ * the time any of this loads, so it costs nothing but the attribute.
+ *
+ * IT WAS NOT FREE TO MEASURE EITHER, which is the part M6's "harmless, cosmetic" disposition
+ * missed: writing those 54,016 lines happened INSIDE the bracket around Context::Update(), and
+ * removing them took CHANGING's Update from 0.36948 to 0.10143 ms/frame. The fontless fixture
+ * was mostly measuring the logger.
+ *
+ * WHAT ELSE IT MOVES, AND WHAT IT DOES NOT. CHANGING's Update() now pays real glyph layout in
+ * place of that logging, and the "re-evaluation + SetText + relayout" line follows it -- which
+ * makes that line MORE honest, since a real HUD has a font. The BUDGETED number does not move:
+ * it is REDRAWN - STILL, and REDRAWN writes no text at all (the DOM guard below is what says so),
+ * so neither view relays out after its first frame and neither was doing the logging.
+ *
+ * FScopedFontWarningCounter below is what keeps this from silently regressing.
  */
 static FString BuildDocument(const FVaCuusModelLayout& Layout)
 {
@@ -269,10 +290,56 @@ static FString BuildDocument(const FVaCuusModelLayout& Layout)
 		Body += FString::Printf(TEXT("\t<div id=\"f%02d\">{{%s}}</div>\n"), Index, *Fields[Index].WireName);
 	}
 
-	return FString::Printf(TEXT("<rml>\n<head><style>body { display: block; } div { display: block; }</style></head>\n")
-						   TEXT("<body data-model=\"hud\">\n%s</body>\n</rml>"),
+	return FString::Printf(
+		TEXT("<rml>\n<head><style>body { display: block; font-family: LatoLatin; font-size: 16px; } ")
+		TEXT("div { display: block; }</style></head>\n")
+		TEXT("<body data-model=\"hud\">\n%s</body>\n</rml>"),
 		*Body);
 }
+
+/**
+ * THE OBSERVABLE FOR THE FONT ABOVE. Without it the attribute is a comment: a document that
+ * loses its font still passes every timing assertion in this file, still passes the DOM guard,
+ * and simply goes back to writing tens of thousands of warnings into the log the harness reads
+ * test counts from. Nothing else in the suite would notice.
+ *
+ * Counted off the log stream rather than through AddExpectedMessage, because that machinery can
+ * only assert a message ARRIVES, in both of its shapes: Occurrences > 0 demands that EXACT count
+ * and errors when the count differs (AutomationTest.cpp:1826-1838), and Occurrences == 0 does
+ * not mean "none" -- it means "suppress this, and it had better have appeared", raising an Error
+ * when the message never came (:1840-1848). There is no expectation shape that means "and none
+ * of these", so reading GLog is the only way to assert zero. The device pattern is
+ * VaCuusBundlePackTest.cpp's FScopedLogCapture, trimmed to a count -- storing 54,000 lines to
+ * answer one question would be its own log problem.
+ *
+ * Serialize() arrives from whichever thread logged (RmlUi's font warnings come off the UI
+ * thread), hence the atomic; FlushThreadedLogs is what makes "emitted before this read"
+ * checkable, and is the same reason that file gives.
+ */
+class FScopedFontWarningCounter final : public FOutputDevice
+{
+public:
+	FScopedFontWarningCounter() { GLog->AddOutputDevice(this); }
+
+	virtual ~FScopedFontWarningCounter() override { GLog->RemoveOutputDevice(this); }
+
+	virtual void Serialize(const TCHAR* V, ELogVerbosity::Type Verbosity, const FName& Category) override
+	{
+		if (V != nullptr && FCString::Strstr(V, TEXT("No font face defined")) != nullptr)
+		{
+			Count.fetch_add(1, std::memory_order_relaxed);
+		}
+	}
+
+	int32 Read() const
+	{
+		GLog->FlushThreadedLogs();
+		return Count.load(std::memory_order_relaxed);
+	}
+
+private:
+	std::atomic<int32> Count{0};
+};
 
 /** One UI frame at a time; the wake event coalesces, so N triggers are not N frames. */
 static bool RunFrames(FVaCuusUIThread& UIThread, int32 NumFrames)
@@ -308,6 +375,11 @@ bool FVaCuusModelUICostTest::RunTest(const FString& Parameters)
 	{
 		return false;
 	}
+
+	// Declared before the UI thread so it is listening from before the first document parses,
+	// and destroyed after it (the ON_SCOPE_EXIT below is declared later, so it runs first) --
+	// which keeps the teardown's layout passes, if any ever appear, inside the window.
+	const FScopedFontWarningCounter FontWarnings;
 
 	FVaCuusModule& Module = FVaCuusModule::Get();
 	FVaCuusUIThread* UIThread = Module.GetOrStartUIThread();
@@ -558,6 +630,15 @@ bool FVaCuusModelUICostTest::RunTest(const FString& Parameters)
 	UIThread->EnqueueRemoveView(RedrawnViewId);
 	UIThread->EnqueueRemoveView(ChangingViewId);
 	RunFrames(*UIThread, 1);
+
+	// ---- THE LOG BILL (VaCuus-akj.21). ----
+	//
+	// Read here, after every frame this test will ever record: three views x 64 text elements,
+	// relaid out for 208 frames, is the largest single producer of "No font face defined" in the
+	// whole suite -- 54,016 of the log's 56,066 such lines before the fixture got its font. Zero
+	// is the assertion, and it is a measured one: drop `font-family` from BuildDocument and this
+	// reads 27,008 (the count of WARNINGS; the log carries each one twice).
+	TestEqual(TEXT("the cost fixture logged no 'No font face defined' warning"), FontWarnings.Read(), 0);
 
 	return true;
 }
