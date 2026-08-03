@@ -1,6 +1,7 @@
 // Copyright 2026 Vladimir Alyamkin. All Rights Reserved.
 
 #include "/Engine/Public/Platform.ush"
+#include "/Plugin/VaCuus/Private/VaCuusUIInterpolants.ush"
 
 /**
  * The M5 decorator fill (spec §2(e)): gradients + the builtin set, paired with
@@ -94,11 +95,16 @@ float4 GlassPanel(float2 UV)
 	return GlowPremul + FillPremul * (1.0f - GlowPremul.a);
 }
 
+// Takes VaCuusUI.usf's shared interpolant struct, like every stage paired with MainVS.
+// It is not tidiness: a pixel stage that spells its own list out omits SV_Position, and
+// DXC then numbers its registers one lower than the vertex stage's, which D3D12 refuses
+// as a fatal PSO error. The full reading is above FVaCuusUIInterpolants.
 void MainGradientPS(
-	in float4 Color : TEXCOORD1,
-	in float2 UV : TEXCOORD0,
+	FVaCuusUIInterpolants In,
 	out float4 OutColor : SV_Target0)
 {
+	const float2 UV = In.UV;
+	const float4 Color = In.Color;
 	float4 Fill = float4(0.0f, 0.0f, 0.0f, 0.0f);
 
 	if (GradientMode == VACUUS_MODE_GLASS_PANEL)

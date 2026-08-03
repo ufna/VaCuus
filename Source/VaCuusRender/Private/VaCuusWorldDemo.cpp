@@ -507,10 +507,14 @@ static void SmokeClick(const FVector2D& Position)
 {
 	FSlateApplication& Slate = FSlateApplication::Get();
 
-	// The pressed-button sets differ between down and up, faithfully:
-	// FSlateApplication removes the released button before constructing the up
-	// event (SlateApplication.cpp:6144-6147), the asymmetry the processor's latch
-	// release depends on.
+	// The pressed-button sets differ between down and up, faithfully: OnMouseUp
+	// removes the released button before it constructs the value-copy event, and
+	// says so (SlateApplication.cpp:6100-6107). The processor's latch no longer
+	// depends on that asymmetry -- it counts the presses it consumed instead, so
+	// that a TOUCH release, whose button set is a constant, can end a gesture too
+	// (FVaCuusPointerLatch, bead VaCuus-61d) -- but a synthetic event that lied
+	// about its sets would still misrepresent the pipeline everything else here
+	// measures.
 	const TSet<FKey> LeftOnly = {EKeys::LeftMouseButton};
 	const FPointerEvent DownEvent(FSlateApplicationBase::CursorPointerIndex, Position, Position, LeftOnly,
 		EKeys::LeftMouseButton, 0.0f, FModifierKeysState());
