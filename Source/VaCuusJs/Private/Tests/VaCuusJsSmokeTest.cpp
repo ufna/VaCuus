@@ -4,7 +4,7 @@
 
 #include "VaCuusJs.h"
 
-#include "quickjs.h"
+#include "VaCuusQuickJs.h"
 
 #include <cstring>
 

@@ -35,7 +35,7 @@
 #include "HAL/PlatformProcess.h"
 #include "Misc/ScopeLock.h"
 
-#include "quickjs.h"
+#include "VaCuusQuickJs.h"
 
 #include <RmlUi/Core.h>
 

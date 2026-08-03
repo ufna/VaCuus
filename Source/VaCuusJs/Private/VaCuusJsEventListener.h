@@ -4,7 +4,7 @@
 
 #include "CoreMinimal.h"
 
-#include "quickjs.h"
+#include "VaCuusQuickJs.h"
 
 #include <RmlUi/Core/EventListener.h>
 #include <RmlUi/Core/Types.h>

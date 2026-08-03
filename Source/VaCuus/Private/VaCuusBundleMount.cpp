@@ -82,15 +82,29 @@ static void FinishAndPublishLocked(const TSharedRef<FVaCuusBundleMount>& Mount)
 	PublishMountLocked(Mount);
 
 	// The mapped-vs-resident branch is SAID, not implied: the packaged Linux gate
-	// greps this line for the resident path (the !IsMapped branch, spec M6 2(b)) --
-	// on 5.8 only Win64's platform properties answer true to memory mapping
-	// (WindowsPlatformProperties.h:76-79; Linux/Mac inherit the Generic false,
-	// GenericPlatformProperties.h:258-261).
+	// greps this line for the resident path (the !IsMapped branch, spec M6 2(b)).
+	//
+	// The resident branch reports THE PROPERTY IT READ, not a platform it assumes.
+	// "Only Win64 maps" is false and was false when it was written: three of the four
+	// property structs answer true -- Win64 (WindowsPlatformProperties.h:76-79),
+	// Android (AndroidPlatformProperties.h:118-121) and iOS
+	// (IOSPlatformProperties.h:71-74). Only Linux and Mac map to false, and by
+	// inheritance rather than choice: neither declares the member, so both get
+	// FGenericPlatformProperties::SupportsMemoryMappedFiles() (GenericPlatformProperties.h:258-261).
+	//
+	// Why the branch and not one string: on a platform that CAN map, "resident" is not
+	// a platform fact, it is a failure -- the mapping was refused or was never requested
+	// at cook -- and this is the line someone reads at 2am with no source tree open. A
+	// line that blames a property which is actually true sends that reader to the wrong
+	// half of the system. So each branch states only what is true where it prints.
 	UE_LOG(LogVaCuus, Log, TEXT("Mounted bundle '%s': %d entries, %lld bytes, %s, hash %s"),
 		*Mount->BundleName, Mount->Entries.Num(), Mount->PayloadSize,
 		Mount->bMemoryMapped
 			? TEXT("memory-mapped region")
-			: TEXT("resident buffer (FPlatformProperties::SupportsMemoryMappedFiles() is false on this platform)"),
+			: (FPlatformProperties::SupportsMemoryMappedFiles()
+					? TEXT("resident buffer (this platform DOES support memory mapping -- the load returned no mapped "
+						   "region, so the mapping was refused or the payload was not cooked memory-mappable)")
+					: TEXT("resident buffer (FPlatformProperties::SupportsMemoryMappedFiles() is false on this platform)")),
 		*Mount->ContentHashHex);
 }
 }	 // namespace VaCuusBundleMountPrivate
@@ -202,9 +216,23 @@ bool FVaCuusBundleMountTable::MountBundle(UVaCuusBundle* Bundle)
 
 	if (Mount->bMemoryMapped)
 	{
-		// Prefault the whole region (a hint, MappedFileHandle.h:69-77): page-fault IO
-		// otherwise lands on the UI thread mid-document-load, and a <=10 MB bundle
-		// prefaults for pennies at mount time on the game thread.
+		// Prefault the whole region so page-fault IO does not land on the UI thread
+		// mid-document-load. "Hint" is literal and the word carries the caveat: the
+		// base IMappedFileRegion::PreloadHint is an EMPTY BODY (MappedFileHandle.h:75-77)
+		// and the header says so ("some platforms might ignore it", :70). What each
+		// platform we can reach actually does:
+		//   Win64 -- FMappedFileRegionWindows overrides it and touches one byte per page
+		//            (WindowsPlatformFile.cpp:984, :1000-1017). This is the only platform
+		//            where our mapped branch runs today, so this call is why it is here.
+		//   Apple -- overridden with the same per-page touch loop (ApplePlatformFile.cpp:415-430).
+		//   Android -- NOT overridden: FAndroidMappedFileRegion declares no PreloadHint
+		//            (AndroidPlatformFile.cpp:1324-1339), so this call compiles to the
+		//            empty base and prefaults nothing. Android's mechanism would be
+		//            MAP_POPULATE at map time, which nothing here requests.
+		// And the cost claim is desktop-shaped: this is SYNCHRONOUS blocking IO on the
+		// GAME thread. A <=10 MB bundle is pennies off an SSD; off cold phone storage it
+		// is a real hitch, so if the mapped branch ever runs on a phone this call is the
+		// first thing to move or drop.
 		OwnedRegion->GetMappedRegion()->PreloadHint(0, BulkSize);
 	}
 	Mount->OwnedRegion = MoveTemp(OwnedRegion);

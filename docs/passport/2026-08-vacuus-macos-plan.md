@@ -303,7 +303,9 @@ either changes instrument or is recorded as not reproduced.
 **Three Mac-first observables to capture deliberately** — nothing else will surface them:
 `Exp-GLASS-BACKBUFFER-SRV` (block 5, row 8 — see risk 4); the bundle mount line, which should read
 `resident buffer (FPlatformProperties::SupportsMemoryMappedFiles() is false on this platform)`
-exactly as on Linux (`VaCuusBundleMount.cpp:93`; `MacPlatformProperties.h` has no override); and
+exactly as on Linux (`VaCuusBundleMount.cpp:107`; `MacPlatformProperties.h` has no override — note
+the line now branches on the property, so a *different* resident string would mean Mac started
+answering true, which would itself be the finding); and
 the cook's bundle hash, expected to match Linux's `adcb1da0b34dffdb071d3f9db02fd780eceb1f4e700eae66ed79966ed8015017`
 at 461881 bytes — identical is a free cross-platform determinism proof, different is a finding
 worth chasing before anything else in the packaging block.

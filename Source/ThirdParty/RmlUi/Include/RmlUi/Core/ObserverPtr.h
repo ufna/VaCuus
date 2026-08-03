@@ -39,7 +39,7 @@ class EnableObserverPtr;
  */
 
 template <typename T>
-class RMLUICORE_API ObserverPtr {
+class ObserverPtr {
 public:
 	ObserverPtr() noexcept : block(nullptr) {}
 	ObserverPtr(std::nullptr_t) noexcept : block(nullptr) {}
@@ -110,7 +110,7 @@ private:
 };
 
 template <typename T>
-class RMLUICORE_API EnableObserverPtr {
+class EnableObserverPtr {
 public:
 	ObserverPtr<T> GetObserverPtr()
 	{

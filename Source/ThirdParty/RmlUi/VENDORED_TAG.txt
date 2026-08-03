@@ -108,3 +108,60 @@ name), and spellings that "%.3f" with trimmed trailing zeros cannot reproduce
 NOT yet offered upstream -- that is a maintainer action and nobody has taken it.
 It should be: the hunk is upstream-shaped on purpose, and until it lands there
 every re-vendor has to carry it by hand.
+
+
+Patch #2 -- dll-interface removed from four HEADER-ONLY CLASS TEMPLATES (Win64 pass,
+2026-08-03). Found by the plugin's first Windows build ever; invisible on Linux and
+macOS by construction.
+
+    Include/RmlUi/Core/ObserverPtr.h:42            class RMLUICORE_API ObserverPtr
+    Include/RmlUi/Core/ObserverPtr.h:113           class RMLUICORE_API EnableObserverPtr
+    Include/RmlUi/Core/UniqueRenderResource.h:14   class RMLUICORE_API UniqueRenderResource
+    Include/RmlUi/Core/Traits.h:35                 class RMLUICORE_API Releaser
+
+In each, `class RMLUICORE_API X` becomes `class X`. Nothing else changes.
+
+THE MECHANISM. Include/RmlUi/Core/Header.h:8-21: in a shared build on Win32,
+RMLUICORE_API is __declspec(dllexport) while compiling the library (RMLUI_CORE_EXPORTS
+is set for VaCuusRml) and __declspec(dllimport) for everyone else. On a CLASS TEMPLATE
+that is a category error. dllimport tells MSVC the members of every instantiation live
+in another DLL, so a consumer TU stops instantiating them locally and emits __imp_
+references instead -- which resolve only if the library happened to instantiate and
+export that exact specialization. VaCuusJs asks for one the library never used:
+
+    VaCuusJsDom.cpp.obj : error LNK2019: unresolved external symbol
+    "__declspec(dllimport) public: __cdecl Rml::ObserverPtr<class Rml::Element>::
+    ObserverPtr<class Rml::Element>(void)" (__imp_??0?$ObserverPtr@VElement@Rml@@@Rml@@QEAA@XZ)
+    referenced in function "public: struct JSValue __cdecl
+    FVaCuusJsViewContext::WrapElement(class Rml::Element *)"
+
+Rml::Element is used constantly, but nothing inside RmlUi's own Core ever
+default-constructs an ObserverPtr<Element>, so that one constructor was never emitted
+into UnrealEditor-VaCuusRml.dll and never exported.
+
+WHY REMOVING IT IS CORRECT RATHER THAN A WORKAROUND. All four templates are entirely
+header-inline: no .cpp in Source/ defines a member of any of them, and the library
+contains no explicit instantiation of any of them (both checked). A header-only
+template needs no dll-interface at all -- every module compiles its own copy, which is
+the normal C++ model. The non-template API those copies call IS still exported and
+still carries the macro: ObserverPtrBlock plus AllocateObserverPtrBlock and
+DeallocateObserverPtrBlockIfEmpty (ObserverPtr.h:10-15). The observer STATE therefore
+stays single-instance in VaCuusRml.dll, which is the property that actually matters;
+only the inline code around it is duplicated per module.
+
+Off Windows the macro expands to __attribute__((visibility("default")))
+(Header.h:45), which on a header-only template only widens symbol visibility for code
+each module already instantiates for itself. That is why Linux and macOS linked
+happily for six milestones with the defect present, and it is also why removing it
+cannot change their behaviour: no cross-module reference to these inline members
+exists on any platform.
+
+VERIFICATION (the re-vendoring check for this patch): build any Win64 MODULAR target
+-- e.g. `Build.bat <Project>Editor Win64 Development -project=...`. With the patch
+reverted, UnrealEditor-VaCuusJs.dll fails to link with the LNK2019 above. With it
+applied, all five plugin DLLs link. Seen both ways on 2026-08-03. A monolithic Win64
+target does NOT exercise this: VaCuusRml.Build.cs defines RMLUI_STATIC_LIB there, and
+Header.h:51 then makes RMLUICORE_API empty, so the defect cannot appear.
+
+NOT yet offered upstream -- same standing as patch #1. It should be; the fix is
+upstream-shaped and costs upstream nothing.

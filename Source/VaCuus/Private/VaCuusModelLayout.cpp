@@ -22,6 +22,12 @@ FVaCuusModelArrayDesc::FVaCuusModelArrayDesc(FVaCuusModelArrayDesc&&) = default;
 FVaCuusModelArrayDesc& FVaCuusModelArrayDesc::operator=(FVaCuusModelArrayDesc&&) = default;
 FVaCuusModelArrayDesc::~FVaCuusModelArrayDesc() = default;
 
+// Same reason, one level up: the layout owns TArray<FVaCuusModelArrayDesc>, so moving it
+// needs the desc complete. The copy pair is deleted in the header -- see the invariant
+// note there for what MSVC found that clang had been quietly instantiating around.
+FVaCuusModelLayout::FVaCuusModelLayout(FVaCuusModelLayout&&) = default;
+FVaCuusModelLayout& FVaCuusModelLayout::operator=(FVaCuusModelLayout&&) = default;
+
 void FVaCuusModelArrayDesc::SyncCopy(void* DestValuePtr, const void* SrcValuePtr) const
 {
 	// NOT ArrayProperty->CopySingleValue, WHOSE WASTE IS STRUCTURAL. The engine's whole-array

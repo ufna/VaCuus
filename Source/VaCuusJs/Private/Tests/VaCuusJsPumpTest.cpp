@@ -19,7 +19,7 @@
 #include "HAL/PlatformTime.h"
 #include "Misc/ScopeExit.h"
 
-#include "quickjs.h"
+#include "VaCuusQuickJs.h"
 
 #include <cstring>
 

@@ -376,7 +376,23 @@ bool FVaCuusUIThread::Start()
 	}
 
 	// Name stays within 15 characters: Linux truncates the OS thread name there.
-	// BelowNormal keeps us off the game and render threads' backs.
+	//
+	// BelowNormal keeps us off the game and render threads' backs ON EVERY PLATFORM
+	// THIS PLUGIN SHIPS TO, which is the whole scope of the claim:
+	//   Win64 -- THREAD_PRIORITY_BELOW_NORMAL (WindowsRunnableThread.cpp:22).
+	//   Linux -- FRunnableThreadUnix overrides SetThreadPriority and goes through
+	//            setpriority()/nice relative to a captured process baseline
+	//            (UnixPlatformRunnableThread.cpp:86-108), which is a mechanism that works.
+	//   Mac   -- 25 against Normal's 31 (ApplePlatformRunnableThread.h:82, :84).
+	// It is NOT true on Android and this is recorded here rather than discovered later:
+	// ANDROID_USE_NICE_VALUE_THREADPRIORITY defaults to 0 (AndroidPlatform.h:133-134), so
+	// FRunnableThreadAndroid's SetThreadPriority override is not even declared
+	// (AndroidPlatformRunnableThread.h:86-89) and the pthread base runs instead -- it
+	// assigns sched_priority = 5 (PThreadRunnableThread.h:55) under whatever policy the
+	// thread already has and DISCARDS pthread_setschedparam's return value (:75-76).
+	// Under SCHED_OTHER the only legal sched_priority is 0, so that call fails EINVAL and
+	// the priority silently does not change. Whoever ports to Android decides between
+	// defining the macro for the target and dropping the claim; do not leave it implied.
 	Thread = FRunnableThread::Create(
 		this, TEXT("VaCuusUI"), GVaCuusUIThreadStackSize, TPri_BelowNormal);
 

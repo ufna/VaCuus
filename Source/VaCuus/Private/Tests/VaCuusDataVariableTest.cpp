@@ -268,7 +268,20 @@ private:
 		Source.Title = TEXT("Hello");
 		Source.Tag = FName(TEXT("HeroUnit"));
 		Source.Caption = FText::FromString(TEXT("Ready"));
-		Source.Utf8Note = UTF8TEXT("caf\xC3\xA9");
+		// "cafe" with an e-acute, written as EXPLICIT UTF-8 BYTES rather than as
+		// UTF8TEXT("caf\xC3\xA9"). The escape form is not portable: inside a u8"" literal
+		// MSVC treats a \x escape as a CODE POINT and re-encodes it as UTF-8 rather than
+		// emitting it as a raw code unit -- it says so itself, warning C5321, "nonstandard
+		// extension used: encoding '\x..' as a multi-byte utf-8 character". So \xC3\xA9
+		// became the UTF-8 encodings of U+00C3 and U+00A9, four bytes where two were meant,
+		// and VaCuus.Model.Binding failed on the first Win64 run with the round-tripped
+		// string reading as "cafA(c)" instead of the intended text. clang takes the same
+		// escapes as raw code units, which is why Linux and macOS have always passed here.
+		// A byte array has one meaning on every compiler, which is what a test asserting
+		// BYTE preservation should have been using in the first place.
+		static const UTF8CHAR CafeUtf8[] = {
+			UTF8CHAR('c'), UTF8CHAR('a'), UTF8CHAR('f'), UTF8CHAR(0xC3), UTF8CHAR(0xA9), UTF8CHAR(0)};
+		Source.Utf8Note = FUtf8String(CafeUtf8);
 		Source.AnsiNote = "ansi-note";
 		Source.Colour = EVaCuusTestColour::Blue;
 		Source.Icon = TSoftObjectPtr<UObject>(FSoftObjectPath(TEXT("/Game/UI/Icon.Icon")));

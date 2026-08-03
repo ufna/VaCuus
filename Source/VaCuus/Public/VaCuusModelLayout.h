@@ -396,6 +396,44 @@ public:
 
 	FVaCuusModelLayout() = default;
 
+	/**
+	 * MOVE-ONLY, DECLARED RATHER THAN INFERRED -- and the first Win64 build is what forced
+	 * the declaring. The ArrayDescs comment below already states the invariant ("TUniquePtr
+	 * inside the desc also makes the layout move-only, which is what stops a copied layout
+	 * carrying pointers into another layout's table"), but until now nothing enforced it:
+	 * the copy constructor was implicitly deleted while the copy ASSIGNMENT operator was
+	 * implicitly *declared and viable*, because TArray's copy-assignment is an ordinary
+	 * member of a class template -- not SFINAE-constrained -- so it exists for every T and
+	 * only fails when its body is instantiated.
+	 *
+	 * clang never instantiated that body. `Layout = FVaCuusModelLayout(...)`
+	 * (VaCuusDataArrayTest.cpp:91, VaCuusDataVariableTest.cpp:127) binds an rvalue, move
+	 * assignment wins overload resolution, and the copy branch is never odr-used -- so the
+	 * ill-formed member sat there compiling on Linux and macOS for the whole life of the
+	 * file. MSVC defines the implicit copy-assignment eagerly and the body finally got
+	 * instantiated: TArray<FVaCuusModelArrayDesc>::operator=(const TArray&) -> CopyToEmpty
+	 * -> MemoryOps.h:121 placement-copy-construct -> C2280, "attempting to reference a
+	 * deleted function", 21 times across the module.
+	 *
+	 * Deleting the copy operations removes the member MSVC was choking on and makes the
+	 * invariant enforced by shape, which is what the comment below only asked for. That
+	 * this cannot break the other platforms is not a hope: a copy that was ever really
+	 * performed would have failed to compile there too, since the desc's copy constructor
+	 * is deleted on every platform. Out of line for the move pair, mirroring
+	 * FVaCuusModelArrayDesc above -- the header declares the desc before the layout, and
+	 * TUniquePtr<FVaCuusModelLayout> needs the complete type.
+	 *
+	 * No VACUUS_API on these two, unlike FVaCuusModelArrayDesc's: that struct exports
+	 * member by member, whereas this one is `class VACUUS_API FVaCuusModelLayout` at :378,
+	 * and repeating the macro on a member of an already-dll-exported class is MSVC's
+	 * C2487. clang accepts the redundant attribute silently, so this too is a
+	 * Win64-only diagnostic.
+	 */
+	FVaCuusModelLayout(FVaCuusModelLayout&&);
+	FVaCuusModelLayout& operator=(FVaCuusModelLayout&&);
+	FVaCuusModelLayout(const FVaCuusModelLayout&) = delete;
+	FVaCuusModelLayout& operator=(const FVaCuusModelLayout&) = delete;
+
 	/** Builds the layout. Diagnostics for everything skipped go to LogVaCuus. */
 	explicit FVaCuusModelLayout(const UScriptStruct* InStruct);
 

@@ -41,10 +41,38 @@ public class VaCuusJs : ModuleRules
 		if (Target.Platform == UnrealTargetPlatform.Win64)
 		{
 			PrivateDefinitions.Add("WIN32_LEAN_AND_MEAN");
-			PrivateDefinitions.Add("_WIN32_WINNT=0x0601");
-			// Upstream needs /experimental:c11atomics under MSVC (quickjs-ng
-			// CMakeLists.txt:128); revisit when a Win64 build of this module
-			// first runs -- clang-cl and MSVC differ here.
+
+			// _WIN32_WINNT IS DELIBERATELY NOT SET HERE. It used to be forced to 0x0601
+			// (Windows 7), which the first Win64 build showed to be both redundant and
+			// harmful: UBT already puts `#define _WIN32_WINNT 0x0A00` in the module's
+			// generated Definitions.h, so ours landed 26 lines below it and won, producing
+			// C4005 "macro redefinition" 23 times AND compiling this module's UE headers
+			// against a Windows 7 API level while every other module in the build saw
+			// Windows 10. Upstream only ever needed a floor; the engine's value is higher
+			// than the floor, so the correct action is to leave it alone.
+
+			// THE /experimental:c11atomics QUESTION, ANSWERED -- this is the first Win64
+			// compile of this module, which is what the open item was waiting for.
+			//
+			// The flag is NOT needed, and the reason matters more than the answer.
+			// quickjs.c:73 guards the whole atomics feature on
+			//     #if !defined(__TINYC__) && ... && !__STDC_NO_ATOMICS__ && ...
+			//     #include "quickjs-c-atomics.h"
+			//     #define CONFIG_ATOMICS
+			//     #endif
+			// and MSVC defines __STDC_NO_ATOMICS__ unless /experimental:c11atomics is
+			// passed. So under MSVC the guard is false, CONFIG_ATOMICS never gets defined,
+			// and quickjs.c:60921-61409 -- the _Atomic/atomic_fetch_* code that would have
+			// demanded the flag -- is preprocessed away. It compiles because the feature
+			// is gone, not because MSVC accepted it.
+			//
+			// THE CONSEQUENCE, WHICH IS A BEHAVIOURAL DIFFERENCE AND NOT A BUILD DETAIL:
+			// the JavaScript `Atomics` global is absent on Win64 and present on Linux and
+			// macOS, where clang leaves __STDC_NO_ATOMICS__ undefined. Adding
+			// /experimental:c11atomics for MSVC would restore parity; it is an owner call
+			// rather than a silent default, because it opts a shipped module into an
+			// explicitly experimental MSVC switch to enable a builtin no VaCuus document
+			// or test currently uses.
 		}
 
 		// EXPORT CHECK (Linux modular builds): patch #1 must keep every JS_*
