@@ -222,6 +222,13 @@ bool FVaCuusUnsizedDecodeDrainTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("...and its finished decode is drained anyway"), Arrivals, uint64(1));
 
 	// The size finally arrives, exactly as SVaCuusWidget::Tick delivers it.
+	//
+	// Sampled BEFORE the enqueue because Enqueue() triggers the wake event itself
+	// (VaCuusUIThread.cpp:800-801): the resize's own trigger can start a frame before
+	// RunFrames below ever samples anything, so the count of frames this leg actually ran
+	// is not a constant. It bounds the recording assertion at the end of the test.
+	const uint64 FramesBeforeResize = UIThread->GetFrameCount();
+
 	UIThread->EnqueueResize(ViewId, GLateViewSize);
 	if (!TestTrue(TEXT("UI frames ran after the resize"), RunFrames(*UIThread, 1)))
 	{
@@ -256,10 +263,40 @@ bool FVaCuusUnsizedDecodeDrainTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("...and a full RGBA8 payload"), Pair.Value.RGBA.Num(), GProbeSize.X * GProbeSize.Y * 4);
 	}
 
-	// One recorded frame for one sized tick: the resize did not retroactively record the
-	// frames the view sat out.
-	TestEqual(TEXT("The sized view recorded exactly one frame"),
-		Status->FramesRecorded.load(std::memory_order_acquire), uint64(1));
+	// The sized view records, and it records only the frames it actually ran -- the resize
+	// did not retroactively record the frames the view sat out.
+	//
+	// A RANGE RATHER THAN AN EXACT COUNT, and the range is the finding. This line asserted
+	// == 1 until a Win64 pass failed it in both of its runs, deterministically, with every
+	// substantive assertion above passing (docs/passport/2026-08-vacuus-win64-results.md §5).
+	// The count is not the test's to fix at 1: RunFrames waits with WaitForFrameCount(Before
+	// + 1), a FLOOR, and the resize's own Enqueue() has already triggered the wake event, so
+	// whether the two triggers coalesce into one frame or land as two is a race between the
+	// waiter's sample and the worker's wake. Both outcomes are correct; a 16-core Windows box
+	// reproducibly takes the second one, Linux and macOS happen to take the first.
+	//
+	// THE READ ORDER IS LOAD-BEARING, which is why the two loads are not folded into the
+	// assertion arguments: FVaCuusRmlDocumentHost bumps FramesRecorded inside the frame
+	// (VaCuusRmlDocumentHost.cpp:576) and FVaCuusUIThread::Run bumps FrameCount only after
+	// RunFrame returns (VaCuusUIThread.cpp:979-980), so a frame in flight is recorded but not
+	// yet counted. Reading Recorded first and the frame count second makes that skew at most
+	// ONE frame -- the worker is a single thread, so frame k's count bump precedes frame k+1's
+	// record -- and the ceiling carries exactly that one frame of slack, no more.
+	//
+	// What the ceiling still catches is what the == 1 was written for: a resize that replayed
+	// the frames the view sat out would push Recorded past the frames the thread ran here,
+	// however many that was. The user-visible half stays exact and is asserted above -- one
+	// buffer PUBLISHED, because the idle gate withholds the duplicate frame's publish, which
+	// is why that assertion held on Win64 while this one did not.
+	const uint64 RecordedWhenSized = Status->FramesRecorded.load(std::memory_order_acquire);
+	const uint64 FramesRunSinceResize = UIThread->GetFrameCount() - FramesBeforeResize;
+
+	TestTrue(FString::Printf(TEXT("The sized view recorded at least one frame (recorded %llu)"), RecordedWhenSized),
+		RecordedWhenSized >= 1);
+	TestTrue(FString::Printf(TEXT("...and no more than the %llu frame(s) the UI thread ran since the resize, "
+								  "+1 for a frame in flight (recorded %llu)"),
+				 FramesRunSinceResize, RecordedWhenSized),
+		RecordedWhenSized <= FramesRunSinceResize + 1);
 
 	return true;
 }
