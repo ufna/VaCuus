@@ -66,7 +66,34 @@ public class VaCuusRml : ModuleRules
 		PrivateDefinitions.Add("RMLUI_FONT_ENGINE_FREETYPE=1");
 
 		PrivateDependencyModuleNames.AddRange(new[] { "Core" });
+
+		// FreeType2 plus the two libraries IT needs, named here rather than inherited.
+		//
+		// FreeType2.Build.cs:66-68 already asks for zlib and UElibPNG on its own behalf
+		// ("FreeType needs these to deal with bitmap fonts") -- but that request is made
+		// through AddEngineThirdPartyPrivateStaticDependencies, and that helper is a
+		// NO-OP for an engine module in an Installed engine:
+		// ModuleRules.cs:1601-1607 gates the whole body on
+		// `if (!bUsePrecompiled || target.LinkType == TargetLinkType.Monolithic)`.
+		// A Launcher/Installed engine sets bUsePrecompiled on every engine module, so in a
+		// modular (editor) target FreeType2's own two lines vanish and libfreetype.a arrives
+		// with its libpng references unresolved. On a SOURCE engine bUsePrecompiled is false,
+		// the lines run, and this module inherits them -- which is why the Linux dev box never
+		// saw it. First observed as ~23 `Undefined symbols for architecture arm64: _png_*,
+		// referenced from _Load_SBit_Png in libfreetype.a[35](sfnt.c.o)` linking
+		// libUnrealEditor-VaCuusRml.dylib against the 5.8.1 Launcher engine on macOS.
+		//
+		// The references are real and present in the shipped binaries on both platforms
+		// (`nm -u` finds png_* in the Mac and the Linux libfreetype.a alike), even though the
+		// shipped ftoption.h:276 leaves `FT_CONFIG_OPTION_USE_PNG` commented out -- the header
+		// does not describe how Epic's prebuilt archives were configured, so the archive is the
+		// authority. macOS's linker rejects an unresolved symbol in a dylib outright; ld.lld
+		// does not, which is the second half of why this is a Mac-first failure.
+		//
+		// The calls below are OUR module's, where bUsePrecompiled is false, so they always run.
 		AddEngineThirdPartyPrivateStaticDependencies(Target, "FreeType2");
+		AddEngineThirdPartyPrivateStaticDependencies(Target, "zlib");
+		AddEngineThirdPartyPrivateStaticDependencies(Target, "UElibPNG");
 
 		foreach (string Dir in new[] { "Source/Core", "Source/Core/Elements", "Source/Core/Layout", "Source/Core/FontEngineDefault" })
 		{
