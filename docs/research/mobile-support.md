@@ -19,6 +19,37 @@ targeted from this host at all, so every iOS experiment belongs on the Mac.
 
 ---
 
+## 0. STANDING BUG — reproduces on Linux today, no device, no mobile build
+
+> **The world panel's first touch latches input for the whole application, permanently.**
+>
+> `FVaCuusWorldInputProcessor::HandleMouseButtonUpEvent` clears its latch only when
+> `MouseEvent.GetPressedButtons().IsEmpty()` (`Source/VaCuusRender/Private/VaCuusWorldInputProcessor.cpp:518`).
+> **That predicate can never be true for a touch event.** `FSlateApplication::OnTouchEnded` builds
+> the event with `bPressLeftMouseButton = true` (`SlateApplication.cpp:6832-6845`), and the touch
+> constructor bakes `PressedButtons = FTouchKeySet::StandardSet` into the event's value copy
+> (`Events.h:938`, `Events.cpp:15`) — so the set is never empty, whatever the application's live
+> button state is. The comment at `:509-517` that justifies the predicate cites
+> `SlateApplication.cpp:6100-6103`, which is about the *application's* live set and not the event's
+> copy: the load-bearing justification is wrong, which is why the predicate looks right.
+>
+> The processor holds no Slate capture by design, so no engine safety net fires. Every later
+> pointer event in the application is consumed. There is no recovery short of the panel dying
+> (`ClearLatch` at `:390, :446, :601`, all death paths; `Tick` is empty,
+> `VaCuusWorldInputProcessor.h:220`; `IInputProcessor` has no touch or capture-lost hook at all,
+> `IInputProcessor.h:26-50`).
+>
+> **This is not a mobile-only bug and it does not need a device.** `FSlateApplication` converts
+> every left click into a real touch event under `-faketouches` (`SlateApplication.cpp:900,
+> 5261-5264, 6092-6095`), so it reproduces on a desktop Linux box right now. The suite has never
+> seen a touch event: every synthesized `FPointerEvent` under `Tests/` uses `CursorPointerIndex`.
+>
+> **Not fixed here on purpose** — current mobile scope is "does it build and run", and this is
+> filed as its own item. Fix and proof are specified in §3.1. Do not let it fall off the list
+> because mobile is deferred: *the bug is already shipping on the supported platforms' touch path.*
+
+---
+
 ## 1. The answer to the hypothesis
 
 > *"apart from mipmap generation and maybe small things, everything should work on mobile."*
@@ -90,7 +121,7 @@ the plugin's test suite has never seen a touch event — every synthesized `FPoi
 | Composite gamma permutation | works unchanged | pinned by device profile | pinned by device profile | none |
 | PSO creation at draw time | **needs work** | GLES link = classic multi-ms hitch | Metal first-use compile | small |
 | UI thread creation / stack | works unchanged | clamp floor 128 KB | clamp floor 512 KB | none |
-| UI thread **priority** | **needs work** | `TPri_BelowNormal` almost certainly inert | works (25 vs 31) | small |
+| UI thread **priority** | **needs work** (claim DONE) | `TPri_BelowNormal` inert; the comment now says so | works (25 vs 31) | small |
 | UI thread affinity | unknown | may inherit the game thread's pin | n/a (no pinning) | small |
 | App backgrounding / suspension | **needs work** | safe by accident; zero delegates subscribed | same, plus a grace-window constraint | small |
 | Clock discontinuity on resume | **needs work** | full gap in one frame; JS watchdog risk | same | medium |
@@ -98,12 +129,12 @@ the plugin's test suite has never seen a touch event — every synthesized `FPoi
 | quickjs stack budget | works unchanged | unchanged | unchanged | none |
 | quickjs under the mobile toolchains | unknown | bionic + NDK r27c clang, untested | Darwin libc, = macOS path | small |
 | Mapped bundle — **runtime** | split | mapping likely does **not** engage (OBB/APK) | should engage for real, first non-Windows platform | small |
-| Mapped bundle — **our claims about it** | **needs work** | comment, log line and buyer doc all wrong | same | small |
-| `PreloadHint` at mount | **needs work** | no-op on Android; comment claims otherwise | works; synchronous game-thread IO at mount | small |
+| Mapped bundle — **our claims about it** | **DONE** | comment, log line and buyer doc were all wrong; §3.3 | same | — |
+| `PreloadHint` at mount | **needs work** (claim DONE) | no-op on Android; the comment now says so | works; synchronous game-thread IO at mount | small |
 | Memory pressure response | **needs work** | no engine delegate for `onTrimMemory` | single-slot handler owned by `UEngine` | medium |
 | Touch → tap reaches RmlUi | works unchanged | via Slate's touch→mouse laundering | same | none |
 | Touch **release** predicate (widget) | **needs work** | masked by the engine, doubled MouseLeave | same | small |
-| World-panel latch on touch | **blocked** | app-wide input lockout | app-wide input lockout | small |
+| World-panel latch on touch | **blocked — see §0** | app-wide input lockout | app-wide input lockout | small |
 | Multi-touch | **needs work** | one shared capture bool, one RmlUi button | same, plus system gesture steal | medium |
 | Hover / cursor with no cursor | **needs work** | `:hover` flashes per tap; cursor real for DeX/mouse | cursor reporting unknown | medium |
 | Touch scrolling (RmlUi touch API) | **needs work** | unused; no wheel exists | unused; needs `ProcessTouchCancel` | medium |
@@ -112,7 +143,7 @@ the plugin's test suite has never seen a touch event — every synthesized `FPoi
 | Hardware Back button | **needs work** | `Android_Back` unmapped, reaches nothing | n/a | small |
 | Per-module build gates | works unchanged | monolithic → `RMLUI_STATIC_LIB=1` | monolithic | none |
 | FreeType2 / zlib / libPNG | works unchanged | ARM64 + x64 archives present | Device + Simulator present | none |
-| Plugin descriptor claims | **needs work** | claims Android today | claims iOS today | small |
+| Plugin descriptor claims | **DONE** | refused, silently — §5 | refused, silently — §5 | — |
 | Content staging | works unchanged | OBB by default; APK under AAB | plain files in the `.app` | none |
 | Android toolchain | **blocked** | NDK/SDK/JDK absent on the Mac | n/a | medium |
 | iOS toolchain | **needs work** | n/a | Xcode 26 in range; signing missing (Simulator needs none) | small |
@@ -212,15 +243,21 @@ game-thread mirror the HDR check already uses (`SVaCuusWidget.cpp:351-358` →
 
 These are the cheapest items on the list and the codebase treats this class as a defect.
 
+**All seven rows below are FIXED** (commit "the descriptor stops claiming platforms we never built,
+and six comments stop lying about mobile"). The table is kept as the record of what was wrong and
+why, so the reasoning survives the diff; the `Where` column's line numbers are from before the fix
+and the comments have grown, so read them as "this claim, in this file". Two corrections to the
+table's own citations are folded in below.
+
 | Claim | Where | Truth |
 |---|---|---|
 | "on 5.8 only Win64's platform properties answer true to memory mapping" | `Source/VaCuus/Private/VaCuusBundleMount.cpp:84-88` | `AndroidPlatformProperties.h:118-121` and `IOSPlatformProperties.h:71-74` both return **true**; only the Generic false (`GenericPlatformProperties.h:258-261`) that Linux/Mac inherit. |
 | Resident mount logs "`SupportsMemoryMappedFiles()` is false on this platform" | same file `:93` | On Android the property is true and the mapping failed for a *different* reason — this is the line you would be reading at 2am. |
 | "literally true only on Win64" | `docs/research/m6-api-notes/bundle-cook.md:90` | Same error. |
 | "memory-mapped on Win64, resident buffer on Linux/macOS" | `docs/buyer/setup.md:102-105` | Must become per-platform; iOS is the first non-Windows platform where the mapped branch runs for real. |
-| "`BelowNormal` keeps us off the game and render threads' backs" | `Source/VaCuus/Private/VaCuusUIThread.cpp:379` | True on iOS (25 vs 31, `ApplePlatformRunnableThread.h:73-88`). On Android `ANDROID_USE_NICE_VALUE_THREADPRIORITY` defaults to **0** (`AndroidPlatform.h:133-134`), so the nice path is compiled out and `pthread_setschedparam` is called with `sched_priority = 5` under SCHED_OTHER — EINVAL on Linux/Android — with the **return value discarded** (`PThreadRunnableThread.h:53, :75-76`). Silent no-op. |
+| "`BelowNormal` keeps us off the game and render threads' backs" | `Source/VaCuus/Private/VaCuusUIThread.cpp:379` | True on iOS (25 vs 31, `ApplePlatformRunnableThread.h:73-88`). On Android `ANDROID_USE_NICE_VALUE_THREADPRIORITY` defaults to **0** (`AndroidPlatform.h:133-134`), so the nice path is compiled out and `pthread_setschedparam` is called with `sched_priority = 5` under SCHED_OTHER — EINVAL on Linux/Android — with the **return value discarded** (`Runtime/Core/Private/HAL/PThreadRunnableThread.h:55, :75-76` — `:53` above was `TPri_AboveNormal`, `:55` is the `BelowNormal: return 5`). Silent no-op. Note the claim *does* hold on all three supported platforms, which is why it stood: Win64 `THREAD_PRIORITY_BELOW_NORMAL` (`WindowsRunnableThread.cpp:22`), Linux `setpriority()` relative to a captured process baseline (`UnixPlatformRunnableThread.cpp:86-108`), Mac 25 vs 31. |
 | `PreloadHint` "page-faults IO that would otherwise land on the UI thread" | `Source/VaCuus/Private/VaCuusBundleMount.cpp:206-208` | `IMappedFileRegion::PreloadHint`'s base is an empty body (`MappedFileHandle.h:75-77`); `FAndroidMappedFileRegion` does not override it (`AndroidPlatformFile.cpp:1324-1339`). Android's mechanism is `MAP_POPULATE` at map time, which IoStore never requests (`IoDispatcherFileBackend.cpp:2152`). Apple *does* implement it (`ApplePlatformFile.cpp:415-430`) — and it is synchronous blocking IO on the **game thread** at mount (`VaCuusBundleMount.cpp:208`), pennies on an SSD, a real hitch on a cold phone. |
-| "`ClangToolChain.cs:649` turns it into `-isystem`" | `Source/VaCuusRml/VaCuusRml.Build.cs:35` | Mechanism right, number stale: `ClangToolChain.cs:635-638` in this engine. |
+| "`ClangToolChain.cs:649` turns it into `-isystem`" | `Source/VaCuusRml/VaCuusRml.Build.cs:35` | Mechanism right; the number is imprecise rather than stale, and this row was itself slightly wrong. `:649` in this engine is `Arguments.AddRange(CompileEnvironment.SystemIncludePaths.Select(IncludePath => GetSystemIncludePathArgument(...)))` — the right dispatch, but a reader who opens it does **not** find the flag. The literal `-isystem` is in `GetSystemIncludePathArgument` at `:636-638` (not `:635-638`; `:635` is blank). Both are now cited. |
 
 Two more that are not wrong, just incomplete: the `Atomics` divergence note at
 `Source/VaCuusJs/VaCuusJs.Build.cs:54-75` is MSVC-only and does **not** recur on mobile (both
@@ -328,15 +365,21 @@ Kept unknown on purpose. None of these was smoothed into a verdict.
 
 ## 5. What the plugin should declare now
 
-`VaCuus.uplugin` declares **no** `SupportedTargetPlatforms` and no per-module allow/deny list.
+*(Written before the fix; kept because it is the argument for the field. The field is now in
+`VaCuus.uplugin` and what follows the code block is the measured result.)*
+
+`VaCuus.uplugin` declared **no** `SupportedTargetPlatforms` and no per-module allow/deny list.
 `PluginDescriptor.SupportsTargetPlatform` returns true for every platform when the list is
-null/empty and `bHasExplicitPlatforms` is false (`PluginDescriptor.cs:131-134, :753-763`), so:
-UBT puts all four Runtime modules into a mobile Game target (`UEBuildTarget.cs:5141-5144`), UAT
+null/empty and `bHasExplicitPlatforms` is false (`Configuration/Descriptors/PluginDescriptor.cs:753-763`;
+runtime twin `Runtime/Projects/Private/PluginDescriptor.cpp:764-774`), so:
+UBT admitted every Runtime module to a mobile Game target (`UEBuildTarget.cs:5842-5846` and
+`:5886-5890` are the gates that *would* have refused; `:5141-5144` is the same test in the
+build-everything path), UAT
 stages the `.uplugin` (`CopyBuildToStagingDirectory.Automation.cs:897-904`), and `RunUAT
 BuildPlugin -TargetPlatforms=Android+IOS` will attempt Development *and* Shipping compiles for both
 (`BuildPluginCommand.Automation.cs:264-275`). With `"EnabledByDefault": true`, any project that
 drops this plugin into `Plugins/` and packages for Android gets all four modules compiled with no
-gate whatsoever. **Today the plugin's answer to "do you support mobile" is "yes", and it has never
+gate whatsoever. **The plugin's answer to "do you support mobile" was "yes", and it had never
 been built there.**
 
 The honest interim declaration is one field:
@@ -345,15 +388,40 @@ The honest interim declaration is one field:
 "SupportedTargetPlatforms": [ "Win64", "Mac", "Linux" ],
 ```
 
-Then a mobile Game target either skips the plugin silently (`UEBuildTarget.cs:5842-5846`, once the
-`.uproject` reference carries the copied list — which `:5679-5687` synthesizes automatically for an
-enabled-by-default plugin) or throws a named, actionable `BuildLogEventException` (`:5886-5890`).
 Authoring is unaffected: `bIncludePluginsForTargetPlatforms` defaults to `Type == TargetType.Editor`
-(`TargetRules.cs:1554-1557`), so the editor still loads the plugin and only the mobile *game* target
-refuses. It also makes a Fab listing's platform metadata true by construction rather than by
-promise. **One caveat that belongs in the buyer docs:** a buyer whose own module lists `VaCuus` in
-`PublicDependencyModuleNames` gets a link failure on Android instead of a plugin-level message —
-that *is* the clean refusal, but it should be documented rather than discovered.
+(`Configuration/Rules/TargetRules.cs:1554-1557`), so the editor still loads the plugin and only a
+*game* target for an unlisted platform refuses. It also makes a Fab listing's platform metadata true
+by construction rather than by promise.
+
+**What that refusal looks like was afterwards MEASURED, not predicted, and one prediction above was
+wrong.** No Android toolchain is needed for this: `LinuxArm64` is a valid UBT platform on the Linux
+box, is outside the declared list, and takes the identical code path. `UnrealBuildTool -Mode=JsonExport
+VcHost LinuxArm64 Development` runs the whole target setup without compiling. Three cases, all
+observed:
+
+| Case | What the buyer sees |
+|---|---|
+| Plugin enabled by default, no `.uproject` reference (**our own VcHost**) | **Total silence.** Exit 0, a target with **zero** VaCuus modules, and not one mention of the plugin in the UBT log. `AddPlugin` returns null after a `Logger.LogTrace` (`Configuration/UEBuildTarget.cs:5842-5846`) — reached because `:5679-5687` copies the descriptor's list onto the synthesized reference — and `LogTrace` is below UBT's default output level (`GlobalOptions.cs:28` = `LogEventType.Log` = `LogLevel.Debug`, `EpicGames.Core/Logging/Log.cs:52`; filter `logLevel >= OutputLevel` at `:1244`). At `-VeryVerbose` one line appears: `Ignoring plugin 'VaCuus' (referenced via VcHost default plugins) due to unsupported target platform.` |
+| Plugin listed in the `.uproject` (**what `docs/buyer/setup.md` step 2 tells buyers to do**) | Hard failure, exit 6, plugin named: `VaCuus.uplugin is referenced via Gate.uproject with a mismatched 'SupportedTargetPlatforms' field…` (`UEBuildTarget.cs:5886-5890`). Loud — but the remedy it suggests ("Launch the editor to update references") addresses a different problem, so the message needs translating in the buyer docs. |
+| A buyer module names a VaCuus module in its dependencies | ~~link failure~~ — **this note's original prediction was wrong.** UBT logs the same silent `Ignoring plugin` trace and then **resolves and compiles the modules anyway**: the `LinuxArm64` target for a project whose module depends on `"VaCuus"` builds `VaCuus` and `VaCuusRml` into the target while `VaCuusRender` and `VaCuusJs` stay out. A half-plugin with no renderer and no staged `.uplugin`, and no message at any verbosity. Worse than the link error that was assumed. |
+
+Case 1 is unreachable from our side — the plugin is gone before any `.Build.cs` of ours is
+constructed — so it is documented in `docs/buyer/setup.md` and nowhere else. Case 3 **is** reachable,
+and is now refused by name from `Source/VaCuusRml/VaCuusRml.Build.cs`, which re-reads the descriptor
+and asks `PluginDescriptor.SupportsTargetPlatform` (`Configuration/Descriptors/PluginDescriptor.cs:753-763`)
+rather than copying a platform list that could drift. `VaCuusRml` carries it because every other
+module in the plugin depends on it, so one guard covers every dependency path.
+
+**`bHasExplicitPlatforms` is deliberately NOT set.** With a non-empty list both branches of every
+implementation of the check are identical — `FPluginDescriptor::SupportsTargetPlatform`
+(`Runtime/Projects/Private/PluginDescriptor.cpp:764-774`), its UBT twin
+(`PluginDescriptor.cs:753-763`), `FPluginReferenceDescriptor::IsEnabledForPlatform`
+(`PluginReferenceDescriptor.cpp:50`) and `PluginReferenceDescriptor.IsSupportedTargetPlatform`
+(`PluginReferenceDescriptor.cs:427-437`) — and the two places that test the flag test it as an OR
+against a non-empty list anyway (`PluginManager.cpp:1017`, `CookOnTheFlyServer.cpp:11176`). It buys
+nothing here and adds a trap: the flag's whole purpose is to make an **empty** list mean "no
+platforms", so anyone who later clears the array to re-open the plugin would silently refuse every
+platform instead. Leave it absent.
 
 Nothing the plugin itself ships trips Apple's dynamic-code rules, and it is worth recording why
 rather than assuming it: the vendored quickjs is a pure bytecode interpreter with no JIT and no
@@ -365,16 +433,16 @@ Say that in the buyer docs so a reviewer question has a prepared answer.
 
 ## 6. Proposed beads — cheapest de-risking first
 
-1. **Declare `SupportedTargetPlatforms` and document the refusal.** Add
+1. **DONE — Declare `SupportedTargetPlatforms` and document the refusal.** Add
    `["Win64","Mac","Linux"]` to `VaCuus.uplugin` and one paragraph to `docs/buyer/setup.md`
    explaining that a mobile game target refuses at configure time, and that a buyer module
    depending on `VaCuus` will see a link error instead. Minutes of work; it makes every other item
    on this list non-urgent for a buyer.
-2. **Fix the touch release predicate in both places, with the first touch tests the suite has
+2. **THE ONE THAT IS A LIVE BUG TODAY (see §0) — fix the touch release predicate in both places, with the first touch tests the suite has
    ever had.** `VaCuusWorldInputProcessor.cpp:518` and `SVaCuusWidget.cpp:638`, plus corrected
    comments that stop citing `SlateApplication.cpp:6100-6103` as if it were about the event copy.
    Reproducible and provable today under `-faketouches` — no device, no toolchain.
-3. **Correct the false claims in source and docs.** The memory-mapping scope (mount comment, mount
+3. **DONE — Correct the false claims in source and docs.** The memory-mapping scope (mount comment, mount
    log line, `bundle-cook.md:90`, `setup.md:102-105`), the `TPri_BelowNormal` claim
    (`VaCuusUIThread.cpp:379`), the `PreloadHint` claim (`VaCuusBundleMount.cpp:206-208`), and the
    stale `ClangToolChain.cs:649` citation. Pure documentation of mechanisms already read; no

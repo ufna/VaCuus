@@ -1,12 +1,63 @@
 // Copyright 2026 Vladimir Alyamkin. All Rights Reserved.
 
 using UnrealBuildTool;
+using EpicGames.Core;
 using System.IO;
 
 public class VaCuusRml : ModuleRules
 {
 	public VaCuusRml(ReadOnlyTargetRules Target) : base(Target)
 	{
+		// THE PLATFORM REFUSAL, MADE AUDIBLE IN THE ONE CASE WE CAN STILL SPEAK IN.
+		//
+		// VaCuus.uplugin declares SupportedTargetPlatforms. For the ordinary case -- a
+		// project that just enables the plugin -- UBT honours that by DROPPING the plugin
+		// before a line of this file runs: AddPlugin returns null after a
+		// Logger.LogTrace (UEBuildTarget.cs:5842-5846), and LogTrace is below UBT's
+		// default output level, so nothing is printed at all. (GlobalOptions.cs:28 sets
+		// LogOutputLevel = LogEventType.Log, which is LogLevel.Debug --
+		// EpicGames.Core/Logging/Log.cs:52; the filter is `logLevel >= OutputLevel`
+		// at Log.cs:1244, and LogTrace is LogLevel.Trace, below Debug.)
+		// Measured on this tree, not assumed: a LinuxArm64 game target for VcHost -- a
+		// platform outside the declared list, standing in for Android -- exits 0, builds
+		// a target with zero VaCuus modules, and mentions the plugin nowhere in the UBT
+		// log unless -VeryVerbose is passed. Nothing this file can do reaches that case.
+		//
+		// The case it CAN reach is the nastier one. When a project module names a VaCuus
+		// module in its dependencies, UBT resolves and compiles that module even though
+		// it just dropped the plugin -- same LinuxArm64 target, a module depending on
+		// "VaCuus", and VaCuus + VaCuusRml land in the target while VaCuusRender and
+		// VaCuusJs stay out. That is a half-plugin with no renderer, no staged .uplugin
+		// and no message. Refuse it here, by name, so the buyer reads a sentence instead
+		// of debugging an absent UI.
+		//
+		// Why this module carries the guard: every other module in the plugin depends on
+		// VaCuusRml (VaCuus.Build.cs:41, VaCuusRender.Build.cs:118, VaCuusJs.Build.cs:99),
+		// so this constructor is on every path a dependent module can take and one guard
+		// covers all of them.
+		//
+		// Why the descriptor is re-read rather than a platform list copied into this file:
+		// a copy is a second source of truth that nothing keeps in sync. This asks the
+		// SAME method the engine asks (PluginDescriptor.SupportsTargetPlatform,
+		// PluginDescriptor.cs:753-763) of the SAME file, so the guard cannot disagree with
+		// the descriptor even in principle -- editing one edits both.
+		FileReference DescriptorFile =
+			FileReference.Combine(new DirectoryReference(PluginDirectory), "VaCuus.uplugin");
+		PluginDescriptor Descriptor = PluginDescriptor.FromFile(DescriptorFile);
+		if (!Descriptor.SupportsTargetPlatform(Target.Platform))
+		{
+			string Declared = string.Join(", ", Descriptor.GetSupportedTargetPlatformNames() ?? new string[0]);
+			throw new BuildException(
+				$"VaCuus does not support {Target.Platform}. VaCuus.uplugin declares SupportedTargetPlatforms " +
+				$"= [{Declared}], and the plugin has never been built or run anywhere else. Android and iOS in " +
+				$"particular are not merely unbuilt: text entry, touch scrolling and app-lifecycle handling are " +
+				$"unimplemented there (docs/research/mobile-support.md costs the work out). You are seeing this " +
+				$"message -- rather than the plugin quietly vanishing, which is what happens without a module " +
+				$"dependency -- because one of your modules depends on a VaCuus module, which makes UBT compile " +
+				$"part of the plugin even after dropping it for {Target.Platform}. Drop the dependency for this " +
+				$"platform, or ask for the platform.");
+		}
+
 		PCHUsage = PCHUsageMode.NoPCHs;
 		bUseUnity = false;
 		CppCompileWarningSettings.UndefinedIdentifierWarningLevel = WarningLevel.Off;

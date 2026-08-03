@@ -15,6 +15,38 @@ cook-inclusion rule before your first packaged build.
    appears. `Automation RunTests VaCuus` runs the full shipped suite (test source
    ships on purpose, with its fixtures).
 
+### Platforms — and what refusal looks like
+
+`VaCuus.uplugin` declares `"SupportedTargetPlatforms": ["Win64", "Mac", "Linux"]`.
+That list is the honest one: those are the platforms the plugin is built, tested and
+shipped on. **Android and iOS are not supported and have never been built** — not just
+unbuilt, either: text entry, touch scrolling and app-lifecycle handling are
+unimplemented there. Ask if you need them; it is scoped work, not a refusal on
+principle.
+
+Unreal's own refusal for an unsupported platform is quiet, so here is what you will
+actually see:
+
+- **A game target for an unsupported platform silently drops the plugin.** UBT emits
+  `Ignoring plugin 'VaCuus' … due to unsupported target platform` at `-VeryVerbose`
+  only — a normal build prints nothing, exits 0, and produces a binary with no VaCuus
+  modules. The `.uplugin` is not staged, `/VaCuus/` content is not cooked, and your UI
+  is simply absent at runtime with no error. **If a mobile build comes back with no UI
+  and no message, this is why.**
+- **Step 2 above protects you from that.** Listing the plugin in your `.uproject`
+  turns the silence into a hard build failure that names the plugin:
+  `VaCuus.uplugin is referenced via <YourProject>.uproject with a mismatched
+  'SupportedTargetPlatforms' field`. Read that as "VaCuus does not support the
+  platform you are targeting" — the engine's suggested fix (relaunch the editor to
+  update references) is aimed at a different problem and will not help here.
+- **If one of your C++ modules depends on a VaCuus module**, UBT compiles part of the
+  plugin even after dropping it — you would get whatever your dependency chain reaches
+  and nothing else, with no renderer and no staged descriptor. The plugin fails that
+  build itself instead, with the platform named, from `VaCuusRml.Build.cs`.
+- **Authoring is unaffected.** `bIncludePluginsForTargetPlatforms` defaults to editor
+  targets, so the editor loads the plugin normally on Win64/Mac/Linux and only *game*
+  targets for other platforms refuse.
+
 ## 2. First document
 
 UI files live as loose files during development. The VFS resolves relative paths
@@ -101,8 +133,22 @@ loop — plus `vacuus dev` from `Web/` if you author in TSX — is the whole dev
 
 Cooked builds do not ship loose UI files (see the staging gate below). The shipping
 path is `UVaCuusBundle`: one asset that packs your whole DevUI tree into a single
-payload at cook time — memory-mapped on Win64, resident buffer on Linux/macOS — and
-serves it through the same VFS paths, so nothing about your documents changes.
+payload at cook time and serves it through the same VFS paths, so nothing about your
+documents changes.
+
+**Memory-mapped or resident is the engine's call, not a platform law we wrote.** The
+loader maps the payload where `FPlatformProperties::SupportsMemoryMappedFiles()` is
+true and hands us one resident buffer where it is false. Of the platforms this plugin
+supports, **Win64 answers true; Linux and macOS answer false**, because neither
+declares the property and both inherit the generic `false`. The VFS reads a span
+either way, so the branch changes footprint and nothing else — and it is not a
+platform test: a platform that *can* map can still end up resident if the mapping is
+refused. Do not infer one from the other. The mount log line names which branch it
+actually took, and that line is the one to read:
+
+```
+LogVaCuus: Mounted bundle '<name>': 24 entries, 461881 bytes, resident buffer (...), hash <hex>
+```
 
 **One-time wiring (three config lines + one asset):**
 
