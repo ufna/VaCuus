@@ -510,3 +510,53 @@ every kill was by PID. No editor process is left running.
 7. **Two small housekeeping calls**: where the `dumpbin` export check should live (§6), and
    whether the bundle mount's "resident buffer" message should stop asserting a reason that is
    wrong on Windows (§9).
+
+### Disposition, 2026-08-03 evening — what happened to each of the seven
+
+Added after the pass, deliberately below the original list rather than inside it: §1–§10 record
+what was seen on the day and do not get rewritten. Every item now has a bead, so this block is a
+signpost and not a second tracker.
+
+1. **RESOLVED — and it was not a driver, a permission or a stale cache.** Bead `xa5`, fixed by
+   `b4f12e1`. DXC numbers signature registers positionally and `SV_Position` occupies one in the
+   vertex output signature, so a pixel stage that spells out its own semantics and omits it starts
+   one register low; D3D12 refuses the pipeline and `PipelineStateCache.cpp:712` makes that Fatal.
+   Fix is the engine's own idiom (`SlateShaderCommon.ush:35-47`): one shared interpolant struct in
+   `Shaders/Private/VaCuusUIInterpolants.ush`, included by all four stages. Zero pipeline failures
+   on the RTX 2080 SUPER afterwards, HUD on screen, Linux 198/198. **Neither Vulkan nor Metal could
+   have caught it by construction** — both map `SV_Position` to a builtin that consumes no numbered
+   varying. The 13 `NOT RUN` rows of §8 are now blocked only on the venue (item 6), tracked as
+   `akj.10.1`.
+2. **RESOLVED.** All five are ancestors of `master`: `42fbdc2`, `e767f4a`, `38e1318`, `3b6bb44`,
+   plus `b4f12e1` from item 1.
+3. **RESOLVED.** Bead `akj.10.5`. Landed as a *range*, not the two-line `>= 1` this section
+   sketched: `recorded >= 1` **and** `recorded <= frames-run-since-the-resize + 1`, so the
+   anti-retroactive property the original `== 1` was written for survives. The extra frame's real
+   source turned out to be one level up from §5's account — `Enqueue()` triggers the wake event
+   itself (`VaCuusUIThread.cpp:800-801`), so the resize wakes the worker before `RunFrames` samples
+   anything. The `+1` is the one frame that can be recorded-but-not-yet-counted
+   (`VaCuusRmlDocumentHost.cpp:576` bumps inside the frame, `VaCuusUIThread.cpp:979-980` after it),
+   which is why the two loads are read in that order. Restore-the-bug both ways on Linux: a
+   fabricated retroactive record fails the ceiling and leaves the publish assertion passing exactly
+   as Win64 saw it; removing the record bump fails the floor. Suite 198/198.
+4. **DEFERRED, by owner decision, until it can be measured.** Bead `akj.10.4`. The flag is not
+   added: §4's answer is deduced from the preprocessor guard, and sessions now survive long enough
+   to evaluate `typeof Atomics` on Win64 and decide against an observation instead.
+5. **OPEN.** Bead `akj.10.9`.
+6. **OPEN, and it is now the top of the Win64 critical path** — with item 1 fixed, the console
+   session is the only thing between here and the 13 rows. Bead `5fg`; the rows are `akj.10.1`, the
+   passport column `akj.10.2`, the IME row `akj.6.19`.
+7. **The `dumpbin` check: DECIDED** — it goes in as-is at `Tools/api_export_check_win64.ps1`, so the
+   remaining work is retrieving it from this pass's scratch on the Win64 box before that tree is
+   deleted, not writing it (bead `akj.10.7`). **The bundle-mount message: RESOLVED** by `825969f`,
+   hours after this pass — `VaCuusBundleMount.cpp` now branches on the predicate and the
+   supported-but-unmapped case says so. That commit also corrects a premise this document repeats
+   in §9: "memory mapping is Win64-only" is false. Win64, Android and iOS all answer true; only
+   Linux and Mac inherit false from `FGenericPlatformProperties`
+   (`GenericPlatformProperties.h:258-261`). Bead `akj.10.6`, closed.
+
+Not on the original list because they were recorded in §9 as "could not run" rather than as
+decisions, but they are owed and now tracked: the Win64 cook — disk literal and the memory-mapped
+bundle line — is `akj.10.3`, and the monolithic game target plus `BuildPlugin -StrictIncludes` is
+`akj.10.8`. **`akj.10.8` needs no interactive desktop**, so it is the one piece of this backlog that
+an SSH session can finish today.

@@ -9,6 +9,11 @@ run gets its reason recorded, never silently dropped.
 
 ## 1. The manual matrix — Win64 D3D12 and macOS Metal columns
 
+**Win64 half tracked as bead `akj.10.1`, and it is blocked on `5fg`, not on rendering:** the PSO
+fatal that stopped the 2026-08-03 pass is fixed (`xa5`, `b4f12e1`), so what remains is a session on
+the physical console — an OpenSSH session on Windows has no interactive desktop and a windowed UE
+process dies before engine init.
+
 The checklist is `docs/passport/2026-08-vacuus-manual-matrix.md`: 15 rows, executed
 once by hand per platform; the Linux Vulkan column is filled and shows what each
 PASS looks like. Per-platform notes:
@@ -30,12 +35,18 @@ PASS looks like. Per-platform notes:
 
 ## 2. The perf passport — Win64/macOS §11 columns
 
+**Win64 half tracked as bead `akj.10.2`** (blocked on `5fg` for the Dev soak; the staged Shipping
+leg may not be — establishing that is part of the bead).
+
 `docs/passport/2026-08-vacuus-perf-passport.md` has Dev + cooked-Shipping-Linux
 numbers on every row; Win64 D3D12 and macOS Metal columns are open. Same soaks:
 `vacuus.RefHud` + `vacuus.M1HUD.PerfLog 1` (Dev), staged Shipping with
 `-VaCuusRefHud -VaCuusPerfLog`. Read windows from the log, not stdout.
 
 ## 3. The Win64 disk literal (the budget row's own platform)
+
+**Tracked as bead `akj.10.3`, which also carries the memory-mapped bundle line** — same cook, and
+Win64 is the only platform where that branch executes. Needs no interactive desktop.
 
 Passport row 6 currently holds the Linux proxy (+3.22 MiB, marked as proxy —
 the research demanded the marking). The literal:
@@ -59,6 +70,14 @@ windowed: focus the text input (`vacuus.M2Demo`), compose via the Windows IME
 window tracks the caret rect. Record the result on the bead.
 
 ## 5. The quickjs `/experimental:c11atomics` decision
+
+**Tracked as bead `akj.10.4`. Half-answered by the 2026-08-03 Win64 pass, and the answer moved the
+question:** MSVC compiles the module clean *without* the flag, because the vendored source takes the
+`__STDC_NO_ATOMICS__` branch and the atomics code is preprocessed away — so the open item is no
+longer a build question but a behavioural one, the JavaScript `Atomics` global being absent on Win64
+and present on Linux and macOS (`VaCuusJs.Build.cs:56-75` now carries the full argument). Owner
+decision 2026-08-03: **do not add the flag yet** — sessions survive on Win64 now, so confirm with a
+live `typeof Atomics` first and decide against an observation rather than a deduction.
 
 `Source/VaCuusJs/VaCuusJs.Build.cs:44-48`: upstream quickjs-ng demands
 `/experimental:c11atomics` under MSVC (their CMakeLists.txt:128); clang-cl and MSVC
@@ -120,3 +139,29 @@ the `-/Binaries/...` `-/Intermediate/...` filter fix). Steps:
 - **GPU in or out of the 32 MB RAM row** (passport row 5): **DECIDED 2026-08-02 —
   out, its own line**, per the recorded recommendation (7.91 MiB @1080p is a
   view-size choice, not plugin behavior); the row now states the exclusion.
+
+## 9. What the Win64 machine itself needs before any of §1–§3 can run
+
+Added 2026-08-03 after the first Win64 pass, because two of its findings are properties
+of the machine rather than of the work, and both will otherwise be rediscovered from
+scratch by whoever sits down next.
+
+- **No interactive desktop over SSH** — bead `5fg`. A GUI process launched from a
+  non-interactive OpenSSH session on Windows has no desktop: `-game -windowed` died at
+  startup (exit 3) before engine init, with zero VaCuus lines. `-RenderOffscreen` boots
+  and is how the pass produced findings at all, but it cannot produce the rows that exist
+  to be seen. Options, none tried: the physical console, a scheduled task set to run in
+  the console session, PsExec `-i`, or RDP (which creates a real interactive session).
+  **This blocks §1 and most of §2; it does not block §3 or the builds in bead
+  `akj.10.8`.**
+- **No .NET Framework SDK** — bead `akj.10.9`. `SwarmInterface.Build.cs:29-34` throws when
+  `NetFxSdkDir` is null on Win64 and `UnrealEd` depends on it, so **no editor target can
+  produce a makefile** — a stock template project with no VaCuus fails identically in
+  3.4 s, which is what settles authorship. The pass worked around it with a sandboxed
+  AutoSDK stub under `C:\VaCuusWin64Test\autosdk` and `UE_SDKS_ROOT` set per build process
+  only; that stub dies with the scratch tree and has to be re-created otherwise. Installing
+  VS component `Microsoft.Net.Component.4.6.2.SDK` retires the workaround.
+
+Full record of that pass, including the five build fixes it landed and the 13 matrix rows
+it could not reach: `docs/passport/2026-08-vacuus-win64-results.md` (see its §11
+disposition block for where each open item now lives).
