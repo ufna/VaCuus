@@ -1,0 +1,42 @@
+// Copyright 2026 Vladimir Alyamkin. All Rights Reserved.
+
+#pragma once
+
+/**
+ * THE ONE INTERPOLANT DECLARATION, SHARED BY EVERY STAGE PAIRED WITH VaCuusUI.usf's
+ * MainVS — the engine's own idiom (SlateShaderCommon.ush:35-47 declares
+ * VertexToPixelInterpolants once and both Slate stages take it), and the reason is
+ * register allocation, not tidiness.
+ *
+ * DXC numbers signature registers positionally, and SV_Position OCCUPIES ONE in the
+ * vertex OUTPUT signature. When each stage spelled its own parameter list out and the
+ * pixel stage omitted SV_Position — legal HLSL, and what these files did until the first
+ * Win64 pass — the two signatures came out shifted by exactly one register. Read off the
+ * compiled shaders on Win64/SM6, in
+ * Saved/ShaderDebugInfo/PCD3D_SM6/Global/FVaCuusUI{VS,PS}/0/Output.d3dasm:
+ *
+ *     VS output:  SV_Position reg 0 | TEXCOORD 0 reg 1 | TEXCOORD 1 reg 2
+ *     PS input:                       TEXCOORD 0 reg 0 | TEXCOORD 1 reg 1
+ *
+ * D3D12 then refuses the pipeline outright — "Vertex Shader - Pixel Shader linkage
+ * error: Signatures between stages are incompatible. Semantic 'TEXCOORD' is defined for
+ * mismatched hardware registers between the output stage and input stage" — and
+ * PipelineStateCache.cpp:712 treats a PSO refusal as Fatal, so the session died at the
+ * first UI draw, ~20 s in, with no VaCuus pixels ever on screen.
+ *
+ * Vulkan and Metal never saw it, which is why this survived M1-M6: SPIR-V and Metal map
+ * SV_Position to a builtin that consumes no numbered varying, so their TEXCOORD
+ * locations line up whether or not the pixel stage names it.
+ *
+ * Declaring SV_Position in every pixel stage would also work. A shared struct is the
+ * shape that cannot drift: two stages cannot disagree about an order neither of them
+ * writes separately. Take this struct even in a stage that ignores a member.
+ *
+ * Found by the first Win64/D3D12 pass, 2026-08-03 (bead VaCuus-xa5).
+ */
+struct FVaCuusUIInterpolants
+{
+	float4 Position : SV_POSITION;
+	float2 UV : TEXCOORD0;
+	float4 Color : TEXCOORD1;
+};

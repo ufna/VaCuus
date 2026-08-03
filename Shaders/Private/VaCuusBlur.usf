@@ -1,6 +1,7 @@
 // Copyright 2026 Vladimir Alyamkin. All Rights Reserved.
 
 #include "/Engine/Public/Platform.ush"
+#include "/Plugin/VaCuus/Private/VaCuusUIInterpolants.ush"
 
 /**
  * The M5 glass pair (spec §2(c)): the separable gaussian the backdrop blur runs at
@@ -91,12 +92,16 @@ float4 GlassUVBounds;
  * ElementBackgroundBorder.cpp:72) and feeds the pipeline's SrcAlpha/InvSrcAlpha blend, so
  * any future feathered mask lerps blurred-over-sharp — the correct edge.
  */
+// Takes VaCuusUI.usf's shared interpolant struct, like every stage paired with MainVS —
+// see the reading above FVaCuusUIInterpolants. This stage samples by SV_Position and
+// ignores In.UV; it takes the whole struct anyway, because a stage that writes its own
+// list is exactly how the registers drifted apart in the first place.
 void MainGlassPS(
-	in float4 SvPosition : SV_POSITION,
-	in float4 Color : TEXCOORD1,
-	in float2 UnusedUV : TEXCOORD0,
+	FVaCuusUIInterpolants In,
 	out float4 OutColor : SV_Target0)
 {
+	const float4 SvPosition = In.Position;
+	const float4 Color = In.Color;
 	const float2 UV = clamp(SvPosition.xy * GlassUVTransform.xy + GlassUVTransform.zw, GlassUVBounds.xy, GlassUVBounds.zw);
 	OutColor = float4(GlassTexture.Sample(GlassSampler, UV).rgb, Color.a);
 }

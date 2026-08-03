@@ -2,21 +2,21 @@
 
 #include "/Engine/Public/Platform.ush"
 #include "/Engine/Private/GammaCorrectionCommon.ush" // sRGBToLinear for the LinearOutput composite permutation
+#include "/Plugin/VaCuus/Private/VaCuusUIInterpolants.ush"
 
 /** Pixel-space -> clip-space, UE row-vector convention (v' = v * M). */
 float4x4 Projection;
 
-void MainVS(
+FVaCuusUIInterpolants MainVS(
 	in float2 InPosition : ATTRIBUTE0,
 	in float4 InColor : ATTRIBUTE1,
-	in float2 InUV : ATTRIBUTE2,
-	out float4 OutPosition : SV_POSITION,
-	out float4 OutColor : TEXCOORD1,
-	out float2 OutUV : TEXCOORD0)
+	in float2 InUV : ATTRIBUTE2)
 {
-	OutPosition = mul(float4(InPosition, 0.0f, 1.0f), Projection);
-	OutColor = InColor; // premultiplied RGBA (VET_UByte4N, memory order)
-	OutUV = InUV;
+	FVaCuusUIInterpolants Out;
+	Out.Position = mul(float4(InPosition, 0.0f, 1.0f), Projection);
+	Out.UV = InUV;
+	Out.Color = InColor; // premultiplied RGBA (VET_UByte4N, memory order)
+	return Out;
 }
 
 Texture2D UITexture;
@@ -24,12 +24,11 @@ SamplerState UISampler;
 uint bUseTexture;
 
 void MainPS(
-	in float4 Color : TEXCOORD1,
-	in float2 UV : TEXCOORD0,
+	FVaCuusUIInterpolants In,
 	out float4 OutColor : SV_Target0)
 {
-	float4 Tex = bUseTexture ? UITexture.Sample(UISampler, UV) : float4(1.0f, 1.0f, 1.0f, 1.0f);
-	OutColor = Color * Tex; // premultiplied * premultiplied
+	float4 Tex = bUseTexture ? UITexture.Sample(UISampler, In.UV) : float4(1.0f, 1.0f, 1.0f, 1.0f);
+	OutColor = In.Color * Tex; // premultiplied * premultiplied
 }
 
 Texture2D CompositeTexture;
