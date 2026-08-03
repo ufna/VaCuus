@@ -6,6 +6,7 @@
 
 #include "Engine/HitResult.h" // complete FHitResult (the CachedTraceHit member)
 #include "Framework/Application/IInputProcessor.h"
+#include "InputCoreTypes.h"	  // complete FKey (the FVaCuusPointerPress member) and its GetTypeHash
 #include "Layout/Geometry.h"
 
 class APlayerController;
@@ -72,6 +73,139 @@ struct FVaCuusWorldHitMath
 	{
 		return FIntPoint(FMath::FloorToInt(Widget.X), FMath::FloorToInt(Widget.Y));
 	}
+};
+
+/**
+ * ONE press this processor consumed, identified by what the EVENT itself carries:
+ * which Slate user, which pointer, which button. FVaCuusPointerLatch below counts
+ * these and counts NOTHING else -- see its comment for why the obvious alternative
+ * (FPointerEvent::GetPressedButtons()) is unusable.
+ *
+ * The triple covers both device shapes with no branch:
+ *   - a MOUSE puts every button on one pointer -- FSlateApplication always builds
+ *     mouse events with PointerIndex = CursorPointerIndex (SlateApplication.cpp
+ *     :6109-6118) -- so Button is what separates a left drag from a right one;
+ *   - a TOUCH puts every finger on its OWN PointerIndex (OnTouchStarted passes the
+ *     finger index straight through, SlateApplication.cpp:6781-6787) and hard-codes
+ *     EffectingButton to LeftMouseButton for all of them (Events.h:939-940), so
+ *     PointerIndex is what separates two fingers.
+ * UserIndex keeps two local players' pointers apart (FInputEvent::GetUserIndex,
+ * Events.h:332).
+ */
+struct FVaCuusPointerPress
+{
+	uint32 UserIndex = 0;
+	uint32 PointerIndex = 0;
+	FKey Button;
+
+	/** The way to build one everywhere in the processor, so a press is exactly what its event said it was. */
+	static FVaCuusPointerPress FromEvent(const FPointerEvent& Event);
+
+	bool operator==(const FVaCuusPointerPress& Other) const
+	{
+		return UserIndex == Other.UserIndex && PointerIndex == Other.PointerIndex && Button == Other.Button;
+	}
+
+	friend uint32 GetTypeHash(const FVaCuusPointerPress& Press)
+	{
+		// FKey's GetTypeHash is an in-class friend (InputCoreTypes.h:112), so it is
+		// reachable ONLY by argument-dependent lookup -- qualifying it `::` does not
+		// compile.
+		return HashCombine(
+			HashCombine(::GetTypeHash(Press.UserIndex), ::GetTypeHash(Press.PointerIndex)), GetTypeHash(Press.Button));
+	}
+};
+
+/**
+ * THE CAPTURE LATCH'S STATE, as a type rather than a bool, so the release condition
+ * cannot be written wrongly again (bead VaCuus-61d).
+ *
+ * WHAT IT HOLDS: the set of presses this processor consumed and has not yet seen
+ * released, plus the panel they belong to. Held == that set is non-empty. A gesture
+ * therefore ends exactly when the presses that STARTED it come back up -- not when
+ * some other party's notion of "no buttons down" happens to agree.
+ *
+ * WHY NOT FPointerEvent::GetPressedButtons().IsEmpty(), which is what this was:
+ * that predicate is honest for a MOUSE up, because FSlateApplication::OnMouseUp
+ * removes the released button from PressedMouseButtons BEFORE it constructs the
+ * value-copy event, and says so in its own comment (SlateApplication.cpp:6100-6107).
+ * It is a CONSTANT for a touch up: OnTouchEnded builds its event with
+ * bPressLeftMouseButton = true (SlateApplication.cpp:6832-6843) and the touch
+ * constructor bakes PressedButtons = FTouchKeySet::StandardSet, which is
+ * {LeftMouseButton}, into the copy (Events.h:938; Events.cpp:15). IsEmpty() is
+ * therefore false for every touch release that will ever exist, so a latch waiting
+ * on it never released and the first tap consumed every later pointer event in the
+ * application, permanently.
+ *
+ * AND NOTHING WOULD HAVE CAUGHT IT. The processor holds no Slate capture by design
+ * (it consumes before routing), so the engine's touch net has nothing of ours to
+ * release: FSlateUser::NotifyPointerReleased force-releases CAPTURE on every touch
+ * end (SlateUser.cpp:1284-1290), which is what quietly saves SVaCuusWidget's
+ * identically-shaped predicate (SVaCuusWidget.cpp:638) by driving its
+ * OnMouseCaptureLost (SlateUser.cpp:314). And IInputProcessor offers no touch hook
+ * and no capture-lost hook to fall back on -- its complete surface is
+ * IInputProcessor.h:20-53.
+ *
+ * ENFORCEMENT BY SHAPE, and its exact limit. The held set is private and every
+ * mutator takes an FVaCuusPointerPress, so this type offers no predicate over a
+ * button set to write: the release site now reads "remove the press this event
+ * names", and there is no correct-looking wrong alternative to reach for. What it
+ * does NOT do is forbid a future handler from calling MouseEvent.GetPressedButtons()
+ * itself -- nothing in C++ can. It removes the path of least resistance, which is
+ * the path the bug came down.
+ */
+class FVaCuusPointerLatch
+{
+public:
+	/**
+	 * Record a consumed press. The FIRST one takes the latch and its panel; further
+	 * presses while held (a second mouse button, a second finger) join the same
+	 * gesture and each must come up before it ends. A TSet, so a repeated press --
+	 * the same button re-reported without an intervening up -- is idempotent rather
+	 * than a leak, which a counter would not be.
+	 */
+	void NotePress(UVaCuusWorldComponent* InPanel, const FVaCuusPointerPress& Press)
+	{
+		if (HeldPresses.IsEmpty())
+		{
+			Panel = InPanel;
+		}
+		HeldPresses.Add(Press);
+	}
+
+	/**
+	 * Record a release. Removing a press that is not ours is a deliberate no-op: a
+	 * second finger's release, or the release of a button whose press the game got,
+	 * must not end a drag this processor owns.
+	 */
+	void NoteRelease(const FVaCuusPointerPress& Press)
+	{
+		HeldPresses.Remove(Press);
+		if (HeldPresses.IsEmpty())
+		{
+			Panel = nullptr;
+		}
+	}
+
+	/** The panel died mid-drag, or there is nothing left to release to: forget the whole gesture. */
+	void Drop()
+	{
+		HeldPresses.Reset();
+		Panel = nullptr;
+	}
+
+	/** True while a consumed press keeps the event stream ours (the widget's bHasMouseCapture analog). */
+	bool IsHeld() const { return !HeldPresses.IsEmpty(); }
+
+	/** The latched panel, or null -- weak, because a panel can die mid-drag (level streaming). */
+	UVaCuusWorldComponent* GetPanel() const { return Panel.Get(); }
+
+	/** The observable a multi-button / multi-finger gesture is asserted through. */
+	int32 NumHeldPresses() const { return HeldPresses.Num(); }
+
+private:
+	TWeakObjectPtr<UVaCuusWorldComponent> Panel;
+	TSet<FVaCuusPointerPress> HeldPresses;
 };
 
 /**
@@ -143,14 +277,13 @@ struct FVaCuusWorldHitMath
  * so Slate never sees the press), so the widget's capture semantics are replayed
  * locally -- a consumed press latches the panel, and every move/up keeps being
  * consumed and forwarded (moves via the unbounded plane projection once the ray
- * leaves the quad) until the LAST button releases: GetPressedButtons().IsEmpty()
- * on the up, the post-release set -- established by the CALLERS, which remove the
- * button from PressedMouseButtons BEFORE constructing the value-copy event
- * (OnMouseUp, SlateApplication.cpp:6098-6118; the drag-drop synthesized up,
- * :7565-7581); the Remove inside ProcessMouseButtonUpEvent runs after the event
- * copy exists and cannot affect what a preprocessor sees -- exactly the widget's
- * rule and for the widget's reason (SVaCuusWidget.cpp:629-637 -- `<= 1` would
- * drop a two-button drag).
+ * leaves the quad) until the last press THIS PROCESSOR RECORDED comes back up.
+ * That bookkeeping is FVaCuusPointerLatch above, and its comment carries the whole
+ * argument for why the release condition is a set of presses we saw rather than the
+ * event's own button set. The behaviour it produces is still the widget's
+ * (SVaCuusWidget.cpp:638): a second button pressed mid-drag keeps the drag, and only
+ * the last release ends it -- reached now by counting our own presses instead of by
+ * trusting a field a touch event cannot populate.
  *
  * MOUSE LEAVE IS MANDATORY: when the ray leaves a hovered panel (trace miss, a
  * different panel, or the occlusion rule disengaging), MouseLeave is sent or
@@ -243,6 +376,36 @@ public:
 	/** MouseLeave events sent because the ray left a hovered panel. */
 	uint64 GetNumLeavesSent() const { return NumLeavesSent; }
 
+	/**
+	 * The latch, read-only. It IS the invariant "a gesture ends when its presses
+	 * end", and an invariant with no observable cannot be tested and will rot -- this
+	 * one rotted for exactly that reason (bead VaCuus-61d).
+	 */
+	const FVaCuusPointerLatch& GetLatch() const { return Latch; }
+
+#if WITH_DEV_AUTOMATION_TESTS
+	/**
+	 * TEST SEAM: put the processor into the state a consumed press leaves it in.
+	 *
+	 * A press cannot reach the latch under automation, because QueryEngagement needs
+	 * GEngine->GameViewport and an editor automation session has none, so every
+	 * synthesized press is deferred before it can latch (see QueryEngagement's
+	 * ViewportWidget gate). Everything AFTER the press needs no viewport: each
+	 * handler consults the latch before QueryEngagement, and ResolveLatchedPixel
+	 * simply declines when there is no viewport to project through, leaving the
+	 * consume/release decision -- the part under test -- to run for real.
+	 *
+	 * PASS A LIVE PANEL. With a null one the handlers take their panel-died branch,
+	 * and a test that never latches onto anything cannot tell a released latch from a
+	 * dropped one: the "was the latch really released" assertions would pass under
+	 * the very bug they exist to catch.
+	 */
+	void SeedLatchForTest(const FPointerEvent& PressEvent, UVaCuusWorldComponent* Panel)
+	{
+		Latch.NotePress(Panel, FVaCuusPointerPress::FromEvent(PressEvent));
+	}
+#endif
+
 private:
 	/** The occlusion rule's runtime evaluation plus everything a trace needs once engaged. */
 	struct FEngagement
@@ -282,17 +445,8 @@ private:
 	/** MouseLeave to the hovered panel (unless it is ExceptFor) and forget it. */
 	void SendLeaveIfHovering(const UVaCuusWorldComponent* ExceptFor = nullptr);
 
-	void ClearLatch()
-	{
-		bLatched = false;
-		LatchedPanel = nullptr;
-	}
-
-	/** True while a consumed press keeps the event stream ours (the widget's bHasMouseCapture analog). */
-	bool bLatched = false;
-
-	/** The panel the latch belongs to. Weak: a panel can die mid-drag (level streaming), which simply ends the latch. */
-	TWeakObjectPtr<UVaCuusWorldComponent> LatchedPanel;
+	/** The gesture in progress; see FVaCuusPointerLatch. */
+	FVaCuusPointerLatch Latch;
 
 	/** The panel the pointer last resolved onto; who MouseLeave goes to. */
 	TWeakObjectPtr<UVaCuusWorldComponent> HoveredPanel;

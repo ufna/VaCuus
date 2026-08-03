@@ -78,6 +78,23 @@ bool FVaCuusWorldHitMath::RayToWidget(const FTransform& ComponentTransform, cons
 }
 
 // ---------------------------------------------------------------------------
+// FVaCuusPointerPress
+// ---------------------------------------------------------------------------
+
+FVaCuusPointerPress FVaCuusPointerPress::FromEvent(const FPointerEvent& Event)
+{
+	// Three accessors, no derivation: whatever the event says it is, the press is.
+	// GetEffectingButton is the ONE button this event is about, which is what makes a
+	// press and its release name the same thing -- as opposed to GetPressedButtons,
+	// which is a snapshot of something else entirely (see FVaCuusPointerLatch).
+	FVaCuusPointerPress Out;
+	Out.UserIndex = Event.GetUserIndex();
+	Out.PointerIndex = Event.GetPointerIndex();
+	Out.Button = Event.GetEffectingButton();
+	return Out;
+}
+
+// ---------------------------------------------------------------------------
 // Install refcount
 // ---------------------------------------------------------------------------
 
@@ -370,9 +387,9 @@ bool FVaCuusWorldInputProcessor::HandleMouseMoveEvent(FSlateApplication& SlateAp
 	// game-thread input cost the M2 budget line is stated against.
 	VACUUS_PERF_SCOPE(Input);
 
-	if (bLatched)
+	if (Latch.IsHeld())
 	{
-		UVaCuusWorldComponent* Panel = LatchedPanel.Get();
+		UVaCuusWorldComponent* Panel = Latch.GetPanel();
 		if (Panel != nullptr && Panel->GetView() != nullptr)
 		{
 			FIntPoint Pixel;
@@ -387,7 +404,7 @@ bool FVaCuusWorldInputProcessor::HandleMouseMoveEvent(FSlateApplication& SlateAp
 			return true;
 		}
 		// The panel died mid-drag (level streaming, Destroy): nothing to release to.
-		ClearLatch();
+		Latch.Drop();
 	}
 
 	const FEngagement Engagement = QueryEngagement(SlateApp, MouseEvent);
@@ -427,13 +444,17 @@ bool FVaCuusWorldInputProcessor::HandleMouseButtonDownEvent(FSlateApplication& S
 	check(IsInGameThread());
 	VACUUS_PERF_SCOPE(Input);
 
-	if (bLatched)
+	if (Latch.IsHeld())
 	{
-		UVaCuusWorldComponent* Panel = LatchedPanel.Get();
+		UVaCuusWorldComponent* Panel = Latch.GetPanel();
 		if (Panel != nullptr && Panel->GetView() != nullptr)
 		{
-			// A second button pressed mid-drag is part of the gesture: forwarded and
-			// consumed; the latch already owns the stream until the LAST release.
+			// A second button (or a second finger) pressed mid-drag is part of the
+			// gesture: forwarded, consumed, and RECORDED -- the latch runs until every
+			// press it recorded has come back up, so a press it never saw would be a
+			// release it could never account for.
+			Latch.NotePress(Panel, FVaCuusPointerPress::FromEvent(MouseEvent));
+
 			FIntPoint Pixel;
 			if (ResolveLatchedPixel(MouseEvent, Panel, Pixel))
 			{
@@ -443,7 +464,7 @@ bool FVaCuusWorldInputProcessor::HandleMouseButtonDownEvent(FSlateApplication& S
 			++NumConsumed;
 			return true;
 		}
-		ClearLatch();
+		Latch.Drop();
 	}
 
 	const FEngagement Engagement = QueryEngagement(SlateApp, MouseEvent);
@@ -476,11 +497,10 @@ bool FVaCuusWorldInputProcessor::HandleMouseButtonDownEvent(FSlateApplication& S
 
 	if (View->GetSnapshot().Contains(Hit.Pixel))
 	{
-		// The latch engages on the FIRST consumed button and releases on the last-up
-		// rule in the up handler -- the widget's capture idiom without Slate capture
-		// (there is nothing routed to capture: we consumed pre-routing).
-		bLatched = true;
-		LatchedPanel = Hit.Component;
+		// The latch engages on the FIRST consumed press and ends when that press (and
+		// any that joined it) comes back up -- the widget's capture idiom without
+		// Slate capture (there is nothing routed to capture: we consumed pre-routing).
+		Latch.NotePress(Hit.Component, FVaCuusPointerPress::FromEvent(MouseEvent));
 		++NumConsumed;
 		return true;
 	}
@@ -493,9 +513,9 @@ bool FVaCuusWorldInputProcessor::HandleMouseButtonUpEvent(FSlateApplication& Sla
 	check(IsInGameThread());
 	VACUUS_PERF_SCOPE(Input);
 
-	if (bLatched)
+	if (Latch.IsHeld())
 	{
-		UVaCuusWorldComponent* Panel = LatchedPanel.Get();
+		UVaCuusWorldComponent* Panel = Latch.GetPanel();
 		if (Panel != nullptr && Panel->GetView() != nullptr)
 		{
 			FIntPoint Pixel;
@@ -506,19 +526,17 @@ bool FVaCuusWorldInputProcessor::HandleMouseButtonUpEvent(FSlateApplication& Sla
 			}
 		}
 
-		// GetPressedButtons() is the POST-release set: the CALLERS remove the released
-		// button from PressedMouseButtons BEFORE constructing the value-copy event --
-		// OnMouseUp (SlateApplication.cpp:6098-6118) and the drag-drop synthesized up
-		// (:7565-7581); the Remove inside ProcessMouseButtonUpEvent runs after the
-		// event copy exists (a no-op for the OnMouseUp path, kept for touch) and
-		// cannot affect what this handler sees. So IsEmpty() -- not Num() <= 1 -- is
-		// "the last button just came up". The widget's exact rule and reason
-		// (SVaCuusWidget.cpp:629-637): `<= 1` would drop the latch with a second
-		// button still held mid-drag.
-		if (MouseEvent.GetPressedButtons().IsEmpty())
-		{
-			ClearLatch();
-		}
+		// THE RELEASE. This event names exactly one press -- its own -- and the latch
+		// ends when the last press it recorded is gone. Nothing here reads the event's
+		// button SET, which is the bug this replaced: a touch up carries a constant
+		// {LeftMouseButton} and could never satisfy IsEmpty() (bead VaCuus-61d; the
+		// engine lines are cited on FVaCuusPointerLatch).
+		//
+		// A two-button mouse drag still survives releasing one button, because the
+		// OTHER button's press is still in the set -- the property the old predicate
+		// was reaching for, now held by construction rather than by the caller's
+		// bookkeeping happening to be in the right order.
+		Latch.NoteRelease(FVaCuusPointerPress::FromEvent(MouseEvent));
 
 		// The press was ours, so its release must be too.
 		++NumConsumed;
@@ -581,12 +599,12 @@ bool FVaCuusWorldInputProcessor::HandleMouseWheelOrGestureEvent(
 	// widget never sees them either (SWidget has no gesture hook it overrides).
 	if (FMath::IsNearlyZero(InWheelEvent.GetWheelDelta()))
 	{
-		return bLatched;
+		return Latch.IsHeld();
 	}
 
-	if (bLatched)
+	if (Latch.IsHeld())
 	{
-		UVaCuusWorldComponent* Panel = LatchedPanel.Get();
+		UVaCuusWorldComponent* Panel = Latch.GetPanel();
 		if (Panel != nullptr && Panel->GetView() != nullptr)
 		{
 			FIntPoint Pixel;
@@ -598,7 +616,7 @@ bool FVaCuusWorldInputProcessor::HandleMouseWheelOrGestureEvent(
 			++NumConsumed;
 			return true;
 		}
-		ClearLatch();
+		Latch.Drop();
 	}
 
 	const FEngagement Engagement = QueryEngagement(SlateApp, InWheelEvent);

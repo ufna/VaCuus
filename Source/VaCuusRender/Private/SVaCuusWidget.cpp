@@ -635,6 +635,18 @@ FReply SVaCuusWidget::OnMouseButtonUp(const FGeometry& MyGeometry, const FPointe
 	// capture with a button still held, breaking any drag that uses a second button.
 	// This is also exactly what the precedent does
 	// (FWebBrowserViewport::OnMouseButtonUp, WebBrowserViewport.cpp:52-78).
+	//
+	// TOUCH, and why this predicate is safe HERE but was not in the world-panel
+	// preprocessor (bead VaCuus-61d): a touch up cannot satisfy IsEmpty() at all --
+	// OnTouchEnded passes bPressLeftMouseButton = true (SlateApplication.cpp
+	// :6832-6843) and the touch constructor bakes PressedButtons = {LeftMouseButton}
+	// into the value copy (Events.h:938; Events.cpp:15) -- so this branch is simply
+	// not taken and the widget returns Handled below without releasing. What makes
+	// that harmless is REAL Slate capture, which the preprocessor deliberately does
+	// not hold: FSlateUser::NotifyPointerReleased force-releases capture on every
+	// touch end regardless of the reply (SlateUser.cpp:1284-1290), which drives
+	// OnMouseCaptureLost (SlateUser.cpp:314) and clears MouseCapture below. The
+	// engine's net, not this line, is what ends a touch drag here.
 	if (MouseCapture.IsHeld() && MouseEvent.GetPressedButtons().IsEmpty())
 	{
 		SetMouseCapture(false);
