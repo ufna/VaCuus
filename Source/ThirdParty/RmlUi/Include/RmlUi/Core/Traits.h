@@ -32,7 +32,7 @@ protected:
 };
 
 template <typename T>
-class RMLUICORE_API Releaser : public ReleaserBase {
+class Releaser : public ReleaserBase {
 public:
 	void operator()(T* target) const
 	{

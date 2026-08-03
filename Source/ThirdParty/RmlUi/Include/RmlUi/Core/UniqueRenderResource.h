@@ -11,7 +11,7 @@ class RenderManager;
     Abstraction for a uniquely owned render resource. The underlying resource is released upon destruction.
  */
 template <typename Derived, typename Handle, Handle InvalidHandleValue>
-class RMLUICORE_API UniqueRenderResource {
+class UniqueRenderResource {
 public:
 	static constexpr Handle InvalidHandle() { return InvalidHandleValue; }
 
