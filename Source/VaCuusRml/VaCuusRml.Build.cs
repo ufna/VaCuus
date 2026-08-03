@@ -31,9 +31,16 @@ public class VaCuusRml : ModuleRules
 		//
 		// A system include path is the engine's own answer: VCToolChain.cs:281-289 turns it
 		// into `/external:I` plus `/external:W0` on MSVC (warning level 0 INSIDE those
-		// headers, so nothing is emitted for /WX to promote), and ClangToolChain.cs:649
-		// turns it into `-isystem` on Linux/Mac. Warnings in our OWN code are untouched on
-		// every platform; only the vendored headers go quiet.
+		// headers, so nothing is emitted for /WX to promote), and on clang the flag is
+		// `-isystem`: ClangToolChain.cs:649 maps every SystemIncludePath through
+		// GetSystemIncludePathArgument, and that method is where the literal `-isystem`
+		// is written (:636-638). Cite both -- opening :649 alone shows a dispatch and not
+		// the flag, which is how this citation read as evidence it did not carry. This
+		// covers every clang target, not just the two we ship: AndroidToolChain
+		// (AndroidToolChain.cs:17) and IOSToolChain via AppleToolChain
+		// (IOSToolChain.cs:15, AppleToolChain.cs:20) both derive from ClangToolChain.
+		// Warnings in our OWN code are untouched on every platform; only the vendored
+		// headers go quiet.
 		PublicSystemIncludePaths.Add(Path.Combine(RmlRoot, "Include"));
 		PublicDefinitions.Add("RMLUI_CUSTOM_RTTI=1");
 
