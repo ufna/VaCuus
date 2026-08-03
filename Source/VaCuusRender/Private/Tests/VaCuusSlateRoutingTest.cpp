@@ -322,6 +322,45 @@ bool FVaCuusSlateRoutingTest::RunTest(const FString& Parameters)
 		return true;
 	}
 
+	// A macOS VENUE ACCOMMODATION, and the message it silences is the ENGINE'S, not ours.
+	//
+	// Where the message comes from: on a platform that HAS an ITextInputMethodSystem, focusing the
+	// text field in block 5 registers and activates an IME context, and
+	// FMacTextInputMethodSystem::ActivateContext (MacTextInputMethodSystem.cpp:155-192) insists the
+	// context's window be an FCocoaWindow carrying an FCocoaTextView. An automation test builds its
+	// widget outside any window -- FVaCuusTextInputMethodContext::GetWindow() returns
+	// Surface.NativeWindow (VaCuusTextInput.cpp:756-763), legitimately null here -- so
+	// `bActivatedContext` stays false and :188-190 logs
+	//
+	//     LogMacTextInputMethodSystem: Error: Activating a context failed when its window couldn't be found.
+	//
+	// UE's framework promotes any logged Error into a test failure, so this test went red on macOS
+	// while every assertion in it passed (docs/passport/2026-08-vacuus-macos-results.md, section 4).
+	// On Linux FSlateApplication has no text input method system at all, ActivateContext is never
+	// called, and the line cannot occur.
+	//
+	// Why the pattern stops at "its window": ActivateContext has a SIBLING error two branches up
+	// (MacTextInputMethodSystem.cpp:159-162, "...when its registration couldn't be found"), and that
+	// one WOULD mean a defect on our side -- activating a context we never registered. It stays
+	// fatal to this test.
+	//
+	// Why Occurrences = -1, and why no `#if PLATFORM_MAC`: AutomationTest.h:1792-1794 (identically
+	// :1777-1779 for the regex overload the macOS pass proposed) documents a negative count as
+	// "occurrences of this message will be silently ignored", and the code agrees --
+	// FAutomationTestBase::HasMetExpectedMessages (AutomationTest.cpp:1826-1862) raises an error
+	// only for a count > 0 that was not met exactly, or a count == 0 that never occurred; a negative
+	// entry has no branch and is silent whether it matched N times or none. A positive count would
+	// fail on Linux ("expected 1, found 0"), and a platform #if would only restate the silence the
+	// negative count already provides.
+	//
+	// WHAT THIS COSTS, stated so it is not discovered the hard way: a genuine IME regression on
+	// macOS that emitted this same line -- ours handing the platform a context whose window really
+	// should have been there -- is now invisible to this test. What still guards that is the
+	// windowed venue: in a real session the harness's precondition (no NSWindow) does not hold, and
+	// the matrix's row 4 is where a broken activation would show.
+	AddExpectedMessagePlain(TEXT("Activating a context failed when its window"), ELogVerbosity::Error,
+		EAutomationExpectedMessageFlags::Contains, /*Occurrences=*/-1);
+
 	if (!TestFalse(TEXT("RmlUi is down before the test"), FVaCuusEngine::Get().IsInitialized()))
 	{
 		return false;
