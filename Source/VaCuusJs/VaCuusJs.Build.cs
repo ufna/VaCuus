@@ -68,11 +68,27 @@ public class VaCuusJs : ModuleRules
 			//
 			// THE CONSEQUENCE, WHICH IS A BEHAVIOURAL DIFFERENCE AND NOT A BUILD DETAIL:
 			// the JavaScript `Atomics` global is absent on Win64 and present on Linux and
-			// macOS, where clang leaves __STDC_NO_ATOMICS__ undefined. Adding
-			// /experimental:c11atomics for MSVC would restore parity; it is an owner call
-			// rather than a silent default, because it opts a shipped module into an
-			// explicitly experimental MSVC switch to enable a builtin no VaCuus document
-			// or test currently uses.
+			// macOS, where clang leaves __STDC_NO_ATOMICS__ undefined.
+			//
+			// DECIDED 2026-08-03 (owner, bead akj.10.4): ACCEPT THE SPLIT. We do NOT pass
+			// /experimental:c11atomics. It would opt a shipped module into an explicitly
+			// experimental MSVC switch to enable a builtin that no VaCuus document, test or
+			// buyer-facing API uses. This comment states the decision instead of asking the
+			// question, and the evidence below is why it is safe to state.
+			//
+			// CONFIRMED AT RUNTIME, not just deduced from the preprocessor -- the check the
+			// first Win64 pass could not reach, because no session survived long enough.
+			// A console-session `vacuus.RefHud` build with a temporary console.log probe:
+			//     ATOMICS-PROBE: typeof Atomics=undefined typeof SharedArrayBuffer=function
+			//                    typeof WeakRef=function
+			//
+			// READ THAT SECOND FIELD BEFORE CHANGING ANYTHING HERE. `SharedArrayBuffer` is
+			// PRESENT on Win64 while `Atomics` is missing -- the two do not travel together,
+			// because SharedArrayBuffer is not behind the CONFIG_ATOMICS guard. So the
+			// idiomatic feature test, `typeof SharedArrayBuffer !== 'undefined'`, PASSES on
+			// Windows and then `Atomics.load` throws. That trap is the reason this split has
+			// to be documented for buyers rather than merely accepted (docs/buyer/gotchas.md);
+			// it is sharper than a plain "Win64 lacks Atomics" would be.
 		}
 
 		// EXPORT CHECK (Linux modular builds): patch #1 must keep every JS_*

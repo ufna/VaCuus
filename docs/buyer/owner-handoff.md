@@ -110,13 +110,31 @@ the `-/Binaries/...` `-/Intermediate/...` filter fix). Steps:
    report CLEAN on the package.
 3b. **If a channel ever gets PRECOMPILED binaries** (Fab's is source-only, so this is
    the "some day" step): re-run BuildPlugin with `FilterPlugin.ini`'s `-/Binaries/...`
-   rule commented out, then `bash Tools/api_export_check.sh <out>`. It `nm -D`s the
-   delivered `.so`s and fails if a class the docs tell buyers to use has zero exported
-   members. This is not paranoia — it is exactly how VaCuus-dgl shipped: `UVaCuusWidget`
-   and `UVaCuusWorldComponent` registered fine (Blueprint worked) and exported **0**
-   members each, so no buyer's C++ could link either one, and nothing in this repo
-   could see it because every in-tree consumer compiles the plugin from source. The
-   check is Linux-only; a Win64 drop needs the same thing against `dumpbin /exports`.
+   rule commented out, then run the gate for the platform being delivered:
+
+   ```
+   bash Tools/api_export_check.sh <out>                                   # ELF  / .so
+   powershell -ExecutionPolicy Bypass -File Tools\api_export_check_win64.ps1 <out>   # PE-COFF / .dll
+   ```
+
+   Both ask the same question and fail if a class the docs tell buyers to use has zero
+   exported members; each states its own mechanism, because the two platforms do not
+   share one (`-fvisibility-ms-compat` lets a Linux class register while exporting no
+   linkable member; on Windows nothing is exported without the module's `_API` macro).
+   Either accepts a host project's `Plugins\VaCuus` after an editor build, so the check
+   does not have to wait for a package. This is not paranoia — it is exactly how
+   VaCuus-dgl shipped: `UVaCuusWidget` and `UVaCuusWorldComponent` registered fine
+   (Blueprint worked) and exported **0** members each, so no buyer's C++ could link
+   either one, and nothing in this repo could see it because every in-tree consumer
+   compiles the plugin from source.
+
+   Last run 2026-08-03 at commit `6b82e4a` against the Win64 editor build: **clean** —
+   5 supported classes reachable (`UVaCuusWidget` 27 exported member refs,
+   `UVaCuusWorldComponent` 53, `UVaCuusView` 65, `UVaCuusSubsystem` 39,
+   `UVaCuusStyleSet` 14), `FVaCuusRmlDocumentHost` correctly at 0, the absent-class
+   self-test reporting 0 so the FAIL path is known to work, and exported `JS_*`
+   symbols 0 — which is vendored patch #1 (hidden quickjs visibility) holding on a
+   third binary format after ELF and Mach-O.
 4. Upload with the third-party disclosure list from
    `docs/research/m6-api-notes/buildplugin-fab-dryrun.md` §4 (every entry points at
    an in-tree license file the package includes; HarfBuzz is NOT USED — do not

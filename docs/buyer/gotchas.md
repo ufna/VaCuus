@@ -99,6 +99,23 @@ bar as Gameface).
 Do: flex layouts; the CLI templates are flex-first. Grid is a candidate upstream
 contribution, not a v1 promise.
 
+**13a. `Atomics` does not exist on Windows — and `SharedArrayBuffer` does, so the
+obvious feature test lies.**
+Measured on Win64 2026-08-03: `typeof Atomics` is `"undefined"` while
+`typeof SharedArrayBuffer` is `"function"`. On Linux and macOS both are present.
+Cause: the vendored quickjs-ng guards its whole atomics feature on
+`!__STDC_NO_ATOMICS__` (`quickjs.c:73`), and MSVC defines `__STDC_NO_ATOMICS__`
+unless `/experimental:c11atomics` is passed — which VaCuus deliberately does not pass,
+rather than opt a shipped module into an experimental compiler switch
+(`VaCuusJs.Build.cs` carries the decision). `SharedArrayBuffer` is not behind that
+guard, which is why the two come apart.
+Do: **feature-detect `Atomics` itself, never `SharedArrayBuffer` as a proxy** —
+`if (typeof Atomics !== 'undefined')`. The proxy test passes on Windows and then
+`Atomics.load` throws a `TypeError`, so a script written that way works everywhere
+you develop and fails on the platform most of your buyers ship to. If you need
+cross-thread coordination, note that VaCuus already runs every document on one
+process-wide UI thread, so a JS-visible atomic is rarely the tool you want.
+
 ## Engine, cook and packaging
 
 **14. Shipping builds never assert on RmlUi contract violations — but the log still names them.**

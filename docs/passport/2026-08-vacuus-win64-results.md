@@ -226,8 +226,28 @@ The consequence is a shipped platform difference, not a build detail: **the Java
 global exists on Linux and macOS and does not exist on Win64.** Adding the flag for MSVC would
 restore parity. It is written into the Build.cs comment as an owner call rather than silently
 defaulted, because it opts a shipped module into an explicitly *experimental* MSVC switch to enable
-a builtin that no VaCuus document or test currently uses. **Not empirically confirmed at runtime**
-— the intended check (`typeof Atomics` in a live session) was not reachable, see §7.
+a builtin that no VaCuus document or test currently uses.
+
+### Confirmed at runtime, 2026-08-03 evening — and the split is narrower and sharper than predicted
+
+The check this section could not reach has now run. A temporary `console.log` probe in
+`RefHud/refhud_logic.js` (inserted, run, reverted; the tree is clean) on a live console-session
+`vacuus.RefHud` build printed:
+
+```
+LogVaCuusJS: Display: ATOMICS-PROBE: typeof Atomics=undefined typeof SharedArrayBuffer=function typeof WeakRef=function
+```
+
+**`Atomics` is `undefined` on Win64 — the preprocessor inference was right.** But
+`SharedArrayBuffer` is **`function`**, i.e. present. That is the part no one predicted, and it makes
+the buyer-facing hazard worse rather than better: the idiomatic feature test for this capability is
+`typeof SharedArrayBuffer !== 'undefined'`, and on Win64 that test **passes while `Atomics` is still
+missing**. A script that gates on `SharedArrayBuffer` and then calls `Atomics.load` gets a
+`TypeError` on Windows and works everywhere else. Whatever the owner decides about the flag, that
+sentence belongs in the buyer docs, because feature-detecting correctly here is not obvious.
+
+(The `Linux`/`macOS` half of the claim remains the preprocessor inference plus those platforms'
+absence of `__STDC_NO_ATOMICS__` — no probe was run there in this pass.)
 
 ---
 
@@ -391,7 +411,9 @@ consistent with the same session's
 `InputSmoke: no interactive rects; is the document published yet? Aborting`. So: the engine's
 rendering is healthy on this GPU and VaCuus's own draw is what does not survive.
 
-### The two things that did get through, and one of them is a first
+### The two things that did get through — and the first of them was an artifact of this pass's venue
+
+> **CORRECTED 2026-08-03 evening. Read the correction under the box before quoting this finding.**
 
 **Glass takes the DIRECT-SRV route on D3D12 — the first time that branch has ever executed.**
 Logged in rows 8 and 11 before the crash:
@@ -408,6 +430,27 @@ present, `bDirectSRV` resolves true, and the route runs. Linux/Vulkan and macOS/
 ever exercised the bounded-copy fallback. **The pixels were not seen** — the crash took the
 session before a glass screenshot landed — so this is a route-selection result, not a visual one.
 
+**CORRECTION.** That result is real but it is **not a Win64 result — it is a `-RenderOffscreen`
+result**, and this pass had no choice but to run offscreen (§9). The A/B, same machine, same commit,
+same command, only the offscreen switch differing:
+
+| Venue | Log line |
+|---|---|
+| `-game -windowed` (real D3D12 swapchain) | `glass samples the Slate output through a bounded copy pass (texture ShaderResource=no, vacuus.GlassBackbufferSRV=1)` |
+| `-game -RenderOffscreen` | `glass samples the Slate output DIRECTLY as an SRV (texture ShaderResource=yes, vacuus.GlassBackbufferSRV=1)` |
+
+A real swapchain back buffer is not created shader-resource-able; an offscreen render target is. So
+`bDirectSRV` resolving true here was a property of the **render target this pass was forced into**,
+not of D3D12. **The shipped Win64 glass path is the bounded copy pass — the same route as Linux and
+macOS** — and the "first on any platform" claim should be retired. What survives is narrower and
+still worth having: the direct-SRV branch is *reachable* on D3D12 (it is structurally unreachable on
+Metal), so it is not dead code on Windows, and anything that renders through an offscreen target
+there will take it.
+
+The pixels have since been seen, windowed, on a console session: rounded and square panels blur the
+scene live, the control panel does not, and the idle economy holds at 0 published / 1,075 recorded
+while Glass samples every frame. Matrix row 8 is a **PASS**.
+
 `vacuus.M5World.InputSmoke` ran and failed `1 of 1` with "no interactive rects; is the document
 published yet?" — a frame-0 timing artifact of firing the command before the view publishes (the
 same class as the macOS `AutoShot 10`-before-materials-compile lesson), **not** an input finding.
@@ -416,7 +459,15 @@ same class as the macOS `AutoShot 10`-before-materials-compile lesson), **not** 
 
 ## 8. The matrix, Win64 D3D12 column
 
-| # | Row | Win64 D3D12 | Evidence / reason |
+> **SUPERSEDED 2026-08-03 evening.** Every `NOT RUN` below was downstream of the PSO fatal (§7) or
+> of this pass's inability to open a window (§9). Both causes are gone — `b4f12e1` fixed the fatal,
+> and a console session supplies the venue — and the column was re-run at commit `6b82e4a`:
+> **12 of 15 rows PASS**, the three remaining ones are named with what each still needs, and none of
+> them is "the session died". The live column is
+> `2026-08-vacuus-manual-matrix.md`. The table below is kept as the record of what the SSH pass
+> could see, not as the current state.
+
+| # | Row | Win64 D3D12 (SSH pass, superseded) | Evidence / reason |
 |---|-----|-------------|-------------------|
 | 1 | Screen-space HUD composite | **NOT RUN** | session dies on the PSO fatal, §7 |
 | 2 | Steady-state node count | **NOT RUN** | same; `vacuus.RefHud.Count` never reached |
@@ -447,9 +498,37 @@ GetTextInputMethodSystem()` returns null even on a platform that implements it. 
 the `present` branch because it could run a real windowed session; this pass could not (§9). So
 bead **`akj.6.19` did not move**, and the Windows TSF leg remains exactly as owed as it was.
 
+**Confirmed 2026-08-03 evening.** The warning above was right. On a console session the other branch
+is taken, and the matrix row-4 run logged both halves:
+
+```
+IME: platform ITextInputMethodSystem present; composition is available
+TypeShot: IME bridge built=yes, platform system absent=no, registered=yes, context active=yes
+```
+
+So the Windows TSF path reaches `registered` and `context active`, and typing routes
+`OnKeyChar -> ProcessTextInput` as designed. That is the **precondition** for row 5, not row 5:
+`akj.6.19` is specifically about a stale-shadow window after a *document reload*, and exercising it
+needs a real IME and a human at the keyboard. The bead moves from "blocked on venue" to "blocked on
+a human", which is a materially different place to be.
+
 ---
 
 ## 9. What could not be run, and why — recorded, not dropped
+
+> **Status 2026-08-03 evening**, after the console-session pass at commit `6b82e4a`:
+>
+> | Item below | Now |
+> |---|---|
+> | Every windowed row | **RUN.** `SESSIONNAME=Console` is the venue; bead `VaCuus-5fg` answered. |
+> | All visual rows (PSO fatal) | **RUN.** Zero pipeline failures across ~12 sessions. |
+> | Row 5 / bead `akj.6.19` | Precondition established (TSF `present`, `registered`, `context active`); still needs a human + IME. |
+> | Row 15, disk literal, memory-mapped bundle | **STILL OWED** — all three need the Win64 cook, bead `akj.10.3`. |
+> | The `Atomics` runtime confirmation | **RUN.** `typeof Atomics=undefined`, and `SharedArrayBuffer=function` — see §4. |
+> | Perf passport §11 Win64 column | **MEASURED.** Rows 1, 2a, 2b, 3, 4, 7, 8 on the Dev leg. |
+> | Monolithic / game-target build | see §12 |
+> | `BuildPlugin -StrictIncludes` | see §12 |
+> | Editor PIE (rows 12, 13) | Row 12's `-game` leg ran; **the editor-PIE leg and row 13 are still owed.** |
 
 | Item | Why not |
 |---|---|
@@ -517,6 +596,15 @@ Added after the pass, deliberately below the original list rather than inside it
 what was seen on the day and do not get rewritten. Every item now has a bead, so this block is a
 signpost and not a second tracker.
 
+> **Written in the afternoon; §12 is the evening, and it overtakes items 4, 5, 6 and half of 7.**
+> Read §12 for those. In short: the venue question (item 6) was **answered** — the physical console
+> session, no PsExec and no RDP — and with it 13 of 15 matrix rows and the passport's Win64 column
+> landed; `Atomics` (item 4) was **measured live** and the split accepted, with the sharper finding
+> that `SharedArrayBuffer` is present while `Atomics` is not; the NetFxSDK gap (item 5) is still
+> open but its blast radius grew rather than shrank — it blocks packaging too, because
+> `BuildCookRun` builds the editor target. Item 7's `dumpbin` half went a third way: the script was
+> not in the pass's scratch at all, so it was rewritten and re-earned its green (§12.6).
+
 1. **RESOLVED — and it was not a driver, a permission or a stale cache.** Bead `xa5`, fixed by
    `b4f12e1`. DXC numbers signature registers positionally and `SV_Position` occupies one in the
    vertex output signature, so a pixel stage that spells out its own semantics and omits it starts
@@ -566,3 +654,251 @@ decisions, but they are owed and now tracked: the Win64 cook — disk literal an
 bundle line — is `akj.10.3`, and the monolithic game target plus `BuildPlugin -StrictIncludes` is
 `akj.10.8`. **`akj.10.8` needs no interactive desktop**, so it is the one piece of this backlog that
 an SSH session can finish today.
+
+---
+
+## 12. The console-session pass, 2026-08-03 evening
+
+**What changed:** nothing about the machine, and two things about the situation. `b4f12e1` fixed the
+PSO fatal of §7, and the work ran from the **physical console session** instead of over SSH — which
+is the whole content of bead `VaCuus-5fg`. Commit under test `6b82e4a`. Everything below is on the
+same host, GPU, driver and engine as the morning pass, so the two are comparable.
+
+### 12.1 The venue question, answered once so it is not rediscovered (bead `5fg`)
+
+The morning pass's diagnosis was right, and its options list can be closed on the first entry:
+**run from the console session**. Concretely, what worked:
+
+```
+SESSIONNAME=Console, state Active   # `query session` shows it; [Environment]::UserInteractive is True
+"…\UnrealEditor.exe" <abs>.uproject -game -windowed -resx=1920 -resy=1080 -ForceRes -ExecCmds="…,"
+```
+
+No PsExec, no scheduled task, no RDP, no autologon — those were the fallbacks and none was needed.
+The one thing that *does* have to be right is that the shell issuing the launch is itself in the
+console session; an OpenSSH session on Windows is a different session with no interactive desktop,
+and the process dies before engine init with exit 3 and zero VaCuus lines.
+
+Two operational lessons, both learned by doing it wrong first:
+
+- **Close the window, do not kill the process.** `Stop-Process -Force` produces no teardown tail,
+  which is matrix row 14's entire evidence. `Process.CloseMainWindow()` and then waiting gives
+  exit 0 and the full tail. (Offscreen runs have no main window and still need the kill — which is
+  why the offscreen glass A/B below has no tail.)
+- **`-ExecCmds` still swallows everything after it and still splits on commas.** The runner appends
+  the trailing comma itself rather than trusting each invocation to remember.
+
+The driver used for every row is kept beside the artifacts as `run-row.ps1`; each run leaves its
+log, screenshots and a `run.json` under `runs/<tag>/`.
+
+### 12.2 The matrix column: 13 of 15 (beads `akj.10.1`, `akj.10.2`)
+
+Filled in `2026-08-vacuus-manual-matrix.md`, which now carries the row-by-row reading. Rows 1, 2, 3,
+4, 6, 7, 8, 9, 10, 11, 12, 14 and 15 **PASS** — 13 of 15. Only two remain: row 5 needs a human with
+an IME, and row 13 needs an interactive editor PIE with a mid-run file edit. **Zero `Fatal error`,
+zero `graphics pipeline` failures, zero `D3D12 ERROR` across roughly a dozen sessions.**
+
+Two results changed what this document previously claimed, and both are corrections rather than
+additions — see §4 (Atomics, confirmed live and *narrower* than predicted) and §7's boxed correction
+(glass takes the bounded copy pass on a real swapchain; the direct-SRV "first on any platform" was
+an artifact of this pass's own offscreen venue).
+
+The perf passport's Win64 D3D12 column is measured and lives in
+`2026-08-vacuus-perf-passport.md`. The one thing to carry back here: **this desktop is ~2.8× slower
+than the Linux passport machine on the identical workload** — the ratio is established by two
+controls rather than assumed — and row 2a's per-frame budget is breached 2.5× on that basis. The
+tempting alternative explanation, that a slower frame rate inflates per-frame cost, was tested at a
+30 fps cap and **refuted**.
+
+### 12.3 Monolithic game target: builds, and it found what the modular leg cannot (bead `akj.10.8`)
+
+```
+Build.bat TP_ThirdPerson Win64 Development -project=C:\VaCuusWin64Test\VcHost\VcHost.uproject
+  -> Result: Succeeded, 888 s, 358 actions
+  -> C:\VaCuusWin64Test\VcHost\Binaries\Win64\TP_ThirdPerson.exe, 337,195,008 B
+```
+
+**It needed no AutoSDK shim.** §2's `NetFxSDK` blocker is an *editor-target* problem: `SwarmInterface`
+is reached via `UnrealEd`, and a game target does not depend on `UnrealEd`. `UE_SDKS_ROOT` was unset
+in the machine, user and process environments for this build and the makefile generated anyway. That
+narrows bead `akj.10.9` usefully — see §12.5.
+
+**One warning, and it is exactly the kind of thing this leg exists to find:**
+
+```
+…\ThirdParty\RmlUi\Source\Core\Layout\ContainerBox.cpp(141) : warning C4756: overflow in constant arithmetic
+```
+
+`ContainerBox.cpp:141` is `available_space.y = HUGE_VALF;`. The overflow is deliberate and lives in
+Microsoft's own header: `corecrt_math.h:90-99` defines `_HUGE_ENUF` as `1e+300` with the comment
+`_HUGE_ENUF*_HUGE_ENUF must overflow`, `INFINITY` as `((float)(_HUGE_ENUF))`, and `HUGE_VALF` as
+`((float)INFINITY)` — narrowing 1e+300 to `float` overflows on purpose, which is how the header
+manufactures infinity. The diagnostic is therefore benign.
+
+**What is not benign is that the modular leg cannot see it.** The same TU
+(`relay_Core_Layout_ContainerBox.cpp`) is compiled by both targets — 190 `relay_Core_*` actions in
+each — and the modular editor build emits nothing for it. Its `/experimental:log` SARIF sidecar for
+that TU contains **zero results**, so this is not a log-capture artifact. The cause was isolated
+rather than inferred: the only substantive difference between the two response files is
+**`/fp:precise` (editor) versus `/fp:fast` (game)**, and two lines reproduce it exactly —
+
+```cpp
+#include <math.h>
+float f() { return HUGE_VALF; }
+```
+
+```
+cl /c /W4 /fp:precise  -> clean
+cl /c /W4 /fp:fast     -> warning C4756
+```
+
+**The consequence to remember:** `bWarningsAsErrors` is an OR (`UEBuildModuleCPP.cs:2669`, §3), so
+the day anything upstream turns `/WX` on for a game target this becomes a build stopper — on Windows
+only, in vendored code, from a flag nobody set deliberately. It is recorded rather than silenced,
+because silencing it in the module would also hide any *real* constant overflow.
+
+This is B5's mirror image, and the reason the bead insisted on both shapes: B5 (RmlUi's
+dll-interface on header-only templates) **cannot** fire monolithically because `RMLUI_STATIC_LIB`
+empties the macro; C4756 **cannot** fire modularly because the editor target compiles `/fp:precise`.
+Neither build shape substitutes for the other, in either direction.
+
+### 12.4 `BuildPlugin -StrictIncludes` for Win64
+
+Not yet run — queued behind the cook, which claims the machine. Command:
+
+```
+RunUAT.bat BuildPlugin -Plugin=<clone>\VaCuus.uplugin -Package=<out> -TargetPlatforms=Win64 -StrictIncludes
+```
+
+### 12.5 The .NET Framework SDK, narrowed (bead `akj.10.9`)
+
+Re-checked 2026-08-03 evening, four ways, all still negative: no `NETFXSDK` under either Windows
+Kits path, no `Microsoft SDKs\NETFXSDK` key in either registry view, no `.NETFramework` reference
+assemblies, no `mscoree.h` anywhere. `UE_SDKS_ROOT` is set in no scope (machine and user both empty,
+re-verified). The shim from the morning pass still sits at `C:\VaCuusWin64Test\autosdk`, still with
+its `#error`-ed stub header, and is still needed.
+
+**How much it blocks, established by tripping over it rather than by reasoning.** The first draft of
+this section said the SDK gap "blocks the dev loop, not the product", on the strength of §12.3's
+game target building without the shim. **That was wrong, and the P0 cook proved it within five
+seconds:**
+
+```
+Creating makefile for TP_ThirdPersonEditor (.uproject file is newer)
+Unable to instantiate module 'SwarmInterface': Could not find NetFxSDK install dir …
+  (referenced via TP_ThirdPersonEditor -> Launch.Build.cs -> … -> Engine.Build.cs)
+Result: Failed (RulesError)          # AutomationTool exiting with ExitCode=8
+```
+
+`BuildCookRun` builds the **editor** target in order to run the cook, so packaging inherits the
+editor's dependency on `SwarmInterface` the moment UBT has to evaluate module rules again. The P1
+cook succeeded only because the editor makefile happened to still be valid from an earlier editor
+build; disabling the plugin in the `.uproject` invalidated it, and the very next cook failed. Any
+`.uproject` or `Build.cs` edit does the same, and a clean machine's first cook has no valid makefile
+at all.
+
+**Corrected blast radius: this blocks editor builds AND packaging. The only thing that escapes it is
+a direct game-target build** (`Build.bat TP_ThirdPerson …`), which does not depend on `UnrealEd`.
+Owner action is unchanged and now more clearly worth doing: install VS component
+`Microsoft.Net.Component.4.6.2.SDK` (or `4.8.SDK`). Until then every cook on this machine needs
+`UE_SDKS_ROOT` pointed at the shim **for the build process only** — which is how both cooks in
+§12.7 were run, with the machine and user scopes verified empty before and after.
+
+### 12.6 The export gate, re-run (bead `akj.10.7`)
+
+`Tools/api_export_check_win64.ps1` is committed (`6b82e4a`), so the "does Tools/ take PowerShell"
+question is closed. Re-run at this commit against the Win64 editor build: **clean** — 5 supported
+classes reachable (`UVaCuusWidget` 27 exported member refs, `UVaCuusWorldComponent` 53,
+`UVaCuusView` 65, `UVaCuusSubsystem` 39, `UVaCuusStyleSet` 14), `FVaCuusRmlDocumentHost` at 0, the
+absent-class self-test reporting 0 so the FAIL path is known to work, exported `JS_*` symbols 0.
+`docs/buyer/owner-handoff.md` step 3b now names both gates instead of calling the check Linux-only.
+
+### 12.7 The Win64 cook (bead `akj.10.3`) — both halves closed
+
+**(1) The disk literal.** Two `BuildCookRun -platform=Win64 -clientconfig=Shipping -build -cook
+-stage -pak` packages, P1 = plugin enabled, P0 = plugin disabled in the `.uproject` plus the three
+plugin-scoped config lines commented out:
+
+| | P1 (plugin on) | P0 (plugin off) | Delta |
+|---|---|---|---|
+| Staged bytes, non-debug (`.pdb` excluded) | 473,562,978 B | 469,947,474 B | **+3,615,504 B (3.45 MiB)** |
+| `TP_ThirdPerson-Win64-Shipping.exe` | 169,001,472 B | 166,074,368 B | +2,927,104 B |
+| `VcHost-Windows.ucas` | 224,444,416 B | 223,771,520 B | +672,896 B |
+| `VcHost-Windows.pak` | 11,243,420 B | 11,236,996 B | +6,424 B |
+| `VcHost-Windows.utoc` | 213,163 B | 210,422 B | +2,741 B |
+| `global.ucas` | 3,226,992 B | 3,221,584 B | +5,408 B |
+
+**+3.45 MiB against a 10 MB budget**, itemization closing to 931 bytes of staged manifest text, and
+identical non-debug file counts (29) in both legs — nothing appears or disappears as a whole file,
+so the delta is entirely growth inside the binary and the containers. That is what a bundle-mounted
+plugin with no loose staged content is supposed to look like. **Passport row 6's Linux proxy
+(3.22 MiB) turns out to have been a good one — 7% low, same shape.** Full itemization in the
+passport.
+
+**(2) The memory-mapped bundle line, observed taken:**
+
+```
+Mounted bundle '/VaCuus/Bundles/DevUIBundle.DevUIBundle': 24 entries, 465513 bytes,
+  memory-mapped region, hash da75027b...
+```
+
+`bMemoryMapped` is **true** — the branch at `VaCuusBundleMount.cpp:212` that only Win64, Android and
+iOS can reach. Reproduced across two consecutive runs with the identical hash and byte count. Set
+beside the Linux Shipping line for the same bundle — `24 entries, 461881 bytes, resident buffer` —
+this is the platform split the source predicted, now seen from both sides. (Payload sizes differ
+because the two platforms cook the payload separately; entry count matches.)
+
+Note also that `825969f`'s fix is doing its job: the message now reports the property it read rather
+than a platform it assumed, so this line can be trusted on Windows. The warning in bead `akj.10.3`
+about the fallback sentence being wrong on Win64 predates that commit.
+
+**Venue substitution, recorded per spec §2(f).** The observation was made on a cooked, paked, staged
+**Development** build rather than Shipping, because on this engine a Shipping run cannot be read at
+all — see trap 3 below. It is mechanism-preserving for this particular question: `bMemoryMapped` is
+set from whether the load returned a mapped region, which depends on the **cooked payload's**
+`BULKDATA_MemoryMappedPayload` stamp and the iostore/pak loader, neither of which is a function of
+the compile configuration. Both legs read the same cooked content. What the substitution does not
+cover is Shipping-only codegen, and nothing here reads that.
+
+**A cross-check that fell out of it:** the packaged run's second pass measured 79.7 fps with UI
+Update 3.556 / Record 2.205 ms — within noise of the editor `-game` soak's 80.8 fps and
+3.001 ms combined. The packaged build performs like the editor build on this workload, which is
+worth knowing because the passport's Win64 column was measured in the editor venue.
+
+**First-run warm-up is real and large, and it would have been easy to publish by mistake.** The
+*first* run off a fresh cook measured **46.6 fps, Update 13.0 / Record 9.0 ms** — about 4× the
+steady figures above, on the same binary and the same content. Nothing was wrong; the cold PSO and
+shader caches simply dominate the first pass. Any Win64 number taken from a just-cooked package
+without a warm-up run is wrong by roughly that factor.
+
+**Four Win64-specific traps, each of which cost a failed run:**
+
+1. **The cook needs the AutoSDK shim.** Exit code 8 on the first P0 attempt — §12.5. `BuildCookRun`
+   builds the editor target, and disabling the plugin in the `.uproject` invalidated the editor
+   makefile, so UBT re-evaluated module rules and hit `SwarmInterface`.
+2. **Orphaned staged processes lock the staging directory.** Exit code 102,
+   `Error_FailedToDeleteStagingDirectory`, on `dbghelp.dll`. Cause: the staged **root** `.exe` is a
+   launcher stub that re-launches the real binary out of `<staged>\VcHost\Binaries\Win64\`, so
+   killing the PID `Start-Process` returns leaves the *game* running. Two such orphans from earlier
+   row-15 runs were still alive fifteen minutes later. Reap by executable **path** after every
+   staged run — never by name pattern, which is the same trap CLAUDE.md already records for `pkill`.
+3. **A Shipping run on an Installed engine cannot be read at all.** A stock `Game` target compiles
+   every `UE_LOG` out of Shipping, `-log` or not. Setting `bUseLoggingInShipping = true` is refused:
+   `TP_ThirdPerson modifies the values of properties … not allowed, as TP_ThirdPerson has build
+   products in common with UnrealGame`, and the remedy UBT names —
+   `BuildEnvironment = TargetBuildEnvironment.Unique` — requires rebuilding engine modules, which an
+   Installed build cannot do. `-clientconfig=Test` is not an escape either: *"Targets cannot be
+   built in the Test configuration with this engine distribution."* Hence the Development
+   substitution above.
+4. **A stale target receipt silently stages nothing.** After the failed `bUseLoggingInShipping`
+   builds, `TP_ThirdPerson.target` was left as a *partial* receipt — `Launch` empty, **0 build
+   products** — and UAT dutifully staged content with no executable, without warning. Rebuilding did
+   not fix it ("Target is up to date" writes no receipt); the receipt file has to be **deleted** and
+   the target rebuilt. Two related timestamp traps in the same area: restoring a `Target.cs` with
+   `Copy-Item` from a backup restores its **original mtime**, so UBT keeps using the rules assembly
+   it compiled from the edited file and the failure repeats verbatim until the file is touched.
+
+**And one venue difference that is not a trap but will waste ten minutes if unknown:** a staged
+**Shipping** build writes its `Saved/` to `%LOCALAPPDATA%\<Project>\Saved`, while a staged
+**Development** build writes it under the staged tree at `<staged>\VcHost\Saved\`. Screenshots and
+logs are in different places depending on the configuration.
