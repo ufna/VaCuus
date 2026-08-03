@@ -9,7 +9,7 @@
 // The vendored header, reachable only inside this module (PrivateIncludePaths --
 // see VaCuusJs.Build.cs). This header is itself Private/ for the same reason:
 // nothing outside VaCuusJs may see a JSRuntime.
-#include "quickjs.h"
+#include "VaCuusQuickJs.h"
 
 /** The three shapes a surfaced JS-error diagnostic arrives in (M4 Task 8, spec 3.8). */
 enum class EVaCuusJsErrorKind : uint8

@@ -7,7 +7,7 @@
 
 #include "HAL/PlatformTime.h"
 
-#include "quickjs.h"
+#include "VaCuusQuickJs.h"
 
 #include <cstring>
 

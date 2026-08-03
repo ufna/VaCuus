@@ -16,7 +16,25 @@ public class VaCuusRml : ModuleRules
 		CppStandard = CppStandardVersion.Cpp20;
 
 		string RmlRoot = Path.Combine(ModuleDirectory, "../ThirdParty/RmlUi");
-		PublicIncludePaths.Add(Path.Combine(RmlRoot, "Include"));
+
+		// SYSTEM, not plain, and the first Win64 build is what proved it has to be. The
+		// vendored headers are compiled by OUR modules' TUs, not just this one, and those
+		// modules cannot relax warnings: UEBuildModuleCPP.cs:2669 is
+		// `Result.bWarningsAsErrors |= Rules.bWarningsAsErrors`, an OR, so a module can only
+		// ever turn warnings-as-errors ON. (Which also means the `bWarningsAsErrors = false`
+		// above never did anything -- kept only because it still documents the intent for
+		// this module's own vendored .cpp TUs.) MSVC then runs /W4 /WX over RmlUi's headers
+		// and stops the build on C4800 at DataVariable.h:25 and DataModelHandle.h:22 --
+		// `explicit operator bool() const { return definition; }`, a pointer-to-bool
+		// conversion that is idiomatic C++ and that clang does not warn about at all, which
+		// is exactly why Linux and macOS never saw this.
+		//
+		// A system include path is the engine's own answer: VCToolChain.cs:281-289 turns it
+		// into `/external:I` plus `/external:W0` on MSVC (warning level 0 INSIDE those
+		// headers, so nothing is emitted for /WX to promote), and ClangToolChain.cs:649
+		// turns it into `-isystem` on Linux/Mac. Warnings in our OWN code are untouched on
+		// every platform; only the vendored headers go quiet.
+		PublicSystemIncludePaths.Add(Path.Combine(RmlRoot, "Include"));
 		PublicDefinitions.Add("RMLUI_CUSTOM_RTTI=1");
 
 		// RMLUI_DEBUG: DELIBERATELY NOT DEFINED HERE, IN ANY CONFIGURATION -- this comment is
