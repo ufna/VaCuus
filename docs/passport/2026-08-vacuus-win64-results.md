@@ -93,6 +93,11 @@ so had it ever actually been included the build would have failed loudly rather 
 `Microsoft.Net.Component.4.6.2.SDK` or `4.8.SDK`) and the shim becomes unnecessary. Everything
 this pass created lives under `C:\VaCuusWin64Test` and deletes with it.
 
+> **DONE 2026-08-04.** The owner installed it; `NETFXSDK\4.6.2` is real, editor targets generate
+> makefiles with no `UE_SDKS_ROOT` at all, and **the shim has been deleted**. Everything in this
+> section is history — do not re-create the shim. The verification, including the cached-makefile
+> trap that nearly produced a false PASS, is in §12.5. Bead `akj.10.9` closed.
+
 ---
 
 ## 3. Build findings
@@ -799,10 +804,44 @@ at all.
 
 **Corrected blast radius: this blocks editor builds AND packaging. The only thing that escapes it is
 a direct game-target build** (`Build.bat TP_ThirdPerson …`), which does not depend on `UnrealEd`.
-Owner action is unchanged and now more clearly worth doing: install VS component
-`Microsoft.Net.Component.4.6.2.SDK` (or `4.8.SDK`). Until then every cook on this machine needs
-`UE_SDKS_ROOT` pointed at the shim **for the build process only** — which is how both cooks in
-§12.7 were run, with the machine and user scopes verified empty before and after.
+Until it was fixed, every cook on this machine needed `UE_SDKS_ROOT` pointed at the shim **for the
+build process only** — which is how both cooks in §12.7 were run, with the machine and user scopes
+verified empty before and after.
+
+#### RESOLVED 2026-08-04 — the owner installed the SDK, and the shim is gone
+
+The owner installed the VS component; `NETFXSDK\4.6.2` is now real, checked the same four ways this
+document used to prove it absent: registry key
+`HKLM:\SOFTWARE\WOW6432Node\Microsoft\Microsoft SDKs\NETFXSDK\4.6.2` carrying
+`KitsInstallationFolder=C:\Program Files (x86)\Windows Kits\NETFXSDK\4.6.2\`; the directory itself;
+a real `Include\um\mscoree.h`; and `Lib\um\{x64,x86,arm}\mscoree.lib`. (The `.NETFramework`
+reference-assemblies folder is still absent — that is the *targeting pack*, a different component,
+and `MicrosoftPlatformSDK.cs:357-367` does not look for it.)
+
+**The acceptance criterion, run as written, with the same command that used to fail.** The shim was
+not merely unreferenced but *renamed off disk* and then deleted outright, so it could not
+participate even by accident, and `UE_SDKS_ROOT` was empty in process, machine and user scopes with
+no pre-existing makefile:
+
+| | before the install | after |
+|---|---|---|
+| `Build.bat TP_ThirdPersonEditor Win64 Development` | `Unable to instantiate module 'SwarmInterface': Could not find NetFxSDK install dir` → **`Result: Failed (RulesError)`, exit 8**, ~3 s | `Creating makefile for TP_ThirdPersonEditor (no existing makefile)` → **`Result: Succeeded`, exit 0**, 2.5–3.0 s, `Makefile.bin` 6,076,274 B written |
+
+One variable changed and the failure went with it. Confirmed twice, the second time with the shim
+already deleted rather than merely renamed.
+
+**`C:\VaCuusWin64Test\autosdk` no longer exists.** That was the point of removing it: the shim was
+the standing trap this bead was really about — a future session would otherwise have found the
+recipe in this document and re-created a workaround for a problem that no longer exists. Editor
+builds and cooks on this machine now need no `UE_SDKS_ROOT` at all.
+
+**A trap worth keeping from the verification itself**, because it nearly produced a false PASS: the
+first re-test returned `Result: Succeeded` while the SDK was *still missing*. UBT had reused a
+**cached makefile** and never evaluated module rules. The `RulesError` only appears when the
+makefile has to be regenerated — which is exactly why the P1 cook passed and the P0 cook died the
+moment the `.uproject` changed. **Delete `Makefile.bin` before testing anything about module
+rules**, or the cache will tell you a broken thing works. Same family as §12.7's stale-receipt and
+stale-`Target.cs`-mtime traps.
 
 ### 12.6 The export gate, re-run (bead `akj.10.7`)
 
