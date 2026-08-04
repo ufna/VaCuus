@@ -767,13 +767,50 @@ dll-interface on header-only templates) **cannot** fire monolithically because `
 empties the macro; C4756 **cannot** fire modularly because the editor target compiles `/fp:precise`.
 Neither build shape substitutes for the other, in either direction.
 
-### 12.4 `BuildPlugin -StrictIncludes` for Win64
-
-Not yet run — queued behind the cook, which claims the machine. Command:
+### 12.4 `BuildPlugin -StrictIncludes` for Win64 — run 2026-08-04, and it found nothing
 
 ```
-RunUAT.bat BuildPlugin -Plugin=<clone>\VaCuus.uplugin -Package=<out> -TargetPlatforms=Win64 -StrictIncludes
+RunUAT.bat BuildPlugin -Plugin=C:\VaCuus\VaCuus.uplugin -Package=C:\VaCuusStrict\Package \
+           -TargetPlatforms=Win64 -StrictIncludes
+EXIT=0, 2,687 s, 994 files packaged.
 ```
+
+**The flag is verified in effect rather than assumed**, because a silently-ignored flag produces
+exactly the same green: the log says `Building with precompiled headers and unity disabled`, every
+UBT invocation carries `-NoPCH -NoSharedPCH -DisableUnity`, and 929 of the 936 compile actions name
+an individual `.cpp`. The only seven `Module.*` translation units are UHT's generated
+`Module.<X>.gen.cpp`, one per module, which exist with or without unity.
+
+| Leg | Actions | Time | Result |
+|---|---|---|---|
+| `UnrealEditor Win64 Development` | 335 | 1,080 s | Succeeded |
+| `UnrealGame Win64 Development` | 305 | 911 s | Succeeded |
+| `UnrealGame Win64 Shipping` | 305 | 692 s | Succeeded |
+
+**Findings: none.** In 1,059 log lines the only diagnostic is `C4756 overflow in constant
+arithmetic` at the vendored `RmlUi/Source/Core/Layout/ContainerBox.cpp:141` — twice, once per
+*game* leg, never in the editor leg — which is §12.3's already-explained benign case (Microsoft's
+own `corecrt_math.h` manufactures infinity by deliberate overflow; the asymmetry is `/fp:fast`
+versus `/fp:precise`). So under MSVC with PCH and unity both off, no header in this plugin compiles
+only because something else included its dependencies first. This was the platform most likely to
+find one — MSVC's two-phase lookup is stricter than clang's — which is what made the question worth
+asking and the negative worth recording.
+
+Two things this run settled that were not its subject. The CLAUDE.md hazard about `BuildPlugin`
+rewriting `Engine\Binaries\**\UnrealEditor.modules` **did not fire**: the manifest is byte-identical
+before and after, SHA256 `BBE466E4…8747`, measured by the driver script rather than assumed — though
+this is an *Installed* engine and the hazard was recorded against a source one, so it is not
+refuted either. And the package this produced is a **full** run rather than the filter-only
+(`-NoHostPlatform -NoTargetPlatforms`) one that bead `avu` was verified with: it carries `README.md`
+and `docs/buyer`'s four pages, and no `Binaries/`, so the packaging fix holds on the real upload
+shape produced on Windows.
+
+**Operational note, recorded because the opposite was predicted.** The run was launched from an SSH
+session, the link dropped about four minutes in, and the machine then left the network for over an
+hour. **The build completed anyway** and wrote its whole log — Windows did not reap the child when
+the session ended, and the machine had not rebooted (uptime 1,234 minutes at recovery). Launching
+detached is still the better shape, but what a dropped link cost here was the live output, not the
+work.
 
 ### 12.5 The .NET Framework SDK, narrowed (bead `akj.10.9`)
 
