@@ -129,6 +129,78 @@ blur is composite-time work, deliberately outside the publish gate. The referenc
 HUD publishes 100% by design (it animates every frame); your pause menu should look
 like the M1 number, and `vacuus.M1HUD.PerfLog 1` prints the ratio so you can check.
 
+## Geometry antialiasing: `vacuus.ViewSampleCount`, off by default
+
+Most of a VaCuus frame is antialiased already and costs nothing extra for it: RmlUi's
+layout boxes are axis-aligned so their edges land on pixel boundaries, glyphs come out of
+an antialiased font atlas, and gradient decorators antialias their own stop edges
+analytically in the pixel shader. What is left is **polygon edges** — `border-radius`
+arcs, which RmlUi tessellates into a fan, and anything under a non-axis-aligned
+`transform`. On a single-sampled target those are a hard staircase, which is what a small
+dial ring reads as "broken pixels".
+
+`vacuus.ViewSampleCount` (1 = default, 2, 4, 8) turns on MSAA for the per-view render
+target. The draws land in a multisampled companion and the render pass's own store action
+resolves them back into the same single-sampled RT — so **nothing downstream changes**:
+the Slate composite, the world-panel copy, the mip chain and every screen coordinate are
+untouched. Values that are not powers of two round down; the platform maximum still
+applies, and the granted count is logged once per view.
+
+**What it buys, counted.** A `border-radius` disc and a rotated bar, measured as pixels
+that are neither the fill colour nor the background (`docs/research/proofs/3tg-view-msaa`):
+
+| Shape | `ViewSampleCount 1` | `ViewSampleCount 4` |
+|---|---|---|
+| `border-radius` disc, 206×206 box | 0 blended pixels | 432 |
+| rotated quads, 168×173 box | 0 blended pixels | 819 |
+| **axis-aligned boxes (control)** | **0** | **0** |
+| **text (control)** | byte-identical | byte-identical |
+| **gradient fill (control)** | byte-identical | byte-identical |
+
+Zero is not "few" — a single-sampled rasterizer produces a step function, so no pixel is
+ever partially covered. The three controls are the other half of the claim: MSAA multiplies
+COVERAGE samples and leaves texture sampling alone, so it cannot soften text or a fill.
+
+**What it costs.** Reference HUD (1,732 nodes, 908 draws/frame, publishing 100% by design),
+Dev venue, offscreen 1920×1080, 60 s per row, `vacuus.M1HUD.PerfLog 1`, 2026-08-06:
+
+| `vacuus.ViewSampleCount` | Extra GPU memory per view @1080p | UI Record avg | RT Replay avg / p99 | fps | publish ratio |
+|---|---|---|---|---|---|
+| 1 (default) | — | 0.429 ms | 0.411 / 0.594 ms | 226.8 | 100% |
+| 2 | **+15.82 MiB** | 0.433 ms | 0.408 / 0.594 ms | 226.1 | 100% |
+| 4 | **+31.64 MiB** | 0.439 ms | 0.420 / 0.606 ms | 224.5 | 100% |
+| 8 | **+63.28 MiB** | 0.435 ms | 0.546 / 0.733 ms | 223.0 | 100% |
+
+Read that table for what it is. **Memory is the honest cost and it is large**: the
+multisampled target is `N × 7.91 MiB` at 1080p and it ADDS to the 7.91 MiB RT, which has to
+stay because nothing can sample a multisampled texture. At 4× a fullscreen view goes from
+7.91 to 39.55 MiB, and that is *per view* — a stack of three fullscreen views pays it three
+times. Scale it by your own view size, not by 1080p.
+
+The CPU rows barely move, and they barely move for a reason rather than because MSAA is
+free: `Record` is UI-thread command recording and `Replay` is render-thread command
+*recording*, and multisampling costs neither — it costs GPU fill and bandwidth. The fps
+column is a whole-pipeline number on a run that is CPU-bound at ~225, so it bounds the cost
+rather than isolating it. Up to 4× the cost stays invisible here (Replay within noise of the
+1× row, fps −1%). **At 8× it stops
+being invisible**: Replay avg rises 33% (0.411 → 0.546 ms) as the render thread starts
+waiting on the RHI. Treat 8× as the row that needs your own project's GPU profiler before
+you ship it, and 2× or 4× as the ones a HUD can afford. The **publish ratio is untouched at
+every count** — the idle gate is upstream of all of this, so a static HUD still replays
+approximately never and pays the memory and nothing else.
+
+**Turning it off gives the memory back** on the next replayed frame (the release is
+asserted by `VaCuus.Render.MSAA.OutputRTUnchanged`), so this is a live quality setting, not
+a boot-time one.
+
+One caveat worth stating: the resolve is a box filter over display-encoded premultiplied
+pixels. For the case this exists for — a shape's coverage against what is behind it — that
+is exactly right, because a premultiplied edge stores `coverage × encode(C)` and the average
+of those IS the correct value for the averaged coverage. Where it is the standard MSAA
+approximation is an edge between two different opaque colours, which resolves to the encoded
+average rather than the encoded value of the linear average. Every downsample of this target
+has that property; it is not specific to MSAA.
+
 ## World panels: mips ride the same gate
 
 A world panel's render target carries a full mip chain by default (`bGenerateMips`
@@ -140,6 +212,13 @@ one `FGenerateMips` pass per publish (its own `WorldMips` PerfLog line, printed 
 to the `WorldCopy` it follows) and ~33% more RT memory. Turn it off — per component,
 `SetGenerateMips(false)` at runtime — for a panel that never minifies (pinned
 near-1:1 on screen), where the chain buys nothing and the memory is real.
+
+`vacuus.ViewSampleCount` applies to world panels too, and that is deliberate rather than
+incidental: because MSAA resolves into the panel's own single-sampled RT at its own
+`DrawSize`, the copy's extent guard, its format check and the mip chain all see exactly what
+they saw before. (A supersample would not have this property — the sink SKIPS its copy on
+any extent mismatch, so an oversized RT would freeze the panel.) The memory multiplier is
+the panel's own size, not the screen's: a 1024×1024 panel is 4 MiB, so 4× adds 16.
 
 ## Load behavior at scale
 
@@ -158,7 +237,9 @@ Added RAM at reference scale, cooked Shipping, A/B two-run delta at matched quie
 checkpoints: **+14.3 MB median** (band +11…+19) against the 32 MB gate — with the JS
 heap capped at 16 MiB (`JS_SetMemoryLimit`; the reference HUD's steady churn never
 even triggered a collection in 95 s). GPU is reported separately, not inside the
-32 MB: the per-view RT is 7.91 MiB at 1080p and scales with YOUR view size. Added
+32 MB: the per-view RT is 7.91 MiB at 1080p and scales with YOUR view size, and
+`vacuus.ViewSampleCount` multiplies that (see the geometry-AA section — 4× is +31.64 MiB
+per view on top). Added
 disk, Linux Shipping proxy: **+3.22 MiB** total (binary 2.96 MiB + cooked bundle +
 shaders), itemized in the passport; the 10 MB budget row's own platform (Win64) is
 an owner-hardware literal.

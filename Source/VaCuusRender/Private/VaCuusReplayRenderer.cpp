@@ -7,6 +7,7 @@
 #include "VaCuusStats.h"
 #include "VaCuusUIShaders.h"
 
+#include "DynamicRHI.h"
 #include "GlobalRenderResources.h"
 #include "GlobalShader.h"
 #include "PipelineStateCache.h"
@@ -43,8 +44,80 @@ static TAutoConsoleVariable<int32> CVarVaCuusAsyncTextureUploadBytes(
 	TEXT("recorded on a worker, instead of memcpy'ing into staging on the render thread. ")
 		TEXT("0 = always upload inline (the pre-akj.6.25 behaviour)."));
 
+/**
+ * OPT-IN GEOMETRY ANTIALIASING FOR THE PER-VIEW RENDER TARGET (bead VaCuus-3tg), and the
+ * default is 1 because this plugin's economics are the product.
+ *
+ * WHAT ALIASES AND WHY MSAA IS THE INSTRUMENT FOR IT. RmlUi's layout boxes are axis-aligned,
+ * so their edges do not alias; glyphs come out of an already-antialiased font atlas; and
+ * since VaCuus-sw1 the gradient decorators antialias their own stop edges analytically in the
+ * pixel shader. What is left is POLYGON EDGES: `border-radius` arcs, tessellated as a fan with
+ * a radius-dependent point count (GeometryBackgroundBorder.cpp:139), and anything under a
+ * non-axis-aligned `transform`. Multisampling is exactly a polygon-edge instrument -- it
+ * multiplies coverage samples and leaves texture sampling alone -- so it is the whole of the
+ * remaining defect and none of the rest.
+ *
+ * WHY NOT SUPERSAMPLE THE VIEW INSTEAD, which was the other candidate on the bead. Three
+ * findings, each of which the other option fails:
+ *
+ *  1. RmlUi has no context-wide scale. Resizing the context to N x its arranged rect lays the
+ *     document out at 1/N of its authored size -- SetDensityIndependentPixelRatio only moves
+ *     `dp`/`em`, and every sheet here is written in `px` (the lobby demo's hybrid floor already
+ *     records this, VaCuusLobbyDemo.cpp:633-635). So a genuine layout supersample is
+ *     document-side, not a knob.
+ *  2. Rasterizing at N x with the layout left alone magnifies the FONT ATLAS: at N=2 the
+ *     bilinear magnify plus the 2:1 downsample compose to a [0.125, 0.75, 0.125] kernel on
+ *     text that is crisp today. Text is the one thing here that is already antialiased, so
+ *     supersampling cannot improve it and provably softens it.
+ *  3. It would break world panels outright. FVaCuusWorldSink::CopyToDestination skips the copy
+ *     whenever the RT extent and the destination extent disagree (VaCuusWorldSink.cpp:71-78),
+ *     so an N x RT means a world panel that never updates again. MSAA changes no extent, so
+ *     world panels get the knob for free and correctly -- their copy, their format check and
+ *     their mip chain all see the same single-sampled ViewSize texture as before.
+ *
+ * THE THREE COSTS THE BEAD PREDICTED, RE-CHECKED. Memory is real and is the reason for the
+ * default: the MSAA target ADDS to the RT it resolves into, +15.8 MiB (2x) or +31.6 MiB (4x)
+ * per view at 1080p against 7.91 today. The "resolve pass plus rewiring all three consumers"
+ * is not real -- the resolve is a STORE ACTION on the pass we already have
+ * (ERenderTargetActions::Clear_Resolve) and it lands in OutputRT, so no consumer changes at
+ * all. The gamma caveat is real but is not MSAA's: a box resolve of a display-encoded target
+ * is off wherever it averages two DIFFERENT opaque colours -- and for the coverage case this
+ * bead is about it is EXACT, because a premultiplied edge against transparency stores
+ * coverage * encode(C) and the average of those is the right premultiplied value for the
+ * averaged coverage. Any downsample of this target has the same property, supersampling
+ * included.
+ *
+ * PSO: nothing. Every draw path here builds from ApplyCachedRenderTargets
+ * (VaCuusReplayRenderer.cpp's BindPipeline, VaCuusMaterialDraw.cpp:243), which picks the
+ * sample count up from the bound RT.
+ *
+ * Values other than 1/2/4/8 are rounded down rather than refused -- see ResolveViewSampleCount,
+ * which also explains why an unclamped value would crash rather than degrade.
+ */
+static TAutoConsoleVariable<int32> CVarVaCuusViewSampleCount(
+	TEXT("vacuus.ViewSampleCount"),
+	1,
+	TEXT("MSAA sample count for the per-view UI render target: 1 (default, no MSAA), 2, 4 or 8. ")
+	TEXT("Antialiases border-radius arcs and transformed elements, which are the only geometry ")
+	TEXT("here that is not antialiased already. Costs one extra multisampled target per view ")
+	TEXT("(N x 7.91 MiB at 1080p) -- see docs/buyer/perf-guide.md. Other values round DOWN to a ")
+	TEXT("power of two, and the platform maximum still applies."));
+
 namespace VaCuusReplay
 {
+int32 ResolveViewSampleCount(int32 Requested, int32 PlatformMax)
+{
+	// Rounded DOWN to a power of two on both sides, then min'd: FMath::FloorLog2 of a
+	// non-positive int is not something to rely on, so anything under 2 short-circuits to
+	// "off" first and the shift below only ever sees a value >= 2.
+	const auto FloorPow2 = [](int32 Value) { return Value < 2 ? 1 : (1 << FMath::FloorLog2(uint32(Value))); };
+
+	const int32 Wanted = FMath::Min(FloorPow2(Requested), 8);
+	const int32 Allowed = FMath::Min(FloorPow2(PlatformMax), 8);
+	return FMath::Max(FMath::Min(Wanted, Allowed), 1);
+}
+
+
 /**
  * Pixel-space -> clip-space ortho in UE row-vector convention (v' = v * M):
  * x: 0..W -> -1..1, y: 0..H -> 1..-1 (y-down pixels, y-up clip). Incoming z is
@@ -189,6 +262,8 @@ void FVaCuusReplayRenderer::ReleaseResources()
 	Textures.Empty();
 	Shaders.Empty();
 	OutputRT.SafeRelease();
+	MSAART.SafeRelease();
+	bLoggedSampleCount = false;
 
 	// Textures created for a buffer that never reached its replay pass -- teardown between graph
 	// build and pass execution. Nothing dangles either way (the upload task holds its own payload
@@ -215,20 +290,77 @@ void FVaCuusReplayRenderer::EnsureOutputRT(FRHICommandList& RHICmdList, FIntPoin
 		return;
 	}
 
-	if (OutputRT.IsValid() && OutputRT->GetSizeXY() == ViewSize)
+	if (!OutputRT.IsValid() || OutputRT->GetSizeXY() != ViewSize)
+	{
+		// PF_B8G8R8A8 to match Slate's default backbuffer expectations for the
+		// Task 8 composite; shaders write float4, so byte order is irrelevant here.
+		const FRHITextureCreateDesc Desc =
+			FRHITextureCreateDesc::Create2D(TEXT("VaCuusOutputRT"), ViewSize, PF_B8G8R8A8)
+				.SetFlags(ETextureCreateFlags::RenderTargetable | ETextureCreateFlags::ShaderResource)
+				.SetClearValue(FClearValueBinding::Transparent)
+				// Invariant: outside Replay() the RT is always in SRV state.
+				.SetInitialState(ERHIAccess::SRVMask);
+		OutputRT = RHICmdList.CreateTexture(Desc);
+	}
+
+	EnsureSampleTarget(RHICmdList, ViewSize);
+}
+
+void FVaCuusReplayRenderer::EnsureSampleTarget(FRHICommandList& RHICmdList, FIntPoint ViewSize)
+{
+	// GDynamicRHI is null under the -nullrhi automation venue; the base class's answer (8) is
+	// the right default for every RHI that does not lower it, and 1 is the right answer for no
+	// RHI at all -- there is nothing to rasterize into.
+	const int32 PlatformMax = GDynamicRHI ? int32(GDynamicRHI->RHIGetPlatformTextureMaxSampleCount()) : 1;
+	const int32 SampleCount =
+		VaCuusReplay::ResolveViewSampleCount(CVarVaCuusViewSampleCount.GetValueOnRenderThread(), PlatformMax);
+
+	if (SampleCount <= 1)
+	{
+		// Released rather than kept: the knob's whole cost is this allocation, so turning it off
+		// at runtime has to give the memory back on the next replayed frame or the cvar is a lie.
+		if (MSAART.IsValid())
+		{
+			UE_LOG(LogVaCuus, Log, TEXT("VaCuus view MSAA off (vacuus.ViewSampleCount=1): released the multisampled target"));
+			MSAART.SafeRelease();
+			bLoggedSampleCount = false;
+		}
+		return;
+	}
+
+	if (MSAART.IsValid() && MSAART->GetSizeXY() == ViewSize && int32(MSAART->GetDesc().NumSamples) == SampleCount)
 	{
 		return;
 	}
 
-	// PF_B8G8R8A8 to match Slate's default backbuffer expectations for the
-	// Task 8 composite; shaders write float4, so byte order is irrelevant here.
+	// EXTENT AND CLEAR VALUE MATCH OutputRT EXACTLY, and both halves matter: a resolve
+	// attachment must agree with its source on extent (the RHI validates it), and the pass
+	// clears THIS target rather than OutputRT, so a different clear value would change what an
+	// uncovered pixel resolves to.
 	const FRHITextureCreateDesc Desc =
-		FRHITextureCreateDesc::Create2D(TEXT("VaCuusOutputRT"), ViewSize, PF_B8G8R8A8)
-			.SetFlags(ETextureCreateFlags::RenderTargetable | ETextureCreateFlags::ShaderResource)
+		FRHITextureCreateDesc::Create2D(TEXT("VaCuusOutputMSAA"), ViewSize, PF_B8G8R8A8)
+			.SetFlags(ETextureCreateFlags::RenderTargetable)
 			.SetClearValue(FClearValueBinding::Transparent)
-			// Invariant: outside Replay() the RT is always in SRV state.
-			.SetInitialState(ERHIAccess::SRVMask);
-	OutputRT = RHICmdList.CreateTexture(Desc);
+			.SetNumSamples(uint8(SampleCount))
+			// It is only ever a colour attachment, so RTV is both its initial and its only
+			// state; see the declaration for why that needs no transitions.
+			.SetInitialState(ERHIAccess::RTV);
+	MSAART = RHICmdList.CreateTexture(Desc);
+
+	if (!bLoggedSampleCount)
+	{
+		bLoggedSampleCount = true;
+
+		// The requested value is printed next to the granted one because they can differ two
+		// ways -- rounded down to a power of two, or capped by the platform -- and a silently
+		// downgraded quality knob is exactly the thing a buyer would measure and disbelieve.
+		const int64 Bytes = int64(ViewSize.X) * int64(ViewSize.Y) * 4 * int64(SampleCount);
+		UE_LOG(LogVaCuus, Log,
+			TEXT("VaCuus view MSAA on: %dx MSAA at %dx%d (+%.2f MiB per view, resolving into the same %dx%d RT). ")
+			TEXT("vacuus.ViewSampleCount=%d, platform max %d"),
+			SampleCount, ViewSize.X, ViewSize.Y, double(Bytes) / (1024.0 * 1024.0), ViewSize.X, ViewSize.Y,
+			CVarVaCuusViewSampleCount.GetValueOnRenderThread(), PlatformMax);
+	}
 }
 
 void FVaCuusReplayRenderer::BeginAsyncTextureUploads(FRHICommandListImmediate& RHICmdList, FVaCuusCommandBuffer& Buffer)
@@ -406,9 +538,25 @@ void FVaCuusReplayRenderer::ReplayCommands(FRHICommandList& RHICmdList, const FV
 		return;
 	}
 
-	RHICmdList.Transition(FRHITransitionInfo(OutputRT, ERHIAccess::SRVMask, ERHIAccess::RTV));
+	// THE MSAA FORK (bead VaCuus-3tg), and it is the whole of it: with the knob on, the draws
+	// below rasterize into the multisampled companion and the pass's STORE ACTION resolves them
+	// into OutputRT at EndRenderPass. Nothing between these two lines changes -- same viewport,
+	// same scissor arithmetic, same projection, same PSOs (every BindPipeline here builds from
+	// ApplyCachedRenderTargets, which reads the sample count off the bound RT), and the same
+	// single-sampled OutputRT for everything downstream.
+	//
+	// The DESTINATION is the only resource whose state moves. OutputRT goes SRVMask -> RTV
+	// without the knob and SRVMask -> ResolveDst with it (the access RDG itself asserts for a
+	// resolve target, RHIValidationContext.h:1078); MSAART is created in RTV and stays there.
+	const bool bResolve = MSAART.IsValid();
+	FRHITexture* ColorTarget = bResolve ? MSAART.GetReference() : OutputRT.GetReference();
+	const ERHIAccess DestAccess = bResolve ? ERHIAccess::ResolveDst : ERHIAccess::RTV;
 
-	FRHIRenderPassInfo RPInfo(OutputRT, ERenderTargetActions::Clear_Store);
+	RHICmdList.Transition(FRHITransitionInfo(OutputRT, ERHIAccess::SRVMask, DestAccess));
+
+	FRHIRenderPassInfo RPInfo(ColorTarget,
+		bResolve ? ERenderTargetActions::Clear_Resolve : ERenderTargetActions::Clear_Store,
+		bResolve ? OutputRT.GetReference() : nullptr);
 	RHICmdList.BeginRenderPass(RPInfo, TEXT("VaCuusReplay"));
 	{
 		RHICmdList.SetViewport(0.0f, 0.0f, 0.0f, float(RTSize.X), float(RTSize.Y), 1.0f);
@@ -762,7 +910,7 @@ void FVaCuusReplayRenderer::ReplayCommands(FRHICommandList& RHICmdList, const FV
 	}
 	RHICmdList.EndRenderPass();
 
-	RHICmdList.Transition(FRHITransitionInfo(OutputRT, ERHIAccess::RTV, ERHIAccess::SRVMask));
+	RHICmdList.Transition(FRHITransitionInfo(OutputRT, DestAccess, ERHIAccess::SRVMask));
 
 	// SET, not INC, and no longer "one replay per frame so these read as per-frame". Since the
 	// M2 Task 12 idle gate there are frames with NO replay at all, and what saves these two

@@ -21,6 +21,22 @@ namespace VaCuusReplay
  * orientation. See the definition for the conventions.
  */
 VACUUSRENDER_API FMatrix44f MakePixelToClipMatrix(FIntPoint ViewSize);
+
+/**
+ * The sample count `vacuus.ViewSampleCount` actually gets, given what the platform allows.
+ *
+ * A FREE FUNCTION SO IT IS TESTABLE WITHOUT A GPU, which matters because the failure it
+ * prevents is a CRASH and not a wrong pixel: FVulkanTexture's sample switch ends in
+ * `checkf(0, TEXT("Unsupported number of samples %d"))` for anything that is not a power of
+ * two (VulkanTexture.cpp:481-506), so a typo'd `vacuus.ViewSampleCount 3` would take the
+ * process down rather than degrade. Everything is rounded DOWN to a power of two in [1, 8]
+ * and then clamped by PlatformMax (itself rounded down), so every path out of here is a
+ * value the RHI can build.
+ *
+ * PlatformMax is GDynamicRHI->RHIGetPlatformTextureMaxSampleCount() at the call site --
+ * 8 from the base class (DynamicRHI.h:920), lowered by the RHIs that know better.
+ */
+VACUUSRENDER_API int32 ResolveViewSampleCount(int32 Requested, int32 PlatformMax);
 } // namespace VaCuusReplay
 
 /**
@@ -95,8 +111,29 @@ public:
 	 */
 	void BeginAsyncTextureUploads(FRHICommandListImmediate& RHICmdList, FVaCuusCommandBuffer& Buffer);
 
-	/** Latest replayed UI frame (PF_B8G8R8A8, premultiplied alpha, SRV state); null before the first replay. */
+	/**
+	 * Latest replayed UI frame (PF_B8G8R8A8, premultiplied alpha, SRV state); null before the
+	 * first replay.
+	 *
+	 * SINGLE-SAMPLED AT ViewSize WHATEVER `vacuus.ViewSampleCount` SAYS, and that is the whole
+	 * reason the MSAA knob (bead VaCuus-3tg) needed no consumer to change. When the knob is on,
+	 * the draws land in a multisampled companion and the render pass's own store action resolves
+	 * it into THIS texture at EndRenderPass -- so the Slate composite
+	 * (VaCuusSlateElement.cpp:200), the world sink's CopyTexture + mip chain
+	 * (VaCuusWorldSink.cpp:66-100, which SKIPS on any extent mismatch) and every readback still
+	 * see the same format, the same extent and the same SRVMask state they always did.
+	 */
 	FTextureRHIRef GetOutputRT() const { return OutputRT; }
+
+	/**
+	 * Samples the replay pass is currently rasterizing with: 1 (no MSAA texture) or whatever
+	 * `vacuus.ViewSampleCount` resolved to.
+	 *
+	 * THE OBSERVABLE FOR THE KNOB, and it has to be this rather than GetOutputRT()->GetNumSamples()
+	 * -- which is 1 by design on every path, so it can never distinguish "MSAA off" from "MSAA on
+	 * and resolving". VaCuus.Render.MSAA.OutputRTUnchanged asserts against it.
+	 */
+	int32 GetReplaySampleCount() const { return MSAART.IsValid() ? int32(MSAART->GetDesc().NumSamples) : 1; }
 
 	/**
 	 * Texture payloads this replayer sent down the async path, and the ones it uploaded inline.
@@ -158,6 +195,14 @@ public:
 
 private:
 
+	/**
+	 * Brings MSAART in line with `vacuus.ViewSampleCount` and the given size, releasing it when
+	 * the knob is off. Called from EnsureOutputRT so the two targets can never disagree about
+	 * extent -- a resolve whose source and destination differ is an RHI error, and the size is
+	 * only known there.
+	 */
+	void EnsureSampleTarget(FRHICommandList& RHICmdList, FIntPoint ViewSize);
+
 	/** Idempotence/order guard shared by Replay and ConsumeResources; false = already consumed, skip. */
 	bool ShouldConsume(const FVaCuusCommandBuffer& Buffer) const;
 
@@ -215,6 +260,31 @@ private:
 	TMap<FVaCuusTextureHandle, FTextureRHIRef> PendingAsyncTextures;
 
 	FTextureRHIRef OutputRT;
+
+	/**
+	 * The multisampled companion the replay pass rasterizes into while `vacuus.ViewSampleCount`
+	 * is above 1, resolved into OutputRT by the pass's own store action. Null = knob off, and
+	 * then ReplayCommands takes exactly the path it took before bead VaCuus-3tg.
+	 *
+	 * IT ADDS TO OutputRT RATHER THAN REPLACING IT, which is the knob's entire cost: 1080p
+	 * PF_B8G8R8A8 is 7.91 MiB, so 2x is +15.8 and 4x is +31.6 MiB per view, permanently, on top
+	 * of the 7.91 that has to stay because nothing downstream can sample a multisampled texture.
+	 * The cost table is in docs/buyer/perf-guide.md.
+	 *
+	 * NO ShaderResource FLAG, deliberately: nothing samples it and asking for a sampled
+	 * multisampled image is how you fail texture creation on the RHIs that restrict them.
+	 * RenderTargetable is what a resolve source needs and all it needs.
+	 *
+	 * IT NEVER LEAVES ERHIAccess::RTV. A colour attachment that is only ever an attachment has
+	 * no second state to be in -- the Vulkan resolve happens INSIDE the render pass through
+	 * pResolveAttachments (VulkanRenderpass.h:147-153), not as a separate transfer -- so the
+	 * only resource whose state moves is the resolve DESTINATION, and ReplayCommands round-trips
+	 * that one through ResolveDst exactly like it round-trips it through RTV without the knob.
+	 */
+	FTextureRHIRef MSAART;
+
+	/** Latched so the sample count a session actually got is logged once rather than per frame. */
+	bool bLoggedSampleCount = false;
 
 	/** Newest buffer generation consumed so far (drawn via Replay or resource-only via ConsumeResources). */
 	uint64 LastConsumedGeneration = 0;
