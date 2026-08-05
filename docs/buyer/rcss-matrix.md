@@ -166,8 +166,21 @@ and once its bands shrink past about two pixels it fades to the period's mean
 colour rather than aliasing (VaCuusGradient.usf).
 
 This covers the gradient FILL only. Element outlines -- notably `border-radius`
-arcs -- are tessellated geometry drawn into a single-sampled render target and
-are not antialiased.
+arcs -- are tessellated geometry, and geometry is antialiased by a separate,
+OPT-IN knob: `vacuus.ViewSampleCount` (1 by default, 2/4/8) multisamples the
+per-view render target. Off, a curve's outline is a hard staircase -- a
+206x206 `border-radius` disc measures exactly **0** partially covered pixels,
+because a single-sampled rasterizer produces a step function; at 4x it measures
+432, and text, axis-aligned edges and gradient fills come back byte-identical.
+The knob costs one extra multisampled target per view (`N x 7.91 MiB` at 1080p,
+on top of the RT it resolves into), which is why it is off: see
+`perf-guide.md`'s cost table and `docs/research/proofs/3tg-view-msaa`.
+
+`border-radius` takes a LENGTH ONLY, not a percentage -- all four longhands
+register the `"length"` parser and nothing else
+(StyleSheetSpecification.cpp:300-303), so `border-radius: 50%` does not parse
+and the corner stays square. Spell a circle as half its own side
+(`width: 64px; border-radius: 32px`).
 
 | Decorator | Factory.cpp line |
 |---|---|
