@@ -103,11 +103,20 @@ models BEFORE LoadDocument** (gotchas.md #9).
 
 ### From C++
 
-Add both runtime modules to your module's `.Build.cs` —
+Add both runtime modules to your module's `.Build.cs` — **and `UMG`** —
 
 ```csharp
-PublicDependencyModuleNames.AddRange(new string[] { "VaCuus", "VaCuusRender" });
+PublicDependencyModuleNames.AddRange(new string[] { "VaCuus", "VaCuusRender", "UMG" });
 ```
+
+`UMG` is not optional and its omission does not show up as a missing header. `UVaCuusWidget`
+derives from `UWidget`, so calling `TakeWidget()` below needs UMG on YOUR module's link line,
+and UBT does not put it there for you: a public dependency propagates **include paths**
+transitively, not libraries — the recursive link gather is gated on
+`bIsModuleBinaryAStaticLibrary`, and in a modular editor build every module is its own shared
+library (`UnrealBuildTool/Configuration/UEBuildModule.cs:950-958`). So the code compiles and
+then dies at link with `ld.lld: error: undefined symbol: UWidget::TakeWidget()`. Naming UMG
+yourself is the fix.
 
 — then `#include "VaCuusUMGWidget.h"` (or `"VaCuusWorldComponent.h"`) and `"VaCuusView.h"`.
 `UVaCuusWidget` is not UMG-only: `UWidget::TakeWidget()` builds the view and hands back a

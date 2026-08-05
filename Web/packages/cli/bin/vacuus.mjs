@@ -6,6 +6,10 @@
  *   vacuus build --app <dir>          bundle TSX -> Content/DevUI/<out>/, inline
  *                                     sourcemap, provenance manifest
  *   vacuus dev --app <dir>            watch mode riding the M2 live reload
+ *
+ * `build` and `dev` both take --devui-dir <dir> to write into a CONSUMER
+ * PROJECT's Content/DevUI instead of the plugin's; `create` takes it too
+ * (alongside --apps-dir) to scaffold there.
  *   vacuus lint <files...>            the RCSS/facade gotcha rules
  *   vacuus symbolicate --bundle <js>  map engine-logged stack positions to TSX
  *                                     (reads the stack from stdin or --stack)
@@ -46,7 +50,10 @@ async function main() {
 		}
 		case 'dev': {
 			const app = flag(args, '--app') ?? process.cwd();
-			return runDev(app);
+			// Same option as `build`: without it a consumer project's watch loop
+			// wrote its bundle into the PLUGIN's Content/DevUI (bead c8t).
+			const devuiRoot = flag(args, '--devui-dir');
+			return runDev(app, devuiRoot ? { devuiRoot } : {});
 		}
 		case 'lint': {
 			if (args.length === 0) break;
@@ -67,8 +74,9 @@ async function main() {
 			break;
 	}
 
-	console.error('usage: vacuus create <name> | build --app <dir> | dev --app <dir> | lint <files...> |');
-	console.error('       symbolicate --bundle <js> [--stack <file>] | manifest [--check]');
+	console.error('usage: vacuus create <name> [--apps-dir <dir>] [--devui-dir <dir>] |');
+	console.error('       build --app <dir> [--devui-dir <dir>] | dev --app <dir> [--devui-dir <dir>] |');
+	console.error('       lint <files...> | symbolicate --bundle <js> [--stack <file>] | manifest [--check]');
 	return 2;
 }
 

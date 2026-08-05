@@ -81,19 +81,36 @@ public class VaCuusRender : ModuleRules
 
 			// PUBLIC, not private, since VaCuus-dgl moved VaCuusUMGWidget.h into Public/:
 			// the header includes Components/Widget.h and the class derives from UWidget,
-			// and a PRIVATE dependency is not propagated to consumers.
+			// and a PRIVATE dependency is not propagated to consumers. KEEP IT PUBLIC --
+			// what it propagates is the INCLUDE PATH, and that is real.
 			//
-			// MEASURED, NOT ASSUMED, because the obvious guess is wrong. With UMG demoted
-			// to private here (and absent from the consumer module), a buyer-shaped module
-			// that includes this header still COMPILES -- the include path leaks in
-			// transitively -- and then dies at link with
+			// WHAT IT DOES NOT DO, corrected 2026-08-05 (bead 724): this line does NOT
+			// spare a buyer the link error. An earlier revision of this comment claimed,
+			// under the heading "MEASURED, NOT ASSUMED", that promoting UMG here is what
+			// prevents
 			//     ld.lld: error: undefined symbol: UWidget::TakeWidget()
-			// So the failure this line prevents is a LINK failure, not a "file not found",
-			// and it lands on the buyer, never on us: in-tree everything resolves either
-			// way. That is the whole shape of this bead.
+			// in a consumer module. It does not. UBT propagates a public dependency's
+			// include paths transitively, but it does not add that module to a CONSUMER
+			// module's link line: the recursive gather in SetupPublicLinkEnvironment is
+			// gated on bIsModuleBinaryAStaticLibrary -- "Static libraries do not contain
+			// the symbols for their dependencies, so we need to recursively gather them"
+			// (UnrealBuildTool/Configuration/UEBuildModule.cs:950-958) -- and in a modular
+			// editor build every module is its own .so, never a static library, so the
+			// branch is never taken.
 			//
-			// Slate/SlateCore need no such promotion: Widget.h's SWidget comes from Engine,
-			// which already re-exports both (Engine.Build.cs:89-90), and Engine is public here.
+			// Confirmed on the artifact, not derived: a real consumer project's
+			// libUnrealEditor-<Game>.so.link.rsp carries -lUnrealEditor-UMG only because
+			// that consumer module names UMG itself, and Slate/SlateCore are ABSENT from
+			// that line entirely even though Engine re-exports both publicly
+			// (Engine.Build.cs:89-90) -- which also falsifies this comment's old
+			// parenthetical that Slate "needs no such promotion because Engine re-exports
+			// it". Slate is equally not linked; it happens not to matter only because no
+			// Slate symbol is referenced directly from a buyer's translation unit.
+			//
+			// THE ACTUAL FIX LIVES IN THE BUYER'S Build.cs, and docs/buyer/setup.md now
+			// says so: a module that calls TakeWidget() must list "UMG" itself. Do not
+			// "fix" this line by demoting it -- that would break the include path too, and
+			// leave the buyer with a missing header on top of the missing symbol.
 			"UMG",
 
 			// PUBLIC because both exported classes name VaCuus types in their public

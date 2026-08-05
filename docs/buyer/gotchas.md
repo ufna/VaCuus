@@ -20,23 +20,78 @@ animations or transitions", a Warning, not an error
 Do: animate opacity/transform on a wrapper or swap decorators; `vacuus lint` catches
 it at authoring time (`Web/packages/cli/lib/lint.mjs:68-99`).
 
-**3. A transition that works in a browser parses to nothing here.**
-Cause: tween parsing is strict — `transition: opacity 0.3s ease-in-out;` works, loose
-shorthand orderings browsers forgive do not (`vacuus-base.rcss:13-14`; arch spec §13's
-gotcha risk row).
-Do: keep the canonical property-duration-tween order; the lint pass is the backstop.
+**3. `transition: opacity 0.3s ease-in-out;` drops the ENTIRE declaration — there is no
+`ease` family in RmlUi.**
+Cause: the complete tween keyword table is eleven families —
+`back bounce circular cubic elastic exponential linear quadratic quartic quintic sine`,
+each with `-in`, `-out` and `-in-out`
+(`Source/ThirdParty/RmlUi/Source/Core/PropertyParserAnimation.cpp:27-77`). No `ease`,
+no `ease-in`, no `ease-out`, no `ease-in-out`. A token that is not in that map is not a
+tween, so `ParseTransition` tries the other two shapes: the `%fs` sscanf for a duration
+fails (`:267`), and the property-name branch gets null from both `GetShorthand` and
+`GetProperty`, which returns false (`:301-315`). One false return discards the whole
+`transition` property — not just the bad token — and RCSS reports it as a single generic
+line:
+
+```
+Warning: [Rml] Syntax error parsing property declaration 'transition: opacity 0.3s ease-in-out;' in 2d6/components.rcss: 16.
+```
+
+Measured in a running engine with the two spellings side by side in one sheet:
+`ease-in-out` produced that warning and no transition; `cubic-in-out` was silent and
+applied.
+Do: **`cubic-in-out` is the closest thing to CSS's `ease-in-out`** — that is the direct
+substitution when you port a browser stylesheet. And write tween keywords **lowercase**:
+`animation` lowercases each token before the keyword lookup (`:133`) and `transition`
+does **not** (`:240`), so `Cubic-Out` animates fine and silently kills a transition. The
+canonical property-duration-tween order still holds; the lint pass is the backstop for
+`box-shadow` only, not for this.
 
 **4. `position: absolute` lands somewhere unexpected.**
 Cause: it resolves against the nearest ancestor with `position: relative|absolute` —
 there is no browser-style default-positioned root chain past the document
-(`vacuus-base.rcss:15-17`).
+(`vacuus-base.rcss:29-31`).
 Do: put `position: relative` on the container you mean to anchor to.
 
-**5. Text renders nothing; the log repeats "No font face defined".**
-Cause: there is no default font (`vacuus-base.rcss:18-19`), and the message repeats
-per layout pass.
-Do: register a font and name it in your base sheet (the plugin ships LatoLatin with
-its OFL license, `Content/DevUI/fonts/`).
+**5. Text renders nothing; the log repeats "No font face defined" — and your own
+`@font-face` `src` resolves against the wrong directory.**
+Cause: there is no default font (`vacuus-base.rcss:32-36`), and the message repeats per
+layout pass. The plugin loads LatoLatin for you and nothing else. **There is no public
+C++ font-loading API** — `Rml::LoadFontFace` is called only inside the plugin
+(`Source/VaCuus/Private/VaCuusEngine.cpp:138-153`) — so a project shipping its own faces
+has exactly one route, and it works: `@font-face` in RCSS.
+
+**Its `src` is ROOT-relative, which is the opposite of every other path in the system.**
+`<link>` and `<script src>` are document-relative (#12); `@font-face`'s `src` is passed
+verbatim with no `JoinPath` (`StyleSheetParser.cpp:561`) and handed straight to the file
+interface (`FontEngineDefault/FontProvider.cpp:94`), which resolves it against the
+ordered document roots (`Source/VaCuus/Private/VaCuusContentPaths.cpp:92-103`). So a
+sheet at `Content/DevUI/myapp/app.rcss` links its neighbours bare but must spell its
+fonts from the ROOT:
+
+```css
+@font-face {
+	font-family: "Michroma";       /* required, a quoted string */
+	src: myapp/fonts/Michroma-Regular.ttf;   /* ROOT-relative; bare path, NO url() */
+	font-weight: normal;           /* optional: all | normal | bold | <number>; default all */
+	font-style: normal;            /* optional: normal | italic */
+}
+```
+
+The grammar is `StyleSheetParser.cpp:294-330` (properties) and `:525-564` (the block):
+`font-family` and `src` are required, `src` is a **comma-expanded list of bare paths —
+`url()` is not part of it**, and `-rmlui-fallback-face` and `-rmlui-face-index` are the
+two RmlUi extensions. The control run that settles the resolution rule: from a
+subdirectory sheet, a bare `Michroma-Regular.ttf` gave
+`Failed to open file 'Michroma-Regular.ttf' (resolved to …/Content/DevUI/Michroma-Regular.ttf)`.
+
+**Variable fonts render at their default weight for every weight you ask for.** The
+default font engine calls `FT_New_Face` and never sets a variation axis, so one variable
+file cannot serve `font-weight: 400` and `700` differently — you get the default
+instance twice. Ship **static instances**, one file per weight.
+Do: put your faces under your project's `Content/DevUI/`, declare them with root-relative
+`src`, and name the family in your sheet. The plugin's own LatoLatin ships with its OFL
+license under `Content/DevUI/fonts/`.
 
 **6. Style resolution cost jumps after adding one selector.**
 Cause: a bare attribute selector (`[disabled] { … }` with no element/class anchor) is
@@ -59,6 +114,46 @@ Cause: measured RmlUi pathology on documents that force full relayout every fram
 (research :94-95).
 Do: animate `transform` and opacity (no layout), not `left/top/width`; see the blip
 idiom in perf-guide.md.
+
+**8a. NAMED v1 LIMITATION — a `transform` anywhere on the clipping chain silently
+disables ALL clipping beneath it. `overflow: hidden|auto|scroll` then clips nothing, with
+no warning.**
+Symptom: content spills straight out of its box, or a scroll container paints its whole
+list over the rest of the screen. No Error, no Warning, no log line at all.
+Cause, both halves in-tree:
+- RmlUi turns the scissor off whenever a transform is active on the clipping chain —
+  `if (transform) disable_scissor_clipping = true;`, unconditional
+  (`Source/ThirdParty/RmlUi/Source/Core/ElementUtilities.cpp:174`), because a transformed
+  element's geometry may project anywhere and a screen-space rectangle can no longer
+  describe it. The replacement it emits instead is a **clip mask**
+  (`:162-169`, when `has_border_radius || (transform && has_clipping_content)`).
+- The VaCuus replayer **skips the clip mask in v1**: `EnableClipMask` and
+  `RenderToClipMask` are no-ops, "applying the mask needs a stencil pass this RT does not
+  carry yet" (`Source/VaCuusRender/Private/VaCuusReplayRenderer.cpp:741-753`).
+
+So the original clipping is switched off and the replacement never lands. The same
+sentence applies to `border-radius` on a clip container, which is why the plugin's own
+demo sheets forbid both on their clip boxes
+(`Content/DevUI/m2_demo.rcss:9-12`, `Content/DevUI/m1_hud.rcss:7-9`).
+
+**Why this is not exotic: it collides head-on with the obvious resolution-independence
+pattern.** `transform: scale()` on a root wrapper is the cheap way to author against a
+fixed 1920×1080 surface here, because there is no `calc()`, `dp == px`
+(`Context::SetDensityIndependentPixelRatio` is never called by the plugin) and font sizes
+cannot be computed. Adopting that one declaration costs you **every** scroll container
+and `overflow: hidden` box in the document at once, silently. Measured: a 40×14
+`overflow: hidden` box with a 200×14 child under a scaled root rendered the child at its
+full 200px.
+Do: pick one.
+- Keep the transformed root, and **size containers to their content** — never rely on
+  overflow to cut anything. For long lists, delete rows instead of clipping them, which
+  perf-guide.md already prefers on its own grounds ("Smaller standing DOM": a clipped
+  scrollback still records every row into the command stream).
+- Or drop the root transform, author in pixels, and clipping behaves — that is what every
+  shipped demo document does.
+
+A real stencil pass for the clip mask is tracked as plugin work; until it lands this is a
+documented limitation, not a bug you can style around.
 
 ## Data binding and JS
 
@@ -91,7 +186,8 @@ SystemInterface::JoinPath via XMLNodeHandlerHead). From `M5Hud/` the bare name i
 correct; `M5Hud/hud_bundle.js` doubles the directory and skips the script with one
 named Error.
 Do: write paths relative to the document, and read the Error's resolved path when a
-load is skipped.
+load is skipped. **`@font-face`'s `src` is the one exception — it is ROOT-relative
+(#5).** The CLI scaffold gets this right: `vacuus create` emits the bare bundle name.
 
 **13. There is no CSS Grid.**
 Cause: RmlUi is flex-first (research :76; arch spec §1 non-goals — the same market

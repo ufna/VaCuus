@@ -107,11 +107,20 @@ export async function runBuild(appDir, { devuiRoot = DEVUI_ROOT } = {}) {
 	return 0;
 }
 
-export async function runDev(appDir) {
+/*
+ * `devuiRoot` is not decoration: a consumer project's documents live in ITS
+ * Content/DevUI, the second root VaCuusContentPaths::GetDocumentRoots() returns,
+ * and the live-reload watcher registers on EVERY root that call returns
+ * (VaCuusLiveReload.cpp:220), project root included. So watch mode works against
+ * a buyer's project — but only if the bundle is written there. Defaulting to the
+ * PLUGIN's Content/DevUI while accepting --devui-dir on `build` and ignoring it
+ * here wrote a buyer's bundle into the plugin, silently (bead c8t).
+ */
+export async function runDev(appDir, { devuiRoot = DEVUI_ROOT } = {}) {
 	const esbuild = await import('esbuild');
 	appDir = resolve(appDir);
 	const { cfg } = appConfig(appDir);
-	const outfile = join(DEVUI_ROOT, cfg.outDir, cfg.bundleName);
+	const outfile = join(devuiRoot, cfg.outDir, cfg.bundleName);
 	mkdirSync(dirname(outfile), { recursive: true });
 
 	const options = esbuildOptions(appDir, cfg, outfile);

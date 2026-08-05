@@ -41,7 +41,7 @@ A property with multiple parsers accepts any of them, tried in order.
 | `border-bottom-right-radius` | `0px` | no | no | length |  |
 | `border-bottom-left-radius` | `0px` | no | no | length |  |
 | `display` | `inline` | no | yes | keyword: none, block, inline, inline-block, flow-root, flex, inline-flex, table, inline-table, table-row, table-row-group, table-column, table-column-group, table-cell | No CSS Grid in RmlUi (flex-first is the market bar, arch spec 1); the keyword list here is exhaustive. |
-| `position` | `static` | no | yes | keyword: static, relative, absolute, fixed | absolute resolves against the nearest positioned ancestor; there is no browser-style default-positioned root chain past the document (Content/DevUI/M5Hud/vacuus-base.rcss:15-17). |
+| `position` | `static` | no | yes | keyword: static, relative, absolute, fixed | absolute resolves against the nearest positioned ancestor; there is no browser-style default-positioned root chain past the document (Content/DevUI/M5Hud/vacuus-base.rcss:29-31). |
 | `top` | `auto` | no | no | keyword: auto; length_percent |  |
 | `right` | `auto` | no | no | keyword: auto; length_percent |  |
 | `bottom` | `auto` | no | no | keyword: auto; length_percent |  |
@@ -99,8 +99,8 @@ A property with multiple parsers accepts any of them, tried in order.
 | `transform-origin-x` | `50%` | no | no | keyword: left, center, right; length_percent |  |
 | `transform-origin-y` | `50%` | no | no | keyword: top, center, bottom; length_percent |  |
 | `transform-origin-z` | `0` | no | no | length |  |
-| `transition` | `none` | no | no | transition |  |
-| `animation` | `none` | no | no | animation |  |
+| `transition` | `none` | no | no | transition | THERE IS NO `ease` FAMILY. The complete tween table is eleven families -- back bounce circular cubic elastic exponential linear quadratic quartic quintic sine -- each with -in/-out/-in-out (PropertyParserAnimation.cpp:27-77). `ease-in-out` is not in it, and an unrecognized token drops the WHOLE declaration with one generic "Syntax error parsing property declaration" (:240 misses the map, :267 fails the duration sscanf, :301-315 returns false). Use `cubic-in-out` for CSS's `ease-in-out`. Keywords must be LOWERCASE here: `transition` does not lowercase its token (:240) while `animation` does (:133). gotchas.md #3. |
+| `animation` | `none` | no | no | animation | Same tween table as `transition` (PropertyParserAnimation.cpp:27-77), but this parser LOWERCASES each token before the lookup (:133), so `Cubic-Out` works here and silently kills a `transition`. Keyframe values may contain `var()` (Element.cpp:2784-2798). |
 | `decorator` | `` (empty) | no | no | decorator | Renders through the recorder; `shader(...)` values resolve builtin names then registered UMaterial style keys (see the decorators section below). |
 | `mask-image` | `` (empty) | no | no | decorator |  |
 | `font-effect` | `` (empty) | yes | no | font_effect | Glyph generation for effects (glow/outline) is the measured spike class -- ~4.2 ms on the reference HUD's FIRST Record, UI thread, before first publish (perf-guide.md, Exp-GLYPH-WARMUP). Budget it at load, not per frame. |
@@ -211,13 +211,84 @@ effect-heavy styles.
 
 ## At-rules
 
-Dispatched in StyleSheetParser.cpp (`at_rule_identifier`, :786-798 in this
-tree): `@keyframes`, `@decorator`, `@spritesheet`, `@media`. `@media` supports
-the query grammar parsed at :590-670 (width/height/resolution/theme et al.).
+Dispatched in StyleSheetParser.cpp on `at_rule_identifier` (:783-869 in this
+tree): **`@keyframes`** (:786), **`@decorator`** (:790), **`@spritesheet`**
+(:798), **`@media`** (:835), **`@font-face`** (:855). Anything else logs
+"Invalid at-rule identifier" (:869). `@media` supports the query grammar
+parsed by ParseMediaFeatureMap (:567-684 -- width/height/resolution/theme et al.).
+
+### `@font-face` -- and its `src` is ROOT-relative, unlike every other path
+
+There is NO public C++ font-loading API (`Rml::LoadFontFace` is called only
+inside the plugin, VaCuusEngine.cpp:138-153), so `@font-face` is the ONE route
+for a project shipping its own faces. It works.
+
+```css
+@font-face {
+	font-family: "Michroma";                  /* REQUIRED, a quoted string */
+	src: myapp/fonts/Michroma-Regular.ttf;    /* REQUIRED. ROOT-relative. Bare path, NO url() */
+	font-weight: normal;                     /* all | normal | bold | <number>; default `all` */
+	font-style: normal;                      /* normal | italic; default normal */
+	-rmlui-fallback-face: false;             /* RmlUi extension; default false */
+	-rmlui-face-index: 0;                    /* RmlUi extension, for collections; default 0 */
+}
+```
+
+Grammar at StyleSheetParser.cpp:294-330 (the property set) and :525-564 (the
+block: both required properties checked, then one LoadFontFace per src). `src`
+is COMMA-EXPANDED into a list of bare paths -- `url()` is not part of this
+grammar at all.
+
+**ROOT-relative, not document-relative.** `src` is passed verbatim with no
+`JoinPath` (:561), handed straight to the file interface
+(FontEngineDefault/FontProvider.cpp:94) and resolved against the ordered document
+roots (Source/VaCuus/Private/VaCuusContentPaths.cpp:92-103). `<link>` and
+`<script src>` are the opposite -- document-relative (gotchas.md #12) -- so a
+sheet at `Content/DevUI/myapp/app.rcss` links its neighbours bare but must spell
+its fonts `myapp/fonts/Face.ttf`.
+
+**Variable fonts render at their default weight for every requested weight**: the
+default font engine calls `FT_New_Face` without setting a variation axis. Ship
+static instances, one file per weight.
+
+## Custom properties and `var()` -- the only theming layer
+
+Fully implemented in this vendored tree, and worth knowing because **there is no
+`calc()`** (see below): `var()` is the whole of RCSS's computed-value story.
+
+```css
+body { --accent: #38BDF8; --pad: 12px; }
+#panel { color: var(--accent); padding: var(--pad); }
+#panel.alt { color: var(--missing, #F87171); }   /* fallback after the comma */
+```
+
+- **Declared** like any property whose name starts with `--`; the value is stored
+  unparsed as `Unit::STRING`, or as `Unit::VAR_EXPRESSION` when it itself contains
+  a `var()` (PropertySpecification.cpp:233-248). A normal property whose value
+  contains `var()` is likewise stored as VAR_EXPRESSION and resolved at compute
+  time, not parse time (:260-300).
+- **Substituted** with fallbacks (`var(--x, <fallback>)`, nested parens counted)
+  and with CYCLE DETECTION that logs an Error naming the variable and the element
+  (ElementStyle.cpp:162-243).
+- **Inherited**: an undefined name walks up the parent chain
+  (ElementStyle.cpp:115-134), so `body { --accent: … }` themes the document.
+- **Writable from JS** through the facade's `Element::SetProperty`, which routes
+  `--*` names to `SetCustomProperty` (Element.cpp:590-614, the loop at :605-608) -- so a
+  one write, not a stylesheet swap.
+- **Works inside `@keyframes`**: keyframe properties are resolved through the same
+  substitution path (Element.cpp:2784-2798).
+
+Unknown variable with no fallback is an Error and the declaration is dropped, so
+`LogVaCuus: Error: [Rml] Invalid substitution, variable '--x' not defined` is the
+line to grep for (gotchas.md #14).
 
 ## What is NOT here
 
-No CSS Grid (flex-first; arch spec 1 non-goals). No UA stylesheet -- link
-`vacuus-base.rcss` first (gotchas.md #1). Selector support, `data-*` binding
-attributes and element tags are RmlUi-documented surface, not RCSS properties,
-and are out of this matrix's scope.
+No CSS Grid (flex-first; arch spec 1 non-goals). **No `calc()`** -- there is no
+such parser anywhere in the vendored Core, so lengths cannot be computed and
+`var()` above is the only indirection RCSS offers. No UA stylesheet -- link
+`vacuus-base.rcss` first (gotchas.md #1). Note also that `transform` on a clipping
+chain silently disables clipping in v1 (gotchas.md #8a) -- relevant because
+`transform: scale()` on a root is the usual substitute for the missing `calc()`.
+Selector support, `data-*` binding attributes and element tags are
+RmlUi-documented surface, not RCSS properties, and are out of this matrix's scope.

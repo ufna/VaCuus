@@ -85,6 +85,20 @@ try {
 		lintFile(join(devui, 'smoketest', 'smoketest.rcss')).length === 0 &&
 		lintFile(join(devui, 'smoketest', 'vacuus-base.rcss')).length === 0);
 
+	// The scaffolded document's <script src> must be the BARE bundle name: src is
+	// document-relative (SystemInterface::JoinPath strips the filename and appends,
+	// SystemInterface.cpp:72-83) and the document itself sits in DevUI/smoketest/,
+	// so any directory component doubles it and the engine skips the script with one
+	// Error — a scaffold with styling and no behaviour. Nothing else in this
+	// roundtrip loads the document, so this regex is the only observable the
+	// node-side smoke has for it (bead vjh).
+	{
+		const rml = readFileSync(join(devui, 'smoketest', 'smoketest.rml'), 'utf8');
+		const srcs = [...rml.matchAll(/<script\s+src="([^"]*)"/g)].map((m) => m[1]);
+		check('create: <script src> is the bare bundle name (no doubled directory)',
+			srcs.length === 1 && srcs[0] === 'smoketest_bundle.js', JSON.stringify(srcs));
+	}
+
 	await runBuild(appDir, { devuiRoot: devui });
 	const bundlePath = join(devui, 'smoketest', 'smoketest_bundle.js');
 	const provenancePath = join(devui, 'smoketest', 'smoketest_bundle.provenance.json');

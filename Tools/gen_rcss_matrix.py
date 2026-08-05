@@ -17,9 +17,18 @@ What it parses (mechanically -- no hand-copied rows):
      Source/ThirdParty/RmlUi/Source/Core/Factory.cpp -- decorator, filter
      and font-effect names.
 
-What is hand-maintained: the ANNOTATIONS dict below (plugin-side truth --
-what VaCuus refuses or treats specially). Each annotation cites its source;
-keep the cites open-and-checked when editing (project convention).
+What is hand-maintained (and therefore what an RmlUi bump must be re-checked
+against by hand -- regenerating does NOT revalidate these):
+  - the ANNOTATIONS dict below (plugin-side truth -- what VaCuus refuses or
+    treats specially);
+  - the At-rules section, including the @font-face grammar and its
+    root-relative src rule;
+  - the "Custom properties and var()" section;
+  - the "What is NOT here" section.
+Each carries its source cites; keep the cites open-and-checked when editing
+(project convention). The at-rule list in particular was a hardcoded string
+that had gone stale against StyleSheetParser.cpp -- it omitted @font-face,
+the ONE font route a buyer has (bead 9r2).
 
 Invoked with `bash`-less plain python3; writes docs/buyer/rcss-matrix.md.
 """
@@ -60,11 +69,21 @@ ANNOTATIONS = {
     "nav-left": "See nav-up.",
     "nav-right": "See nav-up.",
     "nav": "Shorthand for the nav-* family; the non-inheritance note on nav-up applies.",
+    "transition": "THERE IS NO `ease` FAMILY. The complete tween table is eleven families -- "
+    "back bounce circular cubic elastic exponential linear quadratic quartic quintic sine -- "
+    "each with -in/-out/-in-out (PropertyParserAnimation.cpp:27-77). `ease-in-out` is not in it, "
+    "and an unrecognized token drops the WHOLE declaration with one generic \"Syntax error parsing "
+    "property declaration\" (:240 misses the map, :267 fails the duration sscanf, :301-315 returns "
+    "false). Use `cubic-in-out` for CSS's `ease-in-out`. Keywords must be LOWERCASE here: "
+    "`transition` does not lowercase its token (:240) while `animation` does (:133). gotchas.md #3.",
+    "animation": "Same tween table as `transition` (PropertyParserAnimation.cpp:27-77), but this "
+    "parser LOWERCASES each token before the lookup (:133), so `Cubic-Out` works here and silently "
+    "kills a `transition`. Keyframe values may contain `var()` (Element.cpp:2784-2798).",
     "display": "No CSS Grid in RmlUi (flex-first is the market bar, arch spec 1); the keyword "
     "list here is exhaustive.",
     "position": "absolute resolves against the nearest positioned ancestor; there is no "
     "browser-style default-positioned root chain past the document "
-    "(Content/DevUI/M5Hud/vacuus-base.rcss:15-17).",
+    "(Content/DevUI/M5Hud/vacuus-base.rcss:29-31).",
 }
 
 
@@ -219,16 +238,87 @@ def main():
     w.append("")
     w.append("## At-rules")
     w.append("")
-    w.append("Dispatched in StyleSheetParser.cpp (`at_rule_identifier`, :786-798 in this")
-    w.append("tree): `@keyframes`, `@decorator`, `@spritesheet`, `@media`. `@media` supports")
-    w.append("the query grammar parsed at :590-670 (width/height/resolution/theme et al.).")
+    w.append("Dispatched in StyleSheetParser.cpp on `at_rule_identifier` (:783-869 in this")
+    w.append("tree): **`@keyframes`** (:786), **`@decorator`** (:790), **`@spritesheet`**")
+    w.append("(:798), **`@media`** (:835), **`@font-face`** (:855). Anything else logs")
+    w.append("\"Invalid at-rule identifier\" (:869). `@media` supports the query grammar")
+    w.append("parsed by ParseMediaFeatureMap (:567-684 -- width/height/resolution/theme et al.).")
+    w.append("")
+    w.append("### `@font-face` -- and its `src` is ROOT-relative, unlike every other path")
+    w.append("")
+    w.append("There is NO public C++ font-loading API (`Rml::LoadFontFace` is called only")
+    w.append("inside the plugin, VaCuusEngine.cpp:138-153), so `@font-face` is the ONE route")
+    w.append("for a project shipping its own faces. It works.")
+    w.append("")
+    w.append("```css")
+    w.append("@font-face {")
+    w.append("\tfont-family: \"Michroma\";                  /* REQUIRED, a quoted string */")
+    w.append("\tsrc: myapp/fonts/Michroma-Regular.ttf;    /* REQUIRED. ROOT-relative. Bare path, NO url() */")
+    w.append("\tfont-weight: normal;                     /* all | normal | bold | <number>; default `all` */")
+    w.append("\tfont-style: normal;                      /* normal | italic; default normal */")
+    w.append("\t-rmlui-fallback-face: false;             /* RmlUi extension; default false */")
+    w.append("\t-rmlui-face-index: 0;                    /* RmlUi extension, for collections; default 0 */")
+    w.append("}")
+    w.append("```")
+    w.append("")
+    w.append("Grammar at StyleSheetParser.cpp:294-330 (the property set) and :525-564 (the")
+    w.append("block: both required properties checked, then one LoadFontFace per src). `src`")
+    w.append("is COMMA-EXPANDED into a list of bare paths -- `url()` is not part of this")
+    w.append("grammar at all.")
+    w.append("")
+    w.append("**ROOT-relative, not document-relative.** `src` is passed verbatim with no")
+    w.append("`JoinPath` (:561), handed straight to the file interface")
+    w.append("(FontEngineDefault/FontProvider.cpp:94) and resolved against the ordered document")
+    w.append("roots (Source/VaCuus/Private/VaCuusContentPaths.cpp:92-103). `<link>` and")
+    w.append("`<script src>` are the opposite -- document-relative (gotchas.md #12) -- so a")
+    w.append("sheet at `Content/DevUI/myapp/app.rcss` links its neighbours bare but must spell")
+    w.append("its fonts `myapp/fonts/Face.ttf`.")
+    w.append("")
+    w.append("**Variable fonts render at their default weight for every requested weight**: the")
+    w.append("default font engine calls `FT_New_Face` without setting a variation axis. Ship")
+    w.append("static instances, one file per weight.")
+    w.append("")
+    w.append("## Custom properties and `var()` -- the only theming layer")
+    w.append("")
+    w.append("Fully implemented in this vendored tree, and worth knowing because **there is no")
+    w.append("`calc()`** (see below): `var()` is the whole of RCSS's computed-value story.")
+    w.append("")
+    w.append("```css")
+    w.append("body { --accent: #38BDF8; --pad: 12px; }")
+    w.append("#panel { color: var(--accent); padding: var(--pad); }")
+    w.append("#panel.alt { color: var(--missing, #F87171); }   /* fallback after the comma */")
+    w.append("```")
+    w.append("")
+    w.append("- **Declared** like any property whose name starts with `--`; the value is stored")
+    w.append("  unparsed as `Unit::STRING`, or as `Unit::VAR_EXPRESSION` when it itself contains")
+    w.append("  a `var()` (PropertySpecification.cpp:233-248). A normal property whose value")
+    w.append("  contains `var()` is likewise stored as VAR_EXPRESSION and resolved at compute")
+    w.append("  time, not parse time (:260-300).")
+    w.append("- **Substituted** with fallbacks (`var(--x, <fallback>)`, nested parens counted)")
+    w.append("  and with CYCLE DETECTION that logs an Error naming the variable and the element")
+    w.append("  (ElementStyle.cpp:162-243).")
+    w.append("- **Inherited**: an undefined name walks up the parent chain")
+    w.append("  (ElementStyle.cpp:115-134), so `body { --accent: … }` themes the document.")
+    w.append("- **Writable from JS** through the facade's `Element::SetProperty`, which routes")
+    w.append("  `--*` names to `SetCustomProperty` (Element.cpp:590-614, the loop at :605-608) -- so a")
+    w.append("  one write, not a stylesheet swap.")
+    w.append("- **Works inside `@keyframes`**: keyframe properties are resolved through the same")
+    w.append("  substitution path (Element.cpp:2784-2798).")
+    w.append("")
+    w.append("Unknown variable with no fallback is an Error and the declaration is dropped, so")
+    w.append("`LogVaCuus: Error: [Rml] Invalid substitution, variable '--x' not defined` is the")
+    w.append("line to grep for (gotchas.md #14).")
     w.append("")
     w.append("## What is NOT here")
     w.append("")
-    w.append("No CSS Grid (flex-first; arch spec 1 non-goals). No UA stylesheet -- link")
-    w.append("`vacuus-base.rcss` first (gotchas.md #1). Selector support, `data-*` binding")
-    w.append("attributes and element tags are RmlUi-documented surface, not RCSS properties,")
-    w.append("and are out of this matrix's scope.")
+    w.append("No CSS Grid (flex-first; arch spec 1 non-goals). **No `calc()`** -- there is no")
+    w.append("such parser anywhere in the vendored Core, so lengths cannot be computed and")
+    w.append("`var()` above is the only indirection RCSS offers. No UA stylesheet -- link")
+    w.append("`vacuus-base.rcss` first (gotchas.md #1). Note also that `transform` on a clipping")
+    w.append("chain silently disables clipping in v1 (gotchas.md #8a) -- relevant because")
+    w.append("`transform: scale()` on a root is the usual substitute for the missing `calc()`.")
+    w.append("Selector support, `data-*` binding attributes and element tags are")
+    w.append("RmlUi-documented surface, not RCSS properties, and are out of this matrix's scope.")
     w.append("")
     OUT.write_text("\n".join(w))
     print(f"wrote {OUT} ({len(props)} properties, {len(shorthands)} shorthands, "

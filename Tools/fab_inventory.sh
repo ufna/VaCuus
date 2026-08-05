@@ -11,6 +11,17 @@
 # FilterPlugin decision or a repo-only guarantee whose silent failure would ship the
 # wrong tree. Reasons live beside the rows; the fuller story is
 # docs/research/m6-api-notes/buildplugin-fab-dryrun.md §§1,7.
+#
+# RUN THE GATES *BEFORE* ANY PROJECT IS BUILT AGAINST THE PACKAGE, and against a package
+# produced from a CLEAN CLONE. Both halves are load-bearing:
+#   - Dropping the package into a project's Plugins/ and building writes Binaries/ and
+#     Intermediate/ INTO the package directory. After that this script reports fail=4 and
+#     Tools/fab_scan.sh reports ~253 violations — every one of them build output, not a
+#     package defect. Measured 2026-08-04.
+#   - Building from a DIRTY tree lets untracked files ride the broad `/Web/...` filter
+#     rule into the package. That is how the old `present Web/package-lock.json` row ever
+#     passed for a file that has never been tracked (see the `absent` row below).
+# If you must re-verify after a build, re-package first.
 set -u
 
 if [ $# -ne 1 ] || [ ! -d "$1" ]; then
@@ -27,13 +38,21 @@ absent()  { [ ! -e "$PKG/$1" ] && ok "absent:  $1" || bad "PRESENT (should not b
 
 # FilterPlugin honored — Web rides, source-only
 present "Web/package.json"
-present "Web/package-lock.json"
 present "Web/README.md"
 present "Web/smoke.mjs"
 present "Web/packages/preact-vacuus/PREACT-LICENSE"
 present "Web/packages/cli/bin/vacuus.mjs"
 present "Web/apps/demo-hud"
 absent  "Web/node_modules"
+# ...and NOT the lockfile. It has never been tracked in any branch
+# (`git log --all -- Web/package-lock.json` is empty) and Web/.gitignore:6 excludes it,
+# so from a CLEAN CLONE it cannot exist. This row used to assert `present` and could
+# only ever have passed against a dev tree where a stray local `npm install` left an
+# untracked lockfile that the broad `/Web/...` filter rule then swept into the package —
+# i.e. green on a dirty tree and red on a correct one, the wrong way round for a gate
+# guarding a Fab submission (bead jn1). Asserting `absent` is what makes the row
+# reproducible AND catches the dirty-tree leak it was previously hiding.
+absent  "Web/package-lock.json"
 
 # Backends struck from the vendored tree; the compiled subtree intact
 absent  "Source/ThirdParty/RmlUi/Backends"
@@ -55,11 +74,36 @@ present "Content/DevUI/M5Hud/hud_bundle.js"
 
 # Repo-only trees can never ship
 absent  "Tools"
-absent  "docs"
 absent  ".git"
 absent  ".beads"
 absent  "CLAUDE.md"
 absent  "AGENTS.md"
+
+# THE BUYER DOCUMENTATION SHIPS, and this is the positive form of what an `absent "docs"`
+# row used to assert here. FilterPlugin.ini gained `/README.md` and `/docs/buyer/...` at
+# c1394d6 (2026-08-03, "the package stops being a plugin nobody can be told how to use")
+# precisely because the buyer-install simulation had graded GREEN only by reading these
+# pages out of the DEV TREE. This script was last touched a day earlier (28fd5b9,
+# 2026-08-02), so its `absent "docs"` row went stale on the spot and failed every correct
+# package from then on (bead jn1). Every one of these four pages is cross-referenced BY
+# NAME from the others — "gotchas.md #18" is a dead pointer without the file — so a
+# missing page is a real delivery defect, not a tidiness one.
+present "README.md"
+present "docs/buyer/setup.md"
+present "docs/buyer/gotchas.md"
+present "docs/buyer/perf-guide.md"
+present "docs/buyer/rcss-matrix.md"
+
+# ...but the handoff is INTERNAL: it enumerates the owner's unrun hardware matrix, machine
+# hostnames and bead ids. FilterPlugin.ini:70-76 excludes it with a later-wins rule; this
+# row is that decision's observable.
+absent  "docs/buyer/owner-handoff.md"
+# Nothing outside docs/buyer/ ships — the research notes, specs, passport and plans are
+# repo-only. (Checked as a directory: `-e` on docs/research is enough.)
+absent  "docs/research"
+absent  "docs/passport"
+absent  "docs/superpowers"
+absent  "docs/dev"
 
 # Ships on purpose: it keeps a buyer's `npm install` output (the esbuild ELF) out of
 # THEIR version control — the exact hazard class the fab_scan polices.

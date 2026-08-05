@@ -10,13 +10,30 @@
  * Other §13 gotchas this file cannot fix but you must know:
  *  - box-shadow is NOT animatable (RmlUi refuses the key at animation start,
  *    ElementAnimation.cpp:640-648) — `vacuus lint` catches it at authoring time.
- *  - Tween parsing is strict: `transition: opacity 0.3s ease-in-out;` works,
- *    loose shorthand orderings that browsers forgive do not.
+ *  - THERE IS NO `ease` FAMILY. `transition: opacity 0.3s ease-in-out;` does not
+ *    "work loosely" — it drops the WHOLE declaration, with one generic
+ *    "Syntax error parsing property declaration". `ease-in-out` misses the
+ *    keyword map (PropertyParserAnimation.cpp:240), the `%fs` sscanf for a
+ *    duration fails (:267), so it falls to the property-name branch where
+ *    GetShorthand and GetProperty both return null and ParseTransition returns
+ *    false (:301-315). The complete tween table is :27-77 — eleven families,
+ *      back bounce circular cubic elastic exponential linear quadratic
+ *      quartic quintic sine
+ *    each with `-in`, `-out`, `-in-out`. `cubic-in-out` is the closest thing to
+ *    CSS's `ease-in-out`; write that. (Proven side by side in one sheet: the
+ *    `ease-in-out` line logged the syntax error, the `cubic-in-out` line was
+ *    silent and applied.)
+ *  - CASE: `animation` lowercases each token before the lookup (:133), and
+ *    `transition` does NOT (:240). So `Cubic-Out` animates and the same
+ *    spelling silently kills a transition. Write tween keywords lowercase.
  *  - position: absolute resolves against the nearest ancestor with
  *    position: relative|absolute (RmlUi has no browser-style default-positioned
  *    root chain past the document).
- *  - There is no default font: register one with RmlUi and name it below or
- *    text logs "No font face defined" per layout pass.
+ *  - There is no default font: name a loaded family below, or text logs
+ *    "No font face defined" per layout pass. The plugin loads LatoLatin; a
+ *    project shipping its OWN faces has exactly one route, `@font-face` in
+ *    RCSS, and its `src` is ROOT-relative, not document-relative like `<link>`
+ *    and `<script src>` — see gotchas.md #5.
  */
 
 /* The block layer of the missing UA sheet. */
