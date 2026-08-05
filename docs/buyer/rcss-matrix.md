@@ -153,6 +153,22 @@ names first (`glass-panel` ships), then UMaterial style keys registered by the
 game (`UVaCuusStyleSet` -- the M5 material-decorator tier; unknown keys are
 refused once with a Warning naming both halves of what would have worked).
 
+The six gradient decorators are **antialiased in screen space**, which is a
+deliberate deviation from RmlUi's reference backend. A hard colour break --
+two stops at the same position, which is how a segmented dial ring or a
+hazard hatch is written -- is rendered as a one-pixel ramp instead of a step,
+so a diagonal break does not staircase. The width comes from the analytic
+screen-space derivative of the gradient parameter, so it is one pixel at any
+size, scale or transform; a stop pair that is already more than a pixel apart
+is left bit-for-bit alone, and a smooth gradient is unchanged. A repeating
+gradient gets the same treatment at its period edge as at its interior stops,
+and once its bands shrink past about two pixels it fades to the period's mean
+colour rather than aliasing (VaCuusGradient.usf).
+
+This covers the gradient FILL only. Element outlines -- notably `border-radius`
+arcs -- are tessellated geometry drawn into a single-sampled render target and
+are not antialiased.
+
 | Decorator | Factory.cpp line |
 |---|---|
 | `text` | :196 |

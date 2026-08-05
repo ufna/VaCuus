@@ -12,7 +12,11 @@
  *
  * The gradient math is RmlUi's own reference shader, transliterated
  * (Backends/RmlUi_Renderer_GL3.cpp:96-153) so the dictionaries mean here exactly what
- * they mean there; deviations are marked and are guards, not semantics.
+ * they mean there. Deviations are marked. All but one are guards; the exception is
+ * screen-space antialiasing of the stop transitions, which the reference does not do
+ * because it leaves it to a host that antialiases the whole UI — we composite into a
+ * single-sampled per-view render target, so nothing downstream would ever soften a
+ * conic ring's segment boundaries. See MixStopColors and MainGradientPS.
  */
 
 // Mode values are pinned by VaCuusBuiltinShaders::GetRegistry() (builtins) and the
@@ -48,22 +52,60 @@ float GetStopPosition(int Index)
 /**
  * The reference's mix_stop_colors (RmlUi_Renderer_GL3.cpp:116-122): a smoothstep chain
  * over the (non-decreasing) stop positions, mixing in premultiplied space — which is the
- * correct space for it, the stops arrive premultiplied. The max() is a guard the
- * reference lacks: ResolveColorStops only guarantees non-DEcreasing positions
- * (nudge_stop uses Max, DecoratorGradient.cpp:59-63), and HLSL smoothstep with equal
- * edges divides by zero where GLSL leaves it undefined. Epsilon-separated edges turn a
- * coincident pair into the hard color break it means.
+ * correct space for it, the stops arrive premultiplied.
+ *
+ * DEVIATION, and the point of this file's screen-space work: the reference smoothsteps
+ * between the stop positions VERBATIM, so a coincident pair — which is how RCSS spells a
+ * hard color break, and ResolveColorStops keeps it coincident because nudge_stop only
+ * takes a Max (DecoratorGradient.cpp:59-63, whose own comment claims a 1px spacing it
+ * does not implement) — is a step function in T and therefore a step function on screen:
+ * a staircase along every diagonal segment boundary of a conic ring. The reference gets
+ * away with it because its host antialiases the whole UI; we composite into a
+ * single-sampled per-view RT and have no such host.
+ *
+ * HalfAA is half the screen-space width of one pixel measured in T (the caller derives
+ * it analytically per mode). Each pair is widened AROUND ITS MIDPOINT to span at least
+ * 2*HalfAA, via min/max — so the widening is EXACTLY a no-op for any pair already wider
+ * than a pixel (a two-stop 0..1 linear gradient over 480px has HalfAA ~1e-3: min(0,
+ * 0.5-1e-3) is 0 and max(1, 0.5+1e-3) is 1, bit-identical to before), and a coincident
+ * pair becomes a one-pixel ramp centred exactly where the break was.
+ *
+ * HalfAA is floored by the caller, so W1 - W0 >= 1e-6 by construction: that is the same
+ * divide-by-zero guard the epsilon used to be (HLSL smoothstep with equal edges divides
+ * by zero where GLSL leaves it undefined), now falling out of the AA math instead of
+ * sitting beside it.
+ *
+ * Seed is StopColors[0] for a gradient whose T does not wrap, and the wrap-boundary
+ * blend for one whose T does — see MainGradientPS.
  */
-float4 MixStopColors(float T)
+float4 MixStopColors(float T, float HalfAA, float4 Seed)
 {
-	float4 Color = StopColors[0];
+	float4 Color = Seed;
 	for (int Index = 1; Index < NumStops; ++Index)
 	{
 		const float Edge0 = GetStopPosition(Index - 1);
-		const float Edge1 = max(GetStopPosition(Index), Edge0 + 1e-6f);
-		Color = lerp(Color, StopColors[Index], smoothstep(Edge0, Edge1, T));
+		const float Edge1 = GetStopPosition(Index);
+		const float Mid = 0.5f * (Edge0 + Edge1);
+		Color = lerp(Color, StopColors[Index], smoothstep(min(Edge0, Mid - HalfAA), max(Edge1, Mid + HalfAA), T));
 	}
 	return Color;
+}
+
+/**
+ * The mean color over one period of a repeating gradient — the correct limit when the
+ * bands have shrunk to around a pixel, where no amount of edge widening can help because
+ * the pattern itself is past Nyquist. The chain is piecewise-symmetric between stops
+ * (smoothstep has the same mean as a lerp over its span), so the mean is the trapezoid
+ * sum over the pairs; the wrap segment has zero width and correctly contributes nothing.
+ */
+float4 AverageStopColor()
+{
+	float4 Sum = float4(0.0f, 0.0f, 0.0f, 0.0f);
+	for (int Index = 1; Index < NumStops; ++Index)
+	{
+		Sum += 0.5f * (StopColors[Index - 1] + StopColors[Index]) * (GetStopPosition(Index) - GetStopPosition(Index - 1));
+	}
+	return Sum / max(GetStopPosition(NumStops - 1) - GetStopPosition(0), 1e-6f);
 }
 
 /**
@@ -105,6 +147,17 @@ void MainGradientPS(
 {
 	const float2 UV = In.UV;
 	const float4 Color = In.Color;
+
+	// Taken ONCE, at top level, before any branch: ddx/ddy are quad differences and are
+	// only defined where the whole quad agrees on reaching them. GradientMode is uniform
+	// per draw so the branches below could not actually diverge, but hoisting them costs
+	// nothing and keeps that reasoning out of the compiler's hands. UV is the paint box in
+	// LOCAL PIXELS, so these two are "local pixels per screen pixel" — the entire bridge
+	// between parameter space and screen space, and the reason the widening survives any
+	// transform the element is drawn under.
+	const float2 dUVdx = ddx(UV);
+	const float2 dUVdy = ddy(UV);
+
 	float4 Fill = float4(0.0f, 0.0f, 0.0f, 0.0f);
 
 	if (GradientMode == VACUUS_MODE_GLASS_PANEL)
@@ -113,16 +166,32 @@ void MainGradientPS(
 	}
 	else if (NumStops > 0)
 	{
-		// The reference's t per mode (RmlUi_Renderer_GL3.cpp:126-144).
+		// The reference's t per mode (RmlUi_Renderer_GL3.cpp:126-144), plus dT/dUV for
+		// each — computed ANALYTICALLY rather than as fwidth(T). That is not an
+		// optimization, it is the only correct source: T wraps (conic at the seam, every
+		// repeating gradient at its period edge) and a hardware derivative of a wrapped
+		// value spikes to the size of the whole jump, which would paint a band of fully
+		// smeared color down the wrapping line. The gradient of the underlying field is
+		// smooth across those lines; only its 0..1 representation is not.
 		float T = 0.0f;
+		float2 GradT = float2(0.0f, 0.0f);
 		if (GradientMode == VACUUS_MODE_LINEAR)
 		{
 			const float2 V = UV - GradientP;
-			T = dot(GradientV, V) / dot(GradientV, GradientV);
+			const float InvLenSq = 1.0f / dot(GradientV, GradientV);
+			T = dot(GradientV, V) * InvLenSq;
+			// T is affine in UV, so its gradient is the constant GradientV/|GradientV|^2.
+			GradT = GradientV * InvLenSq;
 		}
 		else if (GradientMode == VACUUS_MODE_RADIAL)
 		{
-			T = length(GradientV * (UV - GradientP));
+			// T = |W| with W = GradientV * (UV - P) componentwise, so dT/dUV_i is
+			// W_i * GradientV_i / T. The max() only matters at the exact center, where
+			// the numerator is zero too; the ratio elsewhere tends to |GradientV|, which
+			// is finite, so this does not blow up approaching the center.
+			const float2 W = GradientV * (UV - GradientP);
+			T = length(W);
+			GradT = GradientV * W / max(T, 1e-8f);
 		}
 		else // VACUUS_MODE_CONIC
 		{
@@ -131,21 +200,79 @@ void MainGradientPS(
 			const float2 V = UV - GradientP;
 			const float2 Rotated = float2(GradientV.x * V.x + GradientV.y * V.y, -GradientV.y * V.x + GradientV.x * V.y);
 			T = 0.5f + atan2(-Rotated.x, Rotated.y) / (2.0f * VACUUS_PI);
+			// The rotation is rigid and atan2(-x, y) is the polar angle minus pi/2, so the
+			// whole expression is (angle of V) + a constant: its gradient is the polar
+			// angle's, perp(V)/|V|^2, scaled by 1/2pi. Written from V — NOT from T — which
+			// is exactly why the seam at atan2's +-pi branch cut does not appear here.
+			GradT = float2(-V.y, V.x) / (max(dot(V, V), 1e-8f) * 2.0f * VACUUS_PI);
 		}
 
-		if (bRepeating != 0)
+		// One pixel of T, in the |ddx| + |ddy| form fwidth() would have given. That form is
+		// not an approximation of the right answer, it IS the right answer: the pixel
+		// footprint in UV is the parallelogram spanned by dUVdx and dUVdy, and its full
+		// extent projected onto the direction of GradT is exactly |GradT.dUVdx| +
+		// |GradT.dUVdy|. So the ramp below spans precisely the support of a box (pixel
+		// area) filter — 1 unit for an axis-aligned edge, sqrt(2) for a 45-degree one,
+		// which is the width a square pixel really does straddle a 45-degree edge over.
+		// An axis-aligned 1px band therefore comes out unchanged: a 1px ramp centred on a
+		// pixel boundary is sampled at its two endpoints and yields the same 0 and 1.
+		//
+		// Clamped because a conic's derivative is unbounded at its center pixel, where
+		// the true answer is "every angle at once" and any finite widening is arbitrary.
+		const float AAWidth = min(abs(dot(GradT, dUVdx)) + abs(dot(GradT, dUVdy)), 1.0f);
+		// Floored so MixStopColors' widened edges are never equal (see there). At the
+		// floor the shader reproduces the old epsilon-separated step exactly, which is the
+		// right fallback for a degenerate quad with no derivatives to speak of.
+		const float HalfAA = max(0.5f * AAWidth, 5e-7f);
+
+		// Does T wrap, and where? A repeating gradient wraps at its stop period. A conic
+		// always wraps at 0/1 whether repeating or not — that is the +-pi branch cut, a
+		// real hard edge in the authored gradient unless the author closed the loop by
+		// repeating the first color last (in which case everything below is a no-op,
+		// because the two colors it blends are equal).
+		const bool bWraps = (bRepeating != 0) || (GradientMode == VACUUS_MODE_CONIC);
+		const float T0 = (bRepeating != 0) ? GetStopPosition(0) : 0.0f;
+		const float Span = (bRepeating != 0) ? max(GetStopPosition(NumStops - 1) - T0, 1e-6f) : 1.0f;
+
+		float4 Seed = StopColors[0];
+		if (bWraps)
 		{
 			// The reference wraps with GLSL mod (:146-151), which follows the DIVISOR's
 			// sign; HLSL's fmod truncates toward zero, which would mirror every repeat
 			// before the first stop. Spelled out via floor to keep GLSL semantics, with a
 			// degenerate-span guard the reference lacks.
-			const float T0 = GetStopPosition(0);
-			const float Span = max(GetStopPosition(NumStops - 1) - T0, 1e-6f);
-			const float X = T - T0;
-			T = T0 + (X - Span * floor(X / Span));
+			//
+			// The window is [T0 - HalfAA, T0 - HalfAA + Span), NOT [T0, T0 + Span): the
+			// shift by half a pixel is what makes the LOWER half of the wrap transition
+			// representable at all. Without it no pixel ever lands below T0, the chain's
+			// widening has nothing to widen there, and a hatch comes out with every
+			// interior edge smooth and every period edge still a staircase.
+			const float X = T - T0 + HalfAA;
+			T = T0 - HalfAA + (X - Span * floor(X / Span));
+
+			// ...and the transition itself, prepended to the chain as its seed: last color
+			// to first across T0. Below T0 the chain contributes nothing (T is under every
+			// stop) so the seed is the answer; above T0 + HalfAA the seed is StopColors[0]
+			// and the chain runs exactly as it always did.
+			Seed = lerp(StopColors[NumStops - 1], StopColors[0], smoothstep(T0 - HalfAA, T0 + HalfAA, T));
 		}
 
-		Fill = MixStopColors(T);
+		Fill = MixStopColors(T, HalfAA, Seed);
+
+		// Bands at or past Nyquist. Widening edges cannot fix a pattern whose period is
+		// approaching a pixel — the edges overlap and what is left aliases anyway — so the
+		// answer is the one a correct filter converges to: the period mean. Fading in from
+		// half a period per pixel means a hatch finer than about 2px settles to a flat
+		// tint instead of shimmering. Only repeating gradients get this: a one-shot
+		// gradient has no period to average over, and outside its stops it is already flat.
+		if (bRepeating != 0)
+		{
+			const float Fade = smoothstep(0.5f, 1.5f, AAWidth / Span);
+			if (Fade > 0.0f)
+			{
+				Fill = lerp(Fill, AverageStopColor(), Fade);
+			}
+		}
 	}
 
 	// Premultiplied * premultiplied, exactly like MainPS: the vertex color carries the
