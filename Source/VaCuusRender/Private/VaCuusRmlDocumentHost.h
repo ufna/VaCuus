@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 
 #include "VaCuusDocumentHost.h"
+#include "VaCuusUnsupportedTally.h" // FVaCuusUnsupportedTally, re-exported by GetUnsupportedTally()
 
 #include "GenericPlatform/ICursor.h" // EMouseCursor (the latched-cursor members below)
 
@@ -83,6 +84,15 @@ public:
 	 * zero whether or not the arrival was taken. Any thread; see the recorder's accessor.
 	 */
 	uint64 GetNumDecodeArrivals() const;
+
+	/**
+	 * This view's refusals of the two unsupported layer-capture virtuals, and the log lines they
+	 * emitted. THE ONLY OBSERVABLE FOR THE LATCH (beads VaCuus-u0q, VaCuus-iuv): "a 200-element
+	 * document logs once" is otherwise invisible from every angle — the automation framework does
+	 * not capture Warnings, and the refused frame looks identical on screen either way. Any
+	 * thread; see the recorder's accessor.
+	 */
+	FVaCuusUnsupportedTally GetUnsupportedTally() const;
 
 private:
 	/** Shared tail of both load paths: adopts and shows the new document, or logs the failure. */

@@ -102,11 +102,11 @@ A property with multiple parsers accepts any of them, tried in order.
 | `transition` | `none` | no | no | transition | THERE IS NO `ease` FAMILY. The complete tween table is eleven families -- back bounce circular cubic elastic exponential linear quadratic quartic quintic sine -- each with -in/-out/-in-out (PropertyParserAnimation.cpp:27-77). `ease-in-out` is not in it, and an unrecognized token drops the WHOLE declaration with one generic "Syntax error parsing property declaration" (:240 misses the map, :267 fails the duration sscanf, :301-315 returns false). Use `cubic-in-out` for CSS's `ease-in-out`. Keywords must be LOWERCASE here: `transition` does not lowercase its token (:240) while `animation` does (:133). gotchas.md #3. |
 | `animation` | `none` | no | no | animation | Same tween table as `transition` (PropertyParserAnimation.cpp:27-77), but this parser LOWERCASES each token before the lookup (:133), so `Cubic-Out` works here and silently kills a `transition`. Keyframe values may contain `var()` (Element.cpp:2784-2798). |
 | `decorator` | `` (empty) | no | no | decorator | Renders through the recorder; `shader(...)` values resolve builtin names then registered UMaterial style keys (see the decorators section below). |
-| `mask-image` | `` (empty) | no | no | decorator |  |
+| `mask-image` | `` (empty) | no | no | decorator | PARSES BUT DOES NOT MASK in v1 -- masking needs the mask layer captured as a filter (ElementEffects.cpp:306 -> RenderInterface::SaveLayerAsMaskImage) and the replayer has no layer render targets. It is REFUSED, once per view, with a Warning (bead VaCuus-iuv). The element renders UNMASKED **and the mask artwork is drawn over it**, because the layer the decorators were drawn into is not a real render target -- verified on screen, not inferred. Substitute: bake the alpha into the image asset and use `decorator: image`/`ninepatch`, or clip with `overflow: hidden` plus `border-radius`. |
 | `font-effect` | `` (empty) | yes | no | font_effect | Glyph generation for effects (glow/outline) is the measured spike class -- ~4.2 ms on the reference HUD's FIRST Record, UI thread, before first publish (perf-guide.md, Exp-GLYPH-WARMUP). Budget it at load, not per frame. |
-| `filter` | `` (empty) | no | no | filter: filter | v1 compiles `blur` only; the other nine types are refused (one Warning per type, effect dropped per element -- VaCuusRecordingRenderInterface.cpp:778-801). Per-element filter blur is not a shipped v1 surface (arch spec 5, M5 amendment): the verified blur consumer is backdrop-filter. |
+| `filter` | `` (empty) | no | no | filter: filter | v1 compiles `blur` only; the other nine types are refused (one Warning per type, effect dropped per element -- VaCuusRecordingRenderInterface.cpp:866-907). Per-element filter blur is not a shipped v1 surface (arch spec 5, M5 amendment): the verified blur consumer is backdrop-filter. |
 | `backdrop-filter` | `` (empty) | no | no | filter | `backdrop-filter: blur(...)` is the shipped glass path -- distilled at record time and re-blurred every engine frame at composite time (arch spec 5, M5 amendment). Non-blur backdrop filters are refused like element filters. |
-| `box-shadow` | `none` | no | no | box_shadow | NOT animatable: RmlUi refuses the key at animation start with a Warning (ElementAnimation.cpp:640-648); `vacuus lint` flags it at authoring time (Web/packages/cli/lib/lint.mjs:68-99). |
+| `box-shadow` | `none` | no | no | box_shadow | DOES NOT RENDER in v1 -- the shadow needs the current layer captured to a texture (GeometryBoxShadow.cpp:235 -> RenderInterface::SaveLayerAsTexture) and the replayer has no layer render targets. It is REFUSED, once per view, with a Warning naming the property and the substitute; the element then renders its normal background and border with the shadow dropped (bead VaCuus-u0q; VaCuus patch #3 to the vendored RmlUi is what makes the failure harmless -- before it the element rendered as an opaque WHITE rectangle and republished every frame). Substitute: `decorator: ninepatch(...)` with a pre-blurred shadow image, or `font-effect: glow` for text. Also NOT animatable even where it renders: RmlUi refuses the key at animation start with a Warning (ElementAnimation.cpp:640-648); `vacuus lint` flags it at authoring time (Web/packages/cli/lib/lint.mjs:68-99). |
 | `fill-image` | `` (empty) | no | no | string |  |
 | `align-content` | `stretch` | no | yes | keyword: flex-start, flex-end, center, space-between, space-around, space-evenly, stretch |  |
 | `align-items` | `stretch` | no | yes | keyword: flex-start, flex-end, center, baseline, stretch |  |
@@ -176,11 +176,16 @@ refused once with a Warning naming both halves of what would have worked).
 
 RmlUi registers ten filter instancers; the VaCuus recorder compiles exactly
 ONE -- `blur`. Every other type is refused with one Warning per type and the
-effect dropped per element (VaCuusRecordingRenderInterface.cpp:778-801;
+effect dropped per element (VaCuusRecordingRenderInterface.cpp:866-907;
 returning handle 0 is RmlUi's own safe-refusal contract, and RmlUi then warns
-per element, ElementEffects.cpp:153-165). The shipped, verified blur consumer
-is `backdrop-filter` (glass); per-element filter/box-shadow blur is a v1.x
-item (arch spec 5, M5 amendment).
+per element, ElementEffects.cpp:161-165). The shipped, verified blur consumer
+is `backdrop-filter` (glass); per-element `filter:` blur is a v1.x item (arch
+spec 5, M5 amendment).
+
+`box-shadow`'s blur never reaches this table at all: the shadow is refused a
+step earlier, at the layer capture it is built on (see the `box-shadow` row
+above and `Layer capture` below), so its CompileFilter("blur") call is never
+made.
 
 | Filter | Factory.cpp line | v1 status |
 |---|---|---|
@@ -208,6 +213,28 @@ effect-heavy styles.
 | `glow` | :230 |
 | `outline` | :231 |
 | `shadow` | :232 |
+
+## Layer capture -- the two properties v1 refuses outright
+
+Rml::RenderInterface has 21 virtuals and the VaCuus recorder now overrides all
+21, but two of them are REFUSALS rather than recordings -- `SaveLayerAsTexture`
+and `SaveLayerAsMaskImage` (RenderInterface.h:112-116). Both mean "hand me the
+current layer back", and this renderer has no layer to hand back: PushLayer,
+CompositeLayers and PopLayer are recorded and then skipped at replay, so every
+draw between a push and a pop lands directly in the base render target. Glass
+(`backdrop-filter`) does not need them -- it is distilled from the buffer and
+composited per engine frame -- which is why it ships and these do not.
+
+Each is refused with **one Warning per view**, latched, naming the property and
+its substitute. A document with two hundred shadowed elements logs one line.
+
+| Property | Reaches | v1 behaviour |
+|---|---|---|
+| `box-shadow` | `SaveLayerAsTexture` | Shadow dropped; the element renders its **normal background and border**. No per-frame cost. |
+| `mask-image` | `SaveLayerAsMaskImage` | Element renders **unmasked**, and the mask artwork is **drawn over it**. |
+
+Both are pinned by automation: `VaCuus.Render.LayerCapture.Refused` and
+`VaCuus.Render.LayerCapture.RestyleChurn`.
 
 ## At-rules
 

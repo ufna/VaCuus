@@ -1200,6 +1200,98 @@ void FVaCuusRecordingRenderInterface::PopLayer()
 	Command.Type = EVaCuusCommandType::PopLayer;
 }
 
+Rml::TextureHandle FVaCuusRecordingRenderInterface::SaveLayerAsTexture()
+{
+	CheckOwnerThread();
+
+	// THE ONLY CALLER IN THE TREE is the box-shadow texture callback (GeometryBoxShadow.cpp:235),
+	// reached from ElementBackgroundBorder::GenerateGeometry -> BoxShadowCache::GetHandle. Element
+	// `filter:` does NOT come through here — it composites through CompositeLayers
+	// (ElementEffects.cpp:283-315), which is implemented.
+	//
+	// WHY v1 CANNOT HONOUR IT, and why implementing this one virtual alone would be worse than
+	// refusing. "Save the current layer as a texture" presupposes that the layer IS something. In
+	// this replayer it is not: PushLayer/CompositeLayers/PopLayer are recorded and then SKIPPED at
+	// replay (VaCuusReplayRenderer.cpp:720-739), so every draw between a push and a pop lands
+	// directly in the base render target and there is no off-screen surface to capture. Minting a
+	// handle here would hand RmlUi a texture the replayer can never fill. Standing one up needs
+	// three things this milestone does not have, and the shadow is wrong without ALL of them:
+	//   (a) a real layer RT stack in the replayer, with mid-replay render-pass switching;
+	//   (b) CompositeLayers actually applying its filter list — the shadow's blur is a
+	//       CompileFilter("blur") plus a filtered composite (GeometryBoxShadow.cpp:197-231),
+	//       recorded today and never applied, so without it the shadow would be hard-edged; and
+	//   (c) the clip-mask stencil pass — the callback cuts the element's own box out of the shadow
+	//       with SetClipMask(SetInverse, ...) (GeometryBoxShadow.cpp:206, :215, :221), and
+	//       EnableClipMask/RenderToClipMask are likewise recorded and skipped
+	//       (VaCuusReplayRenderer.cpp:741-754), so without it the "shadow" would be a solid rect
+	//       painted over the element. That pass is its own bead (VaCuus-4ik).
+	// So this is a refusal by architecture, not an oversight, and it is loud rather than silent.
+	//
+	// RETURNING 0 IS NOW SAFE, which it was not before bead VaCuus-u0q. It reaches
+	// CallbackTextureInterface::SaveLayerAsTexture, which reports the failure to the box-shadow
+	// callback, which returns false, which latches load_failed once (TextureDatabase.cpp:46-60)
+	// instead of re-running the whole callback every frame; and ElementBackgroundBorder::
+	// GenerateGeometry then falls through to the normal background/border path instead of erasing
+	// it and drawing a white quad. Both are VaCuus patch #3 to the vendored RmlUi — see
+	// Source/ThirdParty/RmlUi/VENDORED_TAG.txt. WITHOUT THAT PATCH this return value is
+	// destructive, so the two changes are one fix and must be carried together across a re-vendor.
+	NumSaveLayerAsTextureCalls.fetch_add(1, std::memory_order_release);
+	if (NumSaveLayerAsTextureWarnings.load(std::memory_order_acquire) == 0)
+	{
+		// Latched per recorder, like RefusedFilterTypes/RefusedShaderKeys: the box-shadow cache is
+		// keyed by resolved geometry, so a document full of differently sized shadowed elements
+		// would otherwise log one line per distinct style.
+		NumSaveLayerAsTextureWarnings.store(1, std::memory_order_release);
+		UE_LOG(LogVaCuus, Warning,
+			TEXT("SaveLayerAsTexture: `box-shadow` is not supported in v1 — it needs the current layer captured to a texture, ")
+			TEXT("and this replayer has no layer render targets (PushLayer/CompositeLayers/PopLayer are recorded and skipped). ")
+			TEXT("The shadow is dropped; the element still renders its normal background and border. ")
+			TEXT("Instead: `decorator: ninepatch(...)` with a pre-blurred shadow image, or `font-effect: glow` for text."));
+	}
+
+	return Rml::TextureHandle(0);
+}
+
+Rml::CompiledFilterHandle FVaCuusRecordingRenderInterface::SaveLayerAsMaskImage()
+{
+	CheckOwnerThread();
+
+	// THE ONLY CALLER IN THE TREE is the `mask-image` leg of the element effects Exit stage
+	// (ElementEffects.cpp:296-311, through RenderManager::SaveLayerAsMaskImage,
+	// RenderManager.cpp:328-334). Same architectural wall as SaveLayerAsTexture above — the mask
+	// is a captured LAYER, and this replayer has none — plus a second one: the captured mask is
+	// consumed as a FILTER in the composite's filter list, and the only filter v1 compiles is
+	// `blur` (CompileFilter above), so even a captured mask would have nothing to apply it with.
+	//
+	// RETURNING 0 IS RmlUi'S OWN SAFE REFUSAL, opened rather than assumed: RenderManager wraps the
+	// handle into a live CompiledFilter only when it is nonzero (RenderManager.cpp:328-334), and
+	// AddHandleTo then skips the invalid handle (CompiledFilterShader.cpp:6-12), so the composite
+	// simply runs with no mask filter and the element renders UNMASKED. Nothing leaks and nothing
+	// double-releases.
+	//
+	// WHAT THE AUTHOR ACTUALLY SEES, and it is worse than "unmasked" — this is the half the bead
+	// did not predict and a screenshot did. The mask decorators are RENDERED into the pushed layer
+	// before the capture (ElementEffects.cpp:300-305); because the replayer skips the layer, those
+	// draws land in the base render target like any other geometry. So the mask ARTWORK is painted
+	// on top of the element rather than discarded. That is the visible symptom to look for.
+	NumSaveLayerAsMaskImageCalls.fetch_add(1, std::memory_order_release);
+	if (NumSaveLayerAsMaskImageWarnings.load(std::memory_order_acquire) == 0)
+	{
+		// Latched per recorder. Unlike the box-shadow path this one is called once per element PER
+		// FRAME — RenderEffects runs every frame — so without the latch a single masked element
+		// would log at frame rate.
+		NumSaveLayerAsMaskImageWarnings.store(1, std::memory_order_release);
+		UE_LOG(LogVaCuus, Warning,
+			TEXT("SaveLayerAsMaskImage: `mask-image` is not supported in v1 — it needs the mask layer captured as a filter, ")
+			TEXT("and this replayer has no layer render targets (PushLayer/CompositeLayers/PopLayer are recorded and skipped). ")
+			TEXT("The element renders UNMASKED and the mask artwork is drawn over it, because the layer it was drawn into is not ")
+			TEXT("a real render target. Instead: bake the alpha into the image asset and use `decorator: image`/`ninepatch`, ")
+			TEXT("or clip with `overflow: hidden` plus `border-radius`."));
+	}
+
+	return Rml::CompiledFilterHandle(0);
+}
+
 void FVaCuusRecordingRenderInterface::EnableClipMask(bool bEnable)
 {
 	CheckOwnerThread();

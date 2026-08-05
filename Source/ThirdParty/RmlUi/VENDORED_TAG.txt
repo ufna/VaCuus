@@ -165,3 +165,109 @@ Header.h:51 then makes RMLUICORE_API empty, so the defect cannot appear.
 
 NOT yet offered upstream -- same standing as patch #1. It should be; the fix is
 upstream-shaped and costs upstream nothing.
+
+
+Patch #3 -- box-shadow renders an opaque white rectangle and republishes every frame
+when SaveLayerAsTexture is not implemented (beads VaCuus-u0q, VaCuus-iuv).
+
+Three files, four hunks. This is one fix; carrying any hunk without the others is worse
+than carrying none, and the middle paragraph below says exactly why.
+
+  Include/RmlUi/Core/CallbackTexture.h   CallbackTextureInterface::SaveLayerAsTexture
+  Source/Core/CallbackTexture.cpp        same, definition
+  Source/Core/GeometryBoxShadow.cpp      the texture callback's return
+  Source/Core/ElementBackgroundBorder.cpp  GenerateGeometry
+
+THE DEFECT IS UPSTREAM'S, not ours, and it fires for ANY backend that leaves
+SaveLayerAsTexture at its optional default -- which the base class explicitly permits by
+returning a zero handle (Source/Core/RenderInterface.cpp:37-40). Two things then go wrong
+at once, and the second one hides behind the first:
+
+  (a) THE WHITE RECTANGLE. ElementBackgroundBorder::GenerateGeometry commits to the
+      box-shadow path on `computed.has_box_shadow()` alone: it ERASES the element's normal
+      background and border and stores a BoxShadowRenderable instead. Render() then draws
+      that renderable's `geometry` -- a premultiplied WHITE quad covering the border box
+      extended by 1.5*blur+spread (Source/Core/BoxShadowCache.cpp:56-59) -- textured with
+      the null handle. VaCuus's replayer binds GWhiteTexture and clears bUseTexture for
+      handle 0 (VaCuusReplayRenderer.cpp:506-512), so the quad comes out as pure vertex
+      colour: an opaque white box where the element's own background and border should be.
+
+  (b) THE FRAME-RATE CHURN. The texture callback returns true whether or not it produced
+      a handle (Source/Core/GeometryBoxShadow.cpp, the old `return true` after
+      SaveLayerAsTexture), so CallbackTextureDatabase::EnsureLoaded sees neither a handle
+      nor load_failed and re-runs the WHOLE callback on every frame that asks for the
+      texture (Source/Core/TextureDatabase.cpp:46-60): a layer pushed, a blur filter
+      compiled and released, geometry made and released. That is permanent resource
+      traffic, which permanently trips FVaCuusCommandBuffer::HasResourceTraffic() and
+      forces a published frame every tick on a document that never changes.
+
+THE HUNKS.
+
+1. CallbackTextureInterface::SaveLayerAsTexture returns bool instead of void -- true only
+   when a texture handle was really produced. Purely additive (an ignored return still
+   compiles), and upstream-shaped: its sibling GenerateTexture already returns bool with
+   the same meaning, and CallbackTextureFunction's own doc comment promises "@return True
+   on success" (CallbackTexture.h:19), which the box-shadow callback could not honour
+   without this.
+
+2. GeometryBoxShadow's callback returns that bool instead of an unconditional true. Fixes
+   (b): one failure latches load_failed and the callback never runs again for that cache
+   entry.
+
+3. ElementBackgroundBorder::GenerateGeometry PROBES the shadow texture (Texture::
+   GetDimensions, which is what forces the callback) and falls through to the ordinary
+   background/border path when no texture was produced. Fixes (a).
+
+   It deliberately does NOT render BoxShadowRenderable::background_border_geometry, which
+   looks like the obvious substitute: BoxShadowCache::GetHandle premultiplies that mesh's
+   colours WITHOUT opacity (BoxShadowCache.cpp:85-91, opacity instead going into the shadow
+   quad's vertex alpha at :57-58), so at opacity < 1 it would render fully opaque. The
+   normal path premultiplies by opacity and is exactly right.
+
+4. THE REFUSED RENDERABLE IS PARKED on the ordinary background instead of being dropped.
+   THIS IS THE HUNK THAT LOOKS LIKE BOOKKEEPING AND IS NOT -- the first version of this
+   patch omitted it and was caught by its own test. BoxShadowCache holds entries by WeakPtr
+   and erases the entry from the renderable's destructor (BoxShadowCache.cpp:13, :65-77),
+   so letting the SharedPtr die at the end of GenerateGeometry destroys the cache entry and
+   with it the CallbackTexture whose load_failed hunk 2 just set. Every subsequent restyle
+   then minted a fresh entry and re-ran the whole callback -- (b) again, gated on restyle
+   instead of on frame. Measured: 70 refusals across 70 restyled frames, versus 1.
+
+WHY THIS IS NOT FIXED AT THE VaCuus LAYER, checked rather than assumed. The obvious move
+is to refuse the PROPERTY, so `has_box_shadow()` is never true. It cannot be done:
+StyleSheetSpecification::RegisterParser REFUSES to overwrite an existing name -- it logs
+"Parser with name %s already exists!" and returns false (StyleSheetSpecification.cpp:99-110)
+-- so the registered "box_shadow" parser (:245) cannot be shadowed by one of ours. There is
+no capability query on RenderInterface to add either without breaking the reference
+backends, which override SaveLayerAsTexture but would not override a new predicate.
+
+WHAT THE PLUGIN CONTRIBUTES, and it must land with these hunks: the recorder now OVERRIDES
+both layer-capture virtuals rather than inheriting them, returning 0 with one latched
+Warning per view that names the property, the reason and the substitute
+(VaCuusRecordingRenderInterface.cpp, SaveLayerAsTexture/SaveLayerAsMaskImage). Without
+hunks 3 and 4 that return value is destructive; without the override the failure is silent.
+
+VERIFICATION (the re-vendoring check): automation tests
+VaCuus.Render.LayerCapture.Refused and VaCuus.Render.LayerCapture.RestyleChurn
+(Source/VaCuusRender/Private/Tests/VaCuusLayerCaptureTest.cpp). Each hunk has been reverted
+alone and watched to fail:
+
+  - hunks 2+3 reverted (the true pre-fix state): Refused never settles --
+    "still publishing after 200 frames (201 published, 201 recorded)".
+  - hunk 3 reverted alone: "Expected 'and draws no opaque-white quad ...' to be 0, but it
+    was 12" (three shadowed elements, four corners each).
+  - hunk 2 reverted alone: RestyleChurn reports "to be 10, but it was 70" -- one refusal
+    per restyled frame. NOTE that Refused still PASSES in this state, which is not what one
+    would guess: once hunk 3 declines the shadow path, an idle document never asks for the
+    texture again. That is exactly why RestyleChurn exists.
+  - hunk 4 omitted: same 10 -> 70 as above.
+
+MASK-IMAGE IS NOT FIXED HERE, only made loud (bead VaCuus-iuv). SaveLayerAsMaskImage needs
+the same layer capture, and there is nothing to make harmless short of implementing it: the
+mask decorators are drawn BEFORE the capture (Source/Core/ElementEffects.cpp:300-305), so
+with layers skipped at replay the mask artwork lands in the frame and paints over the
+element. Verified on screen, not inferred.
+
+NOT yet offered upstream -- same standing as patches #1 and #2. Hunks 1-3 are
+upstream-shaped and fix a real upstream defect for any optional-feature-skipping backend;
+hunk 4 is a lifetime consequence of hunk 3 and travels with it.

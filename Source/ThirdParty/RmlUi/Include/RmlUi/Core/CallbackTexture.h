@@ -52,8 +52,14 @@ public:
 	bool GenerateTexture(Span<const byte> source, Vector2i dimensions) const;
 
 	/// Store the current layer as a texture, so that it can be rendered with geometry later.
+	/// @return True on success. False if the render interface does not implement layer capture, if a texture was already
+	///         submitted, or if there is no valid scissor region -- in all three cases no texture handle was produced.
 	/// @note The texture will be extracted using the bounds defined by the active scissor region, thereby matching its size.
-	void SaveLayerAsTexture() const;
+	// VaCuus patch #3 (VENDORED_TAG.txt): void -> bool, so that a callback can tell whether it produced a texture and
+	// answer RmlUi's own "True on success" contract (CallbackTextureFunction, :19) instead of always claiming success.
+	// Purely additive for existing callers -- an ignored return still compiles. Sibling GenerateTexture (:51) already
+	// returns bool for exactly this reason.
+	bool SaveLayerAsTexture() const;
 
 	/// Manually set the texture directly from a custom texture handle.
 	/// @param[in] handle The handle that represents the texture.

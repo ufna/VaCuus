@@ -232,12 +232,18 @@ void GeometryBoxShadow::GenerateTexture(CallbackTexture& out_shadow_texture, Geo
 			}
 		}
 
-		texture_interface.SaveLayerAsTexture();
+		// VaCuus patch #3 (VENDORED_TAG.txt). Upstream discards this result and returns true
+		// unconditionally, which is a lie whenever the render interface leaves SaveLayerAsTexture at
+		// its optional default: the handle stays zero, so CallbackTextureDatabase::EnsureLoaded sees
+		// neither a handle nor load_failed and re-runs this ENTIRE callback on every single frame
+		// (TextureDatabase.cpp:46-60) -- a layer push, a blur compile and release, and geometry made
+		// and released, forever. Reporting the failure latches load_failed once and stops it.
+		const bool layer_captured = texture_interface.SaveLayerAsTexture();
 
 		render_manager.PopLayer();
 		render_manager.SetState(initial_render_state);
 
-		return true;
+		return layer_captured;
 	};
 
 	out_shadow_texture = render_manager.MakeCallbackTexture(std::move(texture_callback));

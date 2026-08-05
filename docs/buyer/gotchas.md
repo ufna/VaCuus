@@ -13,12 +13,40 @@ margins are 0 (`Content/DevUI/M5Hud/vacuus-base.rcss:4-8` documents this exactly
 Do: link `vacuus-base.rcss` FIRST in every document (the CLI template ships it:
 `Web/packages/cli/template/vacuus-base.rcss`), then your own sheets after it.
 
-**2. A box-shadow transition silently does nothing.**
-Cause: RmlUi refuses the key at animation start — "Box shadows do not support
-animations or transitions", a Warning, not an error
-(`Source/ThirdParty/RmlUi/Source/Core/ElementAnimation.cpp:640-648`).
-Do: animate opacity/transform on a wrapper or swap decorators; `vacuus lint` catches
-it at authoring time (`Web/packages/cli/lib/lint.mjs:68-99`).
+**2. `box-shadow` does not render at all — and it is not just the transition.**
+Symptom: the shadow never appears. The element itself is fine: it renders its normal
+background and border, exactly as if you had not written the property. One Warning per
+view names the property and the substitute.
+Cause: RmlUi builds a box-shadow by rendering it into an off-screen layer and asking the
+renderer to hand that layer back as a texture — `SaveLayerAsTexture`
+(`Source/ThirdParty/RmlUi/Source/Core/GeometryBoxShadow.cpp:235`). VaCuus has no layer
+render targets: `PushLayer`/`CompositeLayers`/`PopLayer` are recorded and then skipped at
+replay, so there is no layer to capture. Implementing the capture alone would not help —
+the shadow's blur is a filtered composite and its shape is cut with a clip mask, and
+neither of those is applied at replay either, so it would come out as a hard-edged
+rectangle painted over the element. Refusing is the honest answer for v1.
+Do: use `decorator: ninepatch(...)` with a pre-blurred shadow image (the standard game-UI
+substitute, and cheaper), or `font-effect: glow` for text.
+**Also, separately: a box-shadow TRANSITION does nothing even where shadows render** —
+RmlUi refuses the key at animation start with a Warning, not an error
+(`Source/ThirdParty/RmlUi/Source/Core/ElementAnimation.cpp:640-648`), and `vacuus lint`
+catches it at authoring time (`Web/packages/cli/lib/lint.mjs:68-99`).
+*If you are reading an older copy of these docs that said only "not animatable": that was
+wrong about the bigger half. Fixed 2026-08-05 (bead VaCuus-u0q), which also fixed the
+plugin — until then a shadowed element rendered as an opaque WHITE rectangle over its own
+background and border, and forced a published frame on every single tick.*
+
+**2b. `mask-image` parses, does not mask, and paints its artwork over your element.**
+Symptom: the element is unmasked, and whatever you used as the mask (a gradient, an image)
+is visible on top of it. One Warning per view.
+Cause: the same wall as #2, one door along. RmlUi draws the mask decorators into a pushed
+layer and asks for that layer back as a filter — `SaveLayerAsMaskImage`
+(`Source/ThirdParty/RmlUi/Source/Core/ElementEffects.cpp:306`). With no real layer, the
+mask artwork's draws land in the frame like any other geometry, and the composite runs
+with no mask filter. Unlike #2 there is nothing to make harmless short of implementing the
+capture, so the warning is the whole fix for v1 (bead `VaCuus-iuv`).
+Do: bake the alpha into the image asset and use `decorator: image` or `ninepatch`, or clip
+with `overflow: hidden` plus `border-radius`.
 
 **3. `transition: opacity 0.3s ease-in-out;` drops the ENTIRE declaration — there is no
 `ease` family in RmlUi.**

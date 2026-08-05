@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 
 #include "VaCuusCommandBuffer.h"
+#include "VaCuusUnsupportedTally.h" // FVaCuusUnsupportedTally, returned by GetUnsupportedTally()
 
 #include "Containers/MpscQueue.h"
 #include "Tasks/Task.h"
@@ -163,6 +164,13 @@ public:
 	virtual void EnableClipMask(bool bEnable) override;
 	virtual void RenderToClipMask(Rml::ClipMaskOperation Operation, Rml::CompiledGeometryHandle Geometry, Rml::Vector2f Translation) override;
 
+	// The two LAYER-CAPTURE virtuals (beads VaCuus-u0q, VaCuus-iuv). Both are refusals, not
+	// recordings, and both are overridden rather than inherited ON PURPOSE — inheriting them is
+	// what made `box-shadow` and `mask-image` fail silently for six milestones. See the cpp for
+	// what each one costs the author and why v1 cannot honour them.
+	virtual Rml::TextureHandle SaveLayerAsTexture() override;
+	virtual Rml::CompiledFilterHandle SaveLayerAsMaskImage() override;
+
 	// The M5 shader trio (spec §2(e)): the vocabulary `decorator: linear/radial/conic-
 	// gradient` and `decorator: shader(<builtin>)` arrive in (DecoratorGradient.cpp:252-259,
 	// :422-428, :619-625; DecoratorShader.cpp:35). Shaders are resources (legal out of frame
@@ -268,6 +276,20 @@ public:
 	uint64 GetNumDecodeArrivals() const { return NumDecodeArrivals.load(std::memory_order_acquire); }
 
 	/**
+	 * Refusals and warnings for the two unsupported layer-capture virtuals; see
+	 * FVaCuusUnsupportedTally for why both numbers exist and what each one proves.
+	 */
+	FVaCuusUnsupportedTally GetUnsupportedTally() const
+	{
+		FVaCuusUnsupportedTally Tally;
+		Tally.SaveLayerAsTextureCalls = NumSaveLayerAsTextureCalls.load(std::memory_order_acquire);
+		Tally.SaveLayerAsTextureWarnings = NumSaveLayerAsTextureWarnings.load(std::memory_order_acquire);
+		Tally.SaveLayerAsMaskImageCalls = NumSaveLayerAsMaskImageCalls.load(std::memory_order_acquire);
+		Tally.SaveLayerAsMaskImageWarnings = NumSaveLayerAsMaskImageWarnings.load(std::memory_order_acquire);
+		return Tally;
+	}
+
+	/**
 	 * Resolves the ImageWrapper module ONCE from the game thread and caches it for
 	 * LoadTexture. Call from module startup. NOT for the decode workers, which is a
 	 * lifetime rule rather than a convention -- see FVaCuusTextureDecodeSink (b).
@@ -352,6 +374,17 @@ private:
 	 * exists because they do it silently and we do not.
 	 */
 	bool bLoggedStopOverflow = false;
+
+	/**
+	 * The refusal tally for SaveLayerAsTexture/SaveLayerAsMaskImage, and the LATCH itself: each
+	 * warning fires only while its Warnings counter is still 0. Per recorder, therefore per view
+	 * — the same discipline as RefusedFilterTypes above, and for the same reason. A document with
+	 * 200 shadowed elements logs one line. See FVaCuusUnsupportedTally for why both halves exist.
+	 */
+	std::atomic<uint32> NumSaveLayerAsTextureCalls{0};
+	std::atomic<uint32> NumSaveLayerAsTextureWarnings{0};
+	std::atomic<uint32> NumSaveLayerAsMaskImageCalls{0};
+	std::atomic<uint32> NumSaveLayerAsMaskImageWarnings{0};
 
 	/**
 	 * THE RECORDER'S LIVE MATERIAL TABLE (M5 Task 5b) — handles of compiled

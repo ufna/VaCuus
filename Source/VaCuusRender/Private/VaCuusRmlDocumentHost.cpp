@@ -425,6 +425,13 @@ uint64 FVaCuusRmlDocumentHost::GetNumDecodeArrivals() const
 	return Recorder ? Recorder->GetNumDecodeArrivals() : 0;
 }
 
+FVaCuusUnsupportedTally FVaCuusRmlDocumentHost::GetUnsupportedTally() const
+{
+	// Same standing as GetNumDecodeArrivals above: atomic counters, no thread assert, so the
+	// refusal and its latch can be asserted from a test on the game thread.
+	return Recorder ? Recorder->GetUnsupportedTally() : FVaCuusUnsupportedTally{};
+}
+
 Rml::Context* FVaCuusRmlDocumentHost::GetContext() const
 {
 	// Handed to the UI thread's input drain, which owns every FKey/modifier/button

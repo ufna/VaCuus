@@ -49,15 +49,29 @@ ANNOTATIONS = {
     "decorator": "Renders through the recorder; `shader(...)` values resolve builtin names "
     "then registered UMaterial style keys (see the decorators section below).",
     "filter": "v1 compiles `blur` only; the other nine types are refused (one Warning per type, "
-    "effect dropped per element -- VaCuusRecordingRenderInterface.cpp:778-801). Per-element "
+    "effect dropped per element -- VaCuusRecordingRenderInterface.cpp:866-907). Per-element "
     "filter blur is not a shipped v1 surface (arch spec 5, M5 amendment): the verified blur "
     "consumer is backdrop-filter.",
     "backdrop-filter": "`backdrop-filter: blur(...)` is the shipped glass path -- distilled at record "
     "time and re-blurred every engine frame at composite time (arch spec 5, M5 amendment). "
     "Non-blur backdrop filters are refused like element filters.",
-    "box-shadow": "NOT animatable: RmlUi refuses the key at animation start with a Warning "
-    "(ElementAnimation.cpp:640-648); `vacuus lint` flags it at authoring time "
-    "(Web/packages/cli/lib/lint.mjs:68-99).",
+    "box-shadow": "DOES NOT RENDER in v1 -- the shadow needs the current layer captured to a "
+    "texture (GeometryBoxShadow.cpp:235 -> RenderInterface::SaveLayerAsTexture) and the replayer "
+    "has no layer render targets. It is REFUSED, once per view, with a Warning naming the property "
+    "and the substitute; the element then renders its normal background and border with the shadow "
+    "dropped (bead VaCuus-u0q; VaCuus patch #3 to the vendored RmlUi is what makes the failure "
+    "harmless -- before it the element rendered as an opaque WHITE rectangle and republished every "
+    "frame). Substitute: `decorator: ninepatch(...)` with a pre-blurred shadow image, or "
+    "`font-effect: glow` for text. Also NOT animatable even where it renders: RmlUi refuses the key "
+    "at animation start with a Warning (ElementAnimation.cpp:640-648); `vacuus lint` flags it at "
+    "authoring time (Web/packages/cli/lib/lint.mjs:68-99).",
+    "mask-image": "PARSES BUT DOES NOT MASK in v1 -- masking needs the mask layer captured as a "
+    "filter (ElementEffects.cpp:306 -> RenderInterface::SaveLayerAsMaskImage) and the replayer has "
+    "no layer render targets. It is REFUSED, once per view, with a Warning (bead VaCuus-iuv). The "
+    "element renders UNMASKED **and the mask artwork is drawn over it**, because the layer the "
+    "decorators were drawn into is not a real render target -- verified on screen, not inferred. "
+    "Substitute: bake the alpha into the image asset and use `decorator: image`/`ninepatch`, or "
+    "clip with `overflow: hidden` plus `border-radius`.",
     "font-effect": "Glyph generation for effects (glow/outline) is the measured spike class -- "
     "~4.2 ms on the reference HUD's FIRST Record, UI thread, before first publish "
     "(perf-guide.md, Exp-GLYPH-WARMUP). Budget it at load, not per frame.",
@@ -212,11 +226,16 @@ def main():
     w.append("")
     w.append("RmlUi registers ten filter instancers; the VaCuus recorder compiles exactly")
     w.append("ONE -- `blur`. Every other type is refused with one Warning per type and the")
-    w.append("effect dropped per element (VaCuusRecordingRenderInterface.cpp:778-801;")
+    w.append("effect dropped per element (VaCuusRecordingRenderInterface.cpp:866-907;")
     w.append("returning handle 0 is RmlUi's own safe-refusal contract, and RmlUi then warns")
-    w.append("per element, ElementEffects.cpp:153-165). The shipped, verified blur consumer")
-    w.append("is `backdrop-filter` (glass); per-element filter/box-shadow blur is a v1.x")
-    w.append("item (arch spec 5, M5 amendment).")
+    w.append("per element, ElementEffects.cpp:161-165). The shipped, verified blur consumer")
+    w.append("is `backdrop-filter` (glass); per-element `filter:` blur is a v1.x item (arch")
+    w.append("spec 5, M5 amendment).")
+    w.append("")
+    w.append("`box-shadow`'s blur never reaches this table at all: the shadow is refused a")
+    w.append("step earlier, at the layer capture it is built on (see the `box-shadow` row")
+    w.append("above and `Layer capture` below), so its CompileFilter(\"blur\") call is never")
+    w.append("made.")
     w.append("")
     w.append("| Filter | Factory.cpp line | v1 status |")
     w.append("|---|---|---|")
@@ -235,6 +254,30 @@ def main():
     w.append("|---|---|")
     for name, line in font_effects:
         w.append(f"| `{name}` | :{line} |")
+    w.append("")
+    w.append("## Layer capture -- the two properties v1 refuses outright")
+    w.append("")
+    w.append("Rml::RenderInterface has 21 virtuals and the VaCuus recorder now overrides all")
+    w.append("21, but two of them are REFUSALS rather than recordings -- `SaveLayerAsTexture`")
+    w.append("and `SaveLayerAsMaskImage` (RenderInterface.h:112-116). Both mean \"hand me the")
+    w.append("current layer back\", and this renderer has no layer to hand back: PushLayer,")
+    w.append("CompositeLayers and PopLayer are recorded and then skipped at replay, so every")
+    w.append("draw between a push and a pop lands directly in the base render target. Glass")
+    w.append("(`backdrop-filter`) does not need them -- it is distilled from the buffer and")
+    w.append("composited per engine frame -- which is why it ships and these do not.")
+    w.append("")
+    w.append("Each is refused with **one Warning per view**, latched, naming the property and")
+    w.append("its substitute. A document with two hundred shadowed elements logs one line.")
+    w.append("")
+    w.append("| Property | Reaches | v1 behaviour |")
+    w.append("|---|---|---|")
+    w.append("| `box-shadow` | `SaveLayerAsTexture` | Shadow dropped; the element renders its "
+             "**normal background and border**. No per-frame cost. |")
+    w.append("| `mask-image` | `SaveLayerAsMaskImage` | Element renders **unmasked**, and the "
+             "mask artwork is **drawn over it**. |")
+    w.append("")
+    w.append("Both are pinned by automation: `VaCuus.Render.LayerCapture.Refused` and")
+    w.append("`VaCuus.Render.LayerCapture.RestyleChurn`.")
     w.append("")
     w.append("## At-rules")
     w.append("")

@@ -35,24 +35,32 @@ bool CallbackTextureInterface::GenerateTexture(Span<const byte> source, Vector2i
 	return texture_handle != TextureHandle{};
 }
 
-void CallbackTextureInterface::SaveLayerAsTexture() const
+// VaCuus patch #3 (VENDORED_TAG.txt): returns bool; see CallbackTexture.h for why. Every early-out already
+// left texture_handle at zero, so the only change in behaviour is that the caller can now SEE that.
+bool CallbackTextureInterface::SaveLayerAsTexture() const
 {
 	if (texture_handle)
 	{
 		RMLUI_ERRORMSG("Texture already set");
-		return;
+		return false;
 	}
 
 	const Rectanglei region = render_manager.GetScissorRegion();
 	if (!region.Valid())
 	{
 		RMLUI_ERRORMSG("Save layer as texture requires a scissor region to be set first");
-		return;
+		return false;
 	}
 
+	// A render interface that does not implement layer capture returns the base class's zero
+	// (RenderInterface.cpp:37-40) -- an optional virtual, so this is a supported configuration
+	// rather than an error, and it is the one the bool return exists to report.
 	texture_handle = render_interface.SaveLayerAsTexture();
-	if (texture_handle)
-		dimensions = region.Size();
+	if (!texture_handle)
+		return false;
+
+	dimensions = region.Size();
+	return true;
 }
 
 void CallbackTextureInterface::SetTextureHandle(TextureHandle handle, Vector2i new_dimensions) const

@@ -455,12 +455,21 @@ struct FVaCuusCommandBuffer
 	 * its own earlier warning: the M5 filter pair, and then the M5 shader pair whose
 	 * absence the previous revision of this comment predicted by name ("a document with an
 	 * animated gradient whose NewShaders map went unnamed here would publish frame one and
-	 * then freeze"). The recorder now implements 19 of Rml::RenderInterface's 21 virtuals;
-	 * the 2 still at their defaults are SaveLayerAsTexture/SaveLayerAsMaskImage
-	 * (ThirdParty/RmlUi/Include/RmlUi/Core/RenderInterface.h:112-116, element `filter:`
-	 * output and mask-image). Each arrives with its own handle map on this buffer and joins
-	 * this predicate the day it lands. CompositeFilters is deliberately NOT here: it is
-	 * frame content (see its declaration), covered by the hash.
+	 * then freeze"). The recorder now overrides ALL 21 of Rml::RenderInterface's virtuals, so
+	 * nothing is left at a silent default. The last two — SaveLayerAsTexture and
+	 * SaveLayerAsMaskImage (ThirdParty/RmlUi/Include/RmlUi/Core/RenderInterface.h:112-116) —
+	 * are REFUSALS, not recordings: each returns 0 with one latched warning and adds no
+	 * resource array, so neither touches this predicate. They land here the day layer capture
+	 * is implemented, each with its own handle map. CompositeFilters is deliberately NOT here:
+	 * it is frame content (see its declaration), covered by the hash.
+	 *
+	 * A PREVIOUS REVISION OF THIS COMMENT described those two as "element `filter:` output and
+	 * mask-image", which was wrong about the first half and is corrected here (bead
+	 * VaCuus-u0q): SaveLayerAsTexture's only caller in the whole tree is the box-shadow texture
+	 * callback (ThirdParty/RmlUi/Source/Core/GeometryBoxShadow.cpp:235). Element `filter:` goes
+	 * through CompositeLayers (ElementEffects.cpp:283-315), which IS implemented. Naming the
+	 * wrong property is how box-shadow's white-rectangle failure stayed invisible for two
+	 * milestones — nothing under Source/VaCuus* mentioned it at all.
 	 *
 	 * The compile-time half of that promise is the member-count assert in the definition
 	 * below: a new member on this struct fails the build until someone decides whether it
