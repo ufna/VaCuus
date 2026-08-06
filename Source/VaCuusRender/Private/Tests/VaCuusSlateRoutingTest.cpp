@@ -19,6 +19,9 @@
 
 #include "Framework/Application/NavigationConfig.h"
 #include "Framework/Application/SlateApplication.h"
+#include "Framework/Application/SlateUser.h"
+#include "Layout/WidgetPath.h"
+#include "Widgets/SWindow.h"
 #include "HAL/IConsoleManager.h"
 #include "HAL/PlatformProcess.h"
 #include "InputCoreTypes.h"
@@ -1430,6 +1433,164 @@ bool FVaCuusNavEntryTest::RunTest(const FString& Parameters)
 	Widget->DetachView();
 	UIThread->EnqueueRemoveView(ViewId);
 	TestTrue(TEXT("UI frames survive the removal"), RunFrames(*UIThread, 2));
+
+	return true;
+}
+
+/**
+ * WHO OWNS THE ANSWER TO "AM I HOLDING THE MOUSE" (bead VaCuus-86x).
+ *
+ * Slate does, and the widget used to answer from its own flag. The two drift apart in both
+ * directions and the mechanisms are named on SVaCuusWidget::HoldsPointerCapture(); this test
+ * pins the one that eats a drag, and it is reproducible on any platform even though the
+ * mechanism that causes it in the wild is macOS-only.
+ *
+ * THE SHAPE, not the platform: give the widget Slate's capture WITHOUT going through its own
+ * press handler, which is exactly what FSlateUser::RestoreCaptorPathsByIndex does on macOS
+ * when the application activates -- it assigns the captor map and notifies nobody. A drag is
+ * then live in Slate while the widget's flag says it holds nothing.
+ *
+ * WHY THIS TEST NEEDS A WINDOW when the rest of the file does not: FSlateUser::SetPointerCaptor
+ * refuses a widget it cannot find a path to (SlateUser.cpp:261-271), so the widget has to be
+ * really parented into a really added window. That is also what makes the assertion meaningful
+ * -- the capture is a genuine entry in the captor map, not a stub.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusCaptureReconcileTest, "VaCuus.Input.CaptureReconcile",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusCaptureReconcileTest::RunTest(const FString& Parameters)
+{
+	using namespace VaCuusSlateRoutingTest;
+
+	if (!FSlateApplication::IsInitialized())
+	{
+		AddInfo(TEXT("Skipped: no FSlateApplication, so there is no captor map to disagree with"));
+		return true;
+	}
+
+	const FIntPoint ViewSize(320, 240);
+	const TSharedRef<FVaCuusViewStatus> Status = MakeShared<FVaCuusViewStatus>();
+
+	TStrongObjectPtr<UGameInstance> GameInstance(NewObject<UGameInstance>());
+	TStrongObjectPtr<UVaCuusSubsystem> Subsystem(NewObject<UVaCuusSubsystem>(GameInstance.Get()));
+	TStrongObjectPtr<UVaCuusView> View(NewObject<UVaCuusView>(Subsystem.Get()));
+	View->InitializeView(Subsystem.Get(), /*ViewId=*/1, Status, ViewSize);
+
+	const TSharedRef<FVaCuusSlateElement> Element = MakeShared<FVaCuusSlateElement>();
+	TSharedRef<SVaCuusWidget> Widget = SNew(SVaCuusWidget, View.Get(), Element);
+
+	const FGeometry Geometry = FGeometry::MakeRoot(FVector2f(ViewSize.X, ViewSize.Y), FSlateLayoutTransform());
+
+	// NO DOCUMENT ON PURPOSE: the snapshot is empty, so EVERY point is a pass-through point and
+	// the only thing that can make a move Handled is capture. That is the whole variable.
+	const FIntPoint AnyPoint(40, 40);
+	const TSet<FKey> NoButtons;
+
+	{
+		const FReply Cold = Widget->OnMouseMove(Geometry, MakePointerEvent(AnyPoint, NoButtons, FKey()));
+		TestFalse(TEXT("With no capture and an empty snapshot, a move is Unhandled"), Cold.IsEventHandled());
+	}
+
+	TSharedRef<SWindow> Window = SNew(SWindow).ClientSize(FVector2D(ViewSize.X, ViewSize.Y)).Content()[Widget];
+	FSlateApplication::Get().AddWindow(Window, /*bShowImmediately=*/false);
+	ON_SCOPE_EXIT
+	{
+		if (const TSharedPtr<FSlateUser> CursorUser = FSlateApplication::Get().GetCursorUser())
+		{
+			CursorUser->ReleaseAllCapture();
+		}
+		FSlateApplication::Get().RequestDestroyWindow(Window);
+	};
+
+	// A layout pass, or there is no path to find: FindPathToWidget walks arranged children.
+	Window->SlatePrepass();
+
+	FWidgetPath WidgetPath;
+	if (!TestTrue(TEXT("the widget is reachable from its window"),
+			FSlateApplication::Get().FindPathToWidget(Widget, WidgetPath)))
+	{
+		return false;
+	}
+
+	// THE MACOS RESTORE, IN ONE LINE: Slate is handed the capture directly. The widget's own
+	// press handler is never called, so its flag stays false -- which is the state the engine
+	// leaves it in after ProcessApplicationActivationEvent puts the captor map back.
+	const TSharedPtr<FSlateUser> User = FSlateApplication::Get().GetCursorUser();
+	if (!TestTrue(TEXT("there is a cursor user to hold a capture"), User.IsValid()))
+	{
+		return false;
+	}
+	if (!TestTrue(TEXT("Slate accepted the capture"),
+			User->SetPointerCaptor(FSlateApplicationBase::CursorPointerIndex, Widget, WidgetPath)))
+	{
+		return false;
+	}
+
+	TestTrue(TEXT("Slate now routes the pointer to this widget"), Widget->HasMouseCapture());
+	TestFalse(TEXT("...and the widget does not know it (the whole bug)"), Widget->IsTrackingMouseCapture_Debug());
+
+	// THE ASSERTION. Before the fix this answered Unhandled -- the move bubbled to SViewport,
+	// the game's camera swallowed it, and the drag died mid-gesture with nothing in any log.
+	{
+		const FReply Move = Widget->OnMouseMove(Geometry, MakePointerEvent(AnyPoint, NoButtons, FKey()));
+		TestTrue(TEXT("A move under a capture Slate holds for us is Handled, flag or no flag"),
+			Move.IsEventHandled());
+	}
+
+	// And the mirror caught up, which matters beyond this handler: it is what the headless
+	// click commands attribute a press with (see CaptureHolder above).
+	TestTrue(TEXT("...and the widget has adopted the capture it found"),
+		Widget->IsTrackingMouseCapture_Debug());
+	TestSamePtr(TEXT("...including the process-wide holder"), CaptureHolder(), &Widget.Get());
+
+	// THE OTHER DIRECTION, which must NOT be symmetric: with Slate's capture gone the move is
+	// Unhandled again. The flag is left alone here by design -- HoldsPointerCapture() explains
+	// why clearing it would tear down a live gesture -- so this asserts the ANSWER, which is
+	// what routing depends on.
+	User->ReleaseAllCapture();
+	TestFalse(TEXT("Slate no longer routes to the widget"), Widget->HasMouseCapture());
+	AddInfo(FString::Printf(TEXT("After ReleaseAllCapture the widget's own flag reads %s"),
+		Widget->IsTrackingMouseCapture_Debug() ? TEXT("true (no notification reached it)") : TEXT("false (notified)")));
+	{
+		const FReply Move = Widget->OnMouseMove(Geometry, MakePointerEvent(AnyPoint, NoButtons, FKey()));
+		TestFalse(TEXT("A move with no capture anywhere is Unhandled again"), Move.IsEventHandled());
+	}
+
+	// ---- THE BEAD'S SECOND HALF, on every platform: flag says yes, Slate says no. ----
+	//
+	// Reached here by hand rather than through a press, because producing it through one needs
+	// an interactive rect AND a reply Slate never processes -- two fixtures for a state that is
+	// one line to state directly. In the wild it is FSlateUser::SetPointerCaptor REFUSING the
+	// request (SlateUser.cpp:261-271, a widget not reachable from the event path): ProcessReply
+	// only broadcasts a WITH_SLATE_DEBUGGING trace, no OnMouseCaptureLost ever arrives, and the
+	// widget went on answering Handled for a capture it never got -- eating the game's camera
+	// until the next button-up healed it.
+	if (!Widget->IsTrackingMouseCapture_Debug())
+	{
+		// Put the flag back up WITHOUT Slate: a press over a point the (empty) snapshot does
+		// not cover takes no capture, so the only honest way in is the adopt path again,
+		// followed by a release Slate does not tell us about.
+		if (User->SetPointerCaptor(FSlateApplicationBase::CursorPointerIndex, Widget, WidgetPath))
+		{
+			Widget->OnMouseMove(Geometry, MakePointerEvent(AnyPoint, NoButtons, FKey()));	// adopts
+			User->ReleaseAllCapture();
+		}
+	}
+
+	if (Widget->IsTrackingMouseCapture_Debug())
+	{
+		const FReply Move = Widget->OnMouseMove(Geometry, MakePointerEvent(AnyPoint, NoButtons, FKey()));
+		TestFalse(TEXT("A move is Unhandled when OUR flag says we hold a capture Slate does not"),
+			Move.IsEventHandled());
+	}
+	else
+	{
+		// Slate notified us both times, so this state is not reachable from here. Said out loud
+		// rather than passed silently: a test that quietly asserts nothing is worse than one
+		// that says which half it covered.
+		AddInfo(TEXT("Skipped the flag-says-yes half: this venue's ReleaseAllCapture notifies the "
+					 "widget, so the flag cannot be left standing"));
+	}
 
 	return true;
 }
