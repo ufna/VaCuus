@@ -91,6 +91,108 @@ static JSValue FromHostValue(JSContext* Ctx, const FVaCuusJsValue& Value)
 }
 }	 // namespace VaCuusJsHostApiInternal
 
+void FVaCuusJsViewContext::CallFunction(const FString& FunctionPath, TArrayView<const FVaCuusJsValue> Args)
+{
+	using namespace VaCuusJsHostApiInternal;
+
+	if (Ctx == nullptr)
+	{
+		return;
+	}
+
+	TArray<FString> Segments;
+	FunctionPath.ParseIntoArray(Segments, TEXT("."), /*InCullEmpty=*/true);
+	if (Segments.Num() == 0)
+	{
+		UE_LOG(LogVaCuusJS, Warning, TEXT("CallJs on view %u: the function path is empty"), ViewId);
+		return;
+	}
+
+	// WALK THE PATH, HOLDING THE OWNER. `this` inside the callee must be the object the last
+	// segment lives on -- `vacuus.onFreeze` has to see `this === vacuus`, which is what the
+	// interpolated call it replaces gave it for free. Owner starts as globalThis so a
+	// single-segment path lands on the same `this` a bare `foo(x)` would.
+	JSValue Owner = JS_GetGlobalObject(Ctx);
+	JSValue Callee = JS_UNDEFINED;
+
+	for (int32 Index = 0; Index < Segments.Num(); ++Index)
+	{
+		if (!JS_IsObject(Owner))
+		{
+			// A non-object mid-path: `a.b.c` where `a.b` is a number. Not an error -- see the
+			// missing-function contract on the declaration -- but it must not be read as "the
+			// call happened".
+			UE_LOG(LogVaCuusJS, Warning, TEXT("CallJs('%s') on view %u: '%s' is not an object, nothing called"),
+				*FunctionPath, ViewId, *FString::Join(TArrayView<const FString>(Segments.GetData(), Index), TEXT(".")));
+			JS_FreeValue(Ctx, Owner);
+			return;
+		}
+
+		const FTCHARToUTF8 SegmentUtf8(*Segments[Index]);
+		Callee = JS_GetPropertyStr(Ctx, Owner, SegmentUtf8.Get());
+		if (JS_IsException(Callee))
+		{
+			// A getter on the path threw. Consumed here, like every other JS throw crossing
+			// this seam, and reported through the runtime's sink rather than swallowed.
+			Runtime.ReportException(Ctx, *FunctionPath);
+			JS_FreeValue(Ctx, Owner);
+			return;
+		}
+
+		if (Index + 1 < Segments.Num())
+		{
+			JS_FreeValue(Ctx, Owner);
+			Owner = Callee;
+			Callee = JS_UNDEFINED;
+		}
+	}
+
+	if (!JS_IsFunction(Ctx, Callee))
+	{
+		// THE GUARD THE OLD IDIOM HAND-WROTE, in one place instead of at every call site: a
+		// document that never registered the callback, or failed to load at all, gets a named
+		// Warning rather than a JS exception for a call its author could not have prevented.
+		UE_LOG(LogVaCuusJS, Warning, TEXT("CallJs('%s') on view %u: not a function, nothing called"),
+			*FunctionPath, ViewId);
+		JS_FreeValue(Ctx, Callee);
+		JS_FreeValue(Ctx, Owner);
+		return;
+	}
+
+	// THE ARGUMENTS NEVER BECOME TEXT. Each is one JSValue built by the same marshaller
+	// `vacuus.emit` uses in the other direction, so a string containing quotes, backslashes,
+	// newlines or `);` is a string -- there is no parser downstream of here for it to escape
+	// into. That is the whole of VaCuus-asv's second and larger reason.
+	TArray<JSValue, TInlineAllocator<4>> JsArgs;
+	JsArgs.Reserve(Args.Num());
+	for (const FVaCuusJsValue& Arg : Args)
+	{
+		JsArgs.Add(FromHostValue(Ctx, Arg));
+	}
+
+	JSValue Ret;
+	{
+		// The entry-guard contract (VaCuusJsRuntime.h): wraps the JS call ONLY, and closes
+		// before the exception is consumed -- Eval's shape verbatim.
+		FVaCuusJsEntryGuard Guard(Runtime, Ctx, *FunctionPath);
+		Ret = JS_Call(Ctx, Callee, Owner, JsArgs.Num(), JsArgs.GetData());
+	}
+	if (JS_IsException(Ret))
+	{
+		Runtime.ReportException(Ctx, *FunctionPath);
+	}
+
+	JS_FreeValue(Ctx, Ret);
+	for (JSValue& Arg : JsArgs)
+	{
+		// JS_Call does NOT take ownership of its argv (the JSValueConst rule, quickjs.h:199-201),
+		// unlike JS_SetPropertyStr a few lines below. Ours to free, all of them, call or throw.
+		JS_FreeValue(Ctx, Arg);
+	}
+	JS_FreeValue(Ctx, Callee);
+	JS_FreeValue(Ctx, Owner);
+}
+
 void FVaCuusJsViewContext::InstallHostApi(JSValue Vacuus)
 {
 	// JS_SetPropertyStr takes ownership of every value handed to it (the

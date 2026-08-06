@@ -221,6 +221,28 @@ public:
 	void ExecuteScript(const FString& Source);
 
 	/**
+	 * Calls the JS function at FunctionPath -- dotted, resolved from globalThis, e.g.
+	 * `vacuus.onFreeze` -- with Args. Fire and forget like ExecuteScript above, and the same
+	 * ordering: enqueued after a LoadDocument*, it runs against that document.
+	 *
+	 * PREFER THIS TO ExecuteScript FOR CALLING INTO THE UI. ExecuteScript takes SOURCE, so
+	 * passing a value through it means interpolating that value INTO source, and a string
+	 * carrying a quote then stops being an argument and becomes code -- in your own
+	 * interpreter, from your own game data. This path never builds a source line: each
+	 * FVaCuusJsValue crosses as a JSValue and is handed to the function as data.
+	 *
+	 *     View->CallJs(TEXT("vacuus.onFreeze"), {FVaCuusJsValue::MakeBool(true)});
+	 *
+	 * A PATH THAT RESOLVES TO NOTHING IS NOT AN ERROR: a document that never registered the
+	 * callback, or failed to load, gets one Warning naming the path and no exception -- which
+	 * is what every hand-written `typeof f === 'function'` guard in front of an ExecuteScript
+	 * was for. A dead view, a disabled JS runtime and an unknown view are still refused
+	 * loudly, exactly as they are for ExecuteScript.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "VaCuus")
+	void CallJs(const FString& FunctionPath, const TArray<FVaCuusJsValue>& Args);
+
+	/**
 	 * Closes the current document; the view (and its context) stays alive and can load
 	 * another. The view goes blank on the next UI frame -- the one the close still owes,
 	 * which clears the render target and is also what makes RmlUi free the document

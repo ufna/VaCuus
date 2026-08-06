@@ -53,6 +53,7 @@ public:
 	virtual void PumpFrame(double) override { ++PumpFrames; }
 	virtual void CollectGarbage(const TCHAR*) override { ++GCCalls; }
 	virtual void ExecuteScript(uint32, const FString&, const FString&) override {}
+	virtual void CallFunction(uint32, const FString&, TArrayView<const FVaCuusJsValue>) override {}
 	virtual void OnInlineFrameEntry() override { ++InlineEntries; }
 	virtual void Shutdown() override { ++Shutdowns; }
 };

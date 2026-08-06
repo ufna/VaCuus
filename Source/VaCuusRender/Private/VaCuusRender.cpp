@@ -2141,12 +2141,13 @@ static void FreezeM4DemoModel(const TArray<FString>& Args)
 
 			if (UVaCuusView* View = GState->View.Get())
 			{
-				// Guarded, not assumed: a document that failed to load (or a future one without
-				// the script) has no callback, and an unguarded call would surface as a JS error
-				// for a console command that did its C++ half fine.
-				View->ExecuteScript(FString::Printf(
-					TEXT("if (typeof vacuus !== 'undefined' && typeof vacuus.onFreeze === 'function') vacuus.onFreeze(%s);"),
-					GState->bModelFrozen ? TEXT("true") : TEXT("false")));
+				// CallJs, NOT ExecuteScript + Printf, and this site is why VaCuus-asv exists: the
+				// line here used to interpolate the argument into a JS source string behind a
+				// hand-written `typeof ... === 'function'` guard. Both halves are now the API's:
+				// the guard (a path that resolves to nothing warns instead of throwing) and, more
+				// importantly, the argument -- which never becomes source text at all. A bool is
+				// harmless to interpolate; the idiom was not, and it was the only idiom there was.
+				View->CallJs(TEXT("vacuus.onFreeze"), {FVaCuusJsValue::MakeBool(GState->bModelFrozen)});
 			}
 		});
 }
@@ -2354,7 +2355,7 @@ static FAutoConsoleCommand GM4FreezeCommand(
 	TEXT("vacuus.M4Demo.Freeze"),
 	TEXT("Freeze [1] or thaw [0] the M4 demo's two clocks, optionally after [delaySeconds]: the C++ driver keeps ")
 	TEXT("calling UpdateModel with a byte-identical struct (the M3 precedent) and vacuus.onFreeze(bool) pauses the ")
-	TEXT("JS beats through ExecuteScript. Frozen, nothing publishes on either path."),
+	TEXT("JS beats through CallJs. Frozen, nothing publishes on either path."),
 	FConsoleCommandWithArgsDelegate::CreateStatic(&FreezeM4DemoModel));
 
 static void Wheel(const TArray<FString>& Args)

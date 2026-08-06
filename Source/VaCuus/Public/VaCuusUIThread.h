@@ -161,6 +161,13 @@ public:
 	 */
 	void EnqueueExecuteScript(uint32 ViewId, const FString& Source, const FString& SourceName);
 
+	/**
+	 * Queues a call to the JS function at FunctionPath with Args (VaCuus-asv). Same ordering
+	 * and same refusals as EnqueueExecuteScript above; Args are copied into the command
+	 * because the caller's array dies at the return.
+	 */
+	void EnqueueCallScriptFunction(uint32 ViewId, const FString& FunctionPath, TArray<FVaCuusJsValue> Args);
+
 	void EnqueueShutdown();
 
 	/**
