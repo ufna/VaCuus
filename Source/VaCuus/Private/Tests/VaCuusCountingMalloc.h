@@ -8,6 +8,7 @@
 
 #include "HAL/MemoryBase.h"
 #include "HAL/PlatformAtomics.h"
+#include "HAL/PlatformTLS.h"
 
 #include <atomic>
 
@@ -45,13 +46,36 @@
  * for a live object -- the call forwards to the same inner allocator either way -- and a
  * use-after-free for a scoped one. Static storage closes the hole by shape.
  *
- * THE COUNT IS PROCESS-WIDE, NOT CALLER-SCOPED. Every thread's allocations land in the
- * same counters, so a window is meaningful only when the measuring thread is the only one
- * doing relevant work -- and even then a logger or timer thread can donate a count. The
- * callers below absorb that by protocol, not by assertion: repeat the window, take the
- * MINIMUM -- deterministic allocations made by the measured code appear in every window,
- * intermittent donations do not -- and assert a small bound on that minimum rather than a
- * literal zero of the whole process.
+ * THE COUNT IS SCOPED TO THE PARTICIPATING THREADS, AND IT USED NOT TO BE. Every thread in
+ * the process allocates through this proxy while a window is open -- that is unavoidable,
+ * GMalloc is one pointer -- but only the threads a window NAMES contribute to its counters.
+ * Everyone else forwards and is not counted.
+ *
+ * IT USED TO COUNT EVERYTHING, and the protocol that was supposed to absorb that (repeat
+ * the window, take the minimum) does not hold on a venue where OTHER threads are busy
+ * continuously rather than occasionally. Measured, full suite, real RHI (-RenderOffscreen,
+ * Vulkan) 2026-08-06, both failures on the first run and both filed as defects of the
+ * instrument rather than of the code under test (VaCuus-gq6, VaCuus-z36):
+ *
+ *   VaCuus.Model.Sampler.ArrayAlloc  "a warm republish allocates ~nothing (min 11 <= 4)"
+ *   VaCuus.RefHud.MemProxy           "canary: RemoveContext freed through GMalloc
+ *                                     (frees=11, bytes=+5264)"
+ *
+ * The second is the clearer tell: that window frees an RmlUi context and nothing else, so
+ * its byte delta is negative BY CONSTRUCTION -- unless the render thread, the RHI thread and
+ * the driver are allocating into the same ledger, which on a real RHI they are. The observed
+ * value swung -632, -5008, -88936 and +5264 across runs of the same window. A minimum over
+ * eight windows cannot filter a contributor that is present in all eight.
+ *
+ * SCOPING IS BY THREAD ID AND NOT BY A thread_local FLAG, because a window may legitimately
+ * measure work on a thread it does not run on: the RefHud boot window enqueues onto the UI
+ * thread and pumps it, so the allocations it exists to count happen there. A flag can only
+ * be set on the thread that sets it; an id list can name the UI thread from the test thread.
+ *
+ * The min-of-windows protocol stays in the callers, and its reason is now the narrower one it
+ * can actually deliver: it absorbs a straggler on a PARTICIPATING thread -- a lazily built TLS
+ * cache on the first window, a background flush the UI thread performs once -- not the steady
+ * traffic of the whole process, which is now excluded by shape.
  */
 class FVaCuusCountingMallocProxy final : public FMalloc
 {
@@ -70,9 +94,24 @@ public:
 	 */
 	bool bDisabled = false;
 
+	/**
+	 * THE THREADS THIS WINDOW COUNTS. Written by Begin() BEFORE the CAS that publishes the
+	 * proxy, so every thread that can reach the counters already sees the final list -- the
+	 * CAS is the release, and no separate barrier is needed for these.
+	 *
+	 * Four slots because the shapes that exist are one (the measuring thread alone) and two
+	 * (measuring thread + UI thread); the fourth is headroom for a render-thread window
+	 * without a format change. A window that names more is a design smell, so it is a
+	 * static_assert-able ceiling rather than a TArray -- and a TArray here would allocate
+	 * inside the allocator it is instrumenting.
+	 */
+	static constexpr int32 MaxParticipants = 4;
+	std::atomic<uint32> Participants[MaxParticipants]{};
+	std::atomic<int32> NumParticipants{0};
+
 	//~ Relaxed is enough: windows are read on the installing thread after the restoring
 	//~ CAS (a full barrier), and the min-of-windows protocol absorbs a straggler count
-	//~ from a thread still inside a forwarding call.
+	//~ from a participating thread still inside a forwarding call.
 	std::atomic<uint64> NumMallocs{0};
 	std::atomic<uint64> NumReallocs{0};
 	std::atomic<uint64> NumFrees{0};
@@ -99,6 +138,28 @@ public:
 	std::atomic<int64> LiveQuantizedBytes{0};
 	std::atomic<uint64> SizeLookupFailures{0};
 
+	/**
+	 * @return true when the calling thread is one this window counts.
+	 *
+	 * On the hot path of every allocation in the process while a window is open, so it is a
+	 * TLS read and a walk of at most four ints -- FPlatformTLS::GetCurrentThreadId() is
+	 * pthread_self() on Linux and a TEB field on Windows, neither of which allocates. That
+	 * last part is not a nicety: an allocating thread-id lookup would re-enter this proxy.
+	 */
+	FORCEINLINE bool CountsThisThread() const
+	{
+		const uint32 ThisThread = FPlatformTLS::GetCurrentThreadId();
+		const int32 Num = NumParticipants.load(std::memory_order_relaxed);
+		for (int32 Index = 0; Index < Num; ++Index)
+		{
+			if (Participants[Index].load(std::memory_order_relaxed) == ThisThread)
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
 	void ResetCounts()
 	{
 		NumMallocs.store(0, std::memory_order_relaxed);
@@ -110,72 +171,120 @@ public:
 
 	virtual void* Malloc(SIZE_T Size, uint32 Alignment) override
 	{
-		NumMallocs.fetch_add(1, std::memory_order_relaxed);
+		const bool bCount = CountsThisThread();
+		if (bCount)
+		{
+			NumMallocs.fetch_add(1, std::memory_order_relaxed);
+		}
 		void* Result = Inner->Malloc(Size, Alignment);
-		AddBlockBytes(Result);
+		if (bCount)
+		{
+			AddBlockBytes(Result);
+		}
 		return Result;
 	}
 
 	virtual void* TryMalloc(SIZE_T Size, uint32 Alignment) override
 	{
-		NumMallocs.fetch_add(1, std::memory_order_relaxed);
+		const bool bCount = CountsThisThread();
+		if (bCount)
+		{
+			NumMallocs.fetch_add(1, std::memory_order_relaxed);
+		}
 		void* Result = Inner->TryMalloc(Size, Alignment);
-		AddBlockBytes(Result);
+		if (bCount)
+		{
+			AddBlockBytes(Result);
+		}
 		return Result;
 	}
 
 	virtual void* MallocZeroed(SIZE_T Size, uint32 Alignment) override
 	{
-		NumMallocs.fetch_add(1, std::memory_order_relaxed);
+		const bool bCount = CountsThisThread();
+		if (bCount)
+		{
+			NumMallocs.fetch_add(1, std::memory_order_relaxed);
+		}
 		void* Result = Inner->MallocZeroed(Size, Alignment);
-		AddBlockBytes(Result);
+		if (bCount)
+		{
+			AddBlockBytes(Result);
+		}
 		return Result;
 	}
 
 	virtual void* TryMallocZeroed(SIZE_T Size, uint32 Alignment) override
 	{
-		NumMallocs.fetch_add(1, std::memory_order_relaxed);
+		const bool bCount = CountsThisThread();
+		if (bCount)
+		{
+			NumMallocs.fetch_add(1, std::memory_order_relaxed);
+		}
 		void* Result = Inner->TryMallocZeroed(Size, Alignment);
-		AddBlockBytes(Result);
+		if (bCount)
+		{
+			AddBlockBytes(Result);
+		}
 		return Result;
 	}
 
 	virtual void* Realloc(void* Ptr, SIZE_T NewSize, uint32 Alignment) override
 	{
-		NumReallocs.fetch_add(1, std::memory_order_relaxed);
-		SubBlockBytes(Ptr); // BEFORE the realloc invalidates the old block's size
-		void* Result = Inner->Realloc(Ptr, NewSize, Alignment);
-		if (Result == nullptr && Ptr != nullptr && NewSize > 0)
+		// ONE decision per call, taken once and reused: a realloc that counted its
+		// subtraction but not its addition (or the reverse) would corrupt the ledger far
+		// more quietly than a foreign thread ever did.
+		const bool bCount = CountsThisThread();
+		if (bCount)
 		{
-			AddBlockBytes(Ptr); // a failed grow leaves the old block live: restore its bytes
+			NumReallocs.fetch_add(1, std::memory_order_relaxed);
+			SubBlockBytes(Ptr); // BEFORE the realloc invalidates the old block's size
 		}
-		else
+		void* Result = Inner->Realloc(Ptr, NewSize, Alignment);
+		if (bCount)
 		{
-			AddBlockBytes(Result);
+			if (Result == nullptr && Ptr != nullptr && NewSize > 0)
+			{
+				AddBlockBytes(Ptr); // a failed grow leaves the old block live: restore its bytes
+			}
+			else
+			{
+				AddBlockBytes(Result);
+			}
 		}
 		return Result;
 	}
 
 	virtual void* TryRealloc(void* Ptr, SIZE_T NewSize, uint32 Alignment) override
 	{
-		NumReallocs.fetch_add(1, std::memory_order_relaxed);
-		SubBlockBytes(Ptr);
-		void* Result = Inner->TryRealloc(Ptr, NewSize, Alignment);
-		if (Result == nullptr && Ptr != nullptr && NewSize > 0)
+		const bool bCount = CountsThisThread();
+		if (bCount)
 		{
-			AddBlockBytes(Ptr);
+			NumReallocs.fetch_add(1, std::memory_order_relaxed);
+			SubBlockBytes(Ptr);
 		}
-		else
+		void* Result = Inner->TryRealloc(Ptr, NewSize, Alignment);
+		if (bCount)
 		{
-			AddBlockBytes(Result);
+			if (Result == nullptr && Ptr != nullptr && NewSize > 0)
+			{
+				AddBlockBytes(Ptr);
+			}
+			else
+			{
+				AddBlockBytes(Result);
+			}
 		}
 		return Result;
 	}
 
 	virtual void Free(void* Ptr) override
 	{
-		NumFrees.fetch_add(1, std::memory_order_relaxed);
-		SubBlockBytes(Ptr); // BEFORE the free retires the block
+		if (CountsThisThread())
+		{
+			NumFrees.fetch_add(1, std::memory_order_relaxed);
+			SubBlockBytes(Ptr); // BEFORE the free retires the block
+		}
 		Inner->Free(Ptr);
 	}
 
@@ -275,8 +384,19 @@ inline FVaCuusCountingMallocProxy& GetProxy()
 	return Proxy;
 }
 
-/** @return true when the proxy is installed and counting; false means the window could not open. */
-inline bool Begin()
+/**
+ * Open a window that counts the CALLING thread, plus any threads named in AlsoCount.
+ *
+ * The default -- calling thread only -- is right for every window that measures a call it
+ * makes itself, which is all of them except the RefHud boot and still windows: those enqueue
+ * onto the UI thread and pump it, so the allocations they exist to count happen there and
+ * they pass `{UIThread->GetThreadId()}`. Naming a thread that is not actually doing the work
+ * costs nothing; failing to name one that is makes the window read zero, which is the failure
+ * mode to watch for when a window suddenly measures ~nothing.
+ *
+ * @return true when the proxy is installed and counting; false means the window could not open.
+ */
+inline bool Begin(TConstArrayView<uint32> AlsoCount = {})
 {
 	FVaCuusCountingMallocProxy& Proxy = GetProxy();
 
@@ -288,10 +408,27 @@ inline bool Begin()
 	{
 		return false;
 	}
+	if (!ensureMsgf(AlsoCount.Num() + 1 <= FVaCuusCountingMallocProxy::MaxParticipants,
+			TEXT("VaCuusAllocWindow: %d participants asked for, %d slots"),
+			AlsoCount.Num() + 1, FVaCuusCountingMallocProxy::MaxParticipants))
+	{
+		return false;
+	}
 
 	FMalloc* Live = UE::Private::GMalloc;
 	Proxy.Inner = Live;
 	Proxy.ResetCounts();
+
+	// BEFORE the CAS, which is what publishes both the proxy and this list. A duplicate id
+	// (a caller naming its own thread) is harmless -- CountsThisThread stops at the first
+	// match -- so it is not filtered.
+	int32 NumParticipants = 0;
+	Proxy.Participants[NumParticipants++].store(FPlatformTLS::GetCurrentThreadId(), std::memory_order_relaxed);
+	for (const uint32 ThreadId : AlsoCount)
+	{
+		Proxy.Participants[NumParticipants++].store(ThreadId, std::memory_order_relaxed);
+	}
+	Proxy.NumParticipants.store(NumParticipants, std::memory_order_relaxed);
 
 	// The CAS, not a plain store: if another thread chained its own proxy between the read
 	// and here, a store would silently orphan it. One attempt is enough for a test window;

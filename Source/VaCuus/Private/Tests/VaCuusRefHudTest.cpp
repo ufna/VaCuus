@@ -987,7 +987,16 @@ bool FVaCuusRefHudMemProxyTest::RunTest(const FString& Parameters)
 	// Quiesce the fresh UI thread OUTSIDE the window so thread start-up cost never
 	// masquerades as document cost.
 	const uint32 ViewId = UIThread->AllocateViewId();
-	if (!TestTrue(TEXT("boot: alloc window opened"), VaCuusAllocWindow::Begin()))
+
+	// THE WINDOW HAS TO NAME THE UI THREAD, and this is the only test that does. Windows (2)
+	// and (3) below enqueue work and then pump: RunFrames triggers the UI thread and waits,
+	// so every allocation they exist to measure -- the document, its stylesheet, its geometry
+	// -- happens THERE and not here. The counting proxy is scoped to the threads a window
+	// names (VaCuusCountingMalloc.h), so without this line the boot window would read a few
+	// hundred bytes of enqueue traffic and the ledger's whole claim would evaporate.
+	const uint32 CountedThreads[] = {UIThread->GetThreadId()};
+
+	if (!TestTrue(TEXT("boot: alloc window opened"), VaCuusAllocWindow::Begin(CountedThreads)))
 	{
 		return false;
 	}
@@ -1040,7 +1049,7 @@ bool FVaCuusRefHudMemProxyTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("boot window: under the spec 11 CPU-side 32 MiB gate"), Boot.LiveQuantizedBytesDelta < int64(32) * 1024 * 1024);
 
 	// (3) THE STILL WINDOW.
-	if (!TestTrue(TEXT("still: alloc window opened"), VaCuusAllocWindow::Begin()))
+	if (!TestTrue(TEXT("still: alloc window opened"), VaCuusAllocWindow::Begin(CountedThreads)))
 	{
 		return false;
 	}
@@ -1057,10 +1066,12 @@ bool FVaCuusRefHudMemProxyTest::RunTest(const FString& Parameters)
 	UE_LOG(LogVaCuus, Display, TEXT("%s"), *StillReport);
 	TestTrue(TEXT("still window: every block's size resolved (the ledger's exactness bit)"),
 		Still.SizeLookupFailures == 0);
-	// The ledger hooks GMalloc process-wide, not per-view: a background editor task that
-	// retains > 256 KiB during these ~60 frames would flake this bound. Low risk in the
-	// automation venue (nothing else allocates at steady state here), recorded so a flake
-	// reads as the known hazard, not a regression.
+	// This used to say the ledger hooks GMalloc process-wide and that a background editor
+	// task retaining > 256 KiB would flake the bound -- true when it was written, and the
+	// bound flaked for exactly that family of reason on a real RHI (VaCuus-z36, VaCuus-gq6).
+	// The counter is now scoped to this test's thread and the UI thread, so a foreign task
+	// cannot reach it; what remains inside the bound is the UI thread's own steady state,
+	// which is what the assertion was always about.
 	TestTrue(TEXT("still window: steady state holds (|delta| < 256 KiB over 60 frames)"),
 		FMath::Abs(Still.LiveQuantizedBytesDelta) < 256 * 1024);
 

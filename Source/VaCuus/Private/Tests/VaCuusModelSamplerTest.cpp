@@ -1095,16 +1095,23 @@ bool FVaCuusModelSamplerArrayCostTest::RunTest(const FString& Parameters)
  *    string pointer moves.
  *  - THE COUNTING PROXY (VaCuusCountingMalloc.h). Pointer equality cannot see a
  *    realloc-to-the-same-address or an alloc/free pair that nets out; a count of entries
- *    into the allocator can. The count is process-wide, so the protocol is MIN OF EIGHT
- *    WINDOWS: an allocation the measured code makes deterministically is in every window,
- *    a donation from a logger or timer thread is not. The tests here never start the UI
- *    thread, so no VaCuus code is running anywhere else during a window.
+ *    into the allocator can. The count is scoped to THIS thread -- the windows below name
+ *    no other, and the tests here never start the UI thread, so no VaCuus code runs
+ *    anywhere else during one. MIN OF EIGHT WINDOWS on top of that, for the stragglers
+ *    scoping cannot remove: a TLS cache built lazily inside the first window is this
+ *    thread's allocation and counts, once.
  *
- * The bound is 4, not 0, on the spec's own instruction (a small bound, not a literal zero
- * of the whole process): it absorbs a hypothetical per-window donation that happens to
- * recur, while a structural regression -- destroy-and-rebuild is ~600 element allocations,
- * a per-publish container move is ~1 realloc in EVERY window -- clears it by two orders of
- * magnitude. The raw numbers are reported either way.
+ *    IT USED TO BE PROCESS-WIDE and the min was the whole defence, which is not enough when
+ *    the other threads are busy CONTINUOUSLY rather than occasionally: on a real RHI this
+ *    test failed with "a warm republish allocates ~nothing (min 11 <= 4)" against a copy
+ *    that makes at most a handful, because the render and RHI threads were in every one of
+ *    the eight windows (VaCuus-z36).
+ *
+ * The bound is 4, not 0, on the spec's own instruction (a small bound, not a literal zero):
+ * it absorbs a straggler that happens to recur, while a structural regression --
+ * destroy-and-rebuild is ~600 element allocations, a per-publish container move is ~1
+ * realloc in EVERY window -- clears it by two orders of magnitude. The raw numbers are
+ * reported either way.
  */
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusModelSamplerArrayAllocTest, "VaCuus.Model.Sampler.ArrayAlloc",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -1140,6 +1147,41 @@ bool FVaCuusModelSamplerArrayAllocTest::RunTest(const FString& Parameters)
 		}
 		return Min;
 	};
+
+	// ---- 0. THE INSTRUMENT, before anything it measures. ----
+	//
+	// This test's whole result is "min 0", and a counter that counted NOTHING would produce
+	// the identical number -- a green that means the opposite of what it reads. That is not
+	// hypothetical: the counting proxy is now scoped to the threads a window names
+	// (VaCuusCountingMalloc.h, VaCuus-z36), so a future edit that drops this thread from the
+	// list, or a platform whose GetCurrentThreadId does not match what Begin() recorded,
+	// turns every assertion below into a tautology and nothing else here would notice.
+	//
+	// So: one window that MUST count. A TArray grow is an allocation with no way to avoid
+	// being one -- Reserve on an empty array enters the allocator exactly once.
+	//
+	// IT ENTERS THROUGH Realloc, NOT Malloc, and this guard's first run is what said so: it
+	// asserted Mallocs > 0 and failed with "mallocs=0, bytes=+4096" -- the ledger saw the
+	// 4096 bytes, the malloc counter did not, because FMemory::Realloc(nullptr, N) is how
+	// TArray's allocator grows from empty (ContainerAllocationPolicies.h's ResizeAllocation
+	// calls Realloc unconditionally). So the predicate is Total(), which is mallocs PLUS
+	// reallocs -- and that is the right one anyway: Total() is the exact quantity the two
+	// assertions at the bottom of this test bound.
+	{
+		if (!TestTrue(TEXT("the instrument window installed"), VaCuusAllocWindow::Begin()))
+		{
+			return false;
+		}
+		TArray<uint8> ForcedAllocation;
+		ForcedAllocation.Reserve(4096);
+		const VaCuusAllocWindow::FCounts Instrument = VaCuusAllocWindow::End();
+		// Touched after End() so the compiler cannot decide the array was never needed.
+		ForcedAllocation.Add(1);
+		TestTrue(FString::Printf(TEXT("the counter counts this thread (mallocs=%llu reallocs=%llu bytes=%+lld) -- "
+									  "without this, every 'min 0' below would also hold for a dead counter"),
+					 Instrument.Mallocs, Instrument.Reallocs, Instrument.LiveQuantizedBytesDelta),
+			Instrument.Total() > 0 && Instrument.LiveQuantizedBytesDelta > 0);
+	}
 
 	// ---- 1. The primitive itself: warm same-Num SyncCopy, through the production funnel. ----
 
