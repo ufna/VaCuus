@@ -89,10 +89,16 @@ ANNOTATIONS = {
     "and an unrecognized token drops the WHOLE declaration with one generic \"Syntax error parsing "
     "property declaration\" (:240 misses the map, :267 fails the duration sscanf, :301-315 returns "
     "false). Use `cubic-in-out` for CSS's `ease-in-out`. Keywords must be LOWERCASE here: "
-    "`transition` does not lowercase its token (:240) while `animation` does (:133). gotchas.md #3.",
+    "`transition` does not lowercase its token (:240) while `animation` does (:133). gotchas.md #3. "
+    "Timing tokens MAY come from `var()`, but only because the vendored tree is patched for it "
+    "(VENDORED_TAG.txt patch #4, bead VaCuus-6gj): upstream reads this property before computed "
+    "values exist (ElementStyle.cpp:388) and drops the whole declaration with no diagnostic at all. "
+    "gotchas.md #3b.",
     "animation": "Same tween table as `transition` (PropertyParserAnimation.cpp:27-77), but this "
     "parser LOWERCASES each token before the lookup (:133), so `Cubic-Out` works here and silently "
-    "kills a `transition`. Keyframe values may contain `var()` (Element.cpp:2784-2798).",
+    "kills a `transition`. Keyframe values may contain `var()` (Element.cpp:2784-2798), and so may "
+    "this property's own value -- it is read through ComputedValues::animation(), which resolves "
+    "variables (ComputedValues.cpp:8-16), so unlike `transition` it never needed a patch.",
     "display": "No CSS Grid in RmlUi (flex-first is the market bar, arch spec 1); the keyword "
     "list here is exhaustive.",
     "position": "absolute resolves against the nearest positioned ancestor; there is no "
@@ -229,9 +235,26 @@ def main():
     w.append("and once its bands shrink past about two pixels it fades to the period's mean")
     w.append("colour rather than aliasing (VaCuusGradient.usf).")
     w.append("")
+    # Restored into the GENERATOR on 2026-08-06 (bead VaCuus-6gj): commit 00497b7 wrote
+    # these two paragraphs into docs/buyer/rcss-matrix.md by hand, and the next
+    # regeneration -- this one -- silently reverted them, which is the failure mode this
+    # whole script exists to prevent. Edit here, never the markdown.
     w.append("This covers the gradient FILL only. Element outlines -- notably `border-radius`")
-    w.append("arcs -- are tessellated geometry drawn into a single-sampled render target and")
-    w.append("are not antialiased.")
+    w.append("arcs -- are tessellated geometry, and geometry is antialiased by a separate,")
+    w.append("OPT-IN knob: `vacuus.ViewSampleCount` (1 by default, 2/4/8) multisamples the")
+    w.append("per-view render target. Off, a curve's outline is a hard staircase -- a")
+    w.append("206x206 `border-radius` disc measures exactly **0** partially covered pixels,")
+    w.append("because a single-sampled rasterizer produces a step function; at 4x it measures")
+    w.append("432, and text, axis-aligned edges and gradient fills come back byte-identical.")
+    w.append("The knob costs one extra multisampled target per view (`N x 7.91 MiB` at 1080p,")
+    w.append("on top of the RT it resolves into), which is why it is off: see")
+    w.append("`perf-guide.md`'s cost table and `docs/research/proofs/3tg-view-msaa`.")
+    w.append("")
+    w.append("`border-radius` takes a LENGTH ONLY, not a percentage -- all four longhands")
+    w.append("register the `\"length\"` parser and nothing else")
+    w.append("(StyleSheetSpecification.cpp:300-303), so `border-radius: 50%` does not parse")
+    w.append("and the corner stays square. Spell a circle as half its own side")
+    w.append("(`width: 64px; border-radius: 32px`).")
     w.append("")
     w.append("| Decorator | Factory.cpp line |")
     w.append("|---|---|")
@@ -363,6 +386,15 @@ def main():
     w.append("  one write, not a stylesheet swap.")
     w.append("- **Works inside `@keyframes`**: keyframe properties are resolved through the same")
     w.append("  substitution path (Element.cpp:2784-2798).")
+    w.append("- **Works in `transition` and `animation` timing** -- `transition` only because the")
+    w.append("  vendored tree is patched for it. Resolution happens at COMPUTE time, and those two")
+    w.append("  are the only properties read before that: upstream's `transition` read")
+    w.append("  (ElementStyle.cpp:388) saw the unresolved string and dropped the entire declaration")
+    w.append("  with no warning, no error and no log line, so a theme that put its durations in")
+    w.append("  custom properties -- the obvious thing to do, and what this section recommends --")
+    w.append("  simply never animated. `animation` was never affected (ComputedValues.cpp:8-16).")
+    w.append("  VENDORED_TAG.txt patch #4, bead VaCuus-6gj, pinned by")
+    w.append("  VaCuus.Core.Style.TransitionVariable; gotchas.md #3b.")
     w.append("")
     w.append("Unknown variable with no fallback is an Error and the declaration is dropped, so")
     w.append("`LogVaCuus: Error: [Rml] Invalid substitution, variable '--x' not defined` is the")

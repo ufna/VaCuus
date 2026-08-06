@@ -110,6 +110,35 @@ spellings a float cannot reproduce (`120.50px`, `1.23456px`). Check yourself wit
 the PerfLog publish ratio: an "idle" HUD publishing 100% still means something is
 re-writing the DOM every frame.
 
+**The quantisation law: round a continuous value to the resolution it is DISPLAYED at,
+before you let it dirty anything.** Writing conditionally — the advice above — is
+necessary and **not sufficient**, and this is the case that proves it: the write was
+conditional, and the condition was true on every single frame. Ship heat in the 2d6 demo
+cooled *proportionally*, so it changed every simulation step by some fraction of nothing,
+so its change counter bumped every step, so the gated reader re-read its whole domain
+every frame, and ~250 elements re-rendered to move a 155-pixel bar by a hundredth of a
+pixel. Measured on a UI that looked completely idle: **2.9 % of frames withheld**, i.e.
+it published 97 of every 100. Rounding the value to the gauge's own pixel — one
+part in 155 — before it reached the counter took that to **93.9 % withheld** and dropped
+the JS pump from **6.386 ms to 0.584 ms**, with no visible difference of any kind, because
+a hundredth of a pixel was never on screen to begin with.
+
+```js
+// 155px bar: 1/155 is the finest change a viewer could ever see.
+const shown = Math.round(heat * 155) / 155;
+if (shown !== last) { last = shown; model.heat = shown; }   // now the condition is usually false
+```
+
+The quantum is the display, not the datum: a 155 px bar needs 1/155, a percentage label
+needs 1/100, a two-decimal readout needs 1/100, an icon that is on or off needs 1 bit.
+Pick it from what the pixel or the glyph can actually resolve and round there, at the
+boundary where the value enters the UI — not inside the simulation, which should keep its
+float. This pairs directly with the binding law above: the cost of getting it wrong is
+bindings × rows in the dirty scope at ~0.53 µs each, plus the whole render and publish of
+a frame that looks identical to the last one, and it is paid for a change no one can see.
+A UI that looks idle and publishes 100 % (`vacuus.M1HUD.PerfLog 1`) usually has exactly
+one of these in it.
+
 **Font-effect glyphs are a load cost — pay them at load.** `font-effect: glow` added
 ~4.2 ms to the reference HUD's FIRST Record (5.81 vs 1.65 ms A/B) and nothing to
 steady state (0.402 vs 0.395). The spike lands on the UI thread before first publish;

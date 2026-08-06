@@ -389,9 +389,45 @@ void ElementStyle::TransitionPropertyChanges(const PropertySources& sources, Pro
 	const Property* transition_property = GetLocalProperty(PropertyId::Transition, sources.inline_properties, new_definition);
 	if (!transition_property)
 		return;
+
+	// VaCuus patch #4 (bead VaCuus-6gj) -- RESOLVE var() IN THE `transition` PROPERTY ITSELF.
+	//
+	// A value containing var() is stored unparsed as Property{value, Unit::VAR_EXPRESSION}
+	// (PropertySpecification.cpp:260-267) and resolved at compute time. Every other property
+	// therefore works with var() precisely BECAUSE it is read late -- but `transition` is read
+	// HERE, early and deliberately (the comment above), so it arrived as a String variant, the
+	// TRANSITIONLIST test below rejected it, and the whole declaration vanished with no warning,
+	// no error and no log line of any kind. `animation` is NOT affected: it is read through
+	// ComputedValues::animation(), which already resolves (ComputedValues.cpp:8-16).
+	//
+	// The resolution is safe HERE specifically, which is not an assumption: SubstituteVariableOnce
+	// names this function as the case it is written for (:227-230 -- "Particularly in
+	// TransitionPropertyChanges, these are not yet set for the current element"), and this
+	// function already calls the same helper on every transitioned property's start and target
+	// value a few lines below. The sources match the lookup above exactly -- the element's
+	// current inline properties against the NEW definition -- so a custom property redeclared by
+	// the same rule that changed the transition resolves against the state being transitioned TO.
+	//
+	// nullptr means the substitution failed, and SubstituteVariables/ResolveVariables have already
+	// logged which variable or which value (:212-217, :308-312); dropping the transition then is
+	// the pre-existing behaviour for an unparseable `transition`.
+	Property transition_property_storage;
+	if (transition_property->unit == Unit::VAR_EXPRESSION)
+	{
+		const PropertySources transition_sources{sources.element, new_definition, sources.inline_properties};
+		std::optional<PropertyDictionary> transition_substituted_shorthands;
+		SmallUnorderedSet<String> transition_variable_dependencies;
+		transition_property = ResolveVariablesWithShorthandExpansion(transition_sources, PropertyId::Transition, transition_property,
+			transition_substituted_shorthands, transition_variable_dependencies, transition_property_storage);
+		if (!transition_property)
+			return;
+	}
+
 	if (transition_property->value.GetType() != Variant::TRANSITIONLIST)
 		return;
 
+	// Borrowed from transition_property, which may point at transition_property_storage above --
+	// both outlive every use of this reference.
 	const TransitionList& transition_list = transition_property->value.GetReference<TransitionList>();
 	if (transition_list.none)
 		return;

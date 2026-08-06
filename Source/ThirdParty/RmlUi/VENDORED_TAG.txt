@@ -271,3 +271,101 @@ element. Verified on screen, not inferred.
 NOT yet offered upstream -- same standing as patches #1 and #2. Hunks 1-3 are
 upstream-shaped and fix a real upstream defect for any optional-feature-skipping backend;
 hunk 4 is a lifetime consequence of hunk 3 and travels with it.
+
+
+Patch #4 -- a `transition` whose value contains var() never runs, and says nothing
+(bead VaCuus-6gj).
+
+One file, one hunk: Source/Core/ElementStyle.cpp, ElementStyle::TransitionPropertyChanges.
+
+THE DEFECT IS UPSTREAM'S and it is silent in the strongest sense -- no warning, no error,
+no log line anywhere, in a debug build, at any log level. A property value containing var()
+is stored UNPARSED as Property{value, Unit::VAR_EXPRESSION} (Source/Core/
+PropertySpecification.cpp:260-267) and resolved at COMPUTE time (ElementStyle.cpp:277-315).
+That is deliberate and correct, and it is exactly why var() works everywhere else. But
+TransitionPropertyChanges reads `transition` EARLY, on purpose -- "We get the local property
+directly here to intercept property changes even before the computed values are ready"
+(:388) -- and then tested `transition_property->value.GetType() != Variant::TRANSITIONLIST`
+and returned. A VAR_EXPRESSION is a String variant, so it returned, and the whole
+declaration was gone.
+
+The blast radius is the obvious authoring idiom: RCSS has no calc(), so var() is the only
+theming layer the matrix can recommend, and timing tokens in custom properties are the first
+thing anyone does with it. In the 2d6 demo that was ~30 transitions across four component
+batches, three screens and a screenshot-reviewed component catalogue, none of which had ever
+run, for days, because the symptom is "the element snaps".
+
+`animation` IS NOT AFFECTED and needs no patch, contrary to the original bug report. It is
+read through ComputedValues::animation(), which goes via GetLocalPropertyWithResolvedVariables
+and therefore resolves (Source/Core/ComputedValues.cpp:8-16). Measured, not assumed: with this
+patch fully reverted, the test's #anim-variable element still animates.
+
+THE HUNK is a PURE INSERTION -- `git diff` on the file reports 36 insertions and zero
+deletions, deliberately, so a re-vendor can paste it back between the null check and the
+TRANSITIONLIST test without touching an upstream line:
+
+    const Property* transition_property = GetLocalProperty(PropertyId::Transition, sources.inline_properties, new_definition);
+    if (!transition_property)
+        return;
++   /* the full comment is in the file; not repeated here, twice is what rots */
++   Property transition_property_storage;
++   if (transition_property->unit == Unit::VAR_EXPRESSION)
++   {
++       const PropertySources transition_sources{sources.element, new_definition, sources.inline_properties};
++       std::optional<PropertyDictionary> transition_substituted_shorthands;
++       SmallUnorderedSet<String> transition_variable_dependencies;
++       transition_property = ResolveVariablesWithShorthandExpansion(transition_sources, PropertyId::Transition,
++           transition_property, transition_substituted_shorthands, transition_variable_dependencies,
++           transition_property_storage);
++       if (!transition_property)
++           return;
++   }
+    if (transition_property->value.GetType() != Variant::TRANSITIONLIST)
+        return;
+
+`transition_property_storage` is what the TransitionList reference two lines down borrows,
+so it must stay at function scope; the set and the optional are block-local on purpose, so
+that a `transition` with no var() in it constructs neither.
+
+WHY THIS IS SAFE HERE SPECIFICALLY, opened rather than assumed. The worry with resolving
+anything at this point is compute ordering, and upstream has already answered it: the
+substitution path names THIS FUNCTION as the case it is written for -- "We cannot always use
+the definition or inline properties from the style of the property element. Particularly in
+TransitionPropertyChanges, these are not yet set for the current element" (:227-230) -- and
+this same function already calls the same helper on every transitioned property's start and
+target value a few lines below (:410-414 before the patch). The sources passed here match
+the lookup exactly: the element's current inline properties against the NEW definition, so a
+custom property redeclared by the same rule that changed the transition resolves against the
+state being transitioned TO. `transition` is a plain property, not a shorthand
+(StyleSheetSpecification.cpp:399, and no RegisterShorthand under that name), so the
+shorthand-expansion leg of the helper is never taken; it is used anyway because it is the
+call the neighbouring lines make. A nullptr return means substitution failed, and
+SubstituteVariables / ResolveVariables have already logged which variable or which value
+(:212-217, :308-312) -- so the remaining failure mode is loud, which the original never was.
+Cost is zero unless the property really is a VAR_EXPRESSION.
+
+WHY THIS IS NOT FIXED AT THE VaCuus LAYER: the plugin never sees this call. TransitionProperty-
+Changes is private to ElementStyle, `transition` cannot be re-registered over
+(StyleSheetSpecification::RegisterParser refuses a duplicate name, :99-110), and there is no
+element hook between the definition change and the early read. A VaCuus-side WARNING was
+considered as the fallback deliverable and rejected once the fix landed: after this patch the
+`!= TRANSITIONLIST` branch is unreachable for a var() value, so the warning would be dead
+code, and the branch it would guard lives in this same function -- a re-vendor that lost the
+patch would lose the warning with it. The automation test below is the guard instead.
+
+VERIFICATION (the re-vendoring check): automation test VaCuus.Core.Style.TransitionVariable
+(Source/VaCuus/Private/Tests/VaCuusStyleVariableTest.cpp). Reverted and watched to fail on
+2026-08-06:
+
+  #variable, transition with var() in its duration STARTS rather than snapping (6gj):
+    expected opacity 1.0000 (±0.0100), got 0.2500
+  #variable, var(--slow) = 20s, has barely moved after 250 ms:
+    expected opacity 0.9500 (±0.0600), got 0.2500
+
+with every control still passing -- including "#anim-variable, animation with var() runs too
+-- it was NEVER the broken half (6gj): opacity 0.2500", which is what keeps a future reader
+from patching the animation path as well.
+
+NOT yet offered upstream -- same standing as patches #1-#3. This one is the most
+upstream-shaped of the four: it uses upstream's own helper, in the function upstream's own
+comment says that helper was written for.

@@ -75,6 +75,38 @@ does **not** (`:240`), so `Cubic-Out` animates fine and silently kills a transit
 canonical property-duration-tween order still holds; the lint pass is the backstop for
 `box-shadow` only, not for this.
 
+**3b. `transition: opacity var(--t-fast) cubic-in-out;` — the other silent way to lose a
+whole transition. FIXED 2026-08-06 in the vendored tree; read this if you build against
+stock RmlUi or are wondering why an older build never animated.**
+Symptom: identical to #3 — the element snaps — but with **no warning at all**, not even the
+generic syntax-error line #3 gives you. Nothing in the log, at any level, in a debug build.
+Cause: a value containing `var()` is stored **unparsed**, as
+`Property{value, Unit::VAR_EXPRESSION}`
+(`Source/ThirdParty/RmlUi/Source/Core/PropertySpecification.cpp:260-267`), and resolved at
+**compute** time. That late resolution is exactly why `var()` works for every other
+property — and `transition` is the one property read *before* it, deliberately:
+`ElementStyle::TransitionPropertyChanges` takes the local property "to intercept property
+changes even before the computed values are ready" (`ElementStyle.cpp:388`) and then dropped
+anything that was not already a parsed transition list. A raw string is not, so the whole
+declaration vanished.
+
+It is not exotic, it is the *recommended* idiom: RCSS has no `calc()`, so `var()` is the
+only theming layer `rcss-matrix.md` can point you at, and timing tokens in custom
+properties are the first thing anyone does with it. In the plugin's own 2d6 demo it killed
+**~30 transitions across four component batches and three screens**, through a
+screenshot-reviewed component catalogue, and went unnoticed for days.
+
+**`animation` was never affected** — its own value may contain `var()` and always could,
+because it is read through `ComputedValues::animation()`, which resolves
+(`ComputedValues.cpp:8-16`). So did `var()` inside `@keyframes` values. Only `transition`.
+
+Do: **nothing, on this plugin** — the vendored tree resolves it now
+(`Source/ThirdParty/RmlUi/VENDORED_TAG.txt`, patch #4; bead `VaCuus-6gj`), pinned by
+`VaCuus.Core.Style.TransitionVariable`, which reports `expected opacity 1.0000, got 0.2500`
+the moment that patch goes missing. On stock RmlUi, spell transition timings as literals.
+Either way #3 still applies to the tween keyword, and the two traps stack: a `var()` that
+substitutes to a value containing `ease-in-out` fails at #3 instead, which at least logs.
+
 **4. `position: absolute` lands somewhere unexpected.**
 Cause: it resolves against the nearest ancestor with `position: relative|absolute` —
 there is no browser-style default-positioned root chain past the document
@@ -182,6 +214,40 @@ Do: pick one.
 
 A real stencil pass for the clip mask is tracked as plugin work; until it lands this is a
 documented limitation, not a bug you can style around.
+
+**8b. `opacity` does NOT establish a group. A child that sets its own `opacity` escapes its
+ancestor's completely.**
+Symptom: you fade a panel out and its contents stay. Worst case, and the one that cost real
+time: a plate at `opacity: 0` with 18 icons at `opacity: 0.9` inside it photographs as
+**eighteen lit glyphs floating on nothing**. It reads as a z-order or decorator bug, because
+the one property you would suspect is the one you already set to zero.
+Cause: in CSS, `opacity` creates a group — the subtree is composited to its own buffer and
+that buffer is then faded, so a child at `opacity: 1` inside a parent at `0.5` renders at
+0.5. RmlUi has no such buffer. `opacity` is a plain **inherited** property
+(`Source/ThirdParty/RmlUi/Source/Core/StyleSheetSpecification.cpp:351`,
+`inherited = true`) that each element multiplies into its own colours at paint time —
+background and borders at `ElementBackgroundBorder.cpp:166-173`, text at
+`ElementText.cpp:371-374`, every gradient and shader decorator at `DecoratorGradient.cpp:140`,
+`:265`, `:434`, `:631` and `DecoratorShader.cpp:42`. Inheritance means *copy*, not
+*compose*: `ComputeValues` copies the parent's inherited block wholesale
+(`ComputedValues.h:394`, `inherited = parent.inherited`) and a local declaration then
+**overwrites** it (`ElementStyle.cpp:1247`, `values.opacity(p->Get<float>())`). Nothing
+anywhere multiplies the two together.
+Do, and the right answer differs by what the child is:
+- **Do not redeclare `opacity` on a descendant** if any ancestor animates or toggles its
+  own. Inherit it — that is the case RmlUi gets right, and it is free.
+- **Images, `<progress>`, and `image`/`tiled`/`ninepatch` decorators**: use `image-color`
+  for the child's own fade. It is multiplied **by** the inherited opacity rather than
+  replacing it (`Elements/ElementImage.cpp:178`, `Elements/ElementProgress.cpp:222`,
+  `DecoratorTiled.cpp:80`, `DecoratorNinePatch.cpp:40` — all
+  `image_color().ToPremultiplied(computed.opacity())`). This is what the 2d6 demo's fix
+  used.
+- **Text and solid fills**: fade with the alpha channel of `color` /
+  `background-color` instead of with `opacity`, for the same reason — `ToPremultiplied`
+  computes `alpha * opacity` (`Include/RmlUi/Core/Colour.h:89-98`), so an alpha byte is the
+  element's own and composes with what it inherited instead of replacing it.
+- If you genuinely need group semantics, give the group a **single** opacity and keep every
+  descendant silent about it. There is no way to nest two.
 
 ## Data binding and JS
 
