@@ -8,7 +8,10 @@ and what was seen is written next to it. The **Win64 D3D12** column was executed
 on the owner's desktop from its **physical console session**, at commit `6b82e4a`: **13 of 15
 rows pass**, and the two that do not are named with what each still needs — row 5 wants a
 human at the keyboard with an IME, and row 13 wants an interactive editor PIE with a mid-run
-file edit. Neither is "the session died". The **macOS Metal**
+file edit. Neither is "the session died". **Row 13 has since been executed on the Linux
+column** (2026-08-06, `-vacuusproof` plus a scripted edit, with a pixel pair and a new test
+for its shadow leg — see the row's note); the same run is available on Win64 and needs
+nothing that platform has to supply. The **macOS Metal**
 column remains the owner-hardware handoff: run the SAME commands, read the SAME assertions,
 fill the cells. A row that could not be executed is marked with its reason — it is owed on
 every platform, not silently dropped.
@@ -42,7 +45,7 @@ UnrealEditor <proj>.uproject -game -RenderOffscreen -ForceRes -resx=1920 -resy=1
 | 10 | Material decorators (UMaterial in UI pass) | `vacuus.M5MatSpike, vacuus.M1HUD.AutoShot 10` | Spike cells draw their materials; refused cells named in log | PASS (five materials drawn) | **PASS** (five materials drawn) | owner hw |
 | 11 | M5 acceptance demo (TSX + translation + glass + world quad) | `vacuus.M5Demo, vacuus.M1HUD.AutoShot 10, vacuus.M5Glass.Shot 8` | Both beats read as the M5 T9 proofs; zero `LogVaCuusJS: Error` | PASS (0 JS errors, beats match proofs) | **PASS** (0 JS errors, beats match proofs) | owner hw |
 | 12 | **PF_FloatRGBA composite permutation** (spec §3.2) | set `r.DefaultBackBufferPixelFormat=3` in DefaultEngine.ini `[/Script/Engine.RendererSettings]`, run row 1; then revert and run row 1 again | Log line `VaCuus composite: elements texture is FloatRGBA -> LinearOutput` (GPixelFormats names carry no `PF_` prefix — engine Misc/PixelFormat.cpp:44); HUD colors match the default-format run by eye (no washed-out ~2.2× brightening) | PASS (LinearOutput line + A/B by eye) | **PASS** (LinearOutput line + A/B by eye) — the `-game` leg; the editor-PIE leg is still owed, note E | owner hw |
-| 13 | Live reload (editor watcher) | interactive editor PIE: edit a loaded .rml/.rcss on disk, watch the view reload; runtime half: `vacuus.ReloadUI` | Document reloads without restart; watcher Warning if a bundle shadows the edit | PARTIAL — note B | **NOT EXECUTED** — needs an interactive editor PIE session and a mid-run file edit; same reason as Linux and macOS | owner hw |
+| 13 | Live reload (editor watcher) | interactive editor PIE: edit a loaded .rml/.rcss on disk, watch the view reload; runtime half: `vacuus.ReloadUI` | Document reloads without restart; watcher Warning if a bundle shadows the edit | **PASS** 2026-08-06 — PIE + scripted mid-run edit, pixel pair; shadow leg now a test — note B | **NOT EXECUTED** — the same run is available here (`-vacuusproof`); nothing about it needs this platform | owner hw |
 | 14 | Demo-suite toggles + clean teardown | each row's session end (SIGTERM) | Teardown tail: UI thread stopped in-band, RmlUi shut down, zero unpublished NEW resources | PASS (all sessions) | **PASS (all 10 gracefully-closed sessions)** | owner hw |
 | 15 | Shipping ignition flags | packaged Shipping: `-VaCuusRefHud` / `-VaCuusM5Demo` (+`-VaCuusPerfLog`, `-VaCuusMemProbe`) | Demo boots with no console; gate screenshot at t+8 s | PASS (bundle-mounted Shipping) | **PASS** (cooked + staged Shipping, gate shot at t+8 s) — note F | owner hw |
 
@@ -190,15 +193,49 @@ session plus the real-RHI readback test — mechanism-identical (the permutation
 actual target format, not the viewport kind) — and the interactive editor-PIE leg rides the
 owner-hardware pass of this row.
 
-**Row 13 — live reload.** PARTIAL by venue: the file watcher lives in `VaCuusEditor`
-(editor-only module) and needs an interactive editor session plus a mid-run file edit —
-not expressible in a frame-0 `-ExecCmds` headless run. Standing evidence: the M2 T10 proof
-session (`docs/research/proofs/m2-t10-live-reload/`) and the automation reload suite
-(`VaCuusReloadTest.cpp`), plus the runtime half (`vacuus.ReloadUI`, moved into the runtime
-module by the M6 sweep). The interactive editor pass is owed on each platform page with the
-same steps: PIE with a loaded document → edit the .rcss on disk → watch the view repaint →
-mount a bundle → edit again → assert the shadowing Warning names the path. NOT EXECUTABLE
-HEADLESS — reason recorded.
+**Row 13 — live reload. EXECUTED 2026-08-06 on Linux Vulkan, and the premise that it could not
+be was wrong.** This row said "not expressible in a frame-0 `-ExecCmds` headless run" for
+three days. What is true is narrower: a frame-0 command line cannot BY ITSELF edit a file
+half a minute later. The plugin already ships the harness that closes that gap —
+`Proof.LiveReload.PIE`, whose own header says it needs "a HUMAN **OR A SCRIPT** to edit a file
+from outside this process" — so the row needed a second process, not a person.
+
+What was run, and what it produced:
+
+```bash
+UnrealEditor VcHost.uproject -RenderOffscreen -ForceRes -resx=1920 -resy=1080 -nosplash \
+  -vacuusproof -testexit="Automation Test Queue Empty" \
+  -ExecCmds="Automation RunTests Proof.LiveReload.PIE,"
+# ... a shell loop watches the log for VACUUS_PROOF_EDIT_NOW, then edits
+# Plugins/VaCuus/Content/DevUI/m1_hud.rcss: #hp-fill #FF0000 -> #00FFFF
+```
+
+  - `Live reload flushed 1 changed path(s) after 190 ms and reloaded 1 view(s): …/m1_hud.rcss`
+    — a real inotify event, the debounce, the reload, in a live PIE session;
+  - `Proof.LiveReload.PIE` **Success** (it asserts both screenshots exist, so a harness that
+    started PIE and did nothing else would go red);
+  - the pixel pair in `Saved/VaCuusProof/`: exactly **1,080 pixels in a 90×12 block at
+    (128..217, 189..200)** are `(255,0,0)` in the before shot and `(0,255,255)` in the after
+    one. That block is `#hp-fill`. The rest of the frame differs too, because the 3D scene
+    behind the HUD keeps moving — which is why the assertion is on the red→cyan transition
+    and not on a whole-frame diff.
+
+**Steps 4-5 — the bundle shadow warning — are now a test rather than a manual step.**
+`VaCuus.LiveReload.BundleShadow` mounts a transient bundle containing the changed path and
+asserts ONE Warning names the shadow, the file, the bundle and the remedy, with a control run
+(nothing mounted → no such line). Watched to fail with the warning deleted. It needs no
+watcher and no view: the shadow check is a string test between a watched root and the mount
+table, so nothing about it wanted a human.
+
+**What genuinely still wants a person, and it is now a small claim:** somebody looking at a
+real windowed editor rather than at two PNGs. Every mechanical link in this row — event,
+debounce, reload dispatch, repaint, shadow warning — is asserted by a test or by the pixel
+pair above.
+
+Standing evidence unchanged: the M2 T10 proof session
+(`docs/research/proofs/m2-t10-live-reload/`), the automation reload suite
+(`VaCuusReloadTest.cpp`), `VaCuus.LiveReload.WatcherEvent` for the real-inotify link, and the
+runtime half (`vacuus.ReloadUI`).
 
 **Row 14 — teardown.** Every session above ended by SIGTERM with the same tail: UI thread stopped
 by an in-band shutdown command, VFS teardown serving totals printed, RmlUi shut down, recorder
