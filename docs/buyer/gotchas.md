@@ -288,6 +288,27 @@ directions).
 Do: this is a security property, not a bug. Bindings come from the document; JS
 writes are data. Route through `innerRML` only when you mean markup.
 
+**11b. A style your JS wrote inline disappears when the component framework re-renders
+that element — and a change gate that outlives the element makes it permanent.**
+Cause: OBSERVED, mechanism deliberately not asserted. In the 2d6 demo a `applyScale()`
+wrote `transform: scale(1.3333)` onto `#stage` and gated later writes on a `data-scale`
+ATTRIBUTE it wrote beside it. On two screens the router changed screen in the same frame
+and re-rendered the subtree under `#stage`: the JS log shows the transform WAS written
+(`stage: view 2560x1440 -> scale(1.3333)`, frame 1), the measured tab-bar card edges are
+the 1920-space ones in a 2560-wide view, and the attribute survived while the inline style
+did not — so the gate then suppressed every rewrite and the document stayed unscaled in the
+corner of the view for the rest of the session. Preact's `diffProps` should not touch a
+`style` prop that neither vnode carries, so a definition-dirty path in RmlUi is the other
+candidate; nobody has chased it, and this entry does not pretend otherwise.
+Do: two rules, and the second is the load-bearing one.
+(a) Put JS-owned properties on an element your component tree never renders into. The
+`ElementDocument` is the natural one — `document.style` is reachable from JS and no
+framework owns it.
+(b) **Never gate a write on state whose lifetime differs from the thing it gates.** A
+module-scope variable outlives re-renders correctly; an attribute or class on the same
+element you are writing to does not. The symptom is silence — no warning, no error, one
+missing property, forever — which is why it costs a session to find rather than a minute.
+
 **12. A `<script src>` or rcss link 404s with the directory doubled.**
 Cause: `src` is DOCUMENT-relative — the head handler joins the path against the
 document's own URL (`Content/DevUI/M5Hud/m5_hud.rml:13-18`, citing
