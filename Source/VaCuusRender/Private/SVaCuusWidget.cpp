@@ -515,6 +515,43 @@ void SVaCuusWidget::SetMouseCapture(bool bInCaptured)
 	MouseCapture.Set(SharedThis(this), bInCaptured);
 }
 
+bool SVaCuusWidget::HoldsPointerCapture()
+{
+	// No Slate at all (a -nullrhi automation venue can be one) means there is nobody to ask,
+	// and the mirror is the only truth there is.
+	if (!FSlateApplication::IsInitialized())
+	{
+		return MouseCapture.IsHeld();
+	}
+
+	const bool bSlateHolds = HasMouseCapture();
+
+	// THE RECONCILE IS ONE-WAY, AND THE ASYMMETRY IS THE CAREFUL PART.
+	//
+	// "Slate holds it" is a FACT about the captor map, so adopting it is always right: it is
+	// the macOS restore, and the widget really is about to be sent this drag's moves.
+	//
+	// "Slate does not hold it" is NOT the mirror image. It is a fact about the map too, but
+	// not evidence that a gesture we started has ended -- our own press sets the mirror before
+	// the reply is processed, and a venue that never processes replies (an automation test
+	// calling handlers directly) leaves that state standing for the whole gesture. Clearing
+	// the mirror on it would tear down a live drag's bookkeeping, and would send RmlUi a
+	// MouseLeave in the middle of one. So the answer below is Slate's, and the mirror is left
+	// to the button-up and OnMouseCaptureLost that own it.
+	if (bSlateHolds && !MouseCapture.IsHeld())
+	{
+		// Verbose rather than Warning: on macOS this is the ENGINE's own activation dance and
+		// happens on every alt-tab back into a held drag, so a warning would cry wolf at the
+		// user about the platform's behaviour.
+		SetMouseCapture(true);
+		UE_LOG(LogVaCuus, Verbose,
+			TEXT("VaCuus widget adopted a Slate mouse capture it did not take itself (the macOS ")
+			TEXT("activation restore, or a capture granted outside our own press)"));
+	}
+
+	return bSlateHolds;
+}
+
 FReply SVaCuusWidget::OnMouseMove(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent)
 {
 	// THE "input" HALF OF THE SPEC'S GAME-THREAD BUDGET (Task 14), and every handler below
@@ -534,7 +571,7 @@ FReply SVaCuusWidget::OnMouseMove(const FGeometry& MyGeometry, const FPointerEve
 	// While we hold capture the answer is Handled regardless of coverage: a drag that
 	// started on a scrollbar must keep being ours even after the pointer wanders off
 	// it, which is exactly the case the snapshot cannot express.
-	if (MouseCapture.IsHeld() || GetSnapshot().Contains(Position))
+	if (HoldsPointerCapture() || GetSnapshot().Contains(Position))
 	{
 		return FReply::Handled();
 	}
@@ -562,6 +599,11 @@ FReply SVaCuusWidget::OnMouseButtonDown(const FGeometry& MyGeometry, const FPoin
 	// Capture on the FIRST button only, and release when the last one comes up --
 	// the idiom FWebBrowserViewport uses (WebBrowserViewport.cpp:52-78). Capture is
 	// what keeps a drag alive outside the rect it started in.
+	// THE MIRROR HERE, NOT Slate, and the distinction is the whole shape of VaCuus-86x's fix:
+	// this question is "have we already requested capture for this gesture", which is our own
+	// bookkeeping about our own presses. Slate's answer is the authority for ROUTING (does it
+	// deliver to us) and not for this -- and asking it here would also re-request capture on
+	// the second button of a two-button drag in any venue that does not process our replies.
 	if (!MouseCapture.IsHeld())
 	{
 		SetMouseCapture(true);
@@ -624,6 +666,8 @@ FReply SVaCuusWidget::OnMouseButtonUp(const FGeometry& MyGeometry, const FPointe
 	SendInput(FVaCuusInputEvent::MouseButton(
 		/*bDown=*/false, Position, MouseEvent.GetEffectingButton(), ToModifierState(MouseEvent)));
 
+	// The mirror, for the same reason as the press: "are we in the middle of a gesture we
+	// took", not "does Slate route to us".
 	const bool bWasCapturing = MouseCapture.IsHeld();
 
 	// GetPressedButtons() is the POST-release set: FSlateApplication::OnMouseUp removes
@@ -647,8 +691,12 @@ FReply SVaCuusWidget::OnMouseButtonUp(const FGeometry& MyGeometry, const FPointe
 	// touch end regardless of the reply (SlateUser.cpp:1284-1290), which drives
 	// OnMouseCaptureLost (SlateUser.cpp:314) and clears MouseCapture below. The
 	// engine's net, not this line, is what ends a touch drag here.
-	if (MouseCapture.IsHeld() && MouseEvent.GetPressedButtons().IsEmpty())
+	if (bWasCapturing && MouseEvent.GetPressedButtons().IsEmpty())
 	{
+		// SetMouseCapture, not NoteCaptureLost: this is the ORDERLY end of a drag and RmlUi
+		// must not be told the pointer left -- it is still over the element, the button just
+		// came up. The reply below is what makes Slate agree a moment later, and the
+		// OnMouseCaptureLost it triggers finds the flag already down and does nothing.
 		SetMouseCapture(false);
 
 		// Handled AND releasing: an FReply that releases capture without being handled
@@ -728,6 +776,10 @@ void SVaCuusWidget::OnMouseCaptureLost(const FCaptureLostEvent& CaptureLostEvent
 	// window loses focus, another widget captures, the viewport changes input mode.
 	// Without this the flag would stay set forever and every later mouse move would
 	// answer Handled, silently eating the game's camera input.
+	//~ The RAW mirror here, deliberately: by the time this notification arrives Slate has
+	//~ ALREADY dropped the capture, so HoldsPointerCapture() would answer false and this
+	//~ branch would never run. The question here is "did WE think we had it", which is
+	//~ exactly what the mirror is for.
 	if (MouseCapture.IsHeld())
 	{
 		SetMouseCapture(false);

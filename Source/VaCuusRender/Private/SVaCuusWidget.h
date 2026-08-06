@@ -354,6 +354,49 @@ private:
 	/** The only writer of MouseCapture; FVaCuusMouseCaptureState above says why it is the only one. */
 	void SetMouseCapture(bool bInCaptured);
 
+	/**
+	 * SLATE'S ANSWER TO "DO YOU ROUTE POINTER EVENTS TO ME", with our mirror reconciled to it.
+	 * Every routing decision asks THIS, never MouseCapture.IsHeld() directly (bead VaCuus-86x).
+	 *
+	 * The flag alone is wrong in both directions, and each has a named mechanism:
+	 *
+	 *  - SLATE HOLDS AND WE DO NOT KNOW (macOS). FSlateUser::RestoreCaptorPathsByIndex assigns
+	 *    the whole captor map and notifies nobody -- it is a one-line setter, and the engine's
+	 *    own comment above it says "Unclear why from existing code, but Mac seems to need to
+	 *    cache & restore all mouse captor paths when activating the top level window"
+	 *    (SlateUser.h:191-193). Its only caller is the PLATFORM_MAC block in
+	 *    FSlateApplication::ProcessApplicationActivationEvent, which snapshots the captors,
+	 *    calls ActivateApplication -- releasing every capture, which DOES fire our
+	 *    OnMouseCaptureLost and clears the flag -- and then puts the map back behind us. Slate
+	 *    then keeps routing a held drag here while the widget believes it holds nothing, so
+	 *    the first move that leaves the interactive rect answers Unhandled and the drag dies
+	 *    mid-gesture.
+	 *
+	 *  - WE HOLD AND SLATE DOES NOT (every platform). The press sets the flag BEFORE the reply
+	 *    is processed, and FSlateUser::SetPointerCaptor can refuse -- it returns false when the
+	 *    widget is not reachable from the event path (SlateUser.cpp:256-282). ProcessReply only
+	 *    broadcasts a WITH_SLATE_DEBUGGING trace for that, so no OnMouseCaptureLost ever
+	 *    arrives and the widget answers Handled for every move of a capture it never got,
+	 *    eating the game's camera input until the next button-up.
+	 *
+	 * Both are the same defect -- trusting our own bookkeeping about a fact Slate owns -- so
+	 * both get the same answer rather than two guards. HasMouseCapture() reads the same
+	 * PointerCaptorPathsByIndex the Mac restore writes (SWidget::HasMouseCapture ->
+	 * FSlateApplication::DoesWidgetHaveMouseCapture -> FSlateUser::DoesWidgetHaveAnyCapture),
+	 * which is what makes it the authority and not just a second opinion.
+	 *
+	 * WHAT THIS IS NOT FOR: the press and button-up bookkeeping. "Have we already requested
+	 * capture for this gesture" and "is the last button up" are questions about OUR presses,
+	 * and they keep reading the mirror -- see the comments at those two sites. Only the
+	 * ROUTING answer (does Slate deliver to us) comes from here.
+	 *
+	 * NOT const: adopting an unknown capture writes the mirror, which is what the process-wide
+	 * "who holds capture" attribution reads. The adopt is ONE-WAY on purpose; the
+	 * implementation says why the other direction would be wrong.
+	 */
+	bool HoldsPointerCapture();
+
+
 	/** The left stick's latched deflection as a direction, or None inside the dead zone. */
 	EAnalogNavDirection ResolveAnalogNavDirection() const;
 
