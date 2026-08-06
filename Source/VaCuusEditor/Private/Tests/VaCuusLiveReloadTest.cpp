@@ -3,6 +3,8 @@
 #include "Misc/AutomationTest.h"
 
 #include "VaCuus.h"
+#include "VaCuusBundle.h"
+#include "VaCuusBundleMount.h"
 #include "VaCuusContentPaths.h"
 #include "VaCuusDocumentHost.h"
 #include "VaCuusEngine.h"
@@ -30,6 +32,65 @@
 
 namespace VaCuusLiveReloadTest
 {
+/**
+ * Captures GLog across a scope so a test can assert what a line SAID, not merely that one
+ * arrived. AddExpectedMessagePlain answers "did a Warning matching X occur"; it cannot answer
+ * "did it name this path and this bundle", which is the whole content of the shadow warning.
+ *
+ * A near-twin of VaCuusBundlePackTest's, and deliberately not shared: that one exists because
+ * its line is Log-level and therefore invisible to the automation machinery
+ * (AutomationTest.cpp:233 routes only Error/Warning/Display), this one because the assertion
+ * is about the text. Lifting them into a common test header would make one helper answer to
+ * two different arguments, and neither file would carry its own reason any more.
+ */
+class FScopedLiveReloadLogCapture final : public FOutputDevice
+{
+public:
+	FScopedLiveReloadLogCapture() { GLog->AddOutputDevice(this); }
+	virtual ~FScopedLiveReloadLogCapture() override { GLog->RemoveOutputDevice(this); }
+
+	virtual void Serialize(const TCHAR* V, ELogVerbosity::Type Verbosity, const FName& Category) override
+	{
+		FScopeLock Lock(&Mutex);
+		Lines.Add(V);
+	}
+
+	bool Contains(const TCHAR* Fragment) { return ContainsAllOnOneLine({Fragment}); }
+
+	/**
+	 * True when ONE captured line contains every fragment.
+	 *
+	 * The one-line part is the assertion, not a convenience. Checking fragments independently
+	 * let this file's shadow test pass a control it should have failed: the changed path also
+	 * appears in the flush's ordinary "flushed N changed path(s)" diagnostic, so "the capture
+	 * contains the path" stayed true with the shadow warning deleted. Found by deleting it.
+	 */
+	bool ContainsAllOnOneLine(std::initializer_list<const TCHAR*> Fragments)
+	{
+		// Threaded logging delivers from the log thread; the flush is what makes "emitted
+		// before this line" a checkable claim rather than a race.
+		GLog->FlushThreadedLogs();
+		FScopeLock Lock(&Mutex);
+		for (const FString& Line : Lines)
+		{
+			bool bAll = true;
+			for (const TCHAR* Fragment : Fragments)
+			{
+				bAll = bAll && Line.Contains(Fragment);
+			}
+			if (bAll)
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
+private:
+	FCriticalSection Mutex;
+	TArray<FString> Lines;
+};
+
 //~ EVERY VIEW BELOW IS BUILT ON FVaCuusTestNullDocumentHost -- no context, no RmlUi -- and that
 //~ is enough deliberately: what the dispatch tests assert is a GAME-THREAD fact ("the reload
 //~ dispatcher re-issued a load for this view"), observed through
@@ -1030,6 +1091,118 @@ bool FVaCuusLiveReloadWatcherEventTest::RunTest(const FString& Parameters)
 	ADD_LATENT_AUTOMATION_COMMAND(FVaCuusPumpWatcherCommand(State));
 	ADD_LATENT_AUTOMATION_COMMAND(FVaCuusAwaitReloadCommand(State));
 	ADD_LATENT_AUTOMATION_COMMAND(FVaCuusVerifyWatcherEventCommand(State));
+	return true;
+}
+
+/**
+ * THE BUNDLE SHADOW WARNING -- the one thing live reload can do about a trap it cannot fix.
+ *
+ * With a bundle mounted, the VFS serves the PACKED copy of anything the bundle contains, so
+ * an edit to the loose file is re-read and then thrown away: the view shows the bundle's
+ * bytes and nothing anywhere says why. Live reload does not (and should not) reach into the
+ * mount table to fix that -- the watcher watches loose roots by design -- so the flush names
+ * the shadow per changed file, and that Warning IS the feature.
+ *
+ * It had no test. It is step 4-5 of manual-matrix row 13, which is the row nobody had ever
+ * executed on any platform (VaCuus-akj.10.10), and the reason given was that the row needs a
+ * human in an editor. That is true of WATCHING A VIEW REPAINT and false of this: the shadow
+ * check is a string test between a watched root and the mount table, so it needs neither a
+ * watcher event nor a view. Synchronous, no file I/O, no latent command.
+ *
+ * THE PROBE FILE NEVER EXISTS ON DISK, deliberately. NoteChangeAt filters on the action and
+ * the name (ShouldTrackChange is pure) and the flush's shadow loop compares strings, so a
+ * real file would add I/O and a cleanup path to a test that asserts neither.
+ *
+ * BOTH DIRECTIONS, because "a Warning fired" is only half a claim: the same change with
+ * nothing mounted must produce NO shadow line. Without that half this test would pass against
+ * an implementation that warned unconditionally.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusLiveReloadBundleShadowTest, "VaCuus.LiveReload.BundleShadow",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusLiveReloadBundleShadowTest::RunTest(const FString& Parameters)
+{
+	using namespace VaCuusLiveReloadTest;
+
+	FVaCuusLiveReload Reload;
+	Reload.Start();
+	ON_SCOPE_EXIT
+	{
+		Reload.Shutdown();
+		FVaCuusBundleMountTable::UnmountAll();
+	};
+
+	const TArray<FString>& WatchedRoots = Reload.GetWatchedRoots();
+	if (WatchedRoots.Num() == 0)
+	{
+		// Start() skips roots that do not exist, and the shadow loop iterates the ones it
+		// registered -- with none there is nothing to shadow. Named rather than passed
+		// silently: on a tree with no DevUI directory this test asserts nothing.
+		AddInfo(TEXT("Skipped: no DevUI root exists, so nothing is watched and no path can be shadowed"));
+		return true;
+	}
+
+	// A name no real document uses, under a root that IS watched. The extension has to be one
+	// the filter accepts -- a probe the filter drops would test the filter, not the shadow.
+	const FString RelativePath = TEXT("vacuus_bundle_shadow_probe.rcss");
+	const FString ChangedPath = WatchedRoots[0] / RelativePath;
+	const FFileChangeData Change(ChangedPath, FFileChangeData::FCA_Modified);
+
+	// ---- 1. NOTHING MOUNTED: the same change must NOT produce a shadow line. ----
+	{
+		FScopedLiveReloadLogCapture Capture;
+		TestTrue(TEXT("the control change was tracked"), Reload.NoteChangeAt(Change, 100.0));
+		Reload.FlushAt(101.0);
+		TestFalse(TEXT("with no bundle mounted, nothing claims the path is shadowed"),
+			Capture.Contains(TEXT("is SHADOWED by mounted bundle")));
+	}
+
+	// ---- 2. MOUNTED AND CONTAINING THE PATH: the flush must name it. ----
+	const TCHAR* BundleName = TEXT("<LiveReloadShadowProbe>");
+
+	VaCuusBundleFormat::FCookedIndex Index;
+	TArray64<uint8> Payload;
+	{
+		const ANSICHAR* Content = "/* the packed copy, which is the whole point */";
+		const int64 Size = FCStringAnsi::Strlen(Content);
+		Payload.Append(reinterpret_cast<const uint8*>(Content), Size);
+		Index.Entries.Add(FVaCuusBundleEntry{VaCuusBundleFormat::NormalizePath(*RelativePath), 0, Size});
+		Index.PayloadSize = Payload.Num();
+	}
+	if (!TestTrue(TEXT("the probe bundle mounted"),
+			FVaCuusBundleMountTable::MountTransient(BundleName, TEXT("built by VaCuusLiveReloadTest"),
+				MoveTemp(Index), MoveTemp(Payload))))
+	{
+		return false;
+	}
+
+	FString ServingBundle;
+	TestTrue(TEXT("the mount table serves the probe path (the precondition the flush reads)"),
+		FVaCuusBundleMountTable::ContainsPath(RelativePath, &ServingBundle));
+	TestEqual(TEXT("...from the probe bundle"), ServingBundle, FString(BundleName));
+
+	// Warning-level lines DO reach the automation machinery, so an undeclared one would fail
+	// the run. Declaring it here is not suppression: the count makes the expectation an
+	// assertion -- the test fails if the line does not appear exactly once.
+	AddExpectedMessagePlain(TEXT("is SHADOWED by mounted bundle"), ELogVerbosity::Warning,
+		EAutomationExpectedMessageFlags::Contains, 1);
+
+	{
+		FScopedLiveReloadLogCapture Capture;
+		TestTrue(TEXT("the shadowed change was tracked"), Reload.NoteChangeAt(Change, 200.0));
+		Reload.FlushAt(201.0);
+
+		// ONE LINE CARRYING ALL FOUR, not four independent Contains checks. Written the loose
+		// way first, and the restore-the-bug run is what caught it: with the warning deleted,
+		// "the capture contains the changed path" was STILL true, because the flush's ordinary
+		// "flushed N changed path(s): <path>" diagnostic names it too. A reader needs the
+		// sentence, the file, the bundle eating it and the way out -- together, in the line
+		// they are reading -- or the warning is not actionable.
+		TestTrue(TEXT("one Warning names the shadow, the file, the bundle and the way out"),
+			Capture.ContainsAllOnOneLine({TEXT("is SHADOWED by mounted bundle"), *ChangedPath, BundleName,
+				TEXT("vacuus.Bundle.Enable 0")}));
+	}
+
 	return true;
 }
 
