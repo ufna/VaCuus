@@ -7,6 +7,7 @@
 #include "VaCuusStats.h"
 #include "VaCuusUIShaders.h"
 
+#include "ClearQuad.h"
 #include "DynamicRHI.h"
 #include "GlobalRenderResources.h"
 #include "GlobalShader.h"
@@ -115,6 +116,89 @@ int32 ResolveViewSampleCount(int32 Requested, int32 PlatformMax)
 	const int32 Wanted = FMath::Min(FloorPow2(Requested), 8);
 	const int32 Allowed = FMath::Min(FloorPow2(PlatformMax), 8);
 	return FMath::Max(FMath::Min(Wanted, Allowed), 1);
+}
+
+FVaCuusClipMaskStep FVaCuusClipMaskState::Step(EVaCuusClipMaskOp Op)
+{
+	FVaCuusClipMaskStep Result;
+
+	switch (Op)
+	{
+		case EVaCuusClipMaskOp::Set:
+		{
+			// The wrap. Nothing bounds the number of mask changes in a frame, so the 8-bit
+			// counter has to come back round somewhere, and the only way back is a clear --
+			// which is exactly what the reference backend pays on EVERY Set
+			// (RmlUi_Renderer_GL3.cpp:1135-1137). Here it is amortised over 224 of them.
+			if (NextFreeValue > HighWaterValue)
+			{
+				Result.bNeedsClear = true;
+				Result.ClearValue = 0;
+				NextFreeValue = 1;
+			}
+
+			TestValue = NextFreeValue;
+			Result.bReplace = true;
+			Result.WriteValue = TestValue;
+			break;
+		}
+
+		case EVaCuusClipMaskOp::SetInverse:
+		{
+			// ALWAYS CLEARS, and it is not an optimisation that was skipped: the passing value
+			// has to be present where nothing is drawn, and a draw cannot put it there. Clearing
+			// also wipes every stale value, so the counter can safely restart from the bottom.
+			Result.bNeedsClear = true;
+			Result.ClearValue = 1;
+			TestValue = 1;
+			Result.bReplace = true;
+			Result.WriteValue = 0; // covered -> fails the EQUAL 1 test, i.e. the INVERSE
+			break;
+		}
+
+		case EVaCuusClipMaskOp::Intersect:
+		{
+			// SO_SaturatedIncrement, so "in the mask already" (== TestValue) plus "covered now"
+			// is the only way to reach TestValue + 1. A stale pixel is at most TestValue - 1 by
+			// the class invariant, so incrementing it lands at most ON TestValue, never past it.
+			//
+			// The ensure is the honest edge: past 255 the increment saturates while TestValue
+			// keeps climbing, and every pixel would then fail -- the mask would clip everything
+			// away. Fail-closed rather than fail-open, and unreachable short of 31 nested
+			// clipping ancestors in one element's chain (ElementUtilities.cpp:165 pushes one
+			// entry per clipping ancestor).
+			ensureMsgf(TestValue < 255,
+				TEXT("Clip-mask nesting exceeded the 8-bit stencil (%u levels); the mask will clip everything"),
+				TestValue);
+			TestValue = FMath::Min(TestValue + 1, 255u);
+			Result.bReplace = false;
+			Result.WriteValue = TestValue; // unused by the increment op; carried for the test
+			break;
+		}
+	}
+
+	// THE INVARIANT, maintained in one place for all three operations: every value that can now
+	// be present in the buffer is below this. Set wrote TestValue; Intersect can have raised a
+	// stale pixel to at most TestValue; SetInverse cleared to 1 == TestValue.
+	NextFreeValue = TestValue + 1;
+	Result.TestValue = TestValue;
+	return Result;
+}
+
+bool BufferUsesClipMask(const FVaCuusCommandBuffer& Buffer)
+{
+	// RenderToClipMask, not EnableClipMask: RenderManager::ApplyClipMask calls
+	// EnableClipMask(false) on every mask TEARDOWN as well (RenderManager.cpp:158-159, reached
+	// from ResetState at :178-190), so a frame that never masked anything still carries disable
+	// edges. Only a RenderToClipMask means a stencil was actually written.
+	for (const FVaCuusCommand& Command : Buffer.Commands)
+	{
+		if (Command.Type == EVaCuusCommandType::RenderToClipMask)
+		{
+			return true;
+		}
+	}
+	return false;
 }
 
 
@@ -263,7 +347,9 @@ void FVaCuusReplayRenderer::ReleaseResources()
 	Shaders.Empty();
 	OutputRT.SafeRelease();
 	MSAART.SafeRelease();
+	StencilRT.SafeRelease();
 	bLoggedSampleCount = false;
+	bLoggedStencilTarget = false;
 
 	// Textures created for a buffer that never reached its replay pass -- teardown between graph
 	// build and pass execution. Nothing dangles either way (the upload task holds its own payload
@@ -361,6 +447,66 @@ void FVaCuusReplayRenderer::EnsureSampleTarget(FRHICommandList& RHICmdList, FInt
 			SampleCount, ViewSize.X, ViewSize.Y, double(Bytes) / (1024.0 * 1024.0), ViewSize.X, ViewSize.Y,
 			CVarVaCuusViewSampleCount.GetValueOnRenderThread(), PlatformMax);
 	}
+}
+
+void FVaCuusReplayRenderer::EnsureStencilTarget(FRHICommandList& RHICmdList, FIntPoint ViewSize)
+{
+	// GetReplaySampleCount(), not the cvar: EnsureSampleTarget has already run for this frame,
+	// so this is the count the colour attachment REALLY has after the platform cap and the
+	// power-of-two floor. A depth-stencil attachment that disagrees with its colour attachment
+	// on samples is a render-pass validation failure, not a wrong pixel.
+	const int32 SampleCount = GetReplaySampleCount();
+
+	if (StencilRT.IsValid() && StencilRT->GetSizeXY() == ViewSize && int32(StencilRT->GetDesc().NumSamples) == SampleCount)
+	{
+		return;
+	}
+
+	// NO ShaderResource FLAG and no resolve target: nothing samples this and nothing reads it
+	// after the pass. Same argument as MSAART's, one step further -- MSAART is at least a
+	// resolve SOURCE, this is neither. DepthStencilTargetable is the whole requirement.
+	//
+	// The clear binding is what BeginRenderPass's Clear action uses, so stencil 0 here is the
+	// same 0 FVaCuusClipMaskState::BeginPass() assumes. Depth 0 matches the projection's pinned
+	// clip z of 0.5 in no particular way and does not need to: every depth-stencil state this
+	// pass binds has bEnableDepthWrite = false and CF_Always, so the depth plane is inert.
+	const FRHITextureCreateDesc Desc =
+		FRHITextureCreateDesc::Create2D(TEXT("VaCuusClipMaskStencil"), ViewSize, PF_DepthStencil)
+			.SetFlags(ETextureCreateFlags::DepthStencilTargetable)
+			.SetClearValue(FClearValueBinding::DepthZero)
+			.SetNumSamples(uint8(SampleCount))
+			// Only ever a depth-stencil attachment, so DSVWrite is both its initial and its only
+			// state -- the same "no second state to be in" argument MSAART's declaration makes.
+			.SetInitialState(ERHIAccess::DSVWrite);
+	StencilRT = RHICmdList.CreateTexture(Desc);
+
+	if (!bLoggedStencilTarget)
+	{
+		bLoggedStencilTarget = true;
+
+		// Announced because it is an allocation a buyer did not ask for by name: it appears the
+		// first time a document clips under a transform or a border-radius, and the whole point
+		// of the lazy allocation is that a document which does neither never sees this line.
+		UE_LOG(LogVaCuus, Log,
+			TEXT("VaCuus clip mask on: this view records a clip mask, so the replay pass now carries a ")
+			TEXT("%dx-sampled stencil at %dx%d (+%.2f MiB per view). Nothing samples or stores it."),
+			SampleCount, ViewSize.X, ViewSize.Y, double(GetClipMaskStencilBytes()) / (1024.0 * 1024.0));
+	}
+}
+
+uint64 FVaCuusReplayRenderer::GetClipMaskStencilBytes() const
+{
+	if (!StencilRT.IsValid())
+	{
+		return 0;
+	}
+
+	// GPixelFormats rather than a literal 4: PF_DepthStencil is D24S8 on some platforms and
+	// D32_S8X24 (8 bytes) on others, and the buyer-facing number in perf-guide.md has to be the
+	// one the platform actually allocates.
+	const FIntPoint Size = StencilRT->GetSizeXY();
+	const uint64 BytesPerSample = uint64(GPixelFormats[PF_DepthStencil].BlockBytes);
+	return uint64(Size.X) * uint64(Size.Y) * BytesPerSample * uint64(StencilRT->GetDesc().NumSamples);
 }
 
 void FVaCuusReplayRenderer::BeginAsyncTextureUploads(FRHICommandListImmediate& RHICmdList, FVaCuusCommandBuffer& Buffer)
@@ -513,11 +659,79 @@ void FVaCuusReplayRenderer::UploadNewResources(FRHICommandList& RHICmdList, cons
 	}
 }
 
+namespace VaCuusReplayPrivate
+{
+/**
+ * THE SECOND PSO AXIS OF THE REPLAY PASS (bead VaCuus-4ik). Depth-stencil state and colour write
+ * mask move together and only together, so they are ONE enum rather than two: every value here
+ * is a (stencil behaviour, colour behaviour) pair that actually occurs, and no other pair does.
+ *
+ * Unmasked is the pre-4ik state and the ONLY value a document without a clip mask ever reaches,
+ * so the common case is still one pipeline bound once for the whole pass.
+ *
+ * FILE SCOPE RATHER THAN INSIDE ReplayCommands because the material tier needs the same states:
+ * it binds a full pipeline of its own and would otherwise be the one draw path in the frame that
+ * ignores the mask.
+ */
+enum class EBoundDS : uint8
+{
+	None,        // nothing bound yet
+	Unmasked,    // stencil test off, colour blended: an ordinary draw
+	Masked,      // stencil test EQUAL <ref>, no stencil write, colour blended
+	MaskReplace, // writing the mask: stencil <- <ref> where covered, NO colour
+	MaskAdd      // writing the mask: stencil += 1 where covered, NO colour
+};
+
+/**
+ * The one place each of those states is spelled out. Shared by the replay pass's own binds and
+ * by the material tier's, so the two cannot drift into disagreeing about what "masked" means.
+ *
+ * bEnableBackFaceStencil stays FALSE on all three stencil states even though the rasterizer is
+ * CM_None and both windings reach the ROP: with it false the RHI MIRRORS the front-face ops onto
+ * the back face rather than leaving the back face at its defaults (VulkanState.cpp:302-316 does
+ * exactly that assignment). Setting it true would mean writing every op twice for no behavioural
+ * difference.
+ *
+ * bEnableDepthWrite is false and the depth test CF_Always in every one of them, which is what
+ * lets the depth plane stay inert next to MakePixelToClipMatrix's pinned clip z of 0.5.
+ */
+FRHIDepthStencilState* DepthStencilStateFor(EBoundDS Which)
+{
+	switch (Which)
+	{
+		case EBoundDS::Masked:
+			// Read the mask, never disturb it: the 0x00 WRITE mask is what makes a masked draw
+			// safe to run between two mask builds.
+			return TStaticDepthStencilState<false, CF_Always, true, CF_Equal, SO_Keep, SO_Keep, SO_Keep, false, CF_Always,
+				SO_Keep, SO_Keep, SO_Keep, 0xFF, 0x00>::GetRHI();
+
+		case EBoundDS::MaskReplace:
+			return TStaticDepthStencilState<false, CF_Always, true, CF_Always, SO_Replace, SO_Replace, SO_Replace, false,
+				CF_Always, SO_Keep, SO_Keep, SO_Keep, 0xFF, 0xFF>::GetRHI();
+
+		case EBoundDS::MaskAdd:
+			// SATURATED, not plain SO_Increment: plain increment WRAPS 255 -> 0, which would turn
+			// an over-nested mask from "clips everything" into "clips a stale region". Saturation
+			// keeps that failure monotone, and FVaCuusClipMaskState::Step ensures long before it.
+			return TStaticDepthStencilState<false, CF_Always, true, CF_Always, SO_SaturatedIncrement, SO_SaturatedIncrement,
+				SO_SaturatedIncrement, false, CF_Always, SO_Keep, SO_Keep, SO_Keep, 0xFF, 0xFF>::GetRHI();
+
+		default:
+			// Unmasked (and None, which no bind ever asks for): byte-for-byte the state this pass
+			// bound before the clip-mask work, so a document that never masks is untouched.
+			return TStaticDepthStencilState<false, CF_Always>::GetRHI();
+	}
+}
+} // namespace VaCuusReplayPrivate
+
 void FVaCuusReplayRenderer::ReplayCommands(FRHICommandList& RHICmdList, const FVaCuusCommandBuffer& Buffer)
 {
 	const FIntPoint RTSize = Buffer.ViewSize;
 	const FMatrix44f Projection = VaCuusReplay::MakePixelToClipMatrix(RTSize);
 	int32 NumDrawCalls = 0;
+
+	/** Mask builds, kept apart from NumDrawCalls: they write stencil, never colour. */
+	int32 NumClipMaskDraws = 0;
 
 	// TOptionalShaderMapRef, NOT TShaderMapRef: the hard ref checkf()s on a missing
 	// shader (GlobalShader.h:201) and under the automation suite's -nullrhi no global
@@ -552,11 +766,48 @@ void FVaCuusReplayRenderer::ReplayCommands(FRHICommandList& RHICmdList, const FV
 	FRHITexture* ColorTarget = bResolve ? MSAART.GetReference() : OutputRT.GetReference();
 	const ERHIAccess DestAccess = bResolve ? ERHIAccess::ResolveDst : ERHIAccess::RTV;
 
+	// THE CLIP-MASK FORK (bead VaCuus-4ik), and it is paid for only by documents that use one.
+	// The scan is what makes the stencil allocation lazy; EnsureStencilTarget must run HERE,
+	// before BeginRenderPass, because creating a texture inside a render pass is illegal.
+	const bool bClipMask = VaCuusReplay::BufferUsesClipMask(Buffer);
+	if (bClipMask)
+	{
+		EnsureStencilTarget(RHICmdList, RTSize);
+	}
+
 	RHICmdList.Transition(FRHITransitionInfo(OutputRT, ERHIAccess::SRVMask, DestAccess));
 
 	FRHIRenderPassInfo RPInfo(ColorTarget,
 		bResolve ? ERenderTargetActions::Clear_Resolve : ERenderTargetActions::Clear_Store,
 		bResolve ? OutputRT.GetReference() : nullptr);
+
+	// ASSIGNED RATHER THAN PASSED TO A CONSTRUCTOR, and that is forced rather than stylistic:
+	// every FRHIRenderPassInfo overload that takes both a colour resolve and a depth target
+	// asserts `check(!ResolveColorRT || ResolveColorRT->IsMultisampled())`
+	// (RHIResources.h:5526) -- which is the wrong texture to test, since a resolve DESTINATION
+	// is single-sampled by definition, and our OutputRT would trip it. The fields are public and
+	// the three-argument overload above already left them at "no depth", so filling them in
+	// afterwards is the same render pass with none of the false assertion.
+	if (bClipMask && StencilRT.IsValid())
+	{
+		RPInfo.DepthStencilRenderTarget.DepthStencilTarget = StencilRT.GetReference();
+		RPInfo.DepthStencilRenderTarget.ResolveTarget = nullptr;
+
+		// CLEAR AT ENTRY, DISCARD AT EXIT. The clear is what FVaCuusClipMaskState::BeginPass()
+		// assumes (stencil 0 everywhere, so its first Set can use value 1), and it is free --
+		// a tile-based GPU folds a clear-on-load into the pass and never touches memory for it.
+		// DontStore is what keeps this attachment invisible downstream: nothing reads the
+		// stencil after EndRenderPass, so there is no store and no resolve.
+		RPInfo.DepthStencilRenderTarget.Action = EDepthStencilTargetActions::ClearDepthStencil_DontStoreDepthStencil;
+
+		// DepthWrite_StencilWrite, not DepthNop_StencilWrite, even though no state below writes
+		// depth: Nop asks the RHI to leave that plane's layout alone, which then needs
+		// RPInfo.NopAccess set correctly for the RHIs that track planes separately
+		// (RHIResources.h:5374-5375). Declaring both writable is the permissive answer, costs one
+		// clear of a plane we discard anyway, and cannot be got subtly wrong.
+		RPInfo.DepthStencilRenderTarget.ExclusiveDepthStencil = FExclusiveDepthStencil::DepthWrite_StencilWrite;
+	}
+
 	RHICmdList.BeginRenderPass(RPInfo, TEXT("VaCuusReplay"));
 	{
 		RHICmdList.SetViewport(0.0f, 0.0f, 0.0f, float(RTSize.X), float(RTSize.Y), 1.0f);
@@ -595,26 +846,77 @@ void FVaCuusReplayRenderer::ReplayCommands(FRHICommandList& RHICmdList, const FV
 			Gradient,
 			Material
 		};
+
+		using EBoundDS = VaCuusReplayPrivate::EBoundDS;
+
 		// The material path's per-pass state: one lazy view UB + the bound-material memo.
 		VaCuusMaterialDraw::FPassState MaterialPassState;
 
+		// The stencil value protocol, and the enable flag EnableClipMask toggles. BeginPass()
+		// matches the render pass's own stencil clear to 0 just above.
+		VaCuusReplay::FVaCuusClipMaskState ClipMask;
+		ClipMask.BeginPass();
+		bool bClipMaskEnabled = false;
+
 		EBoundPS BoundPS = EBoundPS::None;
-		const auto BindPipeline = [&RHICmdList, &GraphicsPSOInit, &BoundPS, &PixelShader, &GradientShader, &MaterialPassState](EBoundPS Wanted)
+		EBoundDS BoundDS = EBoundDS::None;
+
+		// int64 so "never set" is distinguishable from ref 0, which is a legal ref.
+		int64 BoundStencilRef = -1;
+
+		const auto BindPipeline = [&RHICmdList, &GraphicsPSOInit, &BoundPS, &BoundDS, &BoundStencilRef, &PixelShader,
+									  &GradientShader, &MaterialPassState](EBoundPS WantedPS, EBoundDS WantedDS, uint32 WantedRef)
 		{
-			check(Wanted != EBoundPS::Material); // material pipelines bind in DrawMaterial_RenderThread
-			if (BoundPS == Wanted)
+			check(WantedPS != EBoundPS::Material); // material pipelines bind in DrawMaterial_RenderThread
+			check(WantedDS != EBoundDS::None);
+
+			if (BoundPS != WantedPS || BoundDS != WantedDS)
 			{
+				BoundPS = WantedPS;
+				BoundDS = WantedDS;
+				GraphicsPSOInit.BoundShaderState.PixelShaderRHI =
+					(WantedPS == EBoundPS::Gradient) ? GradientShader.GetPixelShader() : PixelShader.GetPixelShader();
+
+				GraphicsPSOInit.DepthStencilState = VaCuusReplayPrivate::DepthStencilStateFor(WantedDS);
+
+				// A mask build must not touch a pixel. CW_NONE rather than a discarding shader
+				// because the mask geometry IS ordinary compiled geometry -- RmlUi hands it over
+				// through CompileGeometry like any other mesh (RenderManager.cpp:197-212) -- so it
+				// draws with the ordinary UI shaders and the colour is simply masked off at the ROP.
+				const bool bWritingMask = (WantedDS == EBoundDS::MaskReplace || WantedDS == EBoundDS::MaskAdd);
+				GraphicsPSOInit.BlendState = bWritingMask
+					? TStaticBlendState<CW_NONE>::GetRHI()
+					: TStaticBlendState<CW_RGBA, BO_Add, BF_One, BF_InverseSourceAlpha, BO_Add, BF_One,
+						  BF_InverseSourceAlpha>::GetRHI();
+
+				SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, WantedRef);
+				BoundStencilRef = int64(WantedRef);
+
+				// The memos must invalidate each other: a material draw after this bind
+				// is under OUR pipeline now, whatever material was bound before it.
+				MaterialPassState.BoundMaterialPS = nullptr;
+				MaterialPassState.BoundStencilRef = -1;
 				return;
 			}
-			BoundPS = Wanted;
-			GraphicsPSOInit.BoundShaderState.PixelShaderRHI =
-				(Wanted == EBoundPS::Gradient) ? GradientShader.GetPixelShader() : PixelShader.GetPixelShader();
-			SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
 
-			// The two memos must invalidate each other: a material draw after this bind
-			// is under OUR pipeline now, whatever material was bound before it.
-			MaterialPassState.BoundMaterialPS = nullptr;
+			// Same pipeline, different reference value -- the common case inside one document,
+			// since every mask level in a frame gets its own value. The ref is COMMAND-LIST state,
+			// not PSO state, so this costs no pipeline switch (RHICommandList.h:3786-3796).
+			if (BoundStencilRef != int64(WantedRef))
+			{
+				BoundStencilRef = int64(WantedRef);
+				RHICmdList.SetStencilRef(WantedRef);
+			}
 		};
+
+		// What an ordinary (non-mask-building) draw wants right now. Three spellings of one answer:
+		// the enum for BindPipeline's memo, the RHI object for the material tier's own PSO, and
+		// the reference value both bind. The ref is 0 with masking off, which is the value the
+		// unmasked state ignores anyway -- keeping it constant stops a mask level left over from
+		// earlier in the frame provoking pointless SetStencilRef calls between unmasked draws.
+		const auto ContentDS = [&bClipMaskEnabled]() { return bClipMaskEnabled ? EBoundDS::Masked : EBoundDS::Unmasked; };
+		const auto ContentDSState = [&ContentDS]() { return VaCuusReplayPrivate::DepthStencilStateFor(ContentDS()); };
+		const auto ContentRef = [&bClipMaskEnabled, &ClipMask]() -> uint32 { return bClipMaskEnabled ? ClipMask.GetTestValue() : 0u; };
 
 		// SetTransform state, already in UE row-vector convention (the recorder
 		// memcpy's Rml's column-major matrix, which lands as the transpose).
@@ -636,7 +938,7 @@ void FVaCuusReplayRenderer::ReplayCommands(FRHICommandList& RHICmdList, const FV
 						break; // Empty/degenerate geometry: nothing to draw.
 					}
 
-					BindPipeline(EBoundPS::UI);
+					BindPipeline(EBoundPS::UI, ContentDS(), ContentRef());
 
 					// Row-vector composition, left to right = application order:
 					// translate (pixels) -> Rml transform -> pixel-to-clip ortho.
@@ -734,10 +1036,17 @@ void FVaCuusReplayRenderer::ReplayCommands(FRHICommandList& RHICmdList, const FV
 
 						const bool bDrawn = VaCuusMaterialDraw::DrawMaterial_RenderThread(RHICmdList, MaterialPassState,
 							RTSize, Translate * CurrentTransform * Projection, Desc->MaterialId, Desc->BuiltinKey,
-							Geo->VB, Geo->IB, Geo->NumVertices, Geo->NumIndices);
+							Geo->VB, Geo->IB, Geo->NumVertices, Geo->NumIndices, ContentDSState(), ContentRef());
 						if (bDrawn)
 						{
 							BoundPS = EBoundPS::Material;
+
+							// The material's own PSO is bound now, so OUR depth-stencil memo is
+							// stale too — not just the pixel shader one. Both have to say "unknown"
+							// or the next UI draw at the same mask level would skip its rebind and
+							// draw under the material's pipeline.
+							BoundDS = EBoundDS::None;
+							BoundStencilRef = -1;
 							++NumDrawCalls;
 						}
 						break;
@@ -807,7 +1116,7 @@ void FVaCuusReplayRenderer::ReplayCommands(FRHICommandList& RHICmdList, const FV
 						PSParameters.StopPositions[StopIndex / 4][StopIndex % 4] = Desc->Stops[StopIndex].Position;
 					}
 
-					BindPipeline(EBoundPS::Gradient);
+					BindPipeline(EBoundPS::Gradient, ContentDS(), ContentRef());
 
 					// Same VS, same matrix math as DrawGeometry above.
 					FMatrix44f Translate = FMatrix44f::Identity;
@@ -887,17 +1196,121 @@ void FVaCuusReplayRenderer::ReplayCommands(FRHICommandList& RHICmdList, const FV
 				}
 
 				case EVaCuusCommandType::EnableClipMask:
+				{
+					// The flag only steers WHICH depth-stencil state the next content draw binds
+					// (ContentDS above). It deliberately does not touch the stencil buffer:
+					// RenderManager::ApplyClipMask emits enable-true immediately before rebuilding
+					// the mask and enable-false when the list empties (RenderManager.cpp:156-176),
+					// so a disable is "stop testing", never "erase" -- and erasing would throw away
+					// values FVaCuusClipMaskState has already accounted for.
+					bClipMaskEnabled = (Command.bClipMaskEnable != 0);
+					break;
+				}
+
 				case EVaCuusCommandType::RenderToClipMask:
 				{
-					// SKIPPED IN v1 outside glass extraction (M5 spec §2(d)): applying the
-					// mask needs a stencil pass this RT does not carry yet. This preserves
-					// pre-M5 behavior for ordinary rounded-corner clipping exactly —
-					// before M5 these two virtuals sat at RmlUi's silent no-op defaults
-					// (RenderInterface.cpp:20-22) and no command was even recorded, so
-					// border-radius overflow has always been clipped by scissor alone here.
-					// Glass corners are Task 3's business: the distiller reads the mask
-					// geometry from the buffer (Command.Geometry resolves in NewGeometry)
-					// and masks the composite-time glass draw with it.
+					// THE STENCIL PASS (bead VaCuus-4ik). Before this existed, both commands fell
+					// through to a comment saying the mask "needs a stencil pass this RT does not
+					// carry yet" -- and because ElementUtilities.cpp:174-175 turns SCISSOR clipping
+					// off unconditionally whenever a transform is active on the clipping chain, and
+					// :162-169 emits this mask in its place, dropping it meant a transformed
+					// ancestor silently disabled ALL clipping in its subtree. Same sentence for a
+					// border-radius on a clip container, which takes the mask path with no
+					// transform involved at all.
+					if (!StencilRT.IsValid())
+					{
+						// Only reachable if the pre-pass scan and this walk disagree, which they
+						// cannot -- BufferUsesClipMask tests for exactly this command type. Guarded
+						// anyway because the alternative is a stencil op against no attachment.
+						ensureMsgf(false, TEXT("RenderToClipMask with no stencil target: the pre-pass scan missed it"));
+						break;
+					}
+
+					const FGeometry* Geo = Geometry.Find(Command.Geometry);
+					if (!ensureMsgf(Geo, TEXT("RenderToClipMask references unknown geometry handle %llu"), Command.Geometry))
+					{
+						break;
+					}
+					if (Geo->NumIndices < 3)
+					{
+						// A degenerate mask shape must NOT be treated as "no mask": RmlUi already
+						// skipped the push for a null geometry (ElementUtilities.cpp:167-168), so
+						// arriving here with one means an empty clip region, and letting the draws
+						// through unmasked is the very bug this case fixes. Stepping the protocol
+						// without drawing leaves the new TestValue matching nothing, i.e. clipped.
+						ClipMask.Step(Command.ClipMaskOp);
+						break;
+					}
+
+					const VaCuusReplay::FVaCuusClipMaskStep Step = ClipMask.Step(Command.ClipMaskOp);
+
+					if (Step.bNeedsClear)
+					{
+						// A full-target stencil clear MID-PASS. DrawClearQuad with colour and depth
+						// off binds exactly the state this needs (CW_NONE + stencil SO_Replace at
+						// the ref, ClearQuad.cpp:44-63), and it is the engine's own way to do this
+						// inside a render pass. It also binds its own PSO and its own vertex
+						// declaration, so both memos below have to be dropped.
+						//
+						// NOT REACHED BY THE COMMON CASE: only SetInverse (box-shadow) and the
+						// 224th Set in one pass ask for it -- see FVaCuusClipMaskState.
+						//
+						// The scissor is still whatever the recorded state left, exactly as in the
+						// reference backend, where glClear is subject to the scissor test too. That
+						// is sound because the scissor also bounds every draw that could read a
+						// stencil value outside it.
+						DrawClearQuad(RHICmdList, /*bClearColor=*/false, FLinearColor::Black, /*bClearDepth=*/false, 0.0f,
+							/*bClearStencil=*/true, Step.ClearValue);
+						BoundPS = EBoundPS::None;
+						BoundDS = EBoundDS::None;
+						BoundStencilRef = -1;
+						MaterialPassState.BoundMaterialPS = nullptr;
+						MaterialPassState.BoundStencilRef = -1;
+					}
+
+					// The ref carries the WRITE value here, not the test value: SO_Replace writes
+					// the bound reference. For MaskAdd it is unused by the op and only has to be
+					// something -- Step.WriteValue is the post-increment value, which keeps the
+					// bound ref monotone with the tests that follow.
+					BindPipeline(EBoundPS::UI, Step.bReplace ? EBoundDS::MaskReplace : EBoundDS::MaskAdd, Step.WriteValue);
+
+					// SAME MATRIX MATH AS AN ORDINARY DRAW, and CurrentTransform is load-bearing
+					// rather than incidental: RenderManager::ApplyClipMask calls SetTransform with
+					// each clip element's OWN transform before its RenderToClipMask and restores the
+					// caller's afterwards (RenderManager.cpp:164-175), so the recorded stream
+					// already interleaves SetTransform commands and this reads whichever one applies.
+					// That is the whole reason a transformed clip box masks the right pixels.
+					FMatrix44f Translate = FMatrix44f::Identity;
+					Translate.M[3][0] = Command.Translation.X;
+					Translate.M[3][1] = Command.Translation.Y;
+
+					FVaCuusUIShaderParameters Parameters;
+					Parameters.Projection = Translate * CurrentTransform * Projection;
+					Parameters.UITexture = GWhiteTexture->TextureRHI;
+					Parameters.UISampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+					Parameters.bUseTexture = 0;
+
+					{
+						FRHIBatchedShaderParameters& BatchedParameters = RHICmdList.GetScratchShaderParameters();
+						SetShaderParameters(BatchedParameters, VertexShader, Parameters);
+						RHICmdList.SetBatchedShaderParameters(VertexShader.GetVertexShader(), BatchedParameters);
+					}
+					{
+						FRHIBatchedShaderParameters& BatchedParameters = RHICmdList.GetScratchShaderParameters();
+						SetShaderParameters(BatchedParameters, PixelShader, Parameters);
+						RHICmdList.SetBatchedShaderParameters(PixelShader.GetPixelShader(), BatchedParameters);
+					}
+
+					RHICmdList.SetStreamSource(0, Geo->VB, 0);
+					RHICmdList.DrawIndexedPrimitive(Geo->IB,
+						/*BaseVertexIndex=*/0, /*FirstInstance=*/0, uint32(Geo->NumVertices),
+						/*StartIndex=*/0, uint32(Geo->NumIndices / 3), /*NumInstances=*/1);
+
+					// NOT counted in NumDrawCalls: that number feeds the VaCuus.Render.DrawCalls
+					// stat, which perf-guide.md documents as the count of draws that PRODUCE
+					// pixels. A mask build writes no colour. VaCuus.Render.ClipMaskDraws is its
+					// own counter for the same reason.
+					++NumClipMaskDraws;
 					break;
 				}
 			}
@@ -926,5 +1339,6 @@ void FVaCuusReplayRenderer::ReplayCommands(FRHICommandList& RHICmdList, const FV
 	// view of the same thing is vacuus.M1HUD.PerfLog's published/skipped line.
 	SET_DWORD_STAT(STAT_VaCuusDrawCalls, NumDrawCalls);
 	SET_DWORD_STAT(STAT_VaCuusCommands, Buffer.Commands.Num());
+	SET_DWORD_STAT(STAT_VaCuusClipMaskDraws, NumClipMaskDraws);
 	FVaCuusPerfLog::AddDraws(NumDrawCalls);
 }

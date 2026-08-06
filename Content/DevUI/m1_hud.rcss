@@ -4,9 +4,15 @@
    overflow:hidden. NO decorators/gradients, NO box-shadow, NO filter or
    backdrop-filter, NO animations/transitions (all M5+).
 
-   IMPORTANT: clip containers (#sb-clip, #compass-window) must have NEITHER
-   border-radius NOR transform - either would push RmlUi from the scissor path
-   onto the clip-mask path, which the M1 recorder does not implement. */
+   NO LONGER TRUE, kept because it was load-bearing for two milestones: the clip
+   containers (#sb-clip, #compass-window) used to be forbidden border-radius AND
+   transform, because either takes RmlUi onto the clip-mask path
+   (ElementUtilities.cpp:162-169) and the replayer skipped the mask. Bead
+   VaCuus-4ik added the stencil pass, so both clip correctly now -- and corrected
+   the rule while doing it: only TRANSFORM disabled clipping outright
+   (:174-175 turns the scissor off unconditionally); border-radius alone KEEPS the
+   scissor (:171-175) and cost nothing but the four corner arcs. They still use
+   neither, only to keep this sheet's per-view cost at zero. */
 
 /* RmlUi ships no user-agent stylesheet: every element defaults to
    display:inline, which ignores width/height. Blockify the basics first. */

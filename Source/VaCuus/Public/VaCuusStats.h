@@ -77,6 +77,14 @@ DECLARE_DWORD_COUNTER_STAT_EXTERN(TEXT("VaCuus Draw Calls"), STAT_VaCuusDrawCall
 DECLARE_DWORD_COUNTER_STAT_EXTERN(TEXT("VaCuus Commands"), STAT_VaCuusCommands, STATGROUP_VaCuus, VACUUS_API);
 
 /**
+ * Clip-mask geometry replayed into the stencil this frame (bead VaCuus-4ik). SEPARATE FROM
+ * Draw Calls on purpose: these draws write no colour (CW_NONE) and perf-guide.md documents Draw
+ * Calls as the count of draws that produce pixels. It is also the cheapest way to see whether a
+ * document has taken the mask path at all -- 0 means every clip in it is a plain scissor.
+ */
+DECLARE_DWORD_COUNTER_STAT_EXTERN(TEXT("VaCuus Clip Mask Draws"), STAT_VaCuusClipMaskDraws, STATGROUP_VaCuus, VACUUS_API);
+
+/**
  * Log-based rolling perf capture for headless soaks (Task 10): wall-clock
  * samples taken around the same scopes as the cycle stats above, printed as
  * avg/p50/p99/max every 5 seconds while `vacuus.M1HUD.PerfLog 1`.

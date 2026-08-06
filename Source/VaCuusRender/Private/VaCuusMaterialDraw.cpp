@@ -175,7 +175,8 @@ static const FMaterial* WalkForShaders(FRHICommandListBase& RHICmdList, const FM
 
 bool DrawMaterial_RenderThread(FRHICommandList& RHICmdList, FPassState& PassState, FIntPoint RTSize,
 	const FMatrix44f& DrawMatrix, uint64 StableId, const FString& Key,
-	FRHIBuffer* VertexBuffer, FRHIBuffer* IndexBuffer, int32 NumVertices, int32 NumIndices)
+	FRHIBuffer* VertexBuffer, FRHIBuffer* IndexBuffer, int32 NumVertices, int32 NumIndices,
+	FRHIDepthStencilState* DepthStencilState, uint32 StencilRef)
 {
 	check(IsInRenderingThread());
 
@@ -235,21 +236,32 @@ bool DrawMaterial_RenderThread(FRHICommandList& RHICmdList, FPassState& PassStat
 	// material shader map, cached by the engine's PSO cache like any other. N
 	// consecutive draws with one material bind once (the PassState memo); the caller
 	// invalidates ITS pipeline memo after us (EBoundPS::Material in ReplayCommands).
-	if (PassState.BoundMaterialPS != PixelShader.GetPixelShader())
+	if (PassState.BoundMaterialPS != PixelShader.GetPixelShader() || PassState.BoundDepthStencil != DepthStencilState)
 	{
 		PassState.BoundMaterialPS = PixelShader.GetPixelShader();
+		PassState.BoundDepthStencil = DepthStencilState;
+		PassState.BoundStencilRef = int64(StencilRef);
 
 		FGraphicsPipelineStateInitializer GraphicsPSOInit;
 		RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
 		GraphicsPSOInit.BlendState =
 			TStaticBlendState<CW_RGBA, BO_Add, BF_One, BF_InverseSourceAlpha, BO_Add, BF_One, BF_InverseSourceAlpha>::GetRHI();
 		GraphicsPSOInit.RasterizerState = TStaticRasterizerState<FM_Solid, CM_None>::GetRHI();
-		GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<false, CF_Always>::GetRHI();
+		// The CALLER's, since bead VaCuus-4ik: inside a clip-masked subtree this is the stencil
+		// EQUAL test, and hardcoding "no stencil" here is what would let a material decorator
+		// paint outside the scroll container every other draw in the frame respects.
+		GraphicsPSOInit.DepthStencilState = DepthStencilState;
 		GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GVaCuusVertexDeclaration.VertexDeclarationRHI;
 		GraphicsPSOInit.BoundShaderState.VertexShaderRHI = VertexShader.GetVertexShader();
 		GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
 		GraphicsPSOInit.PrimitiveType = PT_TriangleList;
-		SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
+		SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, StencilRef);
+	}
+	else if (PassState.BoundStencilRef != int64(StencilRef))
+	{
+		// Same pipeline, deeper (or shallower) mask level. Command-list state, no PSO switch.
+		PassState.BoundStencilRef = int64(StencilRef);
+		RHICmdList.SetStencilRef(StencilRef);
 	}
 
 	{

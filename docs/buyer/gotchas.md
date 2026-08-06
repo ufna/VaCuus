@@ -175,45 +175,60 @@ Cause: measured RmlUi pathology on documents that force full relayout every fram
 Do: animate `transform` and opacity (no layout), not `left/top/width`; see the blip
 idiom in perf-guide.md.
 
-**8a. NAMED v1 LIMITATION — a `transform` anywhere on the clipping chain silently
-disables ALL clipping beneath it. `overflow: hidden|auto|scroll` then clips nothing, with
-no warning.**
-Symptom: content spills straight out of its box, or a scroll container paints its whole
-list over the rest of the screen. No Error, no Warning, no log line at all.
-Cause, both halves in-tree:
-- RmlUi turns the scissor off whenever a transform is active on the clipping chain —
-  `if (transform) disable_scissor_clipping = true;`, unconditional
-  (`Source/ThirdParty/RmlUi/Source/Core/ElementUtilities.cpp:174`), because a transformed
-  element's geometry may project anywhere and a screen-space rectangle can no longer
-  describe it. The replacement it emits instead is a **clip mask**
-  (`:162-169`, when `has_border_radius || (transform && has_clipping_content)`).
-- The VaCuus replayer **skips the clip mask in v1**: `EnableClipMask` and
-  `RenderToClipMask` are no-ops, "applying the mask needs a stencil pass this RT does not
-  carry yet" (`Source/VaCuusRender/Private/VaCuusReplayRenderer.cpp:741-753`).
+**8a. FIXED — clipping under a `transform` (and under `border-radius`) works. It costs one
+stencil buffer per view, and only for views that use it.**
+This entry used to be a named v1 limitation: a `transform` anywhere on the clipping chain
+silently disabled **all** clipping beneath it, and `overflow: hidden|auto|scroll` clipped
+nothing at all. That is no longer true, and the note is kept rather than deleted because
+the shape of the old failure is worth knowing if you are reading older material.
 
-So the original clipping is switched off and the replacement never lands. The same
-sentence applies to `border-radius` on a clip container, which is why the plugin's own
-demo sheets forbid both on their clip boxes
-(`Content/DevUI/m2_demo.rcss:9-12`, `Content/DevUI/m1_hud.rcss:7-9`).
+What was happening: RmlUi turns the scissor off whenever a transform is active on the
+clipping chain — `if (transform) disable_scissor_clipping = true;`, unconditional
+(`Source/ThirdParty/RmlUi/Source/Core/ElementUtilities.cpp:174-175`), because a transformed
+element's geometry may project anywhere and a screen-space rectangle can no longer describe
+it. The replacement it emits instead is a **clip mask** (`:162-169`, whenever
+`has_border_radius || (transform && has_clipping_content)`), and the replayer used to skip
+the two clip-mask commands. So the original clipping was switched off and the replacement
+never landed.
 
-**Why this is not exotic: it collides head-on with the obvious resolution-independence
-pattern.** `transform: scale()` on a root wrapper is the cheap way to author against a
-fixed 1920×1080 surface here, because there is no `calc()`, `dp == px`
-(`Context::SetDensityIndependentPixelRatio` is never called by the plugin) and font sizes
-cannot be computed. Adopting that one declaration costs you **every** scroll container
-and `overflow: hidden` box in the document at once, silently. Measured: a 40×14
-`overflow: hidden` box with a 200×14 child under a scaled root rendered the child at its
-full 200px.
-Do: pick one.
-- Keep the transformed root, and **size containers to their content** — never rely on
-  overflow to cut anything. For long lists, delete rows instead of clipping them, which
-  perf-guide.md already prefers on its own grounds ("Smaller standing DOM": a clipped
-  scrollback still records every row into the command stream).
-- Or drop the root transform, author in pixels, and clipping behaves — that is what every
-  shipped demo document does.
+**One correction to the old entry, because it overstated half of itself.** It used to say the
+same sentence applied to `border-radius` on a clip container with no transform. It did not.
+Three lines below the one everyone was citing, RmlUi says: *"If we only have border-radius then
+we add this element to the scissor region as well as the clip mask… However, when we have a
+transform, the element cannot be added to the scissor region"* (`:171-175`). So a **rounded**
+clip container kept its scissor and still clipped rectangularly — only the four corner **arcs**
+went unclipped, measured at 11.7 differing pixels on the plugin's own demo. Cosmetic, not a
+screenful. Only `transform` disabled clipping outright.
 
-A real stencil pass for the clip mask is tracked as plugin work; until it lands this is a
-documented limitation, not a bug you can style around.
+The replayer now attaches a stencil target to the replay pass and honours both commands
+(`Source/VaCuusRender/Private/VaCuusReplayRenderer.cpp`, `EnableClipMask` /
+`RenderToClipMask`). `transform: scale()` on a root wrapper — the cheap way to author
+against a fixed 1920×1080 surface here, because there is no `calc()` and `dp == px` — no
+longer costs you every scroll container in the document.
+
+**What it costs, since it is not free.** The stencil is allocated **lazily**: a view whose
+document never takes the mask path never allocates one, and `stat vacuus`'s *Clip Mask
+Draws* reads 0 for such a document. A view that does take it pays one depth-stencil target
+at the view's extent and the view's `vacuus.ViewSampleCount`, permanently:
+
+| `vacuus.ViewSampleCount` | stencil, per view at 1920×1080 |
+|---|---|
+| 1 (default) | 7.91 MiB |
+| 2 | 15.82 MiB |
+| 4 | 31.64 MiB |
+| 8 | 63.28 MiB |
+
+Same table as the MSAA companion target's, for the same reason: same extent, same sample
+count, same bytes per sample. The two add up if you run both. See perf-guide.md.
+
+**Two things still worth knowing.**
+- A **rounded** clip container takes the mask path even with no transform at all
+  (`has_border_radius ||` above), so `border-radius` on a scroll container is what most
+  often turns the allocation on.
+- The perf advice has not changed and was never really about clipping: for long lists,
+  deleting rows still beats clipping them, because a clipped scrollback still records every
+  row into the command stream ("Smaller standing DOM", perf-guide.md). Clipping now
+  *works*; it was never free.
 
 **8b. `opacity` does NOT establish a group. A child that sets its own `opacity` escapes its
 ancestor's completely.**

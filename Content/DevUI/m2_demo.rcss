@@ -6,10 +6,26 @@
    `overflow`. NO decorators/gradients, NO box-shadow, NO filter or
    backdrop-filter, NO transitions or animations (M5+).
 
-   ONE HARD RULE FOLLOWS FROM THAT: #list-clip below must have NEITHER
-   border-radius NOR transform. Either would push RmlUi off the scissor path onto
-   the clip-mask path, which this recorder does not implement, and the list would
-   render unclipped over the rest of the screen. */
+   THE HARD RULE THAT USED TO FOLLOW FROM THAT IS GONE (bead VaCuus-4ik). This
+   header used to forbid border-radius AND transform on #list-clip below, on the
+   grounds that either would leave the list "rendering unclipped over the rest of
+   the screen". The replayer now carries a stencil pass and honours both clip-mask
+   commands, so both are safe -- and while fixing it, half of that claim turned
+   out to have been wrong all along:
+
+     - TRANSFORM was exactly as bad as stated. ElementUtilities.cpp:174-175 turns
+       the scissor off unconditionally when a transform is active on the clipping
+       chain, so with the mask skipped NOTHING clipped. Photographed:
+       docs/research/proofs/4ik-clip-mask/cmp_transform.png, rows 09-17 painting
+       over the terrain.
+     - BORDER-RADIUS was not. :171-175 keeps the element in the scissor region
+       when there is no transform -- "If we only have border-radius then we add
+       this element to the scissor region as well as the clip mask" -- so the box
+       still clipped rectangularly and only the four corner ARCS went unclipped.
+       Measured at 11.7 differing pixels in one corner, not a screenful.
+
+   #list-clip still uses neither, for a smaller reason than correctness: either
+   would allocate a per-view stencil target this demo has no use for. */
 
 /* RmlUi ships NO user-agent stylesheet -- verified rather than repeated: there is
    not one .rcss file anywhere in Source/ThirdParty/RmlUi, and `display` is
@@ -216,7 +232,9 @@ button, input
 	overflow-x: hidden;
 	background-color: #0A141AC8;
 	border: 1px #223844;
-	/* NO border-radius and NO transform here -- see the file header. */
+	/* Neither border-radius nor transform here. That was a CORRECTNESS rule until
+	   bead VaCuus-4ik; now it is only a cost one -- either would take the clip-mask
+	   path and allocate a stencil target for this view. See the file header. */
 }
 
 .row

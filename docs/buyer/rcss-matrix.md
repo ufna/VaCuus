@@ -352,8 +352,9 @@ line to grep for (gotchas.md #14).
 No CSS Grid (flex-first; arch spec 1 non-goals). **No `calc()`** -- there is no
 such parser anywhere in the vendored Core, so lengths cannot be computed and
 `var()` above is the only indirection RCSS offers. No UA stylesheet -- link
-`vacuus-base.rcss` first (gotchas.md #1). Note also that `transform` on a clipping
-chain silently disables clipping in v1 (gotchas.md #8a) -- relevant because
-`transform: scale()` on a root is the usual substitute for the missing `calc()`.
+`vacuus-base.rcss` first (gotchas.md #1). `transform: scale()` on a root is the
+usual substitute for the missing `calc()`, and it DOES now clip correctly -- that
+cost every scroll container in the document until the clip-mask stencil pass
+landed, so check gotchas.md #8a for what it costs in memory before adopting it.
 Selector support, `data-*` binding attributes and element tags are
 RmlUi-documented surface, not RCSS properties, and are out of this matrix's scope.

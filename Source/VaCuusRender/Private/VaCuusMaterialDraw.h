@@ -134,6 +134,20 @@ struct FPassState
 
 	/** The material PS bound by the previous material draw of this pass, if any. */
 	FRHIPixelShader* BoundMaterialPS = nullptr;
+
+	/**
+	 * The depth-stencil state and reference the previous material draw of this pass bound
+	 * (bead VaCuus-4ik). -1 = "no material pipeline is bound", which is what the caller writes
+	 * when it binds one of its own.
+	 *
+	 * PART OF THE MEMO KEY, NOT DECORATION: a material bound while no clip mask was active must
+	 * REBIND when one becomes active, or the material fill would be the one element in the
+	 * document that escapes its scroll container. Two fields because the state and the reference
+	 * change independently -- the state only when masking turns on or off, the reference on every
+	 * mask level -- and only the state costs a pipeline switch.
+	 */
+	FRHIDepthStencilState* BoundDepthStencil = nullptr;
+	int64 BoundStencilRef = -1;
 };
 
 /** The tier's master switch: vacuus.MaterialDecorators (default 1 since Task 5b). Any thread. */
@@ -156,10 +170,16 @@ bool IsForcedRepublishEnabled();
  *    frame-2 transient): one Verbose line per pass until the walk yields, which it does
  *    by itself once the map lands (the fallback walk is the honest mitigation; the
  *    registration-time pre-warm makes the window ~unobservable).
+ *
+ * DepthStencilState/StencilRef come from the caller's clip-mask state (bead VaCuus-4ik): the
+ * material tier binds a FULL pipeline of its own, so it is the one draw path that would not
+ * inherit the replayer's stencil test and would render unclipped inside a masked subtree.
+ * Passing them in rather than reading them here keeps the whole protocol in ReplayCommands.
  */
 bool DrawMaterial_RenderThread(FRHICommandList& RHICmdList, FPassState& PassState, FIntPoint RTSize,
 	const FMatrix44f& DrawMatrix, uint64 StableId, const FString& Key,
-	FRHIBuffer* VertexBuffer, FRHIBuffer* IndexBuffer, int32 NumVertices, int32 NumIndices);
+	FRHIBuffer* VertexBuffer, FRHIBuffer* IndexBuffer, int32 NumVertices, int32 NumIndices,
+	FRHIDepthStencilState* DepthStencilState, uint32 StencilRef);
 
 /**
  * RENDER THREAD, at registration (the style registry's pre-warm hook, Task 5b.2): run

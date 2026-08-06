@@ -230,6 +230,47 @@ approximation is an edge between two different opaque colours, which resolves to
 average rather than the encoded value of the linear average. Every downsample of this target
 has that property; it is not specific to MSAA.
 
+## Clipping under a transform costs a second per-view target
+
+`overflow` clipping is normally a **scissor rectangle** and costs nothing at all. RmlUi
+switches to a **clip mask** — a real stencil pass — in two cases, and only then does this
+section apply (`ElementUtilities.cpp:162-169`):
+
+- the clip container has a **`border-radius`**, or
+- there is a **`transform`** anywhere on its clipping chain, and it actually has content to
+  clip.
+
+Neither used to work: the replayer skipped the mask, so a transformed ancestor disabled all
+clipping in its subtree silently (gotchas.md #8a). It works now, and the price is one
+depth-stencil target per view, at the view's extent and the view's `vacuus.ViewSampleCount`:
+
+| `vacuus.ViewSampleCount` | Clip-mask stencil, per view @1080p |
+|---|---|
+| 1 (default) | **7.91 MiB** |
+| 2 | **15.82 MiB** |
+| 4 | **31.64 MiB** |
+| 8 | **63.28 MiB** |
+
+Same table as the MSAA companion above, for the same reason — same extent, same sample count,
+same bytes per sample — and **the two add up** if you run both. At 4× with MSAA on, a
+fullscreen view that clips under a transform holds 7.91 (output) + 31.64 (MSAA) + 31.64
+(stencil) = 71.2 MiB.
+
+**It is allocated lazily, and that is the part worth designing around.** A view whose document
+never records a clip mask never allocates it — which is every document that has no rounded clip
+container and no transformed clipping chain. `stat vacuus`'s **Clip Mask Draws** is how you
+tell: 0 means every clip in the frame is a plain scissor and you are paying nothing.
+
+**The runtime cost is small; the memory is the cost.** On the reference HUD (1,732 nodes,
+publishing 100% by design, 65 s per row, offscreen 1920×1080, 2026-08-06), moving both clip
+containers onto the mask path moved render-thread `Replay` from 0.442 to 0.452 ms average
+(+2.3%) at 1×, and from 0.442 to 0.449 ms at 4×, with p99 *lower* than the scissor rows at
+both counts. The mask draws write stencil only, never colour. `Record` rises more (0.527 →
+0.654 ms), but that is RmlUi building rounded clip geometry on the UI thread, not this pass.
+The **publish ratio is untouched at 100%** — the idle gate is upstream, so a static HUD that
+clips still replays approximately never and pays the memory and nothing else. Full table and
+methodology: `docs/research/proofs/4ik-clip-mask/README.md`.
+
 ## World panels: mips ride the same gate
 
 A world panel's render target carries a full mip chain by default (`bGenerateMips`

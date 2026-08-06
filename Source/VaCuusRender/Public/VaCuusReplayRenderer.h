@@ -37,6 +37,112 @@ VACUUSRENDER_API FMatrix44f MakePixelToClipMatrix(FIntPoint ViewSize);
  * 8 from the base class (DynamicRHI.h:920), lowered by the RHIs that know better.
  */
 VACUUSRENDER_API int32 ResolveViewSampleCount(int32 Requested, int32 PlatformMax);
+
+/** What one RenderToClipMask command has to do to the stencil buffer. See FVaCuusClipMaskState. */
+struct FVaCuusClipMaskStep
+{
+	/** Clear the WHOLE stencil target to ClearValue before drawing the mask geometry. */
+	bool bNeedsClear = false;
+	uint32 ClearValue = 0;
+
+	/** true = write WriteValue where the geometry covers; false = add 1 there instead. */
+	bool bReplace = true;
+	uint32 WriteValue = 1;
+
+	/** The stencil ref every masked draw after this one tests EQUAL against. */
+	uint32 TestValue = 1;
+};
+
+/**
+ * The stencil VALUE PROTOCOL behind EnableClipMask/RenderToClipMask (bead VaCuus-4ik) -- the
+ * half of the clip-mask pass that can be checked without a GPU in the room.
+ *
+ * RmlUi's contract, from the enum's own comments (RenderInterface.h:10-14): `Set` replaces the
+ * mask with the geometry's area, `SetInverse` replaces it with the area OUTSIDE the geometry,
+ * `Intersect` narrows the existing mask to the geometry. Lists are built by
+ * ElementUtilities::ApplyActiveClipRegions -- Set for the first clipping ancestor, Intersect for
+ * every one below it (ElementUtilities.cpp:165) -- and replayed by RenderManager::ApplyClipMask,
+ * which calls EnableClipMask(true) and then one RenderToClipMask per element
+ * (RenderManager.cpp:156-176). So a mask is always REBUILT from a Set/SetInverse; there is no
+ * "pop one level" operation.
+ *
+ * THE REFERENCE BACKEND CLEARS THE WHOLE STENCIL ON EVERY `Set`
+ * (RmlUi_Renderer_GL3.cpp:1135-1137, with its own `@performance Increment the reference value
+ * instead of clearing each time` sitting right above it). We take the note's advice, because a
+ * full-target clear is the one cost here that scales with RESOLUTION rather than with content:
+ * at 1080x1920x4 samples a stencil clear touches 8.3M samples, and a document with a dozen
+ * rounded scroll containers changes its mask list a dozen times per frame.
+ *
+ * SO VALUES ARE NEVER REUSED WITHIN A PASS. The render pass clears the stencil to 0 once at
+ * BeginRenderPass; each `Set` then takes the next unused value, and the ONE INVARIANT that
+ * makes this sound is
+ *
+ *     every value present anywhere in the stencil buffer is < NextFreeValue
+ *
+ * which holds by induction: `Set` writes NextFreeValue and then bumps it; `Intersect` can raise
+ * a stale pixel to at most (max existing + 1), and it bumps NextFreeValue past that too. A
+ * pixel left over from an earlier mask therefore can never equal the current TestValue, so the
+ * stale mask cannot leak into the new one -- which is the exact failure a naive "always write 1"
+ * scheme has, and it is why this is worth asserting rather than eyeballing.
+ *
+ * TWO OPERATIONS STILL FORCE A CLEAR, and both are named rather than hidden:
+ *  - SetInverse, always. "Everything except the covered area passes" needs the passing value to
+ *    be present where NOTHING was drawn, and no per-pixel write can put it there. (This is
+ *    box-shadow's operation -- GeometryBoxShadow.cpp:206, :215, :221 -- so it is rare, and
+ *    box-shadow needs two more things this bead does not build.)
+ *  - Set, once the counter has climbed past HighWaterValue in a single pass. 8 bits is 255
+ *    values and nothing bounds the number of mask changes in a frame, so the counter has to
+ *    wrap somewhere; wrapping means a clear.
+ *
+ * A CLASS, NOT A FUNCTION, because the protocol is stateful by nature -- and a class with no RHI
+ * in it, so VaCuus.Render.ClipMask.ValueProtocol can drive thousands of operations against a
+ * SIMULATED stencil buffer and assert the invariant directly. That test runs under -nullrhi,
+ * where the drawing tests cannot.
+ */
+class VACUUSRENDER_API FVaCuusClipMaskState
+{
+public:
+	/**
+	 * The `Set` value at which the next mask wraps and clears instead. 255 - 31: a wrap leaves at
+	 * least 31 `Intersect` levels of headroom before SO_SaturatedIncrement would pin pixels at
+	 * 255 and start over-including. RmlUi's list length is the number of CLIPPING ancestors of
+	 * one element, so 31 is far past anything a document can produce -- see Step()'s ensure.
+	 */
+	static constexpr uint32 HighWaterValue = 224;
+
+	/** Call once per render pass, matching the pass's own stencil clear to 0. */
+	void BeginPass()
+	{
+		NextFreeValue = 1;
+		TestValue = 0;
+	}
+
+	/** The stencil work one RenderToClipMask needs, and the ref its followers test against. */
+	FVaCuusClipMaskStep Step(EVaCuusClipMaskOp Op);
+
+	/** Ref for masked draws; 0 only before the first Step of a pass. */
+	uint32 GetTestValue() const { return TestValue; }
+
+	/** The invariant above, exposed so the test can assert it rather than restate it. */
+	uint32 GetNextFreeValue() const { return NextFreeValue; }
+
+private:
+	uint32 NextFreeValue = 1;
+	uint32 TestValue = 0;
+};
+
+/**
+ * True when this buffer contains at least one RenderToClipMask, i.e. when the replay pass has to
+ * attach a stencil target at all.
+ *
+ * WHY A SCAN RATHER THAN A FLAG ON THE BUFFER: the flag would be a new hashed field on a struct
+ * whose hash image is guarded by a member-count static_assert (VaCuusCommandBuffer.h:679-690),
+ * and it would be pure derivation -- the commands already say it. The scan runs once per
+ * PUBLISHED frame (the idle gate makes that ~never on a static HUD) over a list the pass is
+ * about to walk anyway, and it buys the whole stencil allocation for documents that never clip
+ * under a transform, which today is every document.
+ */
+VACUUSRENDER_API bool BufferUsesClipMask(const FVaCuusCommandBuffer& Buffer);
 } // namespace VaCuusReplay
 
 /**
@@ -136,6 +242,19 @@ public:
 	int32 GetReplaySampleCount() const { return MSAART.IsValid() ? int32(MSAART->GetDesc().NumSamples) : 1; }
 
 	/**
+	 * Bytes the clip-mask stencil target is currently holding, 0 while no replayed buffer has
+	 * ever used a clip mask.
+	 *
+	 * THE OBSERVABLE FOR THE LAZY ALLOCATION, and the reason it is a byte count rather than a
+	 * bool: the cost this feature adds is memory, the buyer-facing number is per view at the
+	 * view's resolution and sample count, and a test that asserts "0 for a document that does
+	 * not clip" is asserting the thing that actually matters. PF_DepthStencil's bytes-per-block
+	 * is the platform's (D24S8 on most, D32S8X24 on some), so this reads GPixelFormats rather
+	 * than assuming 4.
+	 */
+	uint64 GetClipMaskStencilBytes() const;
+
+	/**
 	 * Texture payloads this replayer sent down the async path, and the ones it uploaded inline.
 	 *
 	 * THE OBSERVABLE FOR THE THRESHOLD, which otherwise has none: both paths leave the same
@@ -202,6 +321,18 @@ private:
 	 * only known there.
 	 */
 	void EnsureSampleTarget(FRHICommandList& RHICmdList, FIntPoint ViewSize);
+
+	/**
+	 * Brings StencilRT in line with the colour target's extent and SAMPLE COUNT, creating it on
+	 * first use. Called from ReplayCommands, before BeginRenderPass, and only for a buffer that
+	 * actually carries a clip mask.
+	 *
+	 * SAMPLE COUNT IS THE HALF THAT MUST NOT BE GOT WRONG: a depth-stencil attachment has to
+	 * agree with its colour attachment on samples, so this reads GetReplaySampleCount() -- the
+	 * count the pass is REALLY rasterizing with -- and not the cvar, which can have been changed
+	 * since MSAART was built and is capped by the platform anyway.
+	 */
+	void EnsureStencilTarget(FRHICommandList& RHICmdList, FIntPoint ViewSize);
 
 	/** Idempotence/order guard shared by Replay and ConsumeResources; false = already consumed, skip. */
 	bool ShouldConsume(const FVaCuusCommandBuffer& Buffer) const;
@@ -283,8 +414,34 @@ private:
 	 */
 	FTextureRHIRef MSAART;
 
+	/**
+	 * Depth-stencil companion for the clip-mask pass (bead VaCuus-4ik). Null until a replayed
+	 * buffer first carries a RenderToClipMask; after that it lives as long as the view does.
+	 *
+	 * ALLOCATED LAZILY AND THEN KEPT, which is a deliberate asymmetry with MSAART above.
+	 * MSAART is released the moment its cvar is turned off, because the cvar IS the feature and a
+	 * knob that does not give the memory back is a lie. This target has no knob: it is demanded
+	 * by the DOCUMENT, and a document that clipped once will clip again on the next frame that
+	 * moves. Freeing it between frames would trade a fixed allocation for a per-frame one.
+	 *
+	 * WHAT IT COSTS, per view: PF_DepthStencil is 4 bytes per sample on the common platforms, so
+	 * 1080p is 7.91 MiB at 1x, 15.8 at 2x, 31.6 at 4x, 63.3 at 8x -- the same table as MSAART's,
+	 * for the same reason (same extent, same sample count, same bytes per sample). Nothing pays
+	 * it unless a mask is actually recorded. GetClipMaskStencilBytes() is the observable.
+	 *
+	 * NEITHER PLANE IS EVER STORED OR SAMPLED. The pass clears both at BeginRenderPass and
+	 * discards both at EndRenderPass (ClearDepthStencil_DontStoreDepthStencil), and no
+	 * ShaderResource flag is asked for -- so the glass distiller, the world sink's CopyTexture
+	 * and the Slate composite still see exactly one texture, single-sampled OutputRT, unchanged.
+	 * The depth plane exists only because no RHI here offers a stencil-only format.
+	 */
+	FTextureRHIRef StencilRT;
+
 	/** Latched so the sample count a session actually got is logged once rather than per frame. */
 	bool bLoggedSampleCount = false;
+
+	/** Latched so the stencil allocation is announced once per view, not once per frame. */
+	bool bLoggedStencilTarget = false;
 
 	/** Newest buffer generation consumed so far (drawn via Replay or resource-only via ConsumeResources). */
 	uint64 LastConsumedGeneration = 0;

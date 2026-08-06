@@ -27,6 +27,7 @@ DEFINE_STAT(STAT_VaCuusInput);
 DEFINE_STAT(STAT_VaCuusModelSample);
 DEFINE_STAT(STAT_VaCuusDrawCalls);
 DEFINE_STAT(STAT_VaCuusCommands);
+DEFINE_STAT(STAT_VaCuusClipMaskDraws);
 
 static TAutoConsoleVariable<int32> CVarVaCuusPerfLog(
 	TEXT("vacuus.M1HUD.PerfLog"),
