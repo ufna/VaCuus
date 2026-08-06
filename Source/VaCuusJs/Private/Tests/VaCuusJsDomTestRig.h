@@ -115,6 +115,12 @@ public:
 	{
 		Real->ExecuteScript(ViewId, Source, SourceName);
 	}
+
+	virtual void CallFunction(
+		uint32 ViewId, const FString& FunctionPath, TArrayView<const FVaCuusJsValue> Args) override
+	{
+		Real->CallFunction(ViewId, FunctionPath, Args);
+	}
 	virtual void OnInlineFrameEntry() override { Real->OnInlineFrameEntry(); }
 	virtual void Shutdown() override { Real->Shutdown(); }
 

@@ -680,6 +680,11 @@ public:
 		Real->OnDocumentReady(ViewId, Document);
 	}
 	virtual void OnDocumentClosing(uint32 ViewId) override { Real->OnDocumentClosing(ViewId); }
+	virtual void CallFunction(
+		uint32 ViewId, const FString& FunctionPath, TArrayView<const FVaCuusJsValue> Args) override
+	{
+		Real->CallFunction(ViewId, FunctionPath, Args);
+	}
 	virtual void PumpFrame(double NowSeconds) override
 	{
 		TFunction<void()> Closure;

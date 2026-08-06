@@ -174,6 +174,8 @@ public:
 	virtual void PumpFrame(double NowSeconds) override;
 	virtual void CollectGarbage(const TCHAR* Reason) override;
 	virtual void ExecuteScript(uint32 ViewId, const FString& Source, const FString& SourceName) override;
+	virtual void CallFunction(
+		uint32 ViewId, const FString& FunctionPath, TArrayView<const FVaCuusJsValue> Args) override;
 	virtual void OnInlineFrameEntry() override;
 	virtual void Shutdown() override;
 	//~ End IVaCuusScriptHost

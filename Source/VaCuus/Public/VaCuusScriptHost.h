@@ -4,6 +4,8 @@
 
 #include "CoreMinimal.h"
 
+#include "VaCuusJsValue.h"
+
 #include "Templates/Function.h"
 #include "Templates/UniquePtr.h"
 
@@ -103,6 +105,19 @@ public:
 	 * (M4 Task 6); an unknown view is the host's own Error-level refusal.
 	 */
 	virtual void ExecuteScript(uint32 ViewId, const FString& Source, const FString& SourceName) = 0;
+
+	/**
+	 * Calls the function at FunctionPath (dotted, from globalThis) on ViewId's context with
+	 * Args. Called by DrainCommands for the CallScriptFunction command kind (VaCuus-asv); an
+	 * unknown view is the host's own Error-level refusal, exactly like ExecuteScript's.
+	 *
+	 * SEPARATE FROM ExecuteScript RATHER THAN SUGAR OVER IT, and that is the point: sugar
+	 * would still have to build `f(<args>)` as text, which is the injection this exists to
+	 * remove. Nothing on this path stringifies an argument -- see
+	 * FVaCuusJsViewContext::CallFunction.
+	 */
+	virtual void CallFunction(
+		uint32 ViewId, const FString& FunctionPath, TArrayView<const FVaCuusJsValue> Args) = 0;
 
 	/**
 	 * Called at the top of every RunFrameInline() -- inline mode only, where UI

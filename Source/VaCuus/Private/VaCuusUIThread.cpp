@@ -705,6 +705,17 @@ void FVaCuusUIThread::EnqueueExecuteScript(uint32 ViewId, const FString& Source,
 	Enqueue(MoveTemp(Command));
 }
 
+void FVaCuusUIThread::EnqueueCallScriptFunction(
+	uint32 ViewId, const FString& FunctionPath, TArray<FVaCuusJsValue> Args)
+{
+	FVaCuusUICommand Command;
+	Command.Kind = EVaCuusCommandKind::CallScriptFunction;
+	Command.ViewId = ViewId;
+	Command.Payload = FunctionPath;
+	Command.ScriptArgs = MoveTemp(Args);
+	Enqueue(MoveTemp(Command));
+}
+
 void FVaCuusUIThread::EnqueueShutdown()
 {
 	FVaCuusUICommand Command;
@@ -1322,6 +1333,25 @@ void FVaCuusUIThread::DrainCommands()
 					TEXT("ExecuteScript('%s') for view %u dropped: this UI thread has no script host ")
 					TEXT("(vacuus.Js.Enable was 0 at boot, or the VaCuusJs module is absent)"),
 					*Command->SourceName, Command->ViewId);
+			}
+			continue;
+		}
+
+		if (Command->Kind == EVaCuusCommandKind::CallScriptFunction)
+		{
+			// ExecuteScript's block verbatim, including which failure is loud where: the
+			// unknown-view refusal is the script host's, the no-host-at-all refusal is ours,
+			// because with no host nothing downstream would ever notice the call vanish.
+			if (ScriptHost.IsValid())
+			{
+				ScriptHost->CallFunction(Command->ViewId, Command->Payload, Command->ScriptArgs);
+			}
+			else
+			{
+				UE_LOG(LogVaCuus, Error,
+					TEXT("CallJs('%s') for view %u dropped: this UI thread has no script host ")
+					TEXT("(vacuus.Js.Enable was 0 at boot, or the VaCuusJs module is absent)"),
+					*Command->Payload, Command->ViewId);
 			}
 			continue;
 		}

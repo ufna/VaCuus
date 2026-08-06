@@ -651,6 +651,23 @@ void FVaCuusJsScriptHost::ExecuteScript(uint32 ViewId, const FString& Source, co
 	}
 }
 
+void FVaCuusJsScriptHost::CallFunction(
+	uint32 ViewId, const FString& FunctionPath, TArrayView<const FVaCuusJsValue> Args)
+{
+	if (ViewContexts.Find(ViewId) == nullptr)
+	{
+		// ExecuteScript's refusal verbatim, and for its reason: a dropped call to the UI is a
+		// silent failure with no downstream witness.
+		UE_LOG(LogVaCuusJS, Error, TEXT("CallJs('%s') for unknown view %u dropped"), *FunctionPath, ViewId);
+		return;
+	}
+
+	if (FVaCuusJsViewContext* View = EnsureViewContext(ViewId))
+	{
+		View->CallFunction(FunctionPath, Args);
+	}
+}
+
 FVaCuusJsViewContext* FVaCuusJsScriptHost::EnsureViewContext(uint32 ViewId)
 {
 	TUniquePtr<FVaCuusJsViewContext>* Entry = ViewContexts.Find(ViewId);

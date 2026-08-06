@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 
 #include "VaCuusInputEvent.h"
+#include "VaCuusJsValue.h"
 #include "VaCuusViewStatus.h"
 
 #include "Containers/SpscQueue.h"
@@ -117,6 +118,18 @@ enum class EVaCuusCommandKind : uint8
 	ExecuteScript,
 
 	/**
+	 * Calls a named JS function with marshalled arguments (VaCuus-asv). Payload carries the
+	 * dotted path, ScriptArgs the values.
+	 *
+	 * ROUTED LIKE ExecuteScript in every respect -- handled before the per-view host lookup,
+	 * refused loudly by the script host on an unknown view, FIFO after a LoadDocument* -- and
+	 * a separate kind rather than a flag on that one because the payloads have nothing in
+	 * common: one is verbatim source, the other is a name plus data that must never BECOME
+	 * source.
+	 */
+	CallScriptFunction,
+
+	/**
 	 * Installs the material-decorator style snapshot (M5 Task 5b). Carries StyleSnapshot
 	 * and, like ClearAssetCaches, deliberately no ViewId: the snapshot is process-wide
 	 * state the recorder's CompileShader reads (there is one registry per process, like
@@ -203,6 +216,13 @@ struct FVaCuusUICommand
 	 * legally contains.
 	 */
 	FString SourceName;
+
+	/**
+	 * CallScriptFunction only: the call's arguments, already in the tagged-union form the JS
+	 * side marshals natively. Copied into the command by value -- they cross to the UI thread
+	 * and the caller's array goes out of scope the moment the enqueue returns.
+	 */
+	TArray<FVaCuusJsValue> ScriptArgs;
 
 	/** View size in pixels; ZeroValue means "leave the current size alone". */
 	FIntPoint ViewSize = FIntPoint::ZeroValue;

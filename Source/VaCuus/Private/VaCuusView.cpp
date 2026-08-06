@@ -251,6 +251,20 @@ void UVaCuusView::ExecuteScript(const FString& Source)
 	UIThread->EnqueueExecuteScript(ViewId, Source, FString::Printf(TEXT("<ExecuteScript view %u>"), ViewId));
 }
 
+void UVaCuusView::CallJs(const FString& FunctionPath, const TArray<FVaCuusJsValue>& Args)
+{
+	check(IsInGameThread());
+
+	FVaCuusUIThread* UIThread = GetUIThread();
+	if (!UIThread)
+	{
+		UE_LOG(LogVaCuus, Warning, TEXT("CallJs('%s') on an invalid view is ignored"), *FunctionPath);
+		return;
+	}
+
+	UIThread->EnqueueCallScriptFunction(ViewId, FunctionPath, Args);
+}
+
 void UVaCuusView::Close()
 {
 	check(IsInGameThread());

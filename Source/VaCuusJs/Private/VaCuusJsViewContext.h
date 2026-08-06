@@ -9,6 +9,7 @@
 // listener header only forward-declares this context.
 #include "VaCuusJsEventListener.h"
 #include "VaCuusJsRuntime.h"
+#include "VaCuusJsValue.h"
 
 namespace Rml
 {
@@ -80,6 +81,29 @@ public:
 	 * jobs drain in the pump (spec 3.5).
 	 */
 	void Eval(const FString& Source, const FString& SourceName);
+
+	/**
+	 * Calls the function at FunctionPath (dotted, resolved from globalThis) with Args, and
+	 * NEVER BUILDS A LINE OF JAVASCRIPT to do it (M6, VaCuus-asv). Implementation in
+	 * VaCuusJsHostApi.cpp, beside the FVaCuusJsValue marshaller it shares with `vacuus.emit`.
+	 *
+	 * THAT IS THE WHOLE POINT, and it is a security property rather than a convenience. The
+	 * idiom this replaces was `ExecuteScript(FString::Printf(TEXT("... vacuus.onFreeze(%s);"),
+	 * Arg))`, which is string interpolation into a live interpreter: a game-supplied argument
+	 * containing a quote does not break the call, it CONTINUES it. Here the arguments never
+	 * touch a parser -- each becomes a JSValue through FromHostValue and is handed to JS_Call
+	 * as data.
+	 *
+	 * `this` is the OWNER of the last path segment, so `vacuus.onFreeze` sees `this === vacuus`
+	 * exactly as `vacuus.onFreeze(x)` written in a script would. A single-segment path gets
+	 * globalThis.
+	 *
+	 * A MISSING FUNCTION IS NOT AN ERROR HERE, because the guard it replaces was not one
+	 * either: the old idiom's `typeof ... === 'function'` test existed precisely so a document
+	 * that never registered the callback (or failed to load) would not turn a console command
+	 * into a JS exception. Same contract, one Warning naming the path, no throw.
+	 */
+	void CallFunction(const FString& FunctionPath, TArrayView<const FVaCuusJsValue> Args);
 
 	/**
 	 * The module ENTRY point (M4 Task 7, spec 3.7; implementation in
