@@ -309,6 +309,28 @@ module-scope variable outlives re-renders correctly; an attribute or class on th
 element you are writing to does not. The symptom is silence — no warning, no error, one
 missing property, forever — which is why it costs a session to find rather than a minute.
 
+**11c. Calling into your UI with `ExecuteScript` + `Printf` is a code-injection bug in your
+own game.**
+Cause: `ExecuteScript` takes SOURCE. Passing a value through it means interpolating that
+value into source, so a string carrying an apostrophe stops being an argument and becomes
+code — `Printf(TEXT("f('%s')"), PlayerName)` with a name of `');doSomething();//` runs
+`doSomething()`. Player names, chat lines, quest titles and anything else a server hands you
+are exactly the strings this bites on, and the failure is silent: the call still "works".
+Do: use `UVaCuusView::CallJs(FunctionPath, Args)` instead. The path is dotted from
+globalThis (`vacuus.onFreeze`), the arguments are `FVaCuusJsValue`s, and **no source line is
+ever built** — each value crosses as a JSValue and reaches your function as data, so there is
+no parser downstream for a string to escape into.
+
+```cpp
+View->CallJs(TEXT("vacuus.onFreeze"), {FVaCuusJsValue::MakeBool(true)});
+```
+
+It also absorbs the `typeof f === 'function'` guard every hand-written call site needed: a
+path that resolves to nothing logs one Warning naming it and throws nothing, because a
+document that has not registered the callback yet is not an error. `this` inside the callee
+is the owner of the last segment, exactly as a written `vacuus.onFreeze(x)` would give.
+Keep `ExecuteScript` for what it is for: running SOURCE you wrote, not data you were handed.
+
 **12. A `<script src>` or rcss link 404s with the directory doubled.**
 Cause: `src` is DOCUMENT-relative — the head handler joins the path against the
 document's own URL (`Content/DevUI/M5Hud/m5_hud.rml:13-18`, citing
