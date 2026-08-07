@@ -142,11 +142,31 @@ $Required = @(
 	@{ Module = 'VaCuus'; Class = 'UVaCuusView' }                  # the handle everything is driven through
 	@{ Module = 'VaCuus'; Class = 'UVaCuusSubsystem' }             # owns views; the CreateView extension seam
 	@{ Module = 'VaCuus'; Class = 'UVaCuusStyleSet' }              # RCSS material decorators (rcss-matrix.md)
+	@{ Module = 'VaCuusRender'; Class = 'SVaCuusWidget' }         # the hand-composition door: SUBCLASSED to route
+	                                                              # input between stacked views (bead VaCuus-akj.25)
 )
 
 # Deliberately NOT exported. Zero members is the pass.
+#
+# THIS LEG SURVIVED akj.25 UNCHANGED, and that is the point of keeping it: the bead added
+# VaCuusSlateView::MakeDocumentHost(), which HANDS BACK an FVaCuusRmlDocumentHost, without
+# exporting a single one of its members. The factory is a free function; the host crosses as
+# the public IVaCuusDocumentHost interface it implements, and the caller can only call
+# through that vtable. If a future edit exports the class itself, the render backend has
+# become ABI and this line is what says so.
+#
+# FVaCuusSlateElement is the same promise for the other half of the pair: MakeElement()
+# returns TSharedRef<FVaCuusSlateElement> to an INCOMPLETE type, so a consumer can hold the
+# handle and drop it and do nothing else. A member export here would mean the glass distiller
+# and the replay contract had leaked into the supported surface.
+#
+# MSVC MAKES THIS LEG SHARPER THAN THE ELF ONE, which is why it is worth stating on the
+# Windows twin: a dllexported class exports EVERY member including implicit ones, so an
+# accidental VACUUSRENDER_API on either of these would show up here as dozens of members
+# rather than as one symbol.
 $Forbidden = @(
 	@{ Module = 'VaCuusRender'; Class = 'FVaCuusRmlDocumentHost' }
+	@{ Module = 'VaCuusRender'; Class = 'FVaCuusSlateElement' }
 )
 
 $Modules = @('VaCuus', 'VaCuusRender', 'VaCuusJs', 'VaCuusRml', 'VaCuusEditor')
