@@ -11,7 +11,7 @@
 #include "RHICommandList.h"
 #include "RenderGraphBuilder.h"
 
-void FVaCuusWorldSink::SetPendingBuffer_RenderThread(FRHICommandList& RHICmdList, TUniquePtr<FVaCuusCommandBuffer> InBuffer)
+void FVaCuusWorldSink::SetPendingBuffer_RenderThread(FRHICommandListImmediate& RHICmdList, TUniquePtr<FVaCuusCommandBuffer> InBuffer)
 {
 	check(IsInRenderingThread());
 	if (!InBuffer)
@@ -27,12 +27,32 @@ void FVaCuusWorldSink::SetPendingBuffer_RenderThread(FRHICommandList& RHICmdList
 	// graph-build time, which this path does not have, but tripping an ensure per
 	// resize would still bury the log and the ordering costs nothing.
 	Replayer.EnsureOutputRT(RHICmdList, InBuffer->ViewSize);
+
+	// The async upload starts HERE, before anything else touches this buffer (bead
+	// VaCuus-9b3, finishing what akj.6.25 did for the screen path). The placement rule is
+	// the same one BeginAsyncTextureUploads' header states and it is about RDG, not about
+	// replay: QueueAsyncCommandListSubmit detaches and dispatches whatever the immediate
+	// list has recorded so far, so it must not run while a graph is half-built. This path
+	// builds its only graph inside GenerateDestinationMips, three calls below -- so the
+	// legal window is everything above it, and the top of the function is where the
+	// payload is still in the buffer.
+	//
+	// NO EnsureOutputRT ORDERING SUBTLETY between the two: EnsureOutputRT's texture
+	// creation is a complete command, and dispatching the stream that carries it is what
+	// this call does to every command before it, in order.
+	Replayer.BeginAsyncTextureUploads(RHICmdList, *InBuffer);
+
 	Replayer.Replay(RHICmdList, *InBuffer);
 
+	// The copy is recorded on the same immediate list the parallel upload list was queued
+	// into, AFTER it, so it inherits the engine's ordering rather than needing a fence of
+	// ours: the RHI thread does not replay a queued list until FinishRecording() has run on
+	// it (RHICommandList.h:4448-4453), and it replays the lists in queue order. A world
+	// panel therefore cannot copy an unfilled image into its render target.
 	CopyToDestination(RHICmdList);
 }
 
-void FVaCuusWorldSink::SetDestination_RenderThread(FRHICommandList& RHICmdList, FTextureRHIRef InDestination)
+void FVaCuusWorldSink::SetDestination_RenderThread(FRHICommandListImmediate& RHICmdList, FTextureRHIRef InDestination)
 {
 	check(IsInRenderingThread());
 	Destination = MoveTemp(InDestination);
@@ -61,7 +81,7 @@ void FVaCuusWorldSink::ReleaseResources_RenderThread()
 	DestinationPooled.SafeRelease();
 }
 
-void FVaCuusWorldSink::CopyToDestination(FRHICommandList& RHICmdList)
+void FVaCuusWorldSink::CopyToDestination(FRHICommandListImmediate& RHICmdList)
 {
 	FRHITexture* Source = Replayer.GetOutputRT();
 	if (!Source || !Destination.IsValid())
@@ -121,17 +141,18 @@ void FVaCuusWorldSink::CopyToDestination(FRHICommandList& RHICmdList)
 	}
 }
 
-void FVaCuusWorldSink::GenerateDestinationMips(FRHICommandList& RHICmdList)
+void FVaCuusWorldSink::GenerateDestinationMips(FRHICommandListImmediate& RHICmdList)
 {
 	VACUUS_PERF_SCOPE(WorldMips);
 
 	// FGenerateMips is RDG-only (GenerateMips.h:38-43), and an FRDGBuilder wants the
 	// immediate list -- which every caller already is: both entry points are bodies of
-	// ENQUEUE_RENDER_COMMAND lambdas (VaCuusRmlDocumentHost.cpp:493-497, the
-	// component's slot update), whose parameter IS FRHICommandListImmediate. Get()
-	// check()s that (RHICommandList.h:4411-4415), so a future non-immediate caller
-	// fails loudly here instead of corrupting command order.
-	FRDGBuilder GraphBuilder(FRHICommandListImmediate::Get(RHICmdList));
+	// ENQUEUE_RENDER_COMMAND lambdas (VaCuusRmlDocumentHost.cpp:548-552, the component's
+	// slot update), whose parameter IS FRHICommandListImmediate. Bead VaCuus-9b3 made that
+	// the TYPE of this path rather than a FRHICommandListImmediate::Get() check() here: a
+	// runtime check parked behind the >1-mip branch is a rule most runs never evaluate,
+	// while the parameter rejects a non-immediate caller at every call site, in every build.
+	FRDGBuilder GraphBuilder(RHICmdList);
 
 	CacheRenderTarget(Destination, TEXT("VaCuusWorldPanelMips"), DestinationPooled);
 	FRDGTextureRef DestinationRDG = GraphBuilder.RegisterExternalTexture(DestinationPooled);

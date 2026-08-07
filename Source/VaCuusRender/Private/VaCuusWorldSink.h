@@ -33,6 +33,13 @@
  * element's newest-buffer drain unnecessary -- render commands from the one UI
  * thread execute in publish order, so there is never a backlog to trim.
  *
+ * LARGE TEXTURE PAYLOADS GO ASYNC HERE TOO (bead VaCuus-9b3, closing the gap akj.6.25
+ * left): a payload at or above `vacuus.AsyncTextureUploadBytes` has its staging memcpy
+ * moved onto a task and a parallel command list, exactly as the screen path does it. The
+ * one thing the two paths do NOT share is where the call sits -- see
+ * SetPendingBuffer_RenderThread's body for why "no graph half-built" is the real rule and
+ * "at RDG graph-build time" was only the screen path's way of obeying it.
+ *
  * THE DESTINATION-SLOT DISCIPLINE (spec 2(g), v1 finding 12.4): Destination is ONE
  * FTextureRHIRef, written only by SetDestination_RenderThread, which only the GAME
  * thread enqueues -- after every UTextureRenderTarget2D (re)init, so the slot update
@@ -58,7 +65,7 @@ class FVaCuusWorldSink final : public IVaCuusFrameSink
 {
 public:
 	//~ Begin IVaCuusFrameSink
-	virtual void SetPendingBuffer_RenderThread(FRHICommandList& RHICmdList, TUniquePtr<FVaCuusCommandBuffer> InBuffer) override;
+	virtual void SetPendingBuffer_RenderThread(FRHICommandListImmediate& RHICmdList, TUniquePtr<FVaCuusCommandBuffer> InBuffer) override;
 	virtual void ReleaseResources_RenderThread() override;
 	//~ End IVaCuusFrameSink
 
@@ -67,7 +74,7 @@ public:
 	 * detaches. See the class comment for the enqueue discipline and why this copies
 	 * immediately when it can.
 	 */
-	void SetDestination_RenderThread(FRHICommandList& RHICmdList, FTextureRHIRef InDestination);
+	void SetDestination_RenderThread(FRHICommandListImmediate& RHICmdList, FTextureRHIRef InDestination);
 
 	/** Buffers that arrived (== publishes delivered). Any thread. */
 	uint64 GetNumArrivals() const { return NumArrivals.load(std::memory_order_relaxed); }
@@ -85,12 +92,29 @@ public:
 	 */
 	uint64 GetNumMipGenerations() const { return NumMipGenerations.load(std::memory_order_relaxed); }
 
+#if WITH_DEV_AUTOMATION_TESTS
+	/**
+	 * The replayer, for its upload-route counters (GetNumAsyncTextureUploads /
+	 * GetNumSyncTextureUploads) — the ONLY observable bead VaCuus-9b3 has, since both
+	 * routes leave the same pixels in the same map and the destination texture looks
+	 * identical either way. Tests only: everything on it is render-thread-private state.
+	 */
+	const FVaCuusReplayRenderer& GetReplayerForTest() const { return Replayer; }
+#endif
+
 private:
-	/** The guarded copy: OutputRT -> Destination, or a counted skip on extent mismatch. */
-	void CopyToDestination(FRHICommandList& RHICmdList);
+	/**
+	 * The guarded copy: OutputRT -> Destination, or a counted skip on extent mismatch.
+	 *
+	 * IMMEDIATE, and by the type rather than by a runtime check: GenerateDestinationMips
+	 * below builds an FRDGBuilder, which only the immediate list can feed. That used to be
+	 * a FRHICommandListImmediate::Get() away — a check() at the bottom of a branch that a
+	 * 1-mip destination never reaches, i.e. a rule most runs never evaluated at all.
+	 */
+	void CopyToDestination(FRHICommandListImmediate& RHICmdList);
 
 	/** FGenerateMips over the (already >1-mip) destination; see the .cpp for the transition story. */
-	void GenerateDestinationMips(FRHICommandList& RHICmdList);
+	void GenerateDestinationMips(FRHICommandListImmediate& RHICmdList);
 
 	FVaCuusReplayRenderer Replayer;
 

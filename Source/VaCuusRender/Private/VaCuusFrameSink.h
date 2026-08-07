@@ -4,7 +4,7 @@
 
 #include "CoreMinimal.h"
 
-class FRHICommandList;
+class FRHICommandListImmediate;
 struct FVaCuusCommandBuffer;
 
 /**
@@ -40,8 +40,19 @@ public:
 	 * (monotonic Generation) and each carries the resource DELTA since the last, so an
 	 * implementation may defer or coalesce draws but must never DROP a buffer's
 	 * resource traffic (FVaCuusReplayRenderer::ConsumeResources is the drop-safe drain).
+	 *
+	 * THE IMMEDIATE LIST IS THE CONTRACT, not merely the list that happens to be at hand
+	 * (bead VaCuus-9b3). Starting the async upload for a large payload means handing a
+	 * parallel list to FRHICommandListImmediate::QueueAsyncCommandListSubmit
+	 * (RHICommandList.h:4448-4453), and this parameter having been FRHICommandList& is the
+	 * whole reason the world sink kept uploading inline for a milestone: the publish site
+	 * always HAD the immediate list (VaCuusRmlDocumentHost.cpp's ENQUEUE_RENDER_COMMAND,
+	 * whose lambda parameter is FRHICommandListImmediate&), the interface was the only
+	 * thing that threw the type away. Widening it costs implementors nothing — every
+	 * FRHICommandList& they pass on still binds — and buys the compiler the ability to
+	 * reject a sink reached from anywhere else.
 	 */
-	virtual void SetPendingBuffer_RenderThread(FRHICommandList& RHICmdList, TUniquePtr<FVaCuusCommandBuffer> InBuffer) = 0;
+	virtual void SetPendingBuffer_RenderThread(FRHICommandListImmediate& RHICmdList, TUniquePtr<FVaCuusCommandBuffer> InBuffer) = 0;
 
 	/** Drops all RHI resources; the sink draws/copies nothing afterwards. */
 	virtual void ReleaseResources_RenderThread() = 0;

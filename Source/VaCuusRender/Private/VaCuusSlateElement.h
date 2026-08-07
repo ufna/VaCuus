@@ -52,7 +52,7 @@ public:
 	 * glass list wholesale, so parsing rides the publish rate (~zero when
 	 * idle) and never the engine frame rate. See FVaCuusGlassDistiller.
 	 */
-	virtual void SetPendingBuffer_RenderThread(FRHICommandList& RHICmdList, TUniquePtr<FVaCuusCommandBuffer> InBuffer) override;
+	virtual void SetPendingBuffer_RenderThread(FRHICommandListImmediate& RHICmdList, TUniquePtr<FVaCuusCommandBuffer> InBuffer) override;
 
 	/** Window-space pixel rect the UI RT is composited into (pre-ElementsOffset). */
 	void SetDestRect_RenderThread(const FIntRect& InDestRect);

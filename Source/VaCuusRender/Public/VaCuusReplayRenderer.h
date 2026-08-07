@@ -196,10 +196,13 @@ public:
 	 * "Commands may already be queued on the immediate command list. These need to be executed
 	 * first before any parallel commands can be inserted, otherwise commands will run
 	 * out-of-order" (FRHICommandListExecutor::Submit, RHICommandList.cpp:1482-1510). Inside an
-	 * RDG pass lambda that would dispatch the graph's own half-recorded stream. So the call has
-	 * to sit at RDG GRAPH-BUILD time, next to EnsureOutputRT, which is exactly where the engine
-	 * makes its own (ShadowSetup.cpp:6902, SkeletalMeshUpdater.cpp:440, both on
-	 * GraphBuilder.RHICmdList).
+	 * RDG pass lambda that would dispatch the graph's own half-recorded stream. So the placement
+	 * rule is "on the immediate list, with no graph half-built", and each sink satisfies it in
+	 * its own shape (bead VaCuus-9b3, which gave this a second caller): the screen path calls it
+	 * at RDG GRAPH-BUILD time next to EnsureOutputRT, exactly where the engine makes its own
+	 * (ShadowSetup.cpp:6902, SkeletalMeshUpdater.cpp:440, both on GraphBuilder.RHICmdList); the
+	 * world path calls it from the render command that delivered the buffer, which has no graph
+	 * at all until FVaCuusWorldSink::GenerateDestinationMips builds one after the copy.
 	 *
 	 * ORDERING IS THE POINT AND IT IS THE ENGINE'S, not a fence of ours: the async list takes
 	 * its place in the immediate stream HERE, and every command the replay pass records
@@ -226,7 +229,7 @@ public:
 	 * the draws land in a multisampled companion and the render pass's own store action resolves
 	 * it into THIS texture at EndRenderPass -- so the Slate composite
 	 * (VaCuusSlateElement.cpp:200), the world sink's CopyTexture + mip chain
-	 * (VaCuusWorldSink.cpp:66-100, which SKIPS on any extent mismatch) and every readback still
+	 * (VaCuusWorldSink.cpp:84-120, which SKIPS on any extent mismatch) and every readback still
 	 * see the same format, the same extent and the same SRVMask state they always did.
 	 */
 	FTextureRHIRef GetOutputRT() const { return OutputRT; }

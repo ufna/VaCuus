@@ -29,7 +29,7 @@ static TAutoConsoleVariable<int32> CVarVaCuusGlassBackbufferSRV(
 	TEXT("does the same). 0 = copy the glass region out first (SlateRHIRenderer.cpp:1140-1147 shape). The direct path ")
 		TEXT("also falls back automatically when the output texture was created without ShaderResource."));
 
-void FVaCuusSlateElement::SetPendingBuffer_RenderThread(FRHICommandList& RHICmdList, TUniquePtr<FVaCuusCommandBuffer> InBuffer)
+void FVaCuusSlateElement::SetPendingBuffer_RenderThread(FRHICommandListImmediate& RHICmdList, TUniquePtr<FVaCuusCommandBuffer> InBuffer)
 {
 	check(IsInRenderingThread());
 	if (!InBuffer)

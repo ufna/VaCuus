@@ -18,9 +18,11 @@
 #include "Engine/World.h"
 #include "Framework/Application/SlateApplication.h"
 #include "GameFramework/Actor.h"
+#include "HAL/IConsoleManager.h"
 #include "HAL/PlatformProcess.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Misc/App.h"
+#include "Misc/ScopeExit.h"
 #include "RHI.h"
 #include "RHIGPUReadback.h"
 #include "RenderingThread.h"
@@ -352,6 +354,80 @@ bool FVaCuusWorldSinkDisciplineTest::RunTest(const FString& Parameters)
 		int64(Sink->GetNumCopies()), int64(3));
 	TestEqual(TEXT("One extent skip: publish(48) against the 64x64 destination"),
 		int64(Sink->GetNumExtentSkips()), int64(1));
+
+	return true;
+}
+
+/**
+ * Bead VaCuus-9b3: the world sink starts the ASYNC upload too, and it does it from its
+ * own entry point rather than from a caller that remembered to.
+ *
+ * WHAT THIS TEST CAN AND CANNOT SEE, said plainly because the split is deliberate. The
+ * async path's pixels and its RHI-thread ordering are already gated byte-for-byte by
+ * VaCuus.Render.Upload.AsyncPayload, which drives the SAME FVaCuusReplayRenderer both
+ * sinks own -- re-reading them here would test the replayer twice and the sink zero
+ * times. What was untested until this bead is the sink's own decision, and its only
+ * observable is the route counters (both routes leave the same pixels in the same map,
+ * which is why FVaCuusReplayRenderer::GetNumAsyncTextureUploads exists at all): one
+ * buffer, two payloads, one on each side of the shipped threshold, arriving through
+ * SetPendingBuffer_RenderThread must split 1 async / 1 sync.
+ *
+ * A bare sink, no component and no view -- the render command IS the contract, exactly
+ * as VaCuus.World.SinkDiscipline argues.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusWorldAsyncUploadTest, "VaCuus.World.AsyncUpload",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusWorldAsyncUploadTest::RunTest(const FString& Parameters)
+{
+	using namespace VaCuusWorldComponentTest;
+	if (!SuiteViable(*this))
+	{
+		return true;
+	}
+
+	IConsoleVariable* ThresholdVar = IConsoleManager::Get().FindConsoleVariable(TEXT("vacuus.AsyncTextureUploadBytes"));
+	if (!TestNotNull(TEXT("vacuus.AsyncTextureUploadBytes exists"), ThresholdVar))
+	{
+		return false;
+	}
+	const int32 SavedThreshold = ThresholdVar->GetInt();
+	ON_SCOPE_EXIT
+	{
+		ThresholdVar->Set(SavedThreshold, ECVF_SetByCode);
+	};
+
+	// The SHIPPED default, and payload sizes chosen against it rather than against a
+	// threshold invented for the test: 1024x1024 RGBA is exactly 4 MB (so it is at the
+	// bound, which the >= comparison sends async), 8x8 is 256 bytes.
+	ThresholdVar->Set(4 * 1024 * 1024, ECVF_SetByCode);
+	const FVaCuusTextureHandle BigHandle = 21;
+	const FVaCuusTextureHandle SmallHandle = 22;
+
+	TUniquePtr<FVaCuusCommandBuffer> Buffer = MakeUnique<FVaCuusCommandBuffer>();
+	Buffer->Generation = 1;
+	Buffer->ViewSize = FIntPoint(64, 64);
+	FVaCuusTextureData& Big = Buffer->NewTextures.Add(BigHandle);
+	Big.Size = FIntPoint(1024, 1024);
+	Big.RGBA.SetNumZeroed(int64(Big.Size.X) * int64(Big.Size.Y) * 4);
+	FVaCuusTextureData& Small = Buffer->NewTextures.Add(SmallHandle);
+	Small.Size = FIntPoint(8, 8);
+	Small.RGBA.SetNumZeroed(int64(Small.Size.X) * int64(Small.Size.Y) * 4);
+
+	const TSharedRef<FVaCuusWorldSink> Sink = MakeShared<FVaCuusWorldSink>();
+	ENQUEUE_RENDER_COMMAND(VaCuusWorldAsyncUpload)(
+		[Sink, &Buffer](FRHICommandListImmediate& RHICmdList)
+		{
+			Sink->SetPendingBuffer_RenderThread(RHICmdList, MoveTemp(Buffer));
+			Sink->ReleaseResources_RenderThread();
+		});
+	FlushRenderingCommands();
+
+	TestEqual(TEXT("The buffer arrived"), int64(Sink->GetNumArrivals()), int64(1));
+	TestEqual(TEXT("The 4 MB payload took the async path"),
+		int64(Sink->GetReplayerForTest().GetNumAsyncTextureUploads()), int64(1));
+	TestEqual(TEXT("The 256-byte payload took the inline path"),
+		int64(Sink->GetReplayerForTest().GetNumSyncTextureUploads()), int64(1));
 
 	return true;
 }
