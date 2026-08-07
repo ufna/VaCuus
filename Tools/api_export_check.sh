@@ -37,9 +37,30 @@
 #                  exist. If that does not come back FAIL, the matcher is broken and the
 #                  whole run aborts rather than reporting a green it did not earn.
 #
-# LINUX ONLY, and it says so instead of pretending: the visibility rule, the mangling and
-# `nm -D` are all ELF. A Win64 package needs the same check written against `dumpbin
-# /exports`; nobody has needed one yet because Fab ships this plugin as source.
+# LINUX AND macOS, one script and therefore ONE list (bead VaCuus-akj.26). Win64 has its own
+# file, api_export_check_win64.ps1, because `dumpbin /exports` shares no flags with `nm` --
+# and its lists are duplicated there, which is a drift risk its own comment names. These two
+# do NOT duplicate anything: only the toolchain line below differs, so a class promised on one
+# of them is promised on both by construction.
+#
+# WHAT DIFFERS BETWEEN THE TWO, and both halves matter:
+#   ELF (Linux)    modules are libUnrealEditor-<M>.so;    GNU nm, `-D --defined-only --demangle`
+#   Mach-O (macOS) modules are libUnrealEditor-<M>.dylib; BSD nm has none of those long flags --
+#                  `-g` (global) `-U` (suppress undefined), then pipe through c++filt
+#
+# THE MACH-O TRAP, and it will mislead anyone who checks by hand (it misled the author on the
+# first pass): the two FORBIDDEN classes DO have symbols carrying their names in the dylib --
+#   vtable for FVaCuusSlateElement
+#   vtable for FVaCuusRmlDocumentHost
+#   SVaCuusWidget::Construct(..., TSharedRef<FVaCuusSlateElement> const&)
+#   VaCuusSlateView::MakeDocumentHost(TSharedRef<FVaCuusSlateElement> const&)
+# -- a vtable and two PARAMETER mentions. None of them is a member, and none of them lets a
+# consumer do anything: the class definitions stay in Private/, so nothing outside the module
+# can name either type. Matching "<Class>::" is what separates a member from a parameter (a
+# parameter demangles as `TSharedRef<FVaCuusSlateElement> const&` -- no `::` after the class
+# name) and from a vtable (`vtable for X` -- no `::` at all). A raw grep for the mangled name
+# reports 3 and 1 instead of 0 and 0. Demangle FIRST, then match; that is why c++filt is not
+# optional on the Mach-O leg.
 set -u
 
 PKG="${1:-}"
@@ -48,23 +69,44 @@ if [[ -z "${PKG}" ]]; then
 	exit 2
 fi
 
-# Fail closed on anything that is not a BuildPlugin package with Linux binaries: a
-# missing directory must never read as "no violations found".
-BINDIR="${PKG}/Binaries/Linux"
+# Fail closed on anything that is not a BuildPlugin package with binaries: a missing
+# directory must never read as "no violations found".
 if ! compgen -G "${PKG}/*.uplugin" > /dev/null; then
 	echo "ABORT: no *.uplugin at '${PKG}' — that is not a BuildPlugin package" >&2
 	exit 2
 fi
-if [[ ! -d "${BINDIR}" ]]; then
-	echo "ABORT: '${BINDIR}' does not exist — this package carries no Linux binaries," >&2
-	echo "       so there is nothing to check. (Source-only packages are the Fab upload" >&2
-	echo "       shape; comment out FilterPlugin.ini's -/Binaries/... to get a binary drop.)" >&2
+
+# Which binary flavour is in the package decides the whole toolchain line. Linux first only
+# because it is the dev platform; a package carrying both is checked as Linux, and running the
+# script on the Mac copy of that package is how you check the other.
+if [[ -d "${PKG}/Binaries/Linux" ]]; then
+	PLATFORM="Linux"
+	BINDIR="${PKG}/Binaries/Linux"
+	LIBEXT="so"
+elif [[ -d "${PKG}/Binaries/Mac" ]]; then
+	PLATFORM="Mac"
+	BINDIR="${PKG}/Binaries/Mac"
+	LIBEXT="dylib"
+else
+	echo "ABORT: neither '${PKG}/Binaries/Linux' nor '${PKG}/Binaries/Mac' exists — this package" >&2
+	echo "       carries no binaries this script can read, so there is nothing to check." >&2
+	echo "       (Source-only packages are the Fab upload shape; comment out FilterPlugin.ini's" >&2
+	echo "       -/Binaries/... to get a binary drop. For Win64 use api_export_check_win64.ps1.)" >&2
 	exit 2
 fi
+
 if ! command -v nm > /dev/null 2>&1; then
-	echo "ABORT: nm not found (binutils)" >&2
+	echo "ABORT: nm not found (binutils on Linux, Xcode command line tools on macOS)" >&2
 	exit 2
 fi
+# Only the Mach-O leg needs it: GNU nm demangles itself, BSD nm cannot.
+if [[ "${PLATFORM}" == "Mac" ]] && ! command -v c++filt > /dev/null 2>&1; then
+	echo "ABORT: c++filt not found — the Mach-O leg cannot separate a member from a parameter" >&2
+	echo "       or a vtable without demangling first. See the header." >&2
+	exit 2
+fi
+
+echo "== ${PLATFORM} (${BINDIR}) =="
 
 # THE SUPPORTED SURFACE, as "module<TAB>class". Adding a class here is how you promise it;
 # see VaCuusRender.Build.cs for what is deliberately absent and why.
@@ -91,16 +133,27 @@ FORBIDDEN=(
 	"VaCuusRender	FVaCuusSlateElement"
 )
 
-# Counts exported member symbols of Class:: in one module's .so. Prints the count; prints
-# nothing else, so it can be used by every leg including the self-test.
+# Counts exported member symbols of Class:: in one module's shared library. Prints the count
+# and nothing else, so it can be used by every leg including the self-test.
+#
+# "Class::" IS THE MATCHER ON BOTH PLATFORMS and it is doing real work, not cosmetics: an
+# exported MEMBER demangles as `... UVaCuusView::Foo(void)` while a class used only as a
+# PARAMETER reads as `UVaCuusView *` or `TSharedRef<FVaCuusSlateElement> const&` -- no `::`
+# after the name -- and a vtable reads `vtable for X`. See the header for the Mach-O case where
+# ignoring this turns two zeros into a 3 and a 1.
 count_members() {
-	local Module="$1" Class="$2" So
-	So="${BINDIR}/libUnrealEditor-${Module}.so"
-	if [[ ! -f "${So}" ]]; then
+	local Module="$1" Class="$2" Lib
+	Lib="${BINDIR}/libUnrealEditor-${Module}.${LIBEXT}"
+	if [[ ! -f "${Lib}" ]]; then
 		echo "MISSING_SO"
 		return
 	fi
-	nm -D --defined-only --demangle "${So}" 2>/dev/null | grep -c -- "${Class}::" || true
+	if [[ "${PLATFORM}" == "Mac" ]]; then
+		# BSD nm: -g global, -U suppress undefined. It cannot demangle, hence c++filt.
+		nm -gU "${Lib}" 2>/dev/null | c++filt | grep -c -- "${Class}::" || true
+	else
+		nm -D --defined-only --demangle "${Lib}" 2>/dev/null | grep -c -- "${Class}::" || true
+	fi
 }
 
 FAILURES=0
@@ -111,7 +164,7 @@ for Entry in "${REQUIRED[@]}"; do
 	Class="${Entry##*	}"
 	N="$(count_members "${Module}" "${Class}")"
 	if [[ "${N}" == "MISSING_SO" ]]; then
-		echo "  FAIL  ${Module}/${Class}: libUnrealEditor-${Module}.so not in the package"
+		echo "  FAIL  ${Module}/${Class}: libUnrealEditor-${Module}.${LIBEXT} not in the package"
 		FAILURES=$((FAILURES + 1))
 	elif [[ "${N}" -lt 1 ]]; then
 		echo "  FAIL  ${Module}/${Class}: 0 exported members — the class registers but cannot be linked"
@@ -127,7 +180,7 @@ for Entry in "${FORBIDDEN[@]}"; do
 	Class="${Entry##*	}"
 	N="$(count_members "${Module}" "${Class}")"
 	if [[ "${N}" == "MISSING_SO" ]]; then
-		echo "  FAIL  ${Module}/${Class}: libUnrealEditor-${Module}.so not in the package"
+		echo "  FAIL  ${Module}/${Class}: libUnrealEditor-${Module}.${LIBEXT} not in the package"
 		FAILURES=$((FAILURES + 1))
 	elif [[ "${N}" -gt 0 ]]; then
 		echo "  FAIL  ${Module}/${Class}: ${N} exported members — the render backend leaked into the ABI"
