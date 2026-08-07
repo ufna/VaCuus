@@ -20,17 +20,37 @@ using UnrealBuildTool;
 // the replayer's callers, the Slate element, the frame sinks, the RmlUi document host -- is
 // the render backend and stays in Private/.
 //
-// WHY NO CONSTRUCTIBLE IVaCuusDocumentHost IS EXPORTED, which is the one thing a reader will
-// come here to ask. UVaCuusSubsystem::CreateView(TUniquePtr<IVaCuusDocumentHost>, FIntPoint)
-// is public and exported, and the only concrete host, FVaCuusRmlDocumentHost, is not. That is
-// deliberate: the host's constructor takes an IVaCuusFrameSink, so exporting the host alone
-// buys nothing -- it would also need the sink interface, and then a CONCRETE sink
-// (FVaCuusSlateElement or FVaCuusWorldSink), and those two are the entire render backend:
-// ICustomSlateElement, the glass distiller, the pooled-RT destination-slot discipline, and
-// FVaCuusCommandBuffer's 750-line replay contract as a supported ABI. That is a large, fragile
-// promise for a v0.1 plugin, and it serves NONE of the four verbs above -- the two exported
-// hosts already construct that machinery correctly, including teardown (mouse capture,
-// navigation config, IME) that a hand-rolled host would have to reimplement.
+// ...AND SINCE 2026-08-07 THERE IS A THIRD DOOR, deliberately narrow (bead VaCuus-akj.25):
+//   SVaCuusWidget          (SVaCuusWidget.h)   -- SUBCLASSABLE, for a UI that stacks views
+//   VaCuusSlateView::MakeElement / MakeDocumentHost (VaCuusSlateView.h) -- opaque factories
+//
+// WHY THE RULE ABOVE DID NOT SURVIVE CONTACT. This block used to say, under the heading "WHY
+// NO CONSTRUCTIBLE IVaCuusDocumentHost IS EXPORTED", that the two hosts were enough for every
+// buyer verb. That was true of the FOUR VERBS and false of a real UI: stacked SVaCuusWidget
+// siblings cannot compose, because Slate delivers a pointer event to the topmost hit-testable
+// widget and an Unhandled reply from it goes to the GAME, never to a covered sibling. So a
+// persistent chrome layer over a swapped content layer -- the single most ordinary shooter-
+// lobby shape, and what this plugin's own lobby demo is -- needs one widget that owns input
+// and routes between views itself. UVaCuusWidget cannot express that, and no amount of
+// documentation makes it able to. The demo proved it by living INSIDE this module and
+// reaching four private headers, which is exactly how a gap like this stays invisible.
+//
+// WHAT THE OLD ARGUMENT GOT RIGHT, AND WHY THE NEW DOOR DOES NOT REOPEN IT. The objection was
+// never "hosts are secret"; it was that exporting FVaCuusRmlDocumentHost drags in
+// IVaCuusFrameSink, then a CONCRETE sink, and with it ICustomSlateElement, the glass
+// distiller, the pooled-RT destination-slot discipline and FVaCuusCommandBuffer's replay
+// contract -- the whole render backend as a supported ABI. Every one of those is STILL in
+// Private/. The factories hand back TSharedRef<FVaCuusSlateElement> to an INCOMPLETE type and
+// TUniquePtr<IVaCuusDocumentHost> to the public interface: a caller can create the pair, pass
+// it, and drop it, and can do nothing else with either. TSharedPtr's deleter is captured
+// where the type was complete (VaCuusSlateView.cpp), which is what makes the handle safe to
+// destroy across the boundary. So the promise is "these two objects exist and pair up", not
+// "here is the backend".
+//
+// SVaCuusWidget IS the one real ABI widening, and it is the one that cannot be avoided:
+// subclassing needs the type, the vtable and the input virtuals. Its header was already
+// self-contained (engine includes only, FVaCuusSlateElement forward-declared), so the cost is
+// the class itself and nothing behind it.
 //
 // So CreateView keeps a narrower, honest job: it is the EXTENSION SEAM for a caller who wants
 // a view that this plugin does not host -- headless, offscreen, a test probe. That seam is
@@ -121,7 +141,19 @@ public class VaCuusRender : ModuleRules
 			// incomplete type and nothing could be called on it. (setup.md tells buyers to
 			// list both modules themselves too; this line is what makes it work for one who
 			// lists only VaCuusRender.)
-			"VaCuus"
+			"VaCuus",
+
+			// PROMOTED FROM PRIVATE by bead VaCuus-akj.25, which moved SVaCuusWidget.h into
+			// Public/: the header derives from SLeafWidget (SlateCore) and names FKey
+			// (InputCore) in AddPassThroughKey/GetPassThroughKeys. A private dependency's
+			// include paths are not propagated, so leaving these private would hand a
+			// consumer a public header it cannot compile.
+			//
+			// SAME CAVEAT AS "UMG" ABOVE, and for the same measured reason: this propagates
+			// the INCLUDE PATH and not the link line. A module that subclasses
+			// SVaCuusWidget must still list SlateCore itself to resolve SWidget's symbols.
+			"SlateCore",
+			"InputCore"
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[] {
@@ -137,14 +169,12 @@ public class VaCuusRender : ModuleRules
 			// The EKeys::* FKey statics (mouse buttons in the widget's input path and in
 			// VaCuus.Input.SlateRouting) are exported by InputCore, not by Engine's
 			// re-export -- referencing them needs the link dependency.
-			"InputCore",
-
+			
 			// Slate side of the render backend (widget, composite) lands in later
 			// tasks; declared up front so the module shape is final.
 			"RenderCore",
 			"Renderer",
-			"SlateCore",
-			"Slate",
+						"Slate",
 			"Projects",
 
 			// LoadTexture: synchronous dimension probe on the UI thread, async decode
