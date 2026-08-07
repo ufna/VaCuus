@@ -149,11 +149,37 @@ grep reads it as a violation.
    `RunUAT BuildPlugin` package with `Binaries/`, and no package was built today. Its list was
    edited (`SVaCuusWidget` in, `FVaCuusSlateElement` in FORBIDDEN); Win64's twin ran with the
    same list and is green, but the ELF leg is unverified on this commit.
-2. **The VaCuusDemo project was not built on macOS.** The relocated lobby demo — the one consumer
-   module that compiles against the new public surface and therefore the sharpest test of it —
-   was only compiled on Linux at the time of writing. Win64 is queued.
+2. **The VaCuusDemo project was not built on macOS.** Linux and Win64 both have it (see §4);
+   the Mac does not, so the consumer-module compile is unverified there.
 3. **No GPU rows.** This is a build/suite/export re-verification. The manual matrix rows (glass,
    world panel, IME, Retina) are the August passports' business and were not re-run.
-4. **`VaCuus-akj.24` is open and reproduces on every lobby run** — the async-upload handover
-   ensure. It predates today's work (it reproduces on a 2026-08-03 binary) and is not a
-   regression from either bead above.
+
+## 4. The consumer module — VaCuusDemo on Win64
+
+This is the sharpest test of the akj.25 surface and the reason it is worth its own section: the
+lobby demo now lives in a **different project, a different module and a different repository**,
+so it compiles against `SVaCuusWidget.h` and `VaCuusSlateView.h` and nothing else. If the public
+surface were short of anything, this is where it shows up as a compile or link error.
+
+Brought over as a git bundle plus its LFS store (the box has no GitHub credentials that work
+non-interactively), given its **own** plugin clone at `C:\VaCuusDemo\Plugins\VaCuus` rather than
+being pointed at VcHost's — deliberately, to avoid the shared-intermediate/orphan-binary trap
+described in `VaCuus-a1k`.
+
+| | |
+|---|---|
+| Build | `VaCuusDemoEditor Win64 Development` — **Succeeded**, 649.41 s, 250 actions from scratch |
+| Warnings | **0**, across the whole 284-line log |
+| Run | `-game -RenderOffscreen`, `vacuus.LobbyDemo` — chrome view 2 over content view 1 at 1280×720, all four PT Sans faces loaded, `lobby.rml` and `chrome.rml` served from the project's own DevUI root |
+| RHI | D3D12, **SM6** |
+
+Document roots resolved as designed — `C:/VaCuusDemo/Plugins/VaCuus/Content/DevUI` then
+`C:/VaCuusDemo/Content/DevUI` — which is the plugin-first order `VaCuusContentPaths.h` specifies,
+with the project root supplying every lobby document.
+
+**`VaCuus-akj.24` did NOT reproduce here.** The async-upload handover ensure
+(`IsWellFormedPayload`, `1024x1024, 0 bytes`) fires on **every** lobby run on Linux/Vulkan and
+fired **zero** times across this Win64/D3D12 run. That is evidence for the bead's stated
+hypothesis rather than against it: the trigger needs two *pending* buffers carrying the same
+texture handle in one drain, which is a queue-timing state, not an unconditional defect. Noted
+on the bead.
