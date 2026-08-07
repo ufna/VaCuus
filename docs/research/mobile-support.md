@@ -215,7 +215,9 @@ onto `Context::ProcessTouch*`. Additive, not a rewrite: RmlUi's touch verbs funn
 `ProcessMouseMove` + `ProcessMouseButtonDown(0)/Up(0)` internally (`Context.cpp:916-919,
 1019-1022`). Two mechanics to get right: the click/scroll distance threshold is scaled by
 `density_independent_pixel_ratio` (`Context.cpp:978`), which we never set — grep finds
-`SetDensityIndependentPixelRatio` only inside a comment in `VaCuusLobbyDemo.cpp:634` — so on a
+`SetDensityIndependentPixelRatio` only inside a comment in the lobby demo, which since
+2026-08-07 lives in the VaCuusDemo project rather than the plugin
+(`Source/TP_ThirdPerson/VaCuus/VaCuusLobbyDemo.cpp:634`, bead VaCuus-akj.25) — so on a
 high-DPI phone the default ratio makes it several times too tight; and RmlUi's duplicate-touch
 guard is `RMLUI_ASSERTMSG`, compiled out in every configuration of this build
 (`Source/VaCuusRml/VaCuusRml.Build.cs:40-44`), so a malformed touch stream degrades silently.

@@ -1,5 +1,11 @@
 # Win64/D3D12 pass — what was executed, what it found, what it could not reach
 
+> **Superseded numbers, not superseded findings (2026-08-07).** This document records the
+> 2026-08-03 pass on commit `fc38ced` and stays as written — it is the record of that run. The
+> build/suite/export figures in it have since moved; the current ones are in
+> `2026-08-07-cross-platform-reverify.md`, which re-ran the three legs on `0e1f470`. Every
+> *finding* below (the D3D12 draw, the traps, the venue differences) is still live.
+
 **What this is.** The first execution of VaCuus on Windows and Direct3D 12, ever. It ran on
 2026-08-03 over SSH from the Linux dev box onto the owner's desktop. It fills what it honestly
 can of the **Win64 D3D12** column of `2026-08-vacuus-manual-matrix.md` and records, by name and

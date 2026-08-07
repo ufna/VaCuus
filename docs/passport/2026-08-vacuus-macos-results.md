@@ -1,5 +1,14 @@
 # macOS/Metal pass — what was executed, what it found, what it could not reach
 
+> **Superseded numbers, not superseded findings (2026-08-07).** This document records the
+> 2026-08-03 pass on commit `f5eba06` and stays as written — it is the record of that run. The
+> build/suite figures in it have since moved; the current ones are in
+> `2026-08-07-cross-platform-reverify.md`, which re-ran the three legs on `0e1f470`. Two things
+> that pass reported as blocked are also no longer true: the machine now carries a real
+> **git clone** (`~/VaCuus` plus a build clone under `VcHost/Plugins/`) instead of a tar copy,
+> and the lobby demo's "`chrome.rml` is not served by any DevUI root" refusal was resolved by
+> moving the demo into the VaCuusDemo project, where its content already lived.
+
 **What this is.** The first execution of VaCuus on Apple silicon and Metal, ever. It ran on
 2026-08-03 against the plan in `2026-08-vacuus-macos-plan.md`, over SSH from the Linux dev box
 onto the owner's MacBook. It fills the **macOS Metal** column of `2026-08-vacuus-manual-matrix.md`

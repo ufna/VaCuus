@@ -153,6 +153,7 @@ namespace `VaCuusUMGDemo`).
 | `UVaCuusWidget` — screen | yes | **yes** |
 | `UVaCuusWorldComponent` — world panel | yes | **yes** |
 | `UVaCuusView` — load, bind, drive, status | yes | **yes** |
+| `SVaCuusWidget` + `VaCuusSlateView.h` — hand-composed stack | no | **yes** — see below |
 | `UVaCuusSubsystem::CreateView(host, size)` | no | **only with your own host** — see below |
 | the render backend (recorder, replayer, Slate element, frame sinks) | no | no — internal |
 
@@ -163,6 +164,53 @@ sink that is not part of the supported surface. Call it only when you are supply
 `IVaCuusDocumentHost` (`VaCuusDocumentHost.h`) — a headless, offscreen or test view. That is
 supported and needs nothing linked: the interface is pure virtual. To put pixels on screen,
 use one of the two host classes above.
+
+### Stacking views: when `UVaCuusWidget` is not enough
+
+`UVaCuusWidget` composes exactly **one** view into **one** widget. That is the right shape for
+almost everything, and the wrong shape for a UI that stacks views — a persistent chrome layer
+over a swapped content layer, the ordinary shooter-lobby arrangement.
+
+**Stacked `UVaCuusWidget`s do not compose, and the reason is Slate, not this plugin.** Slate
+delivers a pointer event to the topmost hit-testable widget, and an `Unhandled` reply from it
+goes to the **game** — never down to a covered sibling. So the lower view never hears a click
+the upper one declined. The fix is one widget that owns the input and routes between the views
+itself, which means subclassing:
+
+```cpp
+#include "SVaCuusWidget.h"      // subclass this
+#include "VaCuusSlateView.h"    // build a view's render side by hand
+
+TSharedRef<FVaCuusSlateElement> Element = VaCuusSlateView::MakeElement();
+UVaCuusView* View = Subsystem->CreateView(VaCuusSlateView::MakeDocumentHost(Element), Size);
+TSharedRef<SVaCuusWidget> Widget = SNew(SVaCuusWidget, View, Element);
+Viewport->AddViewportWidgetContent(Widget, /*ZOrder=*/100);
+```
+
+`FVaCuusSlateElement` is an **opaque handle** — declared, never defined for you. Hold it, pass
+it to the two calls above, drop it at teardown; there is nothing else to call on it. That is
+deliberate: the type carries the glass distiller, the replay renderer and the engine-version
+compatibility seam, and none of those are a promise this plugin is willing to freeze.
+
+**Override the input virtuals and chain to `Super`.** Each handler in `SVaCuusWidget` queues
+the event for the UI thread *and* answers Slate from the view's published snapshot; skipping
+`Super` drops both halves. A router typically calls `Super::OnMouseButtonDown`, returns its
+reply when it is `Handled`, and otherwise forwards the point to the lower view itself.
+
+**Teardown order is the part that bites**, and it is the same rule `UVaCuusWidget` follows
+internally: call `ReleaseOwnPointerCapture()` and `DetachView()` **before** the view is
+destroyed, then drop the widget, then the element. Slate's captor is a weak widget path that
+never notices the leaf died, so a widget dropped mid-drag trips an ensure inside
+`FSlateApplication`.
+
+Your module must list `VaCuusRender`, `VaCuus` and **`SlateCore`** itself — subclassing
+`SVaCuusWidget` references `SWidget` symbols directly, and a dependency's dependency is not
+on your link line (see the `UMG` note above; the mechanism is identical).
+
+The shipped worked example is the lobby demo in the **VaCuusDemo project** (not in the
+plugin): `Source/TP_ThirdPerson/VaCuus/VaCuusLobbyDemo.cpp`, a chrome view over a swapped
+content view with one `SVaCuusLobbyRouterWidget` between them. It lives outside the plugin on
+purpose — it compiles against this page and nothing else, which is what keeps the page honest.
 
 Edit the `.rcss` while PIE runs: the watcher reloads the document in place. That
 loop — plus `vacuus dev` from `Web/` if you author in TSX — is the whole dev story.
