@@ -64,7 +64,7 @@ static const FIntPoint GLateViewSize(320, 240);
 class FCaptureSink final : public IVaCuusFrameSink
 {
 public:
-	virtual void SetPendingBuffer_RenderThread(FRHICommandList&, TUniquePtr<FVaCuusCommandBuffer> InBuffer) override
+	virtual void SetPendingBuffer_RenderThread(FRHICommandListImmediate&, TUniquePtr<FVaCuusCommandBuffer> InBuffer) override
 	{
 		check(IsInRenderingThread());
 		Buffers.Add(MoveTemp(InBuffer));

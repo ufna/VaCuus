@@ -119,7 +119,7 @@ div { display: block; width: 120px; height: 40px; margin: 8px; background-color:
 class FCaptureSink final : public IVaCuusFrameSink
 {
 public:
-	virtual void SetPendingBuffer_RenderThread(FRHICommandList&, TUniquePtr<FVaCuusCommandBuffer> InBuffer) override
+	virtual void SetPendingBuffer_RenderThread(FRHICommandListImmediate&, TUniquePtr<FVaCuusCommandBuffer> InBuffer) override
 	{
 		check(IsInRenderingThread());
 		Buffers.Add(MoveTemp(InBuffer));
