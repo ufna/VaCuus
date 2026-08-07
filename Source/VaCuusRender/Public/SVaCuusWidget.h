@@ -32,7 +32,7 @@ struct FVaCuusModifierState;
  * A FREE CLASS RATHER THAN A NESTED ONE only so that Set() can be defined out of line without
  * naming a private nested type from namespace scope.
  */
-class FVaCuusMouseCaptureState
+class VACUUSRENDER_API FVaCuusMouseCaptureState
 {
 public:
 	bool IsHeld() const { return bHeld; }
@@ -47,6 +47,15 @@ private:
 /**
  * The Slate face of one VaCuus view: composites the UI thread's frames and routes
  * input into it.
+ *
+ * PUBLIC, AND THE ONLY CONCRETE TYPE OF THE COMPOSITION API THAT IS (bead VaCuus-akj.25).
+ * Everything else a caller needs to stand a view up in Slate is reachable through the
+ * opaque factories in VaCuusSlateView.h; this class is the exception because SUBCLASSING is
+ * the extension point. A game that stacks two views and wants one hit-testable widget to
+ * route between them -- which is what the shipped lobby demo does, and what forced this
+ * header out of Private -- has to override the input virtuals and call Super, and no
+ * factory can offer that. Chaining to Super is the contract: each handler here queues the
+ * event and answers from the snapshot, and skipping it silently drops both halves.
  *
  * RENDER SIDE: Tick keeps the view's layout size in sync with the widget's pixel
  * rect (a queued Resize command -- never a direct RmlUi call); OnPaint pushes the
@@ -95,7 +104,7 @@ private:
  * Back event. The stick needs a dead zone and repeat throttling on this side --
  * RmlUi does no key repeat -- which is what Tick drives.
  */
-class SVaCuusWidget : public SLeafWidget
+class VACUUSRENDER_API SVaCuusWidget : public SLeafWidget
 {
 public:
 	SLATE_BEGIN_ARGS(SVaCuusWidget)
