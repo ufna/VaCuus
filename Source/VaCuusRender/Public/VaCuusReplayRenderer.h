@@ -390,8 +390,22 @@ private:
 	 * way it cannot be an empty-payload test, which is the trap in the cheaper version: the
 	 * payload is MOVED out, so what NewTextures still holds is a zero-byte entry that
 	 * UploadNewResources' payload-mismatch ensure would report as a corrupt buffer.
+	 *
+	 * KEYED BY (GENERATION, HANDLE) AND NOT BY HANDLE ALONE -- bead VaCuus-akj.24, and it is the
+	 * same scenario this member was created for, one step further along. The paragraph above says
+	 * a handle legitimately appears in TWO buffers (placeholder in N, real payload in N+1). What
+	 * it did not account for is that Draw_RenderThread begins the async upload for EVERY queued
+	 * buffer before consuming ANY of them, so both parks happen first. With a handle-only key the
+	 * second park OVERWROTE the first, and the damage was in both directions: buffer N's consume
+	 * installed buffer N+1's IMAGE (a draw recorded in N then sampled pixels from the future --
+	 * silent), and buffer N+1's consume found nothing where its own texture belonged and reported
+	 * its already-moved-out payload as corrupt (the ensure that made this findable at all).
+	 *
+	 * The generation makes the two parks distinct entries, so each buffer's consume takes exactly
+	 * the texture its own Begin created. VaCuus.Render.Upload.RepeatedHandle asserts both
+	 * directions; it fails on the old key at byte 0 of the first readback.
 	 */
-	TMap<FVaCuusTextureHandle, FTextureRHIRef> PendingAsyncTextures;
+	TMap<TPair<uint64, FVaCuusTextureHandle>, FTextureRHIRef> PendingAsyncTextures;
 
 	FTextureRHIRef OutputRT;
 

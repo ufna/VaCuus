@@ -592,7 +592,11 @@ void FVaCuusReplayRenderer::BeginAsyncTextureUploads(FRHICommandListImmediate& R
 		// PARKED, NOT INSTALLED -- see PendingAsyncTextures for the buffer-ordering bug that
 		// installing straight into Textures here caused. UploadNewResources of this same buffer
 		// does the install, which is still before any draw that could sample it.
-		PendingAsyncTextures.Add(Pair.Key, MoveTemp(Texture));
+		//
+		// THE GENERATION IS PART OF THE KEY (bead akj.24): every queued buffer is begun before
+		// any is consumed, so two buffers carrying one handle park at the same moment. Keyed by
+		// handle alone the second silently replaced the first.
+		PendingAsyncTextures.Add({Buffer.Generation, Pair.Key}, MoveTemp(Texture));
 		NumAsyncTextureUploads.fetch_add(1, std::memory_order_release);
 	}
 }
@@ -626,10 +630,15 @@ void FVaCuusReplayRenderer::UploadNewResources(FRHICommandList& RHICmdList, cons
 		// is a zero-byte entry the ensure below would report as a corrupt buffer. Installing the
 		// ref HERE rather than at graph-build time is what keeps two buffers carrying the same
 		// handle in order -- see PendingAsyncTextures.
-		if (FTextureRHIRef* Parked = PendingAsyncTextures.Find(Pair.Key))
+		//
+		// LOOKED UP BY THIS BUFFER'S OWN GENERATION (bead akj.24), so a handle that appears in two
+		// queued buffers resolves to the texture ITS buffer created rather than to whichever park
+		// happened last.
+		const TPair<uint64, FVaCuusTextureHandle> ParkKey{Buffer.Generation, Pair.Key};
+		if (FTextureRHIRef* Parked = PendingAsyncTextures.Find(ParkKey))
 		{
 			Textures.Add(Pair.Key, MoveTemp(*Parked));
-			PendingAsyncTextures.Remove(Pair.Key);
+			PendingAsyncTextures.Remove(ParkKey);
 			continue;
 		}
 

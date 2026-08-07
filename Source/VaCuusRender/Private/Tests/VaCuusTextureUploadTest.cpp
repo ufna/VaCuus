@@ -391,4 +391,148 @@ bool FVaCuusTextureUploadAsyncTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+/**
+ * Bead VaCuus-akj.24: ONE HANDLE IN TWO QUEUED BUFFERS.
+ *
+ * WHY THIS STATE IS NOT EXOTIC, which is the whole reason the bug survived: it is the state
+ * PendingAsyncTextures was introduced to serve. Its own declaration names the case — a late image
+ * decode records the 1x1 placeholder in the buffer that ran LoadTexture and the real payload in a
+ * later one, so the same handle legitimately appears twice. What was never tested is that
+ * arrangement with BOTH buffers still pending, which is exactly what
+ * FVaCuusSlateElement::Draw_RenderThread produces: it calls BeginAsyncTextureUploads for every
+ * queued buffer BEFORE the replay pass consumes any of them.
+ *
+ * WHY THE EXISTING TESTS COULD NOT SEE IT. Upload.AsyncPayload and World.AsyncUpload each drive
+ * ONE buffer per pass. One buffer can never collide with itself, so the map being keyed by handle
+ * alone was invisible: the second park overwrote the first, the first consume installed the
+ * SECOND buffer's image, and the second consume found nothing where its own texture should have
+ * been and reported its (already moved-out) payload as corrupt.
+ *
+ * THREE ASSERTIONS, and the middle one is the one that matters:
+ *
+ *  (1) ROUTING — two payloads over the threshold means two async uploads and no inline one. If
+ *      this drops to 1 the test is no longer building the state it exists to build.
+ *  (2) ORDER AND CONTENT — after consuming buffer 1 the handle must resolve to buffer 1's PIXELS,
+ *      and after consuming buffer 2, to buffer 2's. This is the silent half of the defect: with
+ *      the handle-keyed map, consuming buffer 1 installed buffer 2's image, so a document that
+ *      drew during buffer 1 sampled an image from the future. The ensure was only the noisy half.
+ *  (3) NO CORRUPTION REPORT — UploadNewResources' payload-mismatch ensure must not fire. It is an
+ *      automation Error, so the framework fails the test on it without an assertion of ours;
+ *      this is stated so the next reader knows the silence is load-bearing.
+ *
+ * (2) needs a real RHI and self-skips loudly under NullRHI, the venue discipline of the two tests
+ * above; (1) and (3) run everywhere, which is what makes this reproduce in the -nullrhi suite.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusTextureUploadRepeatedHandleTest, "VaCuus.Render.Upload.RepeatedHandle",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusTextureUploadRepeatedHandleTest::RunTest(const FString& Parameters)
+{
+	using namespace VaCuusTextureUploadTest;
+
+	IConsoleVariable* ThresholdVar = IConsoleManager::Get().FindConsoleVariable(TEXT("vacuus.AsyncTextureUploadBytes"));
+	if (!TestNotNull(TEXT("vacuus.AsyncTextureUploadBytes exists"), ThresholdVar))
+	{
+		return false;
+	}
+	const int32 SavedThreshold = ThresholdVar->GetInt();
+	ON_SCOPE_EXIT
+	{
+		ThresholdVar->Set(SavedThreshold, ECVF_SetByCode);
+	};
+	ThresholdVar->Set(4 * 1024 * 1024, ECVF_SetByCode);
+
+	// The SAME handle in both buffers — the whole point. Different seeds so the two images are
+	// distinguishable byte by byte and "the wrong one was installed" is not a coin flip.
+	const FVaCuusTextureHandle Handle = 31;
+	const FIntPoint Size(1024, 1024);
+	TArray<uint8> FirstPattern, SecondPattern;
+	FillPattern(FirstPattern, Size, 3);
+	FillPattern(SecondPattern, Size, 199);
+
+	const auto MakeBuffer = [&](uint64 Generation, const TArray<uint8>& Bytes)
+	{
+		TUniquePtr<FVaCuusCommandBuffer> Buffer = MakeUnique<FVaCuusCommandBuffer>();
+		Buffer->Generation = Generation;
+		Buffer->ViewSize = FIntPoint(64, 64);
+		FVaCuusTextureData& Data = Buffer->NewTextures.Add(Handle);
+		Data.Size = Size;
+		Data.RGBA = Bytes;
+		return Buffer;
+	};
+	TUniquePtr<FVaCuusCommandBuffer> First = MakeBuffer(/*Generation=*/1, FirstPattern);
+	TUniquePtr<FVaCuusCommandBuffer> Second = MakeBuffer(/*Generation=*/2, SecondPattern);
+
+	// Heap-allocated and torn down on the render thread — the class's stated affinity; see the
+	// AsyncPayload test for the full argument.
+	FVaCuusReplayRenderer* Replayer = new FVaCuusReplayRenderer();
+	ON_SCOPE_EXIT
+	{
+		ENQUEUE_RENDER_COMMAND(VaCuusRepeatedHandleTeardown)
+		([Replayer](FRHICommandListImmediate&)
+			{
+				Replayer->ReleaseResources();
+				delete Replayer;
+			});
+		FlushRenderingCommands();
+	};
+
+	const bool bCanReadBack = !GUsingNullRHI;
+	if (!bCanReadBack)
+	{
+		AddInfo(TEXT("VaCuus.Render.Upload.RepeatedHandle: pixel readback SKIPPED under NullRHI; "
+					 "routing and the corruption ensure are still asserted."));
+	}
+
+	TArray<uint8> AfterFirst, AfterSecond;
+	bool bReadFirst = false;
+	bool bReadSecond = false;
+	ENQUEUE_RENDER_COMMAND(VaCuusRepeatedHandleCase)
+	([&](FRHICommandListImmediate& RHICmdList)
+		{
+			// PRODUCTION'S ORDER, and the ordering IS the test: Draw_RenderThread starts the async
+			// upload for EVERY pending buffer at graph-build time, then the pass consumes them
+			// oldest first (VaCuusSlateElement.cpp — the loop over PendingBuffers, then the pass
+			// lambda's ConsumeResources/Replay). Both Begins before either Consume.
+			Replayer->BeginAsyncTextureUploads(RHICmdList, *First);
+			Replayer->BeginAsyncTextureUploads(RHICmdList, *Second);
+
+			Replayer->ConsumeResources(RHICmdList, *First);
+			if (bCanReadBack)
+			{
+				bReadFirst = ReadBackRGBA(RHICmdList, Replayer->GetTextureForTest(Handle), Size, AfterFirst);
+			}
+
+			Replayer->ConsumeResources(RHICmdList, *Second);
+			if (bCanReadBack)
+			{
+				bReadSecond = ReadBackRGBA(RHICmdList, Replayer->GetTextureForTest(Handle), Size, AfterSecond);
+			}
+		});
+	FlushRenderingCommands();
+
+	TestEqual(TEXT("both payloads took the async path"), int64(Replayer->GetNumAsyncTextureUploads()), int64(2));
+	TestEqual(TEXT("neither payload fell back to the inline path"), int64(Replayer->GetNumSyncTextureUploads()), int64(0));
+
+	if (bCanReadBack)
+	{
+		if (TestTrue(TEXT("the handle resolved after consuming buffer 1"), bReadFirst))
+		{
+			const int32 Diff = FirstDifference(AfterFirst, FirstPattern);
+			TestEqual(FString::Printf(TEXT("buffer 1's consume installed BUFFER 1's image (first difference at %d of %d)"),
+						  Diff, FirstPattern.Num()),
+				Diff, INDEX_NONE);
+		}
+		if (TestTrue(TEXT("the handle resolved after consuming buffer 2"), bReadSecond))
+		{
+			const int32 Diff = FirstDifference(AfterSecond, SecondPattern);
+			TestEqual(FString::Printf(TEXT("buffer 2's consume replaced it with BUFFER 2's image (first difference at %d of %d)"),
+						  Diff, SecondPattern.Num()),
+				Diff, INDEX_NONE);
+		}
+	}
+
+	return true;
+}
+
 #endif	// WITH_DEV_AUTOMATION_TESTS
