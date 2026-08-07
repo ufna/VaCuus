@@ -149,12 +149,15 @@ grep reads it as a violation.
    `RunUAT BuildPlugin` package with `Binaries/`, and no package was built today. Its list was
    edited (`SVaCuusWidget` in, `FVaCuusSlateElement` in FORBIDDEN); Win64's twin ran with the
    same list and is green, but the ELF leg is unverified on this commit.
-2. **The VaCuusDemo project was not built on macOS.** Linux and Win64 both have it (see §4);
-   the Mac does not, so the consumer-module compile is unverified there.
-3. **No GPU rows.** This is a build/suite/export re-verification. The manual matrix rows (glass,
+2. **No GPU rows.** This is a build/suite/export re-verification. The manual matrix rows (glass,
    world panel, IME, Retina) are the August passports' business and were not re-run.
+3. **The `akj.24` fix was not re-verified on Win64.** The Windows box went off the network between
+   the fix landing and the re-run. Linux and macOS both carry it (218/218 and the new
+   `RepeatedHandle` test green on both); Win64 is verified only up to `0e1f470`. Since the defect
+   demonstrably did not reproduce on D3D12 in the first place, the missing leg is the *fix's*
+   regression check rather than the bug's confirmation — but it is missing.
 
-## 4. The consumer module — VaCuusDemo on Win64
+## 4. The consumer module — VaCuusDemo on Win64 and macOS
 
 This is the sharpest test of the akj.25 surface and the reason it is worth its own section: the
 lobby demo now lives in a **different project, a different module and a different repository**,
@@ -181,5 +184,54 @@ with the project root supplying every lobby document.
 (`IsWellFormedPayload`, `1024x1024, 0 bytes`) fires on **every** lobby run on Linux/Vulkan and
 fired **zero** times across this Win64/D3D12 run. That is evidence for the bead's stated
 hypothesis rather than against it: the trigger needs two *pending* buffers carrying the same
-texture handle in one drain, which is a queue-timing state, not an unconditional defect. Noted
-on the bead.
+texture handle in one drain, which is a queue-timing state, not an unconditional defect. It was
+**fixed later the same day** (`d5ccd3a`) by keying the park map on `(Generation, Handle)`; see §6.
+
+**macOS, on `0354c52`** — the same shape, its own plugin clone at `~/VaCuusDemo/Plugins/VaCuus`,
+cloned straight from GitHub over SSH (the Mac has a working key, so no bundle was needed and
+git-lfs materialised all 759 files itself):
+
+| | |
+|---|---|
+| Build | `VaCuusDemoEditor Mac Development` — **Succeeded**, 78.53 s, 231 compile actions / 238 total from scratch |
+| Warnings | **0** |
+| Run | `-game -RenderOffscreen`, `vacuus.LobbyDemo` — chrome view 2 over content view 1 at 1280×720, four PT Sans faces, `lobby.rml` + `chrome.rml` from the project root, **zero ensures** |
+| RHI | Metal, **SM5** — `LogMetal: Warning: To use SM6 on this system, please ensure you are running Mac OS 15. Falling back to SM5` on macOS 26.5.2, i.e. the engine's version check is stale, not the OS |
+
+So the consumer module now compiles and runs on all three platforms, which is the full answer to
+"is the public surface enough to build a real UI".
+
+**A third log-location fact, because it is a different one again:** a `-game` run on macOS writes
+to `~/Library/Logs/<ProjectName>/<ProjectName>.log` — not `<Project>/Saved/Logs`, and not
+`~/Library/Logs/Unreal Engine/<Target>/` where the *editor* target puts it. Three runs, three
+places.
+
+## 5. What the re-verification itself turned up
+
+**`VaCuus.Js.Cost.CombinedChurn` is flaky on Apple silicon** (bead `VaCuus-akj.27`, filed). Three
+consecutive runs of one binary on one commit: p99 **4.62** (pass), **4.95** (pass), **5.39**
+(fail), against an assertion of `p99 <= 5.00 ms` (ten times the stated 0.50 ms gate). The
+platform sits at 92–108% of the pass line, so the result is a coin flip. It is not a regression —
+the measurement is JsPump + Update + JsGC with `Record==0`, which shares no code with anything
+changed today — and it passed on this same Mac earlier in the day, which is what a
+boundary-straddling gate does.
+
+One caveat on my own method, recorded so the numbers are readable: the *first* failing run read
+p99 12.60 / max 48.95 because a 136 MiB git-lfs clone was running on the same machine at the
+time. That was my error. Re-running quiet gave 6.14, and the isolated triple above gave 4.6–5.4.
+Load makes it worse; it is marginal without.
+
+## 6. `VaCuus-akj.24`, fixed
+
+`PendingAsyncTextures` was keyed by handle alone while `Draw_RenderThread` begins the async upload
+for **every** queued buffer before consuming any — so two buffers carrying one handle parked at
+the same instant and the second silently replaced the first. Both directions were broken and only
+one was visible: buffer N's consume installed buffer N+1's **image** (a draw recorded in N
+sampling pixels from the future, silent), and buffer N+1's consume found nothing where its own
+texture belonged and reported its already-moved-out payload as corrupt (the ensure).
+
+The key is `(Generation, Handle)` now. New test `VaCuus.Render.Upload.RepeatedHandle` builds the
+state by hand at the replayer level — deliberately, because §4 had just shown the real-widget
+route only fails on one RHI and would have read as flaky. Both outcomes on the record, real RHI:
+before, `Result={Fail}` with "buffer 1's consume installed BUFFER 1's image (first difference at 0
+of 4194304)" plus the ensure; after, `Result={Success}` with zero ensures. Suite 218/218 on Linux.
