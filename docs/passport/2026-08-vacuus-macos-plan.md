@@ -237,9 +237,15 @@ the bubble path (Slate does not say by whom) | unhandled (it fell through)` (`:1
 decision and is unchanged**; the handled branch stopped naming a culprit in bead
 `VaCuus-akj.6.41` because it never could (SViewport is our ancestor, so a pass-through move also
 reports handled). For "did the UI actually take it", use a command that CLICKS —
-`vacuus.LobbyDemo.Click` or `vacuus.M1HUD.TypeShot` — which now prints `the press was taken by
+`vacuus.M1HUD.TypeShot` — which now prints `the press was taken by
 THE UI (VaCuus captured the mouse) | THE GAME (VaCuus declined…)` from Slate's mouse capture,
-the same attribution `vacuus.M2Demo.Drag` has always had. Note `FMacCursor::SetPosition` warps the **real system cursor** via
+the same attribution `vacuus.M2Demo.Drag` has always had. **That two-answer form is exact only
+for the plugin's ONE-widget demos, and `vacuus.LobbyDemo.Click` no longer prints it** (bead
+`VaCuus-pwu`): the lobby stacks two views behind one router that takes capture on the chrome
+path only, so capture cannot name a content click, and that command now reports which of the
+router's doors answered — `THE UI, CHROME | THE UI, CONTENT | THE GAME | NOBODY THIS COMMAND CAN
+NAME`. It also lives in the VaCuusDemo project now, not the plugin, so a VcHost passport run does
+not have it at all. Note `FMacCursor::SetPosition` warps the **real system cursor** via
 `CGWarpMouseCursorPosition` and defeats Apple's 0.25 s post-warp suppression
 (`MacCursor.cpp:491-506`): the pointer jumps on the desktop and the game window must be frontmost.
 Row 4's own evidence line must read **absent=no, registered=yes** — the opposite of the Linux
