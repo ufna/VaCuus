@@ -984,6 +984,23 @@ static void Toggle(const TCHAR* DocumentVfsPath)
 			GDocumentVfsPath, *FString::Join(VaCuusContentPaths::GetDocumentRoots(), TEXT(" | ")));
 	}
 
+	// A WARNING, NOT A REFUSAL, and the difference is this demo's charter: it has an inline
+	// fallback precisely so the toggle works on a bare project, so bad art must not stop it.
+	// But m1_hud.rml references exactly one image, and if that image is absent -- or is a
+	// Git-LFS pointer, which this repo's `*.png filter=lfs` makes possible on any clone made
+	// without git-lfs -- the HUD renders with an empty box where the avatar goes and nothing
+	// says why. Bead VaCuus-akj.28; the lobby demo makes the same check fatal because it has
+	// no fallback to fall back to.
+	if (bLoadFromFile)
+	{
+		FString Diagnosis;
+		if (VaCuusContentPaths::ProbeImage(TEXT("img/avatar.png"), &Diagnosis) != EVaCuusImageProbe::Ok)
+		{
+			UE_LOG(LogVaCuus, Warning,
+				TEXT("VaCuus demo: %s. The HUD still loads; its avatar box will be empty"), *Diagnosis);
+		}
+	}
+
 	TSharedRef<FVaCuusSlateElement> Element = MakeShared<FVaCuusSlateElement>();
 
 	// The subsystem hands the host to the process-wide UI thread, which boots it
