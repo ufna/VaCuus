@@ -242,4 +242,103 @@ bool FVaCuusContentRootsTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+/**
+ * ProbeImage: the two ways art goes missing, told apart (bead VaCuus-akj.28).
+ *
+ * WHY AN EXISTENCE CHECK IS NOT ENOUGH, which is the whole reason this function exists
+ * rather than a FPaths::FileExists at each call site. Both this repo and VaCuusDemo
+ * carry `*.png filter=lfs` in .gitattributes, so a clone made on a machine WITHOUT
+ * git-lfs installed writes ~130-byte POINTER FILES in place of every image. The file is
+ * there, stat succeeds, the open succeeds, and the failure surfaces two layers down in
+ * the PNG decoder as the same blank rectangles a wholly absent file produces. The
+ * incident this bead was filed from cost an hour on the wrong hypothesis (an async
+ * decode race) because the two look identical on screen.
+ *
+ * So the assertion that matters here is not "does the probe notice" but "does the probe
+ * NAME THE REPAIR": a pointer file must produce a diagnosis carrying `git lfs pull`,
+ * because that string is the entire difference between a one-line fix and an hour.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusImageProbeTest, "VaCuus.Core.ImageProbe",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusImageProbeTest::RunTest(const FString& Parameters)
+{
+	const TArray<FString>& Roots = VaCuusContentPaths::GetDocumentRoots();
+	if (!TestTrue(TEXT("At least one DevUI root"), Roots.Num() > 0))
+	{
+		return false;
+	}
+
+	// Relative names, resolved through the roots exactly as the demo bootstraps do -- an
+	// absolute-path test would skip the resolution half and prove less than it looks.
+	const FString ProbeName = TEXT("vacuus_image_probe.png.tmptest");
+	const FString ProbePath = Roots[0] / ProbeName;
+	IFileManager::Get().Delete(*ProbePath);
+
+	// --- Absent: nothing under any root. ---
+	{
+		FString Diagnosis;
+		TestEqual(TEXT("A name under no root probes as Missing"),
+			VaCuusContentPaths::ProbeImage(ProbeName, &Diagnosis), EVaCuusImageProbe::Missing);
+		TestTrue(TEXT("The Missing diagnosis names the file"), Diagnosis.Contains(ProbeName));
+	}
+
+	// --- A Git-LFS pointer: present, readable, and NOT an image. ---
+	{
+		// The real v1 pointer layout (three lines, LF-terminated) rather than a
+		// hand-waved prefix -- a smudge-less checkout writes exactly this.
+		const FString Pointer =
+			TEXT("version https://git-lfs.github.com/spec/v1\n")
+			TEXT("oid sha256:4d7a214614ab2935c943f9e0ff69d22eadbb8f32b1258daaa5e2ca24d17e2393\n")
+			TEXT("size 12345\n");
+		if (TestTrue(TEXT("Pointer fixture written"), FFileHelper::SaveStringToFile(Pointer, *ProbePath)))
+		{
+			FString Diagnosis;
+			TestEqual(TEXT("A pointer file probes as GitLfsPointer, not as a valid image"),
+				VaCuusContentPaths::ProbeImage(ProbeName, &Diagnosis), EVaCuusImageProbe::GitLfsPointer);
+
+			// The point of the whole bead: the message must carry the repair.
+			TestTrue(TEXT("The pointer diagnosis names the repair 'git lfs pull'"),
+				Diagnosis.Contains(TEXT("git lfs pull")));
+		}
+		IFileManager::Get().Delete(*ProbePath);
+	}
+
+	// --- Present, readable, neither a pointer nor an image: truncated or corrupt. ---
+	{
+		if (TestTrue(TEXT("Garbage fixture written"), FFileHelper::SaveStringToFile(TEXT("not an image at all"), *ProbePath)))
+		{
+			FString Diagnosis;
+			TestEqual(TEXT("A non-image file probes as NotAnImage"),
+				VaCuusContentPaths::ProbeImage(ProbeName, &Diagnosis), EVaCuusImageProbe::NotAnImage);
+		}
+		IFileManager::Get().Delete(*ProbePath);
+	}
+
+	// --- A real PNG signature. ---
+	{
+		const uint8 PngBytes[] = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D};
+		TArray<uint8> Bytes(PngBytes, UE_ARRAY_COUNT(PngBytes));
+		if (TestTrue(TEXT("PNG fixture written"), FFileHelper::SaveArrayToFile(Bytes, *ProbePath)))
+		{
+			FString Diagnosis;
+			TestEqual(TEXT("A PNG-signed file probes as Ok"),
+				VaCuusContentPaths::ProbeImage(ProbeName, &Diagnosis), EVaCuusImageProbe::Ok);
+			TestTrue(TEXT("An Ok probe reports no diagnosis"), Diagnosis.IsEmpty());
+		}
+		IFileManager::Get().Delete(*ProbePath);
+	}
+
+	// --- The plugin's OWN shipped art, over the real resolution path. ---
+	// m1_hud.rml references exactly this one image; if this repo is ever cloned without
+	// git-lfs, or the file is dropped, this row is what says so.
+	{
+		FString Diagnosis;
+		TestEqual(TEXT("The shipped img/avatar.png probes as Ok"),
+			VaCuusContentPaths::ProbeImage(TEXT("img/avatar.png"), &Diagnosis), EVaCuusImageProbe::Ok);
+	}
+
+	return true;
+}
+
 #endif // WITH_DEV_AUTOMATION_TESTS
