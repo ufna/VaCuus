@@ -49,6 +49,27 @@
  * (BuildPluginCommand.Automation.cs:465, read at :472). Read VaCuus.Build.cs, not this
  * paragraph, when the question is "does it ship".
  */
+/**
+ * VaCuusContentPaths::ProbeImage's verdict. Ok is the only value a caller may proceed on.
+ */
+enum class EVaCuusImageProbe : uint8
+{
+	/** Resolved, readable, and the bytes begin with a known image signature. */
+	Ok,
+
+	/** No mounted bundle and no loose root serves it. */
+	Missing,
+
+	/** Present and readable, but the bytes are a Git-LFS pointer -- `git lfs pull`. */
+	GitLfsPointer,
+
+	/** Present and readable, but neither a pointer nor a known image signature. */
+	NotAnImage,
+
+	/** Resolved to something that could not be opened or read at all. */
+	Unreadable,
+};
+
 namespace VaCuusContentPaths
 {
 /**
@@ -89,4 +110,47 @@ VACUUS_API const TArray<FString>& GetDocumentRoots();
  */
 VACUUS_API FString ResolveExistingDocument(const FString& VfsPath, FString* OutRoot = nullptr,
 	bool bIncludeMountedBundles = true);
+
+/**
+ * Classifies ONE image the way a person would if they read the bytes, so a content-
+ * dependent bootstrap can refuse by name instead of drawing blank rectangles.
+ *
+ * WHY THIS IS NOT `ResolveExistingDocument(...).IsEmpty()`, and it is the whole point
+ * (bead VaCuus-akj.28): art goes missing in TWO ways that look identical on screen, and
+ * an existence check catches only one.
+ *
+ *   1. The file is absent -- Content/DevUI/img/ gitignored, or simply never staged.
+ *   2. The file is PRESENT AND IS A ~130-BYTE GIT-LFS POINTER. Both this plugin and
+ *      VaCuusDemo carry `*.png filter=lfs`, so any clone made on a machine without
+ *      git-lfs installed writes pointer text in place of every image. Existence
+ *      passes, the open succeeds, and the failure moves down into the PNG decoder.
+ *
+ * Both render as the same flat colour blocks. The incident this was written for cost an
+ * hour on a plausible wrong hypothesis (a race in the async decode path, which exists
+ * and had just produced a real bug) before anyone read the log. Naming the repair is
+ * therefore the deliverable, not merely detecting the fault.
+ *
+ * ONE FILE IS ENOUGH for a whole art directory: images arrive together or not at all --
+ * a checkout writes pointers for every LFS-tracked path or for none, and a gitignored
+ * directory omits all of it. Callers probe a single representative image.
+ *
+ * SIGNATURES, NOT EXTENSIONS: PNG and JPEG (the two raster formats .gitattributes
+ * LFS-tracks and RmlUi's decoders accept here). A file whose bytes match neither is
+ * NotAnImage rather than Ok, so an Ok verdict is a positive statement about content
+ * rather than "not obviously a pointer" -- which is what makes a truncated or
+ * half-smudged file visible too.
+ *
+ * BUNDLES ARE PROBED IN PLACE. A bundle hit cannot go through the platform file layer
+ * (ResolveExistingDocument returns a deliberately unopenable `bundle://` pseudo-path,
+ * see above), so the bytes are read from the mounted span instead. Without that this
+ * would report Unreadable for every image in a bundle-only Shipping build and turn a
+ * healthy package into a refusal.
+ *
+ * OutDiagnosis, when supplied, receives a full human sentence naming the file, the
+ * fault and the repair -- empty on Ok. Callers log it verbatim; keeping the wording
+ * here is what stops each call site from inventing a weaker message.
+ *
+ * Any thread (the mount lookup is a snapshot; the loose read is plain file IO).
+ */
+VACUUS_API EVaCuusImageProbe ProbeImage(const FString& VfsPath, FString* OutDiagnosis = nullptr);
 }	 // namespace VaCuusContentPaths
