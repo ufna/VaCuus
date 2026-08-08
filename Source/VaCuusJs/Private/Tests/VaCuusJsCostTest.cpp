@@ -759,9 +759,11 @@ bool FVaCuusJsCostCombinedChurnTest::RunTest(const FString& /*Parameters*/)
 	//
 	// THE FULL EVIDENCE, every sample taken 2026-08-07/08, so the next person re-calibrating has
 	// the spread and not just a number:
-	//     p50   Linux quiet 0.389 0.388 0.391 0.389 | Mac quiet 1.40 1.45 1.48 | Mac busy 1.40 1.54
-	//     p99   Linux quiet 0.635 0.689 0.635 0.639 | Mac quiet 4.62 4.95 5.39 | Mac busy 12.6 32.8
-	// p50 moves 0.8% on Linux and 6% on the Mac ACROSS BOTH MACHINE STATES; p99 moves 5x on one
+	//     p50   Linux 0.389 0.388 0.391 0.389 | Win64 0.680 | Mac quiet 1.40 1.45 1.48 | Mac busy 1.29-2.02
+	//     p99   Linux 0.635 0.689 0.635 0.639 | Win64 1.194 | Mac quiet 4.62 4.95 5.39 | Mac busy 12.6-32.8
+	// Three platforms span 0.39-2.02 ms at the MEDIAN before any jitter is involved, which is on its
+	// own why an absolute p99 bound could not have worked. p50 moves 0.8% on Linux and stays in one
+	// band on the Mac ACROSS BOTH MACHINE STATES; p99 moves 5x on one
 	// machine. That is the whole argument for which one is the gate.
 	//
 	// THE P99 IS STILL THE DELIVERABLE -- spec 7 asks for it and it is still reported above. What
