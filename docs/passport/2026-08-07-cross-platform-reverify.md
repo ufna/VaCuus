@@ -155,11 +155,11 @@ grep reads it as a violation.
    same list and is green, but the ELF leg is unverified on this commit.
 2. **No GPU rows.** This is a build/suite/export re-verification. The manual matrix rows (glass,
    world panel, IME, Retina) are the August passports' business and were not re-run.
-3. **The `akj.24` fix was not re-verified on Win64.** The Windows box went off the network between
-   the fix landing and the re-run. Linux and macOS both carry it (218/218 and the new
-   `RepeatedHandle` test green on both); Win64 is verified only up to `0e1f470`. Since the defect
-   demonstrably did not reproduce on D3D12 in the first place, the missing leg is the *fix's*
-   regression check rather than the bug's confirmation — but it is missing.
+3. ~~The `akj.24` fix was not re-verified on Win64.~~ **Closed 2026-08-08**: the box came back and
+   the leg ran at `9c6ca5a`. Editor build 86.12 s with zero warnings, suite **218/218 with zero
+   failures**, `VaCuus.Render.Upload.RepeatedHandle` **Success**, and the Win64 export gate clean
+   (27 / 53 / 67 / 39 / 14 / 54 supported, 0 / 0 internal, 0 exported `JS_*`). All three platforms
+   now carry every fix on this page.
 
 ## 4. The consumer module — VaCuusDemo on Win64 and macOS
 
@@ -234,15 +234,21 @@ it either.
 
 What survived every machine state was the median alone:
 
-| | Linux quiet | Mac quiet | Mac busy |
-|---|---|---|---|
-| **p50** | 0.389 0.388 0.391 0.389 | 1.40 1.45 1.48 | 1.29 – 2.02 |
-| p99 | 0.635 0.689 0.635 0.639 | 4.62 4.95 5.39 | 12.6 – 32.8 |
+| | Linux quiet | **Win64** | Mac quiet | Mac busy |
+|---|---|---|---|---|
+| **p50** | 0.389 0.388 0.391 0.389 | **0.680** | 1.40 1.45 1.48 | 1.29 – 2.02 |
+| p99 | 0.635 0.689 0.635 0.639 | **1.194** | 4.62 4.95 5.39 | 12.6 – 32.8 |
+| tail ratio | 1.6 – 1.8 | **1.76** | 3.3 – 3.6 | 4.1 – 68.8 |
 
 p50 moves 0.8% on Linux and stays inside a single band on the Mac across both states, while p99
 moves 5× on one machine. So **p50 is the gate (< 3.0 ms) and the tail is printed, loudly and with
 the max frame beside it, when it is out of family — never as a failure.** The p99 is still the
 spec 7 deliverable and is still reported; what changed is only what may turn the suite red.
+
+Win64 (added 2026-08-08) lands between the other two and is the tidiest of the three — p50 0.680,
+tail ratio 1.76, i.e. a dedicated desktop with nothing indexing. Three platforms spanning 0.39 to
+2.02 ms at the median is the clearest statement of why an absolute p99 bound could not have
+worked: it is a 5× spread in the steady frame before any jitter is involved.
 
 Verified after the second fix: **3/3 green on the Mac**, p50 1.29 / 1.93 / 2.02 and tail ratios
 4.1 / 48.0 / 68.8 — i.e. the tail did exactly what it does on a desktop and the suite stayed
