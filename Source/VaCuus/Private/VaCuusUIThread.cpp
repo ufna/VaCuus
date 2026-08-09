@@ -1251,6 +1251,11 @@ void FVaCuusUIThread::ApplyModelUpdates()
 		for (const TSharedRef<FVaCuusBoundModel>& Model : Pair.Value)
 		{
 			Model->ApplyPendingUpdate();
+
+			// AFTER the apply, so an update that arrived in this very frame counts as a
+			// re-push. Costs a branch on a bool per model per frame in the armed-nowhere case,
+			// which is every frame that follows no language change.
+			Model->CheckTranslationRePush(GetFrameCount());
 		}
 	}
 
@@ -1362,6 +1367,11 @@ void FVaCuusUIThread::DrainCommands()
 				for (const TSharedRef<FVaCuusBoundModel>& Model : Pair.Value)
 				{
 					Model->DirtyTranslations();
+
+					// And arm the stale-FText detector on the models that can suffer from it.
+					// The plugin cannot re-push for the game -- it holds no pointer to the live
+					// struct -- so the most it can do is notice that nobody did.
+					Model->NoteTranslationTableChanged(GetFrameCount());
 				}
 			}
 			VaCuusTranslationVariable::DirtyStandaloneModels();

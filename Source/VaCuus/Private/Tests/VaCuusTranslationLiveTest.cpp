@@ -391,4 +391,114 @@ bool FVaCuusTranslationReservedNameTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+/**
+ * The stale-FText detector (gotchas #22): a model carrying FText that nobody re-pushes after a
+ * language change is told so, once, and a model that IS re-pushed is left alone.
+ *
+ * WHY A DETECTOR AND NOT A FIX. An FText field is projected to a culture-invariant string once,
+ * on the game thread, inside Sample() -- which is exactly what keeps the UI thread away from
+ * FTextLocalizationManager and makes this design thread-safe. The projection can never
+ * re-resolve itself, and the plugin holds no pointer to the game's live struct, so it cannot
+ * re-push on the game's behalf. What it CAN do is notice that nobody did, which turns a
+ * completely silent failure -- stale text, no log, nothing on screen but the wrong language --
+ * into one named line.
+ *
+ * THE SECOND HALF IS THE IMPORTANT ONE. A warning that tells a developer their text is wrong
+ * must never do that to someone whose text is right, so the re-pushing model below is not a
+ * nicety: it is the assertion that keeps this feature from becoming noise.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusTranslationStaleTextTest, "VaCuus.Translation.StaleText",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusTranslationStaleTextTest::RunTest(const FString& Parameters)
+{
+	using namespace VaCuusTranslationLiveTest;
+
+	if (!FPlatformProcess::SupportsMultithreading())
+	{
+		AddInfo(TEXT("Skipped: no multithreading support, so there is no UI thread to drive"));
+		return true;
+	}
+
+	FVaCuusModule& Module = FVaCuusModule::Get();
+	FVaCuusUIThread* UIThread = Module.GetOrStartUIThread();
+	if (!TestNotNull(TEXT("UI thread"), UIThread))
+	{
+		return false;
+	}
+
+	ON_SCOPE_EXIT
+	{
+		Module.StopUIThread();
+	};
+
+	// FVaCuusSamplerDefaultsModel carries an FText Caption; the fixture needs nothing new.
+	const UScriptStruct* Type = FVaCuusSamplerDefaultsModel::StaticStruct();
+	const TSharedRef<FVaCuusBoundModel> Neglected = MakeShared<FVaCuusBoundModel>(TEXT("hud"), Type);
+	const TSharedRef<FVaCuusBoundModel> Diligent = MakeShared<FVaCuusBoundModel>(TEXT("hud"), Type);
+
+	TestTrue(TEXT("the fixture type is detected as carrying FText"), Neglected->HasTextFields());
+
+	const TArray<FString> Ids = {GFieldId};
+	TUniquePtr<FTextProbeHost> OwnedA = MakeUnique<FTextProbeHost>(TEXT("vacuus_stale_neglected"), Ids);
+	TUniquePtr<FTextProbeHost> OwnedB = MakeUnique<FTextProbeHost>(TEXT("vacuus_stale_diligent"), Ids);
+	const TSharedRef<FVaCuusViewStatus> StatusA = MakeShared<FVaCuusViewStatus>();
+	const TSharedRef<FVaCuusViewStatus> StatusB = MakeShared<FVaCuusViewStatus>();
+
+	static const TCHAR* GTinyDocument = TEXT(R"(<rml>
+<head><style>body { display: block; } div { display: block; }</style></head>
+<body data-model="hud"><div id="field">{{Title}}</div></body>
+</rml>)");
+
+	const uint32 ViewA = UIThread->AllocateViewId();
+	const uint32 ViewB = UIThread->AllocateViewId();
+	UIThread->EnqueueAddView(ViewA, MoveTemp(OwnedA), FIntPoint(200, 100), StatusA);
+	UIThread->EnqueueBindModel(ViewA, Neglected);
+	UIThread->EnqueueLoadDocumentFromMemory(ViewA, GTinyDocument, /*LoadSerial=*/1);
+	UIThread->EnqueueAddView(ViewB, MoveTemp(OwnedB), FIntPoint(200, 100), StatusB);
+	UIThread->EnqueueBindModel(ViewB, Diligent);
+	UIThread->EnqueueLoadDocumentFromMemory(ViewB, GTinyDocument, /*LoadSerial=*/1);
+
+	FVaCuusSamplerDefaultsModel Live;
+	Live.Title = TEXT("Alpha");
+	Neglected->Sample(Type, &Live);
+	Neglected->PublishPending();
+	Diligent->Sample(Type, &Live);
+	Diligent->PublishPending();
+
+	if (!TestTrue(TEXT("frames ran"), RunFrames(*UIThread, 3)))
+	{
+		return false;
+	}
+
+	// THE LANGUAGE CHANGE. Neither model is re-pushed by this call -- that is the game's job,
+	// and the point of the whole test is what happens when only one game does it.
+	{
+		TMap<FString, FString> Table;
+		Table.Add(TEXT("vt_stale"), TEXT("irrelevant"));
+		FVaCuusTranslationRegistry::SetTable(Table, TEXT("ru"));
+	}
+
+	// Past the 60-frame deadline. The diligent model publishes a fresh sample each frame, the
+	// way every correctly written game does; the neglected one never publishes again.
+	for (int32 Frame = 0; Frame < 65; ++Frame)
+	{
+		Live.Title = FString::Printf(TEXT("Alpha %d"), Frame);
+		Diligent->Sample(Type, &Live);
+		Diligent->PublishPending();
+
+		if (!TestTrue(TEXT("frames ran past the deadline"), RunFrames(*UIThread, 1)))
+		{
+			return false;
+		}
+	}
+
+	TestTrue(TEXT("the model nobody re-pushed is REPORTED — the silent failure now has a line"),
+		Neglected->WasTranslationStaleReported());
+	TestFalse(TEXT("the model that kept publishing is NOT accused — no false positive for a correct game"),
+		Diligent->WasTranslationStaleReported());
+
+	return true;
+}
+
 #endif	  // WITH_DEV_AUTOMATION_TESTS
