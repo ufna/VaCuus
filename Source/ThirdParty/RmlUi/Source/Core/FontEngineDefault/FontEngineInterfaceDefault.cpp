@@ -77,4 +77,10 @@ void FontEngineInterfaceDefault::ReleaseFontResources()
 	FontProvider::ReleaseFontResources();
 }
 
+// VaCuus patch #5 (VENDORED_TAG.txt).
+int FontEngineInterfaceDefault::GetNumReplacementGlyphs()
+{
+	return FontProvider::GetNumReplacementGlyphs();
+}
+
 } // namespace Rml

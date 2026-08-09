@@ -83,6 +83,20 @@ public:
 	static int32 GetNumFacesLoaded_UIThread();
 
 	/**
+	 * UI THREAD. How many characters have been rendered as U+FFFD because no loaded face — styled
+	 * or fallback — had a glyph for them.
+	 *
+	 * THE ONLY WAY TO SEE THE FONT HALF FAIL. Upstream RmlUi substitutes the replacement character
+	 * and logs nothing at all (FontFaceHandleDefault.cpp), so Cyrillic or CJK text under the
+	 * shipped Latin-only face is a screen of U+FFFD with a clean log. VaCuus patch #5 adds the
+	 * count and one latched warning; this is the door to it. Zero on an engine whose font
+	 * implementation cannot report it, which is why it is a COUNT and not a bool.
+	 *
+	 * Resets with the RmlUi library, i.e. with the UI thread — same lifetime as the face count.
+	 */
+	static int32 GetNumReplacementGlyphs_UIThread();
+
+	/**
 	 * UI THREAD. Zeroes the loaded counter, called from FVaCuusUIThread::Init() — the count is
 	 * per thread lifetime, because that is the thing a replay has to restore. The REQUEST list
 	 * is game-thread state and deliberately survives, since it is what gets replayed.

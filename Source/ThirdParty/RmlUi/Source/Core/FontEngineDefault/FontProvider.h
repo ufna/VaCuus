@@ -55,6 +55,14 @@ public:
 	/// Releases resources owned by sized font faces, including their textures and rendered glyphs.
 	static void ReleaseFontResources();
 
+	// VaCuus patch #5 (VENDORED_TAG.txt): diagnostics for text that had no glyph anywhere.
+	/// Records that a character was substituted with the replacement glyph, and logs the FIRST such character
+	/// as a warning. Called from FontFaceHandleDefault::GetOrAppendGlyph once every fallback face has been tried.
+	static void NoteReplacementGlyph(Character character);
+
+	/// Returns how many substitutions have happened since the provider was initialised.
+	static int GetNumReplacementGlyphs();
+
 private:
 	FontProvider();
 	~FontProvider();
@@ -72,6 +80,11 @@ private:
 
 	FontFamilyMap font_families;
 	FontFaceList fallback_font_faces;
+
+	// VaCuus patch #5 (VENDORED_TAG.txt). Instance members, so both reset when the provider is
+	// recreated by Initialise() -- the counter describes one library lifetime, like the faces above it.
+	int num_replacement_glyphs = 0;
+	bool reported_replacement_glyph = false;
 
 	static const String debugger_font_family_name;
 };

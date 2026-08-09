@@ -55,10 +55,12 @@ public:
 
 		Context->Update();
 		NumFacesLoaded = FVaCuusFontRegistry::GetNumFacesLoaded_UIThread();
+		NumReplacementGlyphs = FVaCuusFontRegistry::GetNumReplacementGlyphs_UIThread();
 		Status->FramesRecorded.fetch_add(1, std::memory_order_release);
 	}
 
 	int32 NumFacesLoaded = -1;
+	int32 NumReplacementGlyphs = -1;
 };
 
 static bool RunFrames(FVaCuusUIThread& UIThread, int32 NumFrames)
@@ -174,6 +176,104 @@ bool FVaCuusFontRegistryReplayTest::RunTest(const FString& Parameters)
 	// the registry replayed its requests into the new thread's queue ahead of anything else.
 	TestEqual(TEXT("the face was RELOADED after the restart, not silently lost"),
 		SecondProbe->NumFacesLoaded, RequestsBefore + 1);
+
+	return true;
+}
+
+/**
+ * The silent substitution, made loud (VaCuus patch #5, bead VaCuus-sg2.6).
+ *
+ * RmlUi answers a character no loaded face covers by swapping in U+FFFD and returning, with no
+ * log at any level (FontFaceHandleDefault.cpp, "If we still have not found a glyph"). The shipped
+ * face is Latin-only -- measured 20-7e, a0-17f plus symbols -- so a game that switches to Russian
+ * without bringing a face renders a screen of replacement characters and its log says nothing was
+ * wrong. The patch counts the substitutions and warns once; this test is the observable that
+ * keeps the patch alive across a re-vendor.
+ *
+ * DELTAS, NEVER ABSOLUTES: the counter belongs to the RmlUi library instance, which this suite
+ * shares, so what is asserted is what THIS document did to it.
+ *
+ * WHAT IS NOT ASSERTED, and why: that the count stays flat once a covering face is registered.
+ * The repository ships exactly one .ttf and it has no Cyrillic, so there is no face to register
+ * -- proving that half needs a font asset, which is a licensing decision and not this bead's.
+ * The half that IS proven is the one that matters for a re-vendor: the instrument distinguishes
+ * covered text from uncovered text.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusFontMissingGlyphTest, "VaCuus.Font.MissingGlyph",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusFontMissingGlyphTest::RunTest(const FString& Parameters)
+{
+	using namespace VaCuusFontRegistryTest;
+
+	if (!FPlatformProcess::SupportsMultithreading())
+	{
+		AddInfo(TEXT("Skipped: no multithreading support, so there is no UI thread to drive"));
+		return true;
+	}
+
+	// A FONT-FAMILY AND A SIZE ARE REQUIRED, not decoration: without them RmlUi logs "No font face
+	// defined" and never lays the text out, so no glyph is ever asked for and the counter cannot
+	// move whether the patch is present or not.
+	static const TCHAR* GLatinDocument = TEXT(R"(<rml>
+<head><style>body { display: block; font-family: LatoLatin; font-size: 16px; } div { display: block; }</style></head>
+<body><div id="t">Health and ammo</div></body>
+</rml>)");
+
+	// Cyrillic: every one of these code points is outside the shipped face's coverage.
+	static const TCHAR* GCyrillicDocument = TEXT(R"(<rml>
+<head><style>body { display: block; font-family: LatoLatin; font-size: 16px; } div { display: block; }</style></head>
+<body><div id="t">Здоровье</div></body>
+</rml>)");
+
+	FVaCuusModule& Module = FVaCuusModule::Get();
+	FVaCuusUIThread* UIThread = Module.GetOrStartUIThread();
+	if (!TestNotNull(TEXT("UI thread"), UIThread))
+	{
+		return false;
+	}
+
+	ON_SCOPE_EXIT
+	{
+		Module.StopUIThread();
+	};
+
+	TUniquePtr<FFontProbeHost> Owned = MakeUnique<FFontProbeHost>(TEXT("vacuus_font_glyphs"));
+	FFontProbeHost* Probe = Owned.Get();
+	const TSharedRef<FVaCuusViewStatus> Status = MakeShared<FVaCuusViewStatus>();
+	const uint32 ViewId = UIThread->AllocateViewId();
+
+	UIThread->EnqueueAddView(ViewId, MoveTemp(Owned), FIntPoint(400, 200), Status);
+	UIThread->EnqueueLoadDocumentFromMemory(ViewId, GLatinDocument, /*LoadSerial=*/1);
+	if (!TestTrue(TEXT("frames ran over the Latin document"), RunFrames(*UIThread, 3)))
+	{
+		return false;
+	}
+
+	// THE CONTROL. Text the face covers must not move the counter -- without this the assertion
+	// below would pass just as well on a counter that incremented on every glyph.
+	const int32 AfterLatin = Probe->NumReplacementGlyphs;
+	if (!TestTrue(TEXT("the counter is readable (the patch is present)"), AfterLatin >= 0))
+	{
+		return false;
+	}
+
+	if (!TestTrue(TEXT("more frames over the same Latin text"), RunFrames(*UIThread, 3)))
+	{
+		return false;
+	}
+	TestEqual(TEXT("covered text substitutes NOTHING, however many frames it is laid out for"),
+		Probe->NumReplacementGlyphs, AfterLatin);
+
+	// THE CLAIM.
+	UIThread->EnqueueLoadDocumentFromMemory(ViewId, GCyrillicDocument, /*LoadSerial=*/2);
+	if (!TestTrue(TEXT("frames ran over the Cyrillic document"), RunFrames(*UIThread, 3)))
+	{
+		return false;
+	}
+
+	TestTrue(TEXT("uncovered text is COUNTED instead of silently becoming U+FFFD"),
+		Probe->NumReplacementGlyphs > AfterLatin);
 
 	return true;
 }

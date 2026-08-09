@@ -8,6 +8,7 @@
 #include "VaCuusUIThread.h"
 
 #include <RmlUi/Core/Core.h>
+#include <RmlUi/Core/FontEngineInterface.h>
 
 namespace
 {
@@ -109,6 +110,17 @@ int32 FVaCuusFontRegistry::GetNumFacesLoaded_UIThread()
 {
 	check(FVaCuusUIThread::IsInUIThread());
 	return GNumFacesLoaded;
+}
+
+int32 FVaCuusFontRegistry::GetNumReplacementGlyphs_UIThread()
+{
+	check(FVaCuusUIThread::IsInUIThread());
+
+	// Through the interface rather than the default engine directly, because that is the seam a
+	// game replacing the font engine would substitute at -- and the base implementation returns 0,
+	// so a custom engine reports "cannot say" rather than failing to compile.
+	Rml::FontEngineInterface* FontEngine = Rml::GetFontEngineInterface();
+	return FontEngine != nullptr ? FontEngine->GetNumReplacementGlyphs() : 0;
 }
 
 void FVaCuusFontRegistry::ResetLoadedCount_UIThread()

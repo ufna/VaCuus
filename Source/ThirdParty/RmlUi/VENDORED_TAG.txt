@@ -369,3 +369,80 @@ from patching the animation path as well.
 NOT yet offered upstream -- same standing as patches #1-#3. This one is the most
 upstream-shaped of the four: it uses upstream's own helper, in the function upstream's own
 comment says that helper was written for.
+
+
+Patch #5 -- a character no loaded face covers becomes U+FFFD with no log at any level
+(bead VaCuus-sg2.6).
+
+Five files, all small. Four of them exist only to carry the count out to a caller.
+
+  Source/Core/FontEngineDefault/FontFaceHandleDefault.cpp   the call site (one line)
+  Source/Core/FontEngineDefault/FontProvider.h / .cpp       the counter and the warning
+  Source/Core/FontEngineDefault/FontEngineInterfaceDefault.h / .cpp  the override
+  Include/RmlUi/Core/FontEngineInterface.h                  the virtual, defaulted to 0
+  Source/Core/FontEngineInterface.cpp                       that default
+
+THE DEFECT IS UPSTREAM'S AND IT IS A DIAGNOSTIC HOLE, not a rendering bug -- the
+substitution itself is correct behaviour. FontFaceHandleDefault::GetOrAppendGlyph, having
+missed in the styled face and then in every fallback face, does this:
+
+    // If we still have not found a glyph, use the replacement character.
+    if (it_glyph == glyphs.end())
+    {
+        character = Character::Replacement;
+        it_glyph = glyphs.find(character);
+        if (it_glyph == glyphs.end())
+            return nullptr;
+    }
+
+No Log::Message, no counter, nothing. So a document rendered ENTIRELY in replacement
+characters is indistinguishable, from the log, from one that rendered perfectly.
+
+WHY THAT MATTERS HERE MORE THAN IT DOES UPSTREAM. VaCuus ships exactly one face,
+Content/DevUI/fonts/LatoLatin-Regular.ttf, and it is Latin-only -- measured with fc-query:
+20-7e, a0-17f, plus assorted symbols. No Cyrillic, no CJK, no Greek beyond a few maths
+glyphs. That is the default every buyer starts from, so the first thing a localized game
+does -- push a Russian or Chinese table -- lands exactly on this path, and the buyer's
+report is "the text is all boxes" with a clean log to go with it.
+
+WHY IT IS NOT FIXED AT THE VaCuus LAYER: the plugin never sees the call. Glyph lookup
+happens inside FontFaceHandleDefault during layout; FontEngineInterface has no hook near
+it, and the only VaCuus-visible surface (FVaCuusSystemInterface::LogMessage) can report
+what RmlUi decides to say -- which is nothing. Replacing the whole font engine to obtain
+one counter is not a proportionate answer.
+
+THE SHAPE, chosen to be upstreamable rather than convenient: a virtual on the public
+FontEngineInterface with a base implementation returning 0, overridden by the default
+engine. An engine that cannot report this answers "0 substitutions", which is why the
+API is a COUNT and not a bool -- "cannot say" and "nothing wrong" must not be the same
+value by construction, and a count makes the difference visible in the trend rather than
+in the type. The warning is latched to ONE line per RmlUi initialisation because this
+runs inside text layout; a line per glyph would flood at frame rate. Both the counter and
+the latch are instance members of FontProvider, so they reset when Rml::Initialise
+recreates it -- the same lifetime as the face list beside them.
+
+VERIFICATION (the re-vendoring check): automation test VaCuus.Font.MissingGlyph
+(Source/VaCuus/Private/Tests/VaCuusFontRegistryTest.cpp). It lays out Latin text, asserts
+the counter does not move across repeated frames -- the control, without which the claim
+would pass on a counter that incremented on every glyph -- then loads Cyrillic and asserts
+it does. Reverted (the one line at the call site commented out) and watched to fail on
+2026-08-09:
+
+  Expected 'uncovered text is COUNTED instead of silently becoming U+FFFD' to be true.
+
+with the control still passing. Restored, green. The run also prints the new warning, which
+is the other half of the deliverable:
+
+  LogVaCuus: Warning: [Rml] No glyph for U+0417 in the styled font face or any fallback
+  face; it renders as the replacement character. ...
+
+U+0417 is the first character of the test's string, which is what says the latch reports the
+FIRST offender rather than an arbitrary one.
+
+NOT ASSERTED, and deliberately: that the count stays flat once a covering face is
+registered. The repository ships one .ttf and it has no Cyrillic, so there is no face to
+register -- proving that half needs a font asset, which is a licensing decision.
+
+NOT yet offered upstream -- same standing as patches #1-#4. This one is worth offering on
+its own merits even to a project that never uses VaCuus: it costs an int, changes no
+rendering behaviour, and turns a class of silent failure into a one-line warning.

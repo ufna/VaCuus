@@ -111,6 +111,13 @@ public:
 	/// Called by RmlUi when it wants to garbage collect memory used by fonts.
 	/// @note All existing FontFaceHandles and FontEffectsHandles are considered invalid after this call.
 	virtual void ReleaseFontResources();
+
+	// VaCuus patch #5 (VENDORED_TAG.txt): diagnostics for text that had no glyph anywhere.
+	/// Returns how many characters have been substituted with the replacement character because no loaded face --
+	/// neither the styled one nor any fallback -- had a glyph for them. Counts substitutions, not distinct characters.
+	/// @note The default implementation returns 0; an engine that cannot report this is indistinguishable from one
+	/// that has substituted nothing, which is why this reports a COUNT rather than a bool.
+	virtual int GetNumReplacementGlyphs();
 };
 
 } // namespace Rml
