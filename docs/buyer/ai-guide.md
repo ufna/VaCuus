@@ -58,8 +58,9 @@ Plugins/VaCuus/docs/buyer/rcss-matrix.md.
 | --- | --- |
 | Before the first document | [`setup.md`](setup.md) §2 — where files live, and the two host classes |
 | Before writing any style | [`rcss-matrix.md`](rcss-matrix.md) — the supported surface, generated |
-| Before the first authoring session | [`gotchas.md`](gotchas.md) — 20 numbered recorded findings |
+| Before the first authoring session | [`gotchas.md`](gotchas.md) — 22 numbered recorded findings |
 | Before optimising anything | [`perf-guide.md`](perf-guide.md) — measured budgets, not guesses |
+| Before the second language | [`localization.md`](localization.md) — the table, the two readers' different timing, and the Latin-only shipped font |
 
 `gotchas.md` is the highest-value page for an agent and it is worth reading in full once.
 The entries most likely to bite a model working from web habits:
@@ -173,6 +174,10 @@ without rendering it, is a guess — mark it as one.
 - Text is invisible, log repeats "No font face defined" → `gotchas.md` #5, and remember
   `@font-face src` is root-relative.
 - Data binding shows nothing, one Error at load → `gotchas.md` #9, bind before load.
+- Text renders as boxes after switching language → `gotchas.md` #5; the shipped face is
+  Latin-only and the log names the first missing character once.
+- A language switch moved some strings and not others → `gotchas.md` #21; parse-time text
+  translates once, at load.
 - Works uncooked, breaks packaged → `gotchas.md` #16 and #19.
 - Editor dies at startup with `exit 127` and no callstack → `gotchas.md` #20; it is a stale
   module binary in a source-built engine, not your UI.

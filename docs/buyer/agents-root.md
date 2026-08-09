@@ -50,6 +50,7 @@ right — put it last and end its value with a comma.
 | --- | --- |
 | How do I install it, host a document, ship it? | [`docs/buyer/setup.md`](docs/buyer/setup.md) |
 | Is this style supported? | [`docs/buyer/rcss-matrix.md`](docs/buyer/rcss-matrix.md) |
-| Why is this behaving strangely? | [`docs/buyer/gotchas.md`](docs/buyer/gotchas.md) — 20 numbered findings |
+| Why is this behaving strangely? | [`docs/buyer/gotchas.md`](docs/buyer/gotchas.md) — 22 numbered findings |
 | What does it cost, and what is the budget? | [`docs/buyer/perf-guide.md`](docs/buyer/perf-guide.md) |
+| How do I ship in more than one language? | [`docs/buyer/localization.md`](docs/buyer/localization.md) — and read it before the first non-Latin script |
 | The full agent briefing | [`docs/buyer/ai-guide.md`](docs/buyer/ai-guide.md) |

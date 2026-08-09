@@ -116,10 +116,19 @@ Do: put `position: relative` on the container you mean to anchor to.
 **5. Text renders nothing; the log repeats "No font face defined" — and your own
 `@font-face` `src` resolves against the wrong directory.**
 Cause: there is no default font (`vacuus-base.rcss:32-36`), and the message repeats per
-layout pass. The plugin loads LatoLatin for you and nothing else. **There is no public
-C++ font-loading API** — `Rml::LoadFontFace` is called only inside the plugin
-(`Source/VaCuus/Private/VaCuusEngine.cpp:138-153`) — so a project shipping its own faces
-has exactly one route, and it works: `@font-face` in RCSS.
+layout pass. The plugin loads LatoLatin for you and nothing else.
+
+**And LatoLatin is Latin-only.** Measured coverage: `U+0020–007E`, `U+00A0–017F`, plus
+assorted symbols. No Cyrillic, no CJK, no Greek beyond a few maths glyphs. A game that
+ships a second language and does nothing about fonts renders that language as replacement
+boxes — see the whole story, with the switch recipe, in
+[`localization.md`](localization.md) §6.
+
+There are **two** routes to your own faces. `@font-face` in RCSS, below, is the authoring
+one. `UVaCuusSubsystem::LoadFontFace(VfsPath, bFallbackFace)` is the runtime one, for a
+game that only knows which face it needs once the language is chosen; it is idempotent and
+survives a UI-thread restart. (An earlier edition of this entry said there was no public
+C++ font API. That was true until the runtime door landed.)
 
 **Its `src` is ROOT-relative, which is the opposite of every other path in the system.**
 `<link>` and `<script src>` are document-relative (#12); `@font-face`'s `src` is passed
@@ -363,6 +372,32 @@ Do: **feature-detect `Atomics` itself, never `SharedArrayBuffer` as a proxy** �
 you develop and fails on the platform most of your buyers ship to. If you need
 cross-thread coordination, note that VaCuus already runs every document on one
 process-wide UI thread, so a JS-visible atomic is rarely the tool you want.
+
+**21. You push a new translation table and half the screen changes.**
+Cause: the two readers do not have the same timing, and this is by design rather than a
+defect. RmlUi translates element text **once, when the document is parsed**, so
+`<div>hud_health</div>` keeps the language it was loaded in forever. Text written
+`{{ t.hud_health }}` inside a data model re-evaluates on the next UI frame, and
+`vacuus.translate()` always reads the newest table. So a mixed document visibly splits in
+two on a language switch.
+Do: decide per string. Plain markup is the fast path and stays the default; opt the
+strings that must change in place into `{{ t.key }}`. If you keep parse-time strings, a
+switch costs `ClearAssetCachesAndReloadAllViews` — which re-mounts JS from the module's
+top level, so open tab, scroll position and timers all reset, on the very screen the
+player is using to change the language. `vacuus.LocDemo` then
+`vacuus.LocDemo.Lang fr` shows both halves side by side in about ten seconds.
+Note the live route's keys are restricted to `[A-Za-z][A-Za-z0-9_.]*` — no hyphens, no
+leading digits — because they are parsed as data expressions. A key that does not fit
+simply stays parse-time. Full treatment: [`localization.md`](localization.md).
+
+**22. A model containing `FText` shows the old language after a culture change.**
+Cause: an `FText` field is resolved to a culture-invariant string **once**, on the game
+thread, inside `UpdateModel` — which is what keeps the UI thread away from
+`FTextLocalizationManager` and makes the design thread-safe at all. The projected text has
+no text id left, so it can never re-resolve itself. Nothing is logged, because nothing on
+that path is wrong.
+Do: call `UpdateModel` every frame (the rest of the system assumes you do), or re-push
+from `UVaCuusSubsystem::OnTranslationTableChanged`.
 
 ## Engine, cook and packaging
 
