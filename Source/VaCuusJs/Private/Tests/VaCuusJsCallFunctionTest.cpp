@@ -9,10 +9,14 @@
 
 #include "Tests/VaCuusJsDomTestRig.h"
 
-//~ EvalString, the read-back channel every JS test uses, lives in the DOM rig's namespace.
-using VaCuusJsDomTest::EvalString;
-
 #if WITH_DEV_AUTOMATION_TESTS
+
+//~ EvalString, the read-back channel every JS test uses, lives in the DOM rig's namespace.
+//~ INSIDE THE GUARD, and it has to be: VaCuusJsDomTestRig.h declares that namespace within
+//~ its own `#if WITH_DEV_AUTOMATION_TESTS` (:19-341), so in a Shipping build the namespace
+//~ does not exist and a `using` above this line is a hard compile error -- which is exactly
+//~ how BuildPlugin's third leg (UnrealGame Shipping) found it on 2026-08-09.
+using VaCuusJsDomTest::EvalString;
 
 namespace VaCuusJsCallFunctionTest
 {
