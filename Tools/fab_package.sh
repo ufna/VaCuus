@@ -109,11 +109,22 @@ check() { if eval "$2"; then echo "  PASS  $1"; else echo "  FAIL  $1"; fail=1; 
 # with three warning lines per asset as the only evidence (the same shape that cost the
 # demo project its 61 images). fab_scan has an LFS_POINTER class for the package, but
 # catching it HERE names the cause instead of the symptom.
-POINTERS="$(grep -rl --binary-files=text '^version https://git-lfs' "$CLONE/VaCuus" 2>/dev/null | head -5)"
+#
+# BOTH CHECKS SKIP Tools/scan-fixture*, and not as a convenience. Those trees are
+# fab_scan.sh's self-test corpus: one committed plant per violation class, including a
+# literal LFS pointer and a literal node_modules directory, and fab_scan ABORTS unless it
+# finds exactly them. They are supposed to look wrong. They also never reach a package --
+# no filter rule includes Tools/ at all -- so a precondition that failed on them would be
+# refusing to package the repository's own gate.
+FIXTURES=(-path "$CLONE/VaCuus/Tools/scan-fixture*" -prune -o)
+
+POINTERS="$(find "$CLONE/VaCuus" "${FIXTURES[@]}" -type f -print 2>/dev/null |
+	xargs -r grep -l --binary-files=text '^version https://git-lfs' 2>/dev/null | head -5)"
 check "no LFS pointers in the clone" '[ -z "$POINTERS" ]'
 [ -n "$POINTERS" ] && printf '        %s\n' $POINTERS
 
-check "no node_modules"      '[ -z "$(find "$CLONE/VaCuus" -type d -name node_modules -print -quit)" ]'
+check "no node_modules" \
+	'[ -z "$(find "$CLONE/VaCuus" "${FIXTURES[@]}" -type d -name node_modules -print -quit)" ]'
 check "no Binaries"          '[ ! -d "$CLONE/VaCuus/Binaries" ]'
 check "no Intermediate"      '[ ! -d "$CLONE/VaCuus/Intermediate" ]'
 check "descriptor present"   '[ -f "$CLONE/VaCuus/VaCuus.uplugin" ]'

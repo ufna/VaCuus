@@ -77,7 +77,10 @@ absent  "Tools"
 absent  ".git"
 absent  ".beads"
 absent  "CLAUDE.md"
-absent  "AGENTS.md"
+# AGENTS.md USED TO BE AN `absent` ROW HERE, and it was right until 2026-08-09: the only
+# AGENTS.md that existed was the repository's, about developing the plugin. The package now
+# carries a DIFFERENT file of that name for the buyer's coding agent (bead VaCuus-avu), so
+# the question changed from "is it here" to "which one is it" -- asserted below, by content.
 
 # THE BUYER DOCUMENTATION SHIPS, and this is the positive form of what an `absent "docs"`
 # row used to assert here. FilterPlugin.ini gained `/README.md` and `/docs/buyer/...` at
@@ -144,9 +147,6 @@ fi
 # The source of that file must NOT also ship: two front doors, one of them buried, and the
 # same text in the package twice.
 absent  "docs/buyer/agents-root.md"
-# Neither dev root file ships. Excluded by omission AND by explicit rule since avu; this row
-# is what makes the omission a decision rather than a thing that happens to still be true.
-absent  "CLAUDE.md"
 
 echo "----"
 echo "pass=$pass fail=$fail"
