@@ -862,6 +862,27 @@ inline void Fill(FVaCuusCostFeedModel& Model, int32 NumRows)
 }
 }	 // namespace VaCuusKillfeedFixture
 
+/**
+ * THE RESERVED-NAME COLLISION FIXTURE. `t` is the top-level name the live translation route
+ * binds into every model (VaCuusTranslationVariable.h), so a struct that declares a field of
+ * exactly that spelling must be refused for that ONE field and bound for every other.
+ *
+ * The lowercase spelling is the whole point and not a style slip: RmlUi resolves data addresses
+ * byte-for-byte, so `T` would be a different variable and would not collide at all -- which is
+ * itself asserted, through Title, by the test that uses this.
+ */
+USTRUCT()
+struct FVaCuusReservedNameModel
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	FString t;
+
+	UPROPERTY(EditAnywhere, Category = "Test")
+	FString Title;
+};
+
 /*
  * THERE IS NO NATIVE CONTAINER-CYCLE FIXTURE, AND THAT IS UHT'S DOING, NOT A GAP. The
  * direct shape (TArray<FSelf> inside FSelf) is refused outright

@@ -4,6 +4,7 @@
 
 #include "VaCuusDataVariable.h"
 #include "VaCuusDefines.h"
+#include "VaCuusTranslationVariable.h"
 #include "VaCuusUIThread.h"
 
 #include "HAL/PlatformProcess.h"
@@ -292,6 +293,18 @@ bool FVaCuusBoundModel::BindToContext(Rml::Context& Context)
 		Layout.GetStruct() != nullptr ? *Layout.GetStruct()->GetName() : TEXT("none"));
 
 	return true;
+}
+
+void FVaCuusBoundModel::DirtyTranslations()
+{
+	check(FVaCuusUIThread::IsInUIThread());
+
+	if (!bBoundToContext)
+	{
+		return;
+	}
+
+	VaCuusTranslationVariable::Dirty(ModelHandle);
 }
 
 void FVaCuusBoundModel::ApplyPendingUpdate()

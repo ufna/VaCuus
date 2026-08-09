@@ -169,6 +169,21 @@ public:
 	void DispatchUnload();
 
 	/**
+	 * Invokes `vacuus.onLanguageChanged(tag)` if a script assigned a function to it — the same
+	 * read-at-fire, guard-wrapped, exception-to-the-sink shape as DispatchUnload, counted on the
+	 * runtime (GetNumLanguageCallbacksRun).
+	 *
+	 * WHAT IT IS FOR: markup written `{{ t.key }}` re-translates by itself, but a UI that builds
+	 * its own strings in JS — a killfeed line, anything needing `translate(key, params)` — has
+	 * no other way to learn that the language moved. Tag is the pusher's label, uninterpreted.
+	 *
+	 * NOT A DOM EVENT, for DispatchUnload's reason restated: the table is process-wide and has
+	 * no element to dispatch against, so a callback slot on the host object is the smallest
+	 * surface that fires identically in every view.
+	 */
+	void DispatchLanguageChanged(const FString& Tag);
+
+	/**
 	 * The identity cache's front door: one wrapper per live element, `===`
 	 * across lookups. Returns an OWNED ref (caller frees or returns to JS);
 	 * the cache itself keeps a BORROWED one (VaCuusJsDomHandle.h has the

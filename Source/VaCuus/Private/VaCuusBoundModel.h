@@ -297,6 +297,17 @@ public:
 	 */
 	void ApplyPendingUpdate();
 
+	/**
+	 * Dirties the reserved translation variable so every `{{ t.* }}` in this model re-evaluates
+	 * on the next Context::Update. UI thread; a no-op before BindToContext(), which is correct
+	 * rather than merely tolerable — a model bound later reads the table at its FIRST evaluation
+	 * and so is already current.
+	 *
+	 * Called from the SetTranslationSnapshot drain, once per model, right after the new snapshot
+	 * is installed. See VaCuusTranslationVariable.h for why one dirty covers every key.
+	 */
+	void DirtyTranslations();
+
 	uint64 GetNumUpdatesApplied() const { return Channel.GetNumUpdatesApplied(); }
 	uint64 GetAppliedGeneration() const { return Channel.GetAppliedGeneration(); }
 

@@ -151,6 +151,18 @@ enum class EVaCuusCommandKind : uint8
 	SetTranslationSnapshot,
 
 	/**
+	 * Loads one font face through Rml::LoadFontFace (spec 2026-08-09 §3). THREAD-level like the
+	 * two snapshots above and for the same reason: RmlUi's font provider is process-global state
+	 * inside Rml::Initialise/Shutdown, with no view identity anywhere in it. Carries Payload (the
+	 * VFS path) and bFallbackFace.
+	 *
+	 * FIFO IS THE FALLBACK ORDER. RmlUi consults fallback faces in registration order
+	 * (FontFaceHandleDefault.cpp:367-383), so the queue's ordering is not merely convenient here
+	 * -- it decides which face wins a glyph.
+	 */
+	LoadFontFace,
+
+	/**
 	 * Drops ONE model condemned by a Blueprint struct recompile (VaCuus-akj.16, spec M6
 	 * 2(j)): out of this thread's registry and the write router, its data model out of the
 	 * view's context (Context::RemoveDataModel, Context.cpp:1097-1114 -- which is also what
@@ -206,8 +218,11 @@ struct FVaCuusUICommand
 	/** View this command applies to; 0 (and Shutdown) means "the whole thread". */
 	uint32 ViewId = 0;
 
-	/** Document path, RML source or JS source, per Kind. Empty for the rest. */
+	/** Document path, RML source, JS source or font VFS path, per Kind. Empty for the rest. */
 	FString Payload;
+
+	/** LoadFontFace only: whether the face joins RmlUi's ordered fallback chain. */
+	bool bFallbackFace = false;
 
 	/**
 	 * ExecuteScript only: the name errors and backtraces report for Payload.

@@ -100,6 +100,11 @@ public:
 		Real->OnDocumentReady(ViewId, Document);
 	}
 	virtual void OnDocumentClosing(uint32 ViewId) override { Real->OnDocumentClosing(ViewId); }
+
+	// FORWARDED EXPLICITLY even though the interface defaults it to a no-op: this wrapper's job
+	// is to be indistinguishable from the real host, and a silently-inherited default would make
+	// `vacuus.onLanguageChanged` untestable through the rig while working in production.
+	virtual void OnTranslationTableChanged(const FString& Tag) override { Real->OnTranslationTableChanged(Tag); }
 	virtual void PumpFrame(double NowSeconds) override
 	{
 		TFunction<void()> Closure;

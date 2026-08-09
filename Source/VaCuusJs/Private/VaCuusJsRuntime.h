@@ -222,6 +222,10 @@ public:
 	uint64 GetNumUnloadCallbacksRun() const { return NumUnloadCallbacksRun.load(std::memory_order_relaxed); }
 	void NoteUnloadCallbackRun() { NumUnloadCallbacksRun.fetch_add(1, std::memory_order_relaxed); }
 
+	/** `vacuus.onLanguageChanged` callbacks actually INVOKED — the live signal's observable. */
+	uint64 GetNumLanguageCallbacksRun() const { return NumLanguageCallbacksRun.load(std::memory_order_relaxed); }
+	void NoteLanguageCallbackRun() { NumLanguageCallbacksRun.fetch_add(1, std::memory_order_relaxed); }
+
 	/**
 	 * THE THREE-DEATH-ORDERS OBSERVABLE (M4 Task 5, spec 2(g)): the number of
 	 * listener-held JS function refs currently alive, a GAUGE, not a fired-count.
@@ -332,6 +336,7 @@ private:
 	std::atomic<uint64> NumErrors{0};
 	std::atomic<uint64> NumWatchdogTrips{0};
 	std::atomic<uint64> NumUnloadCallbacksRun{0};
+	std::atomic<uint64> NumLanguageCallbacksRun{0};
 
 	//~ Owning-thread-only bookkeeping; plain members on purpose (see the class
 	//~ comment's counter-pattern note -- these have no cross-thread readers).

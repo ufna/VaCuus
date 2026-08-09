@@ -21,7 +21,33 @@ struct FVaCuusTranslationSnapshot
 
 	/** Translation key -> translated text. Keys are matched verbatim (case-sensitive). */
 	TMap<FString, FString> Table;
+
+	/**
+	 * The producer's own label for this table ("ru", "zh-Hans", a culture name, anything).
+	 * THE PLUGIN NEVER INTERPRETS IT — it is carried to `vacuus.onLanguageChanged` and to
+	 * the game-thread delegate and that is all. Without it a change signal can only say
+	 * "something changed", and a handler that wants to swap a flag icon or a font class has
+	 * to go ask the game separately for a fact the pusher already had in hand.
+	 */
+	FString Tag;
 };
+
+/**
+ * "A new table is installed." GAME THREAD, broadcast synchronously at the end of SetTable,
+ * i.e. before the snapshot has necessarily reached the UI thread — a handler may push more
+ * game-thread state (see below) and it will drain in the same FIFO order.
+ *
+ * THIS IS THE HANGING POINT FOR THE FText RE-PUSH, and it exists because the alternative is
+ * every buyer independently rediscovering FInternationalization::OnCultureChanged. A model
+ * carrying FText stores FText::AsCultureInvariant(Live.ToString()), resolved once on the
+ * game thread (FVaCuusModelSampler's header carries why), so a culture change is invisible
+ * to a bound model until the next UpdateModel. Hang that re-push here.
+ *
+ * ON THE REGISTRY RATHER THAN THE SUBSYSTEM because that is where the state is: the table is
+ * process-wide, and a C++ caller reaching SetTable directly must not be able to change the
+ * language without the signal firing. UVaCuusSubsystem forwards it to a BlueprintAssignable.
+ */
+DECLARE_MULTICAST_DELEGATE_TwoParams(FOnVaCuusTranslationTableChanged, const FString& /*Tag*/, uint64 /*Version*/);
 
 /**
  * The process-wide localization registry (M5 Task 8, spec §2(l)) — the seam behind
@@ -65,8 +91,18 @@ public:
 	 * new text and `vacuus.translate` calls only. Push the table before LoadDocument,
 	 * or reload the document after a language change — the FText re-push contract on
 	 * UVaCuusView::UpdateModel is the same shape.
+	 *
+	 * THE LIVE HALF DOES NOT NEED EITHER: text written as `{{ t.key }}` inside a data model
+	 * re-evaluates in place on the next UI frame, because this call dirties the reserved `t`
+	 * variable on every model VaCuus created (FVaCuusTranslationVariable). Live is opt-in
+	 * per string; plain markup keeps the parse-time fast path described above.
+	 *
+	 * Tag is the producer's label, carried to the change signals and never interpreted.
 	 */
-	static void SetTable(const TMap<FString, FString>& Table);
+	static void SetTable(const TMap<FString, FString>& Table, const FString& Tag = FString());
+
+	/** The game-thread change signal; see the delegate's own declaration for what it is for. */
+	static FOnVaCuusTranslationTableChanged& OnTableChanged();
 
 	/** GAME THREAD. Current version; 0 = no table ever published. */
 	static uint64 GetVersion_GameThread();

@@ -11,6 +11,7 @@
 class FVaCuusUIThread;
 class IVaCuusDocumentHost;
 class UScriptStruct;
+class UStringTable;
 class UVaCuusBundle;
 class UVaCuusStyleSet;
 class UVaCuusView;
@@ -24,6 +25,17 @@ class UVaCuusView;
  * reload has lie. Add one per view you loaded.
  */
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnVaCuusDocumentsReloadRequested, int32& /*InOutNumReloaded*/);
+
+/**
+ * The Blueprint-facing half of FOnVaCuusTranslationTableChanged (VaCuusTranslation.h, which
+ * carries the whole argument for why this signal exists). Forwarded, not re-implemented, so
+ * a C++ caller reaching FVaCuusTranslationRegistry::SetTable directly cannot change the
+ * language behind Blueprint's back.
+ *
+ * Version is int64 because dynamic delegates have no uint64 property type; the registry's
+ * version is monotonic from 1 and will not reach the sign bit in any process's lifetime.
+ */
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnVaCuusTranslationTableChangedBP, const FString&, Tag, int64, Version);
 
 /**
  * Per-GameInstance owner of VaCuus views, and the once-per-frame pulse that
@@ -226,9 +238,75 @@ public:
 	 * TranslateString once, at text instancing; `vacuus.translate` calls always see
 	 * the newest table. After a language change: push the new table, then reload
 	 * (ClearAssetCachesAndReloadAllViews) for the RML half.
+	 *
+	 * THE RELOAD IS ONLY FOR PARSE-TIME TEXT. Markup written as `{{ t.key }}` inside a data
+	 * model re-translates in place on the next UI frame, no reload and no lost JS state —
+	 * live is opt-in per string (FVaCuusTranslationVariable carries the shape and its key
+	 * restrictions). Reload remains correct, and remains the only route for plain markup.
+	 *
+	 * Tag is the caller's own label ("ru", a culture name, anything): it is handed to
+	 * OnTranslationTableChanged and to `vacuus.onLanguageChanged`, and never interpreted.
+	 *
+	 * TAG IS DEFAULTED RATHER THAN REQUIRED because this is a shipped BlueprintCallable: a
+	 * new required pin would break every existing graph that calls it. An empty tag is a
+	 * legal "the pusher did not say", and the signals carry it through unchanged.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "VaCuus")
-	void SetTranslationTable(const TMap<FString, FString>& Table);
+	void SetTranslationTable(const TMap<FString, FString>& Table, const FString& Tag = TEXT(""));
+
+	/**
+	 * The same push, built from an engine String Table asset — the bridge that makes UE's
+	 * own localization pipeline work through VaCuus with no glue written by the caller.
+	 *
+	 * Each entry's value is FText::FromStringTable(TableId, Key).ToString() (Text.h:510),
+	 * i.e. ALREADY RESOLVED AGAINST THE CURRENT CULTURE, so the game's `.locres` for the
+	 * active language is what lands in the table. Keys come from the always-available
+	 * 2-parameter FStringTable::EnumerateKeysAndSourceStrings (StringTableCore.h:162); the
+	 * 3-parameter overload beside it is WITH_EDITORONLY_DATA and would not survive cooking.
+	 *
+	 * Call it again after a culture change — the values are resolved HERE, at call time, and
+	 * nothing re-resolves itself afterwards (the same reason UpdateModel needs a re-push).
+	 *
+	 * @return how many entries were published; 0 with a Warning for a null or empty asset.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "VaCuus")
+	int32 SetTranslationTableFromStringTable(UStringTable* StringTable, const FString& Tag);
+
+	/**
+	 * "A new translation table is installed", on the game thread. THE HANGING POINT FOR THE
+	 * FText RE-PUSH: a bound model's FText fields are resolved once, on push, and can never
+	 * re-resolve themselves (UVaCuusView::UpdateModel carries the whole contract), so a
+	 * culture change stays invisible to them until something calls UpdateModel again. Bind
+	 * here and do it, instead of wiring FInternationalization::OnCultureChanged yourself.
+	 *
+	 * Forwarded from the process-wide registry, so it fires however the table was pushed.
+	 */
+	UPROPERTY(BlueprintAssignable, Category = "VaCuus")
+	FOnVaCuusTranslationTableChangedBP OnTranslationTableChanged;
+
+	/**
+	 * Loads a font face at runtime, from a path under the DevUI roots (the same VFS every other
+	 * UI file comes through, so a bundled face works like a loose one).
+	 *
+	 * WHY THE PLUGIN OWNS THIS: Rml::LoadFontFace touches process-global font state on the UI
+	 * thread, which game code has no way to reach. And it is not optional for a localized game —
+	 * the face this plugin ships covers Latin only (measured: 20-7e, a0-17f plus symbols), so
+	 * Russian or Chinese text without your own face renders U+FFFD for every character, and RmlUi
+	 * substitutes that replacement silently (FontFaceHandleDefault.cpp:386-393).
+	 *
+	 * bFallbackFace puts the face in RmlUi's fallback chain, consulted IN REGISTRATION ORDER for
+	 * any character the styled family lacks — which is what makes mixed-script text work without
+	 * per-run font switching in the markup.
+	 *
+	 * Registered faces are replayed if the UI thread restarts, and re-registering the same face
+	 * is a no-op, so calling this from a language-change handler is safe. RCSS `@font-face`
+	 * remains the authoring route; this is for a game that only knows which face it needs at
+	 * runtime. Game thread.
+	 *
+	 * @return false for an empty path or a face already registered.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "VaCuus")
+	bool LoadFontFace(const FString& VfsPath, bool bFallbackFace = false);
 
 	/**
 	 * Mounts a UI bundle (M6): its packed files then serve every VFS open ahead of the
@@ -282,4 +360,11 @@ private:
 
 	/** Set in Initialize(); gates ticking exactly like UTickableWorldSubsystem's own flag. */
 	bool bInitialized = false;
+
+	/**
+	 * Subscription to the process-wide registry signal, released in Deinitialize(). Held as
+	 * a handle rather than removed by object, because the registry delegate outlives every
+	 * subsystem and a PIE session that leaked one would fire into a destroyed UObject.
+	 */
+	FDelegateHandle TranslationChangedHandle;
 };

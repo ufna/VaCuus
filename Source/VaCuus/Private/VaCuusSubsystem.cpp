@@ -8,6 +8,7 @@
 #include "VaCuusBundleMount.h"
 #include "VaCuusDefines.h"
 #include "VaCuusDocumentHost.h"
+#include "VaCuusFontRegistry.h"
 #include "VaCuusStats.h"
 #include "VaCuusStyleSet.h"
 #include "VaCuusTranslation.h"
@@ -19,6 +20,9 @@
 #include "Containers/Ticker.h"
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
+#include "Internationalization/StringTable.h"
+#include "Internationalization/StringTableCore.h"
+#include "Internationalization/StringTableRegistry.h"
 #include "HAL/IConsoleManager.h"
 #include "HAL/PlatformProperties.h"
 #include "HAL/PlatformTime.h"
@@ -76,6 +80,15 @@ void UVaCuusSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 		}
 	}
 
+	// The BP-facing forward of the process-wide signal. Subscribed per game instance so
+	// multi-PIE gets one broadcast per subsystem, which is what a Blueprint bound in one
+	// client expects; the registry itself fires once.
+	TranslationChangedHandle = FVaCuusTranslationRegistry::OnTableChanged().AddWeakLambda(this,
+		[this](const FString& Tag, uint64 Version)
+		{
+			OnTranslationTableChanged.Broadcast(Tag, static_cast<int64>(Version));
+		});
+
 	bInitialized = true;
 	SetTickableTickType(GetTickableTickType());
 }
@@ -96,6 +109,12 @@ void UVaCuusSubsystem::Deinitialize()
 		}
 	}
 	Views.Empty();
+
+	// The registry delegate is process-wide and outlives this subsystem; AddWeakLambda
+	// already makes a leaked binding inert, but removing it keeps the invocation list from
+	// growing by one dead entry per PIE session.
+	FVaCuusTranslationRegistry::OnTableChanged().Remove(TranslationChangedHandle);
+	TranslationChangedHandle.Reset();
 
 	SetTickableTickType(ETickableTickType::Never);
 	bInitialized = false;
@@ -265,10 +284,70 @@ void UVaCuusSubsystem::UnregisterStyleSet(UVaCuusStyleSet* StyleSet)
 	FVaCuusStyleRegistry::UnregisterStyleSet(StyleSet);
 }
 
-void UVaCuusSubsystem::SetTranslationTable(const TMap<FString, FString>& Table)
+void UVaCuusSubsystem::SetTranslationTable(const TMap<FString, FString>& Table, const FString& Tag)
 {
 	check(IsInGameThread());
-	FVaCuusTranslationRegistry::SetTable(Table);
+	FVaCuusTranslationRegistry::SetTable(Table, Tag);
+}
+
+int32 UVaCuusSubsystem::SetTranslationTableFromStringTable(UStringTable* StringTable, const FString& Tag)
+{
+	check(IsInGameThread());
+
+	if (StringTable == nullptr)
+	{
+		UE_LOG(LogVaCuus, Warning, TEXT("SetTranslationTableFromStringTable(null): nothing published, the table is unchanged"));
+		return 0;
+	}
+
+	const FName TableId = StringTable->GetStringTableId();
+	FStringTableConstRef Source = StringTable->GetStringTable();
+
+	// THE LOOKUP HAS TO EXIST BEFORE THE VALUES ARE WORTH READING. FText::FromStringTable
+	// resolves through the process-wide registry, not through the object in hand, and a table
+	// that is not registered there yields the literal placeholder "<MISSING STRING TABLE ENTRY>"
+	// for EVERY key -- a full, well-shaped, completely wrong table with no error anywhere.
+	// UStringTable only auto-registers when IsAsset() (StringTable.cpp:401), so an object built
+	// in the transient package, or one manually unregistered, lands exactly here.
+	if (!FStringTableRegistry::Get().FindStringTable(TableId).IsValid())
+	{
+		UE_LOG(LogVaCuus, Error,
+			TEXT("String table '%s' is not in the string-table registry, so every entry would resolve to the missing-entry ")
+			TEXT("placeholder; nothing was published. Pass a saved String Table ASSET (a transient UStringTable does not ")
+			TEXT("auto-register)"),
+			*TableId.ToString());
+		return 0;
+	}
+
+	TMap<FString, FString> Table;
+	Source->EnumerateKeysAndSourceStrings(
+		[&Table, TableId](const FTextKey& Key, const FString& /*SourceString*/) -> bool
+		{
+			// THE SOURCE STRING IS DELIBERATELY IGNORED. It is the authoring-language text;
+			// what a running game needs is the entry resolved against the CURRENT culture,
+			// which is exactly what FText::FromStringTable gives (Text.h:510) and what makes
+			// the project's .locres the thing that decides the answer.
+			Table.Add(Key.ToString(), FText::FromStringTable(TableId, Key).ToString());
+			return true;
+		});
+
+	if (Table.IsEmpty())
+	{
+		UE_LOG(LogVaCuus, Warning,
+			TEXT("String table '%s' enumerated 0 entries; publishing it would REPLACE the live table with an empty one, ")
+			TEXT("so nothing was published"),
+			*TableId.ToString());
+		return 0;
+	}
+
+	FVaCuusTranslationRegistry::SetTable(Table, Tag);
+	return Table.Num();
+}
+
+bool UVaCuusSubsystem::LoadFontFace(const FString& VfsPath, bool bFallbackFace)
+{
+	check(IsInGameThread());
+	return FVaCuusFontRegistry::RegisterFace(VfsPath, bFallbackFace);
 }
 
 bool UVaCuusSubsystem::MountBundle(UVaCuusBundle* Bundle)

@@ -194,6 +194,18 @@ interface VaCuusHost {
 	 * assigned (feature-testable, like `document`).
 	 */
 	onUnload: (() => void) | null;
+	/**
+	 * Assign a function; invoked after the game publishes a new translation table, once per
+	 * view. `tag` is whatever the pusher labelled it with ("ru", a culture name, anything) —
+	 * the plugin never interprets it. Null until assigned, like `onUnload`.
+	 *
+	 * ORDERING IS GUARANTEED: the new table is already installed when this runs, so
+	 * `vacuus.translate` inside the handler answers in the NEW language.
+	 *
+	 * You need this only for strings JS builds itself. Markup written `{{ t.key }}` inside a
+	 * data model re-translates on its own, with no reload and no callback.
+	 */
+	onLanguageChanged: ((tag: string) => void) | null;
 	/** console.log under the host name — the same thunk, so the two cannot drift. */
 	log(...args: any[]): void;
 	/**

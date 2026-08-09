@@ -6,6 +6,7 @@
 #include "VaCuusContentPaths.h"
 #include "VaCuusDefines.h"
 #include "VaCuusEngine.h"
+#include "VaCuusFontRegistry.h"
 #include "VaCuusStyleSet.h"
 #include "VaCuusTranslation.h"
 #include "VaCuusUIThread.h"
@@ -114,6 +115,12 @@ FVaCuusUIThread* FVaCuusModule::GetOrStartUIThread()
 		// table (M5 Task 8) rides the identical argument one line down.
 		FVaCuusStyleRegistry::PublishToUIThread(*UIThread);
 		FVaCuusTranslationRegistry::PublishToUIThread(*UIThread);
+
+		// And the font faces (spec 2026-08-09 §3), by the same argument plus one of its own: a
+		// RESTARTED thread comes back with a fresh RmlUi whose font provider holds only the
+		// shipped Latin face, so without this replay a game's Cyrillic or CJK face is silently
+		// gone and every glyph it served becomes U+FFFD.
+		FVaCuusFontRegistry::PublishToUIThread(*UIThread);
 		return UIThread.Get();
 	}
 
@@ -126,6 +133,12 @@ FVaCuusUIThread* FVaCuusModule::GetOrStartUIThread()
 		UIThread = MoveTemp(NewThread);
 		FVaCuusStyleRegistry::PublishToUIThread(*UIThread);
 		FVaCuusTranslationRegistry::PublishToUIThread(*UIThread);
+
+		// And the font faces (spec 2026-08-09 §3), by the same argument plus one of its own: a
+		// RESTARTED thread comes back with a fresh RmlUi whose font provider holds only the
+		// shipped Latin face, so without this replay a game's Cyrillic or CJK face is silently
+		// gone and every glyph it served becomes U+FFFD.
+		FVaCuusFontRegistry::PublishToUIThread(*UIThread);
 		return UIThread.Get();
 	}
 
