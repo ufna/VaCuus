@@ -316,7 +316,57 @@ still A/B); Shipping ships the bundle or nothing. **Verify it served:** every vi
 teardown logs `N open(s) served by mounted bundles, M by loose roots` — in Shipping,
 M must be 0, and the plugin's own packaged acceptance gates assert exactly that.
 
-## 4. What to read next
+## 4. Verify it yourself — the headless recipe
+
+`Automation RunTests VaCuus` was mentioned twice above without saying how to *run* it
+without a person sitting at the editor. Here is the whole pipeline, and then the four
+things about it that will each cost you an afternoon the first time.
+
+**The suite** — no RHI needed, so it runs on a build agent:
+
+```bash
+<Engine>/Binaries/<Platform>/UnrealEditor-Cmd <Project>.uproject \
+  -ExecCmds="Automation RunTests VaCuus, Quit" -unattended -nullrhi -nosplash
+```
+
+**A visual run** — a real frame, offscreen, at a resolution you chose:
+
+```bash
+<Engine>/Binaries/<Platform>/UnrealEditor <Project>.uproject \
+  -game -RenderOffscreen -ForceRes -resx=1920 -resy=1080 \
+  -ExecCmds="vacuus.RefHud, vacuus.M1HUD.AutoShot 10,"
+```
+
+Screenshots land in `Saved/Screenshots/<Platform>/`.
+
+**1. `-ExecCmds` splits on COMMAS, not semicolons.** `ParseExecCommands.cpp:27` is the
+split, and single-quoted commas are the documented escape (`:11-14`). A recipe written
+with `;` is not rejected — it is parsed as ONE command, which does not exist, and no
+"not recognized" line appears anywhere. **The value also swallows every argument after
+it**: `ParseExecCmdsFromCommandLine` passes `bShouldStopOnSeparator=false`
+(`ParseExecCommands.cpp:63`), so anything to its right becomes part of the last command.
+Put `-ExecCmds` last and **end its value with a comma**, as both recipes above do.
+
+**2. `-RenderOffscreen` alone does not give you the resolution you asked for.**
+`-resx`/`-resy` are clamped to the monitor's usable size unless `-ForceRes` is present
+(`GameEngine.cpp:413-419`), and offscreen there is no monitor to measure — you get a
+small default and every pixel assertion you make is about the wrong frame.
+
+**3. Read results from `Saved/Logs/<Project>.log`, not from stdout.** Other engine
+processes (the trace server in particular) fork and interleave, and the tail of stdout is
+routinely clobbered. The log file is not.
+
+**4. Expect to kill the process yourself.** `Quit` in an `-ExecCmds` list is dispatched at
+frame 0 and deferred, and after an automation session it frequently never fires; the run
+is finished when `Sending StopTestSession` appears in the log. **Kill it by PID.** Do not
+`pkill -f` a pattern taken from the command line — that pattern also matches the shell
+that launched it, and on a build agent it will match the job.
+
+None of this is VaCuus-specific; it is how the engine behaves. It is here because the
+plugin's own acceptance runs are driven exactly this way, and because a buyer who cannot
+reproduce the pipeline cannot check any claim in `perf-guide.md` against their own machine.
+
+## 5. What to read next
 
 - `gotchas.md` — before your first authoring day; every entry is a recorded finding.
 - `rcss-matrix.md` — the exact supported RCSS surface, generated from the vendored
