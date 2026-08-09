@@ -11,10 +11,18 @@ human at the keyboard with an IME, and row 13 wants an interactive editor PIE wi
 file edit. Neither is "the session died". **Row 13 has since been executed on the Linux
 column** (2026-08-06, `-vacuusproof` plus a scripted edit, with a pixel pair and a new test
 for its shadow leg — see the row's note); the same run is available on Win64 and needs
-nothing that platform has to supply. The **macOS Metal**
-column remains the owner-hardware handoff: run the SAME commands, read the SAME assertions,
-fill the cells. A row that could not be executed is marked with its reason — it is owed on
-every platform, not silently dropped.
+nothing that platform has to supply.
+
+**The macOS Metal column below is STALE, and the cells lie by omission.** They still read
+`owner hw`, but the macOS pass ran on 2026-08-03 and answered 12 of the 15 rows — the record is
+`2026-08-vacuus-macos-results.md` §"the matrix", which was written as a separate document and
+never merged back into this table. Read that document, not this column, until the merge lands
+(bead `VaCuus-cob`). Two things to carry when you do: every macOS visual row is an **SM5** row
+(M1 Pro is `GPUFamilyApple7`, so the SM6 clause in `MetalRHI.cpp:255-268` never binds), and rows
+5, 13 and 15 are NOT RUN there for reasons that are named.
+
+A row that could not be executed is marked with its reason — it is owed on every platform, not
+silently dropped.
 
 **Read the Win64 column against its machine, not against Linux's.** The two columns are
 different hardware and the desktop is ~2.8× slower on this workload; the section "The machine,
