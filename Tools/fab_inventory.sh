@@ -120,6 +120,34 @@ present "VaCuus.uplugin"
 present "Resources"
 present "Shaders"
 
+# ---------------------------------------------------------------- the buyer's front door
+# Bead VaCuus-avu. Tools/fab_package.sh writes AGENTS.md into the package root from
+# docs/buyer/agents-root.md; a package produced by RunUAT ALONE will not have it, and that
+# is the point of asserting it here rather than trusting the step ran.
+present "AGENTS.md"
+present "docs/buyer/ai-guide.md"
+present "THIRD-PARTY-NOTICES.md"
+present "PACKAGE-MANIFEST.txt"
+
+# ...and it must be the BUYER's file, not the repository's. The two are different documents
+# with the same name: ours is about developing the plugin (beads, the two-tree build), and
+# handing that to a buyer's coding agent would point it at a workflow that does not exist on
+# its machine. A grep for a phrase only the buyer copy contains is what tells them apart --
+# a `present` row cannot, because both would satisfy it.
+if grep -q "instructions for AI coding agents" "$PKG/AGENTS.md" 2>/dev/null &&
+   ! grep -q "beads" "$PKG/AGENTS.md" 2>/dev/null; then
+	ok "AGENTS.md is the buyer copy, not the repository's dev one"
+else
+	bad "AGENTS.md is NOT the buyer copy (dev instructions would reach the buyer)"
+fi
+
+# The source of that file must NOT also ship: two front doors, one of them buried, and the
+# same text in the package twice.
+absent  "docs/buyer/agents-root.md"
+# Neither dev root file ships. Excluded by omission AND by explicit rule since avu; this row
+# is what makes the omission a decision rather than a thing that happens to still be true.
+absent  "CLAUDE.md"
+
 echo "----"
 echo "pass=$pass fail=$fail"
 [ "$fail" = 0 ]

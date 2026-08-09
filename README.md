@@ -22,6 +22,16 @@ document can be a full-screen HUD or a panel on a quad in the world.
 | [`docs/buyer/gotchas.md`](docs/buyer/gotchas.md) | Every recorded surprise, numbered. Read before your first authoring day — most of them cost someone a debugging session already. |
 | [`docs/buyer/rcss-matrix.md`](docs/buyer/rcss-matrix.md) | The exact supported RCSS surface, generated from the vendored RmlUi this plugin ships. RCSS is not CSS; this page is the difference. |
 | [`docs/buyer/perf-guide.md`](docs/buyer/perf-guide.md) | The budgets, the measured numbers, and the idioms that keep a HUD inside them. |
+| [`docs/buyer/ai-guide.md`](docs/buyer/ai-guide.md) | **If an AI agent writes your UI.** The whole interface is plain text, which suits agents well — but most mistakes here produce no error and a screen that renders, and an agent cannot see the screen. This page is what to brief it with. `AGENTS.md` beside this file is the short version an agent finds on its own. |
+
+**Using Claude Code, Codex, Cursor or Copilot?** One line in your project's own
+`CLAUDE.md` / `AGENTS.md` is enough to point it at the right pages:
+
+```markdown
+UI is VaCuus (HTML/CSS off the game thread). Before touching anything under
+Content/DevUI, read Plugins/VaCuus/docs/buyer/ai-guide.md and
+Plugins/VaCuus/docs/buyer/rcss-matrix.md.
+```
 
 ## Install, in one paragraph
 
