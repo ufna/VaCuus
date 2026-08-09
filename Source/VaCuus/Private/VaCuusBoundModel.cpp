@@ -21,6 +21,19 @@ static Rml::String ToRmlString(const FString& Value)
 {
 	return Rml::String(TCHAR_TO_UTF8(*Value));
 }
+
+/**
+ * How long the stale-FText detector waits before it concludes nobody is coming
+ * (FVaCuusBoundModel::NoteTranslationTableChanged). UI frames.
+ *
+ * GENEROUS ON PURPOSE. The intended pattern -- re-push from
+ * UVaCuusSubsystem::OnTranslationTableChanged -- lands on the very next frame or two, since
+ * the delegate fires on the game thread inside the same SetTable call that enqueued the
+ * snapshot. A game that instead reacts on its next Tick, or that publishes from a timer, may
+ * take longer, and a false accusation would be worse than a late one: this warning tells a
+ * developer their text is wrong, and it must never do that to someone whose text is right.
+ */
+static constexpr uint64 GTranslationRePushDeadlineFrames = 60;
 }	 // namespace VaCuusBoundModelPrivate
 
 FVaCuusBoundModel::FVaCuusBoundModel(const FString& InModelName, const UScriptStruct* InStruct)
@@ -35,6 +48,18 @@ FVaCuusBoundModel::FVaCuusBoundModel(const FString& InModelName, const UScriptSt
 	, Channel(Layout)
 	, UIShadow(InStruct)
 {
+	// One scan, once, for the stale-FText detector (NoteTranslationTableChanged). Cheap enough
+	// to be unconditional -- a model's field list is tens of entries and this runs at bind time,
+	// not per frame -- and doing it here means the detector never has to walk anything again.
+	for (const FVaCuusModelField& Field : Layout.GetFields())
+	{
+		if (Field.Kind == EVaCuusFieldKind::Text)
+		{
+			bHasTextFields = true;
+			break;
+		}
+	}
+
 	// Nothing else: the channel's constructor is where invariant I1 lives (it is born fully
 	// dirty), and both shadows are already initialised instances of InStruct.
 }
@@ -305,6 +330,52 @@ void FVaCuusBoundModel::DirtyTranslations()
 	}
 
 	VaCuusTranslationVariable::Dirty(ModelHandle);
+}
+
+void FVaCuusBoundModel::NoteTranslationTableChanged(uint64 CurrentFrame)
+{
+	check(FVaCuusUIThread::IsInUIThread());
+
+	// Nothing to watch on a model with no FText, and nothing more to say to one already told.
+	if (!bHasTextFields || bTranslationStaleWarned)
+	{
+		return;
+	}
+
+	// Re-arming on every table change is correct rather than wasteful: a game that re-pushed
+	// after the FIRST change and then stopped doing so is exactly the regression worth catching,
+	// and the stamp has to move with each change for the comparison to mean anything.
+	TranslationStampUpdates = Channel.GetNumUpdatesApplied();
+	TranslationDeadlineFrame = CurrentFrame + VaCuusBoundModelPrivate::GTranslationRePushDeadlineFrames;
+	bTranslationCheckArmed = true;
+}
+
+void FVaCuusBoundModel::CheckTranslationRePush(uint64 CurrentFrame)
+{
+	check(FVaCuusUIThread::IsInUIThread());
+
+	if (!bTranslationCheckArmed || CurrentFrame < TranslationDeadlineFrame)
+	{
+		return;
+	}
+
+	bTranslationCheckArmed = false;
+
+	if (Channel.GetNumUpdatesApplied() != TranslationStampUpdates)
+	{
+		// Re-pushed, which is the whole point. Silent: this is the case every correctly written
+		// game is in, on every language change, forever.
+		return;
+	}
+
+	bTranslationStaleWarned = true;
+	UE_LOG(LogVaCuus, Warning,
+		TEXT("VaCuus model '%s' (%s) carries FText and has NOT been re-pushed in the %llu frames since the translation ")
+		TEXT("table changed, so its text is still in the previous language. An FText field is resolved once, on the game ")
+		TEXT("thread, inside UpdateModel and can never re-resolve itself. Call UpdateModel again — hang it off ")
+		TEXT("UVaCuusSubsystem::OnTranslationTableChanged, or push the model every frame. Reported once per model"),
+		*ModelNameStr, Layout.GetStruct() != nullptr ? *Layout.GetStruct()->GetName() : TEXT("none"),
+		VaCuusBoundModelPrivate::GTranslationRePushDeadlineFrames);
 }
 
 void FVaCuusBoundModel::ApplyPendingUpdate()

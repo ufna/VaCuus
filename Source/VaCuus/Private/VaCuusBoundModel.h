@@ -308,6 +308,46 @@ public:
 	 */
 	void DirtyTranslations();
 
+	/**
+	 * "A new translation table was installed." Arms the stale-FText detector on a model that
+	 * carries any FText field. UI thread, called from the SetTranslationSnapshot drain.
+	 *
+	 * WHAT IT IS FOR, and why a detector rather than a fix: an FText field is projected to
+	 * FText::AsCultureInvariant(...) once, on the game thread, inside Sample() -- which is what
+	 * keeps the UI thread away from FTextLocalizationManager and makes this design thread-safe
+	 * at all (FVaCuusModelSampler's header). The projected text can never re-resolve itself, so
+	 * a culture change is invisible to this model until the game calls UpdateModel again. The
+	 * plugin CANNOT do that for it: it holds no pointer to the game's live struct.
+	 *
+	 * So the failure is legitimate, silent, and entirely the caller's to avoid -- which by this
+	 * project's own rule ("an invariant with no observable cannot be tested and will rot") means
+	 * it needs an observable, not just a paragraph in the docs.
+	 */
+	void NoteTranslationTableChanged(uint64 CurrentFrame);
+
+	/**
+	 * The armed detector's per-frame check: once the deadline has passed, warn ONCE if no
+	 * update has been applied since the table changed. UI thread, called from ApplyModelUpdates
+	 * AFTER the apply, so an update that arrived this very frame counts.
+	 *
+	 * NO FALSE POSITIVE FOR THE COMMON CASE BY CONSTRUCTION: a game that pushes its model every
+	 * frame (which everything else here assumes) moves the applied-update counter long before
+	 * the deadline, and the check disarms silently.
+	 */
+	void CheckTranslationRePush(uint64 CurrentFrame);
+
+	/** True when the bound type carries at least one FText field, at any nesting depth. */
+	bool HasTextFields() const { return bHasTextFields; }
+
+	/**
+	 * THE DETECTOR'S OBSERVABLE: has this model been reported as carrying stale text?
+	 *
+	 * Written on the UI thread, read on the test thread only after WaitForFrameCount() has seen
+	 * the counter advance — the same release/acquire hand-off every model probe here relies on
+	 * (VaCuusModelTestHost.h states the rule).
+	 */
+	bool WasTranslationStaleReported() const { return bTranslationStaleWarned; }
+
 	uint64 GetNumUpdatesApplied() const { return Channel.GetNumUpdatesApplied(); }
 	uint64 GetAppliedGeneration() const { return Channel.GetAppliedGeneration(); }
 
@@ -363,6 +403,24 @@ private:
 
 	/** UI thread. RmlUi holds a raw void* to its base from BindToContext() until the context dies. */
 	FVaCuusModelShadow UIShadow;
+
+	/**
+	 * Computed once, at construction, from the layout: does this type carry any FText?
+	 *
+	 * SCANNING THE FLAT FIELD LIST IS COMPLETE, and that is a property of the layout rather
+	 * than an assumption: nested structs are flattened into the same list, and an array whose
+	 * element subtree contains Text is refused outright at desc build
+	 * (FVaCuusModelArrayDesc's comment). So there is nowhere else for an FText to hide.
+	 */
+	bool bHasTextFields = false;
+
+	//~ The stale-FText detector's UI-thread state; see NoteTranslationTableChanged.
+	uint64 TranslationStampUpdates = 0;
+	uint64 TranslationDeadlineFrame = 0;
+	bool bTranslationCheckArmed = false;
+
+	/** Latched for the model's whole life: a game that never re-pushes is told once, not hourly. */
+	bool bTranslationStaleWarned = false;
 
 	/** UI thread. Default-constructed handles are falsy; bBoundToContext is what gates its use. */
 	Rml::DataModelHandle ModelHandle;
