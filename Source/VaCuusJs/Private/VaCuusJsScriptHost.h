@@ -171,6 +171,7 @@ public:
 	virtual void OnViewRemoved(uint32 ViewId) override;
 	virtual void OnDocumentReady(uint32 ViewId, Rml::ElementDocument* Document) override;
 	virtual void OnDocumentClosing(uint32 ViewId) override;
+	virtual void OnTranslationTableChanged(const FString& Tag) override;
 	virtual void PumpFrame(double NowSeconds) override;
 	virtual void CollectGarbage(const TCHAR* Reason) override;
 	virtual void ExecuteScript(uint32 ViewId, const FString& Source, const FString& SourceName) override;

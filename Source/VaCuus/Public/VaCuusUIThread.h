@@ -265,6 +265,14 @@ public:
 	void EnqueueSetTranslationSnapshot(const TSharedPtr<const struct FVaCuusTranslationSnapshot>& Snapshot);
 
 	/**
+	 * Queues one Rml::LoadFontFace (spec 2026-08-09 §3). Thread-level like the two snapshots
+	 * above — the font provider is process-global — and FIFO order IS the fallback order RmlUi
+	 * consults faces in, so this must never be reordered or deduplicated in the queue.
+	 * FVaCuusFontRegistry is the door game code uses; this is how it crosses.
+	 */
+	void EnqueueLoadFontFace(const FString& VfsPath, bool bFallbackFace);
+
+	/**
 	 * Queues one input event for a view. Stamps ViewId, so the caller only fills in
 	 * what the event is (see FVaCuusInputEvent's factories).
 	 *

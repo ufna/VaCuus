@@ -316,6 +316,21 @@ void FVaCuusJsScriptHost::OnDocumentClosing(uint32 ViewId)
 	}
 }
 
+void FVaCuusJsScriptHost::OnTranslationTableChanged(const FString& Tag)
+{
+	// EVERY LIVE CONTEXT, in view-id order (TSortedMap), because the table is process-wide and
+	// every view's script is equally entitled to hear about it. Only materialized contexts are
+	// dispatched to -- an entry with no context means no script has ever run there, so nothing
+	// can have registered a callback (OnViewRemoved's rule, restated).
+	for (TPair<uint32, TUniquePtr<FVaCuusJsViewContext>>& Pair : ViewContexts)
+	{
+		if (Pair.Value.IsValid())
+		{
+			Pair.Value->DispatchLanguageChanged(Tag);
+		}
+	}
+}
+
 void FVaCuusJsScriptHost::RunCapturedScripts(FVaCuusJsViewContext& View, const FVaCuusScriptDocument& Document)
 {
 	const Rml::Vector<FVaCuusCapturedScript>& Scripts = Document.GetCapturedScripts();

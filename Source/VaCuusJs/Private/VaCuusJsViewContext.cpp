@@ -184,6 +184,12 @@ void FVaCuusJsViewContext::InstallGlobals()
 	// property set below hands ownership of the object to the global.
 	JSValue Vacuus = JS_NewObject(Ctx);
 	JS_SetPropertyStr(Ctx, Vacuus, "onUnload", JS_NULL);
+
+	// `vacuus.onLanguageChanged(tag)` -- the live-localization signal, seeded NULL for the
+	// same feature-test reason as onUnload above. Fired after a new table is installed AND
+	// after every model has been dirtied, so `vacuus.translate` inside it already answers in
+	// the new language (FVaCuusUIThread's SetTranslationSnapshot branch owns that order).
+	JS_SetPropertyStr(Ctx, Vacuus, "onLanguageChanged", JS_NULL);
 	JS_SetPropertyStr(Ctx, Vacuus, "log",
 		JS_NewCFunctionMagic(Ctx, &FVaCuusJsViewContext::ConsoleThunk, "log", 0, JS_CFUNC_generic_magic, EConsoleLevel::Log));
 	InstallHostApi(Vacuus);
@@ -290,6 +296,51 @@ void FVaCuusJsViewContext::DispatchUnload()
 		Runtime.ReportException(Ctx, TEXT("vacuus.onUnload"));
 	}
 	JS_FreeValue(Ctx, Ret);
+	JS_FreeValue(Ctx, Fn);
+}
+
+void FVaCuusJsViewContext::DispatchLanguageChanged(const FString& Tag)
+{
+	if (Ctx == nullptr)
+	{
+		return;
+	}
+
+	// Read through the property chain at DISPATCH time, exactly as DispatchUnload argues: the
+	// callback is whatever `vacuus.onLanguageChanged` holds right now, so a script may re-assign
+	// or clear it up to the last moment.
+	JSValue Global = JS_GetGlobalObject(Ctx);
+	JSValue Vacuus = JS_GetPropertyStr(Ctx, Global, "vacuus");
+	JS_FreeValue(Ctx, Global);
+	if (!JS_IsObject(Vacuus))
+	{
+		JS_FreeValue(Ctx, Vacuus);
+		return;
+	}
+
+	JSValue Fn = JS_GetPropertyStr(Ctx, Vacuus, "onLanguageChanged");
+	JS_FreeValue(Ctx, Vacuus);
+	if (!JS_IsFunction(Ctx, Fn))
+	{
+		JS_FreeValue(Ctx, Fn);
+		return;
+	}
+
+	// The house entry shape: guard wraps the call only, a throw is the callback's own problem
+	// and never escapes into the drain that asked.
+	JSValue Arg = JS_NewString(Ctx, TCHAR_TO_UTF8(*Tag));
+	JSValue Ret;
+	{
+		FVaCuusJsEntryGuard Guard(Runtime, Ctx, TEXT("vacuus.onLanguageChanged"));
+		Ret = JS_Call(Ctx, Fn, JS_UNDEFINED, 1, &Arg);
+	}
+	Runtime.NoteLanguageCallbackRun();
+	if (JS_IsException(Ret))
+	{
+		Runtime.ReportException(Ctx, TEXT("vacuus.onLanguageChanged"));
+	}
+	JS_FreeValue(Ctx, Ret);
+	JS_FreeValue(Ctx, Arg);
 	JS_FreeValue(Ctx, Fn);
 }
 

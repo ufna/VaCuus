@@ -27,9 +27,12 @@ TSharedPtr<const FVaCuusTranslationSnapshot> GCurrentTranslationSnapshot;
 // namespace with VaCuusStyleSet.cpp's into one TU.
 // ---------------------------------------------------------------------------------------
 TSharedPtr<const FVaCuusTranslationSnapshot> GInstalledTranslationSnapshot;
+
+/** Game-thread only, like every subscriber it serves; see the delegate's declaration. */
+FOnVaCuusTranslationTableChanged GOnTranslationTableChanged;
 }	 // namespace
 
-void FVaCuusTranslationRegistry::SetTable(const TMap<FString, FString>& Table)
+void FVaCuusTranslationRegistry::SetTable(const TMap<FString, FString>& Table, const FString& Tag)
 {
 	check(IsInGameThread());
 
@@ -38,9 +41,11 @@ void FVaCuusTranslationRegistry::SetTable(const TMap<FString, FString>& Table)
 	TSharedRef<FVaCuusTranslationSnapshot> Snapshot = MakeShared<FVaCuusTranslationSnapshot>();
 	Snapshot->Version = GTranslationVersion;
 	Snapshot->Table = Table;
+	Snapshot->Tag = Tag;
 	GCurrentTranslationSnapshot = Snapshot;
 
-	UE_LOG(LogVaCuus, Log, TEXT("VaCuus translation: published table v%llu (%d entries)"), GTranslationVersion, Table.Num());
+	UE_LOG(LogVaCuus, Log, TEXT("VaCuus translation: published table v%llu (%d entries, tag '%s')"),
+		GTranslationVersion, Table.Num(), *Tag);
 
 	// The queue crossing (never a lock): only when a UI thread is up; a thread started
 	// later gets the same snapshot from PublishToUIThread in GetOrStartUIThread.
@@ -51,6 +56,18 @@ void FVaCuusTranslationRegistry::SetTable(const TMap<FString, FString>& Table)
 			UIThread->EnqueueSetTranslationSnapshot(GCurrentTranslationSnapshot);
 		}
 	}
+
+	// BROADCAST LAST, AFTER THE ENQUEUE, AND THAT ORDER IS THE POINT: the typical handler
+	// re-pushes an FText-bearing model, which enqueues too, and this producer's queue is
+	// FIFO -- so the model update lands on the UI thread behind the snapshot that motivated
+	// it, never ahead of it. Broadcasting first would let a re-pushed model be applied
+	// against the OLD installed table for one frame.
+	GOnTranslationTableChanged.Broadcast(Tag, GTranslationVersion);
+}
+
+FOnVaCuusTranslationTableChanged& FVaCuusTranslationRegistry::OnTableChanged()
+{
+	return GOnTranslationTableChanged;
 }
 
 uint64 FVaCuusTranslationRegistry::GetVersion_GameThread()

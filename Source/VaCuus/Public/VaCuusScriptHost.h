@@ -82,6 +82,24 @@ public:
 	virtual void OnDocumentClosing(uint32 ViewId) = 0;
 
 	/**
+	 * A new translation table has been installed; dispatch point for `vacuus.onLanguageChanged`
+	 * in every live view context. Tag is whatever the pusher labelled the table with, carried
+	 * through uninterpreted.
+	 *
+	 * ORDERING IS THE CONTRACT, and it is why this is a separate call rather than something the
+	 * drain does inline: it runs AFTER FVaCuusTranslationRegistry::InstallSnapshot and AFTER
+	 * every model has been dirtied, so a handler that calls `vacuus.translate` or reads the DOM
+	 * already sees the new language. Fired before it, a handler that repaints would write the
+	 * OLD strings — which is precisely the bug this order prevents, and what the test breaks to
+	 * prove.
+	 *
+	 * A default no-op rather than pure virtual: a script host that does not implement scripting
+	 * (the tests' null host) has nothing to dispatch, and the localization feature must not make
+	 * a new host mandatory.
+	 */
+	virtual void OnTranslationTableChanged(const FString& /*Tag*/) {}
+
+	/**
 	 * One pump per UI frame, between the data apply and the record loop: rAF
 	 * callbacks, due timers, then the bounded microtask drain (spec 3.5, built in
 	 * M4 Task 3). NowSeconds is Rml::GetSystemInterface()->GetElapsedTime() --

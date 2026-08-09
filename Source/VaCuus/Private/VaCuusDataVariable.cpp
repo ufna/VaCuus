@@ -4,6 +4,7 @@
 
 #include "VaCuusDefines.h"
 #include "VaCuusModelShadow.h"
+#include "VaCuusTranslationVariable.h"
 #include "VaCuusUIThread.h"
 #include "VaCuusWriteRouter.h"
 
@@ -898,9 +899,35 @@ int32 VaCuusData::BindModelVariables(Rml::DataModelConstructor& Constructor, con
 		return 0;
 	}
 
+	// THE RESERVED TRANSLATION VARIABLE, BOUND FIRST AND ON PURPOSE (spec 2026-08-09 §1). It
+	// gives every model the live `{{ t.key }}` route; binding it ahead of the game's own
+	// variables is what makes a struct that also declares a top-level `t` lose DETERMINISTICALLY
+	// and get told why below, instead of winning the race and silently disabling live
+	// translation for that model. It is not counted in NumBound: that number answers "how many
+	// of the STRUCT's variables bound", and this one is not the struct's.
+	if (!VaCuusTranslationVariable::Bind(Constructor))
+	{
+		UE_LOG(LogVaCuus, Error, TEXT("VaCuus model '%s': the reserved translation variable '%s' could not be bound; ")
+								 TEXT("`{{ t.key }}` will not translate in this model"),
+			*Layout.GetStruct()->GetName(), VaCuusTranslationVariable::ReservedName);
+	}
+
 	int32 NumBound = 0;
 	for (const FVaCuusModelDefinitions::FTopLevelVariable& Variable : Definitions->GetTopLevelVariables())
 	{
+		// `t` IS RESERVED, and the refusal is named here rather than left to RmlUi's generic
+		// "variable already exists" warning, which names neither the model nor the reason.
+		// Compared byte-exact because RmlUi resolves data addresses byte-for-byte: a field
+		// spelled `T` is a different variable and is not in conflict.
+		if (Variable.Name.Equals(VaCuusTranslationVariable::ReservedName, ESearchCase::CaseSensitive))
+		{
+			UE_LOG(LogVaCuus, Error,
+				TEXT("VaCuus model '%s': the top-level field '%s' collides with the RESERVED translation variable and is ")
+				TEXT("NOT bound — `{{ t.key }}` is the live localization route. Rename the field"),
+				*Layout.GetStruct()->GetName(), *Variable.Name);
+			continue;
+		}
+
 		// EVERY variable is bound with the SAME pointer, the shadow's base -- the invariant
 		// the whole adapter rests on. A leaf applies its own offset in DereferencePointer; a
 		// struct definition passes the base down untouched.

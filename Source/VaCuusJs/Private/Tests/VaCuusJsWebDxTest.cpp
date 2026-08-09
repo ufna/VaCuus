@@ -50,6 +50,8 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusJsPreactDesyncTest, "VaCuus.Js.Preact.De
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusJsPreactReloadRemountTest, "VaCuus.Js.Preact.ReloadRemount",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusJsLanguageChangedTest, "VaCuus.Js.LanguageChanged",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusJsTranslateTest, "VaCuus.Js.Translate",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
@@ -669,6 +671,102 @@ bool FVaCuusJsTranslateTest::RunTest(const FString& Parameters)
 			RenderedText = T != nullptr ? UTF8_TO_TCHAR(T->GetInnerRML().c_str()) : TEXT("<no element>");
 		});
 	TestEqual(TEXT("RML text translated at parse through the same snapshot"), RenderedText, FString(TEXT("vx_hallo")));
+
+	TestEqual(TEXT("no JS error anywhere in the run"), FWrappedDomHost::Inner->GetRuntime()->GetNumErrors(), uint64(0));
+	return true;
+}
+
+/**
+ * `vacuus.onLanguageChanged` (spec 2026-08-09 §2) — the signal a UI that builds its own
+ * strings needs, because markup written `{{ t.key }}` re-translates itself but a killfeed
+ * line assembled in JS does not.
+ *
+ * THE ASSERTION THAT MATTERS IS THE ORDERING ONE. The handler calls `vacuus.translate`
+ * on itself, so what it records proves WHEN it ran: the drain installs the snapshot,
+ * dirties every model, and only THEN dispatches (FVaCuusUIThread's SetTranslationSnapshot
+ * branch). Restore the bug by moving that ScriptHost call above the InstallSnapshot line
+ * and this test fails with the handler reporting the PREVIOUS language — silently, in
+ * production, because every call still succeeds. Verified both ways.
+ */
+bool FVaCuusJsLanguageChangedTest::RunTest(const FString& Parameters)
+{
+	using namespace VaCuusJsWebDxTest;
+
+	FDomTestRig Rig;
+	const FDomTestRig::EBoot Boot = Rig.Boot(*this);
+	if (Boot != FDomTestRig::EBoot::Ok)
+	{
+		return Boot == FDomTestRig::EBoot::Skip;
+	}
+
+	FDomProbeHost* Probe = nullptr;
+	uint32 ViewId = 0;
+	if (!BootWithDocument(*this, Rig, Probe, ViewId, TEXT("vacuus_js_language"), GMountDocument))
+	{
+		return false;
+	}
+
+	TestEqual(TEXT("the slot feature-tests as null before anything assigns to it"),
+		Rig.Eval(ViewId, "String(vacuus.onLanguageChanged)"), FString(TEXT("null")));
+
+	// The handler records the tag it was given AND what translate() answers at that instant.
+	Rig.Eval(ViewId,
+		"globalThis.VL = [];"
+		"vacuus.onLanguageChanged = (tag) => { globalThis.VL.push(tag + ':' + vacuus.translate('vl_hello')); };"
+		"'installed'");
+
+	const uint64 CallbacksBefore = FWrappedDomHost::Inner->GetRuntime()->GetNumLanguageCallbacksRun();
+
+	{
+		TMap<FString, FString> Table;
+		Table.Add(TEXT("vl_hello"), TEXT("vl_bonjour"));
+		FVaCuusTranslationRegistry::SetTable(Table, TEXT("fr"));
+	}
+	if (!TestTrue(TEXT("the push crossed"), PumpRealFrames(*Rig.Thread, 2)))
+	{
+		return false;
+	}
+
+	// THE ORDERING, MADE VISIBLE: 'fr' is the tag the game pushed, and 'vl_bonjour' is the value
+	// from the table that push carried — so the callback ran after the install, not before.
+	TestEqual(TEXT("the handler saw the tag AND the already-installed new table"),
+		Rig.Eval(ViewId, "globalThis.VL.join('|')"), FString(TEXT("fr:vl_bonjour")));
+	TestEqual(TEXT("one callback ran"),
+		FWrappedDomHost::Inner->GetRuntime()->GetNumLanguageCallbacksRun(), CallbacksBefore + 1);
+
+	// A SECOND push fires again, and the tag is carried through uninterpreted.
+	{
+		TMap<FString, FString> Table;
+		Table.Add(TEXT("vl_hello"), TEXT("vl_privet"));
+		FVaCuusTranslationRegistry::SetTable(Table, TEXT("ru"));
+	}
+	if (!TestTrue(TEXT("the second push crossed"), PumpRealFrames(*Rig.Thread, 2)))
+	{
+		return false;
+	}
+	TestEqual(TEXT("fired again, with the second table already live"),
+		Rig.Eval(ViewId, "globalThis.VL.join('|')"), FString(TEXT("fr:vl_bonjour|ru:vl_privet")));
+
+	// READ AT FIRE TIME, not at registration: clearing the slot stops the dispatch, which is the
+	// on*-attribute semantics `vacuus.onUnload` already keeps.
+	Rig.Eval(ViewId, "vacuus.onLanguageChanged = null; 'cleared'");
+	{
+		TMap<FString, FString> Table;
+		Table.Add(TEXT("vl_hello"), TEXT("vl_hola"));
+		FVaCuusTranslationRegistry::SetTable(Table, TEXT("es"));
+	}
+	if (!TestTrue(TEXT("the third push crossed"), PumpRealFrames(*Rig.Thread, 2)))
+	{
+		return false;
+	}
+	TestEqual(TEXT("a cleared slot is not called"),
+		Rig.Eval(ViewId, "globalThis.VL.length"), FString(TEXT("2")));
+	TestEqual(TEXT("...and the counter did not move either"),
+		FWrappedDomHost::Inner->GetRuntime()->GetNumLanguageCallbacksRun(), CallbacksBefore + 2);
+
+	// The table itself kept working while the callback was off — the two are independent.
+	TestEqual(TEXT("translate still answers from the newest table"),
+		Rig.Eval(ViewId, "vacuus.translate('vl_hello')"), FString(TEXT("vl_hola")));
 
 	TestEqual(TEXT("no JS error anywhere in the run"), FWrappedDomHost::Inner->GetRuntime()->GetNumErrors(), uint64(0));
 	return true;

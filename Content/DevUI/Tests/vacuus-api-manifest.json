@@ -58,6 +58,7 @@
       "emit",
       "log",
       "model",
+      "onLanguageChanged",
       "onUnload",
       "stats",
       "translate",

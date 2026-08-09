@@ -7,12 +7,14 @@
 #include "VaCuusDefines.h"
 #include "VaCuusDocumentHost.h"
 #include "VaCuusEngine.h"
+#include "VaCuusFontRegistry.h"
 #include "VaCuusInputMap.h"
 #include "VaCuusNodeCount.h"
 #include "VaCuusStats.h"
 #include "VaCuusStyleSet.h"
 #include "VaCuusTextInput.h"
 #include "VaCuusTranslation.h"
+#include "VaCuusTranslationVariable.h"
 #include "VaCuusUIQueues.h"
 #include "VaCuusWriteRouter.h"
 
@@ -765,6 +767,16 @@ void FVaCuusUIThread::EnqueueSetTranslationSnapshot(const TSharedPtr<const FVaCu
 	Enqueue(MoveTemp(Command));
 }
 
+void FVaCuusUIThread::EnqueueLoadFontFace(const FString& VfsPath, bool bFallbackFace)
+{
+	// No ViewId: RmlUi's font provider is one per process, like the style and translation state.
+	FVaCuusUICommand Command;
+	Command.Kind = EVaCuusCommandKind::LoadFontFace;
+	Command.Payload = VfsPath;
+	Command.bFallbackFace = bFallbackFace;
+	Enqueue(MoveTemp(Command));
+}
+
 void FVaCuusUIThread::EnqueueInput(uint32 ViewId, FVaCuusInputEvent Event)
 {
 	// Same rule as commands: once a stop is requested the queues are closed, so
@@ -939,6 +951,12 @@ bool FVaCuusUIThread::Init()
 	ThreadId.store(CurrentThreadId, std::memory_order_release);
 	GVaCuusUIThreadId.store(CurrentThreadId, std::memory_order_release);
 
+	// The font counter is PER THREAD LIFETIME, so it is zeroed here rather than left to
+	// accumulate: a restarted thread starts with the faces RmlUi's fresh provider actually has
+	// (only the default one), and the replay that follows is the thing this counter measures.
+	// After the id publication because the accessor asserts IsInUIThread().
+	FVaCuusFontRegistry::ResetLoadedCount_UIThread();
+
 	// (script host: M4) AFTER the RmlUi boot -- a host may reach Rml services from its
 	// first call -- and AFTER the id publication, so IsInUIThread() already answers true
 	// for anything the factory constructs. vacuus.Js.Enable is read ONCE, here, at the
@@ -1052,6 +1070,12 @@ void FVaCuusUIThread::Exit()
 	// the host destructor); here 1a already emptied those slots.
 	for (TPair<uint32, TUniquePtr<IVaCuusDocumentHost>>& Pair : Hosts)
 	{
+		// The standalone translation handle goes with the context it points into, exactly as
+		// RemoveView drops it before Host->Shutdown(). THIS PATH IS NOT REACHED THROUGH
+		// RemoveView -- a graceful stop closes documents and then comes straight here -- so
+		// leaving it to RemoveView alone would leave dangling handles behind on every normal
+		// shutdown, which is what VaCuusTranslationVariable::ReleaseAll's error caught.
+		VaCuusTranslationVariable::DropStandaloneModel(Pair.Key);
 		Pair.Value->Shutdown();
 	}
 	NumViews.store(0, std::memory_order_release);
@@ -1092,6 +1116,14 @@ void FVaCuusUIThread::Exit()
 	if (const int32 NumDefinitions = FVaCuusDefinitionRegistry::ReleaseAll(); NumDefinitions > 0)
 	{
 		UE_LOG(LogVaCuus, Log, TEXT("UI thread exit: released %d cached model definition set(s)"), NumDefinitions);
+	}
+
+	// The translation key pool goes at the same point and for the weaker version of the same
+	// reason: it holds no UObject, but a live DataVariable's void* points into it, so it may
+	// only be dropped once every context is gone -- which step 3 above has just made true.
+	if (const int32 NumKeys = VaCuusTranslationVariable::ReleaseAll(); NumKeys > 0)
+	{
+		UE_LOG(LogVaCuus, Log, TEXT("UI thread exit: released %d interned translation key path(s)"), NumKeys);
 	}
 
 	GVaCuusUIThreadId.store(0, std::memory_order_release);
@@ -1303,6 +1335,14 @@ void FVaCuusUIThread::DrainCommands()
 			continue;
 		}
 
+		if (Command->Kind == EVaCuusCommandKind::LoadFontFace)
+		{
+			// THREAD-level like the snapshots below it, and handled in arrival order because that
+			// order is RmlUi's fallback order.
+			FVaCuusFontRegistry::LoadFace_UIThread(Command->Payload, Command->bFallbackFace);
+			continue;
+		}
+
 		if (Command->Kind == EVaCuusCommandKind::SetTranslationSnapshot)
 		{
 			// THREAD-level like SetStyleSnapshot, and for the same reason: the table is
@@ -1311,6 +1351,29 @@ void FVaCuusUIThread::DrainCommands()
 			// when no view is live to carry it. Installed before any load queued behind
 			// it drains (FIFO), so that document's text runs through the new table.
 			FVaCuusTranslationRegistry::InstallSnapshot(Command->TranslationSnapshot);
+
+			// THE LIVE HALF (spec 2026-08-09 §1), and it happens HERE, immediately after the
+			// install, so that every `{{ t.* }}` re-evaluates against the table that just
+			// arrived rather than the one it replaced. One dirty per model covers every key in
+			// it: RmlUi tracks dirt by TOP-LEVEL name (DataExpression.cpp:1145-1154), and `t`
+			// is that name. Costs a walk of the model map per PUSH -- not per frame.
+			for (TPair<uint32, TArray<TSharedRef<FVaCuusBoundModel>>>& Pair : Models)
+			{
+				for (const TSharedRef<FVaCuusBoundModel>& Model : Pair.Value)
+				{
+					Model->DirtyTranslations();
+				}
+			}
+			VaCuusTranslationVariable::DirtyStandaloneModels();
+
+			// LAST, AND THAT IS THE CONTRACT: the snapshot is installed and every model is
+			// dirtied before a script hears about it, so `vacuus.translate` inside the handler
+			// answers in the NEW language. Fire it earlier and a handler that repaints writes
+			// the old strings -- silently, because every call still succeeds.
+			if (ScriptHost.IsValid())
+			{
+				ScriptHost->OnTranslationTableChanged(Command->TranslationSnapshot->Tag);
+			}
 			continue;
 		}
 
@@ -1540,6 +1603,16 @@ void FVaCuusUIThread::AddView(FVaCuusUICommand& Command)
 		Host->SetViewSize(Command.ViewSize);
 	}
 
+	// THE STANDALONE TRANSLATION MODEL, created before anything can load a document into this
+	// view -- `data-model=` is resolved once, when an element is attached (Element.cpp:2211), so
+	// a model created later would be invisible to the document already in the tree. Bound models
+	// get their `t` from BindModelVariables instead; this one serves the document that binds no
+	// struct at all, which a settings screen very often is.
+	if (Rml::Context* Context = Host->GetContext())
+	{
+		VaCuusTranslationVariable::CreateStandaloneModel(Command.ViewId, *Context);
+	}
+
 	Hosts.Add(Command.ViewId, MoveTemp(Host));
 	NumViews.store(Hosts.Num(), std::memory_order_release);
 
@@ -1587,6 +1660,11 @@ void FVaCuusUIThread::RemoveView(uint32 ViewId)
 	// drain, in the same frame. Unregistering purges those pending entries, so the flush
 	// can never DirtyVariable into a DataModel that Shutdown() below is about to destroy.
 	FVaCuusWriteRouter::UnregisterViewModels(ViewId);
+
+	// The standalone translation handle goes for the same reason and in the same window: it is a
+	// raw pointer into a DataModel this context owns, and Shutdown() below runs
+	// Rml::RemoveContext. Dropped here, no later drain can dirty a destroyed model.
+	VaCuusTranslationVariable::DropStandaloneModel(ViewId);
 
 	// Drops the context and the render-side resources, but not the host: RmlUi
 	// still holds a RenderManager keyed on its render interface until
