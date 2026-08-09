@@ -47,6 +47,9 @@ public:
 
 	/// Releases resources owned by sized font faces, including their textures and rendered glyphs.
 	void ReleaseFontResources() override;
+
+	// VaCuus patch #5 (VENDORED_TAG.txt).
+	int GetNumReplacementGlyphs() override;
 };
 
 } // namespace Rml

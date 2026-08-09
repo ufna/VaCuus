@@ -386,6 +386,10 @@ const FontGlyph* FontFaceHandleDefault::GetOrAppendGlyph(Character& character, b
 			// If we still have not found a glyph, use the replacement character.
 			if (it_glyph == glyphs.end())
 			{
+				// VaCuus patch #5 (VENDORED_TAG.txt): upstream substitutes silently, so a page
+				// rendered entirely in U+FFFD is indistinguishable from a correct one in the log.
+				FontProvider::NoteReplacementGlyph(character);
+
 				character = Character::Replacement;
 				it_glyph = glyphs.find(character);
 				if (it_glyph == glyphs.end())

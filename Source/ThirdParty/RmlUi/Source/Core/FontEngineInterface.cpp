@@ -65,4 +65,10 @@ int FontEngineInterface::GetVersion(FontFaceHandle /*handle*/)
 
 void FontEngineInterface::ReleaseFontResources() {}
 
+// VaCuus patch #5 (VENDORED_TAG.txt).
+int FontEngineInterface::GetNumReplacementGlyphs()
+{
+	return 0;
+}
+
 } // namespace Rml

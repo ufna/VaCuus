@@ -47,6 +47,31 @@ FontProvider& FontProvider::Get()
 	return *g_font_provider;
 }
 
+// VaCuus patch #5 (VENDORED_TAG.txt): the substitution at FontFaceHandleDefault.cpp's
+// "If we still have not found a glyph" was completely silent, so a document rendered
+// entirely in U+FFFD produced no diagnostic of any kind. Counted always; logged ONCE,
+// because this runs inside text layout and a line per glyph would flood at frame rate.
+void FontProvider::NoteReplacementGlyph(Character character)
+{
+	FontProvider& provider = Get();
+	++provider.num_replacement_glyphs;
+
+	if (!provider.reported_replacement_glyph)
+	{
+		provider.reported_replacement_glyph = true;
+		Log::Message(Log::LT_WARNING,
+			"No glyph for U+%04X in the styled font face or any fallback face; it renders as the replacement character. "
+			"Load a font covering this script, and add it as a fallback face for mixed-script text. "
+			"Reported once per RmlUi initialisation; %d substitution(s) so far.",
+			(unsigned int)character, provider.num_replacement_glyphs);
+	}
+}
+
+int FontProvider::GetNumReplacementGlyphs()
+{
+	return Get().num_replacement_glyphs;
+}
+
 FontFaceHandleDefault* FontProvider::GetFontFaceHandle(const String& family, Style::FontStyle style, Style::FontWeight weight, int size)
 {
 	RMLUI_ASSERTMSG(family == StringUtilities::ToLower(family), "Font family name must be converted to lowercase before entering here.");
