@@ -394,10 +394,21 @@ simply stays parse-time. Full treatment: [`localization.md`](localization.md).
 Cause: an `FText` field is resolved to a culture-invariant string **once**, on the game
 thread, inside `UpdateModel` — which is what keeps the UI thread away from
 `FTextLocalizationManager` and makes the design thread-safe at all. The projected text has
-no text id left, so it can never re-resolve itself. Nothing is logged, because nothing on
-that path is wrong.
-Do: call `UpdateModel` every frame (the rest of the system assumes you do), or re-push
-from `UVaCuusSubsystem::OnTranslationTableChanged`.
+no text id left, so it can never re-resolve itself. The plugin cannot re-push for you
+either: it holds no pointer to your live struct.
+**It will however tell you.** A model carrying `FText` that sees no update in the 60 UI
+frames after a table change gets one Warning naming the model and its type:
+
+```
+LogVaCuus: Warning: VaCuus model 'hud' (FMyHudModel) carries FText and has NOT been
+re-pushed in the 60 frames since the translation table changed, so its text is still in
+the previous language.
+```
+
+A model you push every frame — which is what the rest of the system assumes — never
+triggers it.
+Do: call `UpdateModel` every frame, or re-push from
+`UVaCuusSubsystem::OnTranslationTableChanged`.
 
 ## Engine, cook and packaging
 

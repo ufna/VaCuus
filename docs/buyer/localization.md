@@ -144,6 +144,10 @@ wrong.
 Either call `UpdateModel` every frame (everything else here assumes you do), or re-push
 from the signal in §4.
 
+You will not have to guess whether you got this right. A model carrying `FText` that sees
+no update in the 60 UI frames after a table change gets one Warning naming the model and
+its type; a model you push every frame never triggers it.
+
 ## 6. Fonts — the one that surprises everyone
 
 **The face in the box is `fonts/LatoLatin-Regular.ttf`, and it is Latin-only.** Measured
