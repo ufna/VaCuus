@@ -1,0 +1,55 @@
+<rml>
+<head>
+	<title>VaCuus Localization Demo</title>
+	<style>
+		body {
+			display: block;
+			font-family: LatoLatin;
+			font-size: 18px;
+			color: #e8e8e8;
+			background-color: #14161ce0;
+			padding: 24px;
+			width: 640px;
+		}
+		div { display: block; }
+		#loc-title { font-size: 22px; color: #7fd0ff; margin-bottom: 16px; }
+		.panel { background-color: #1e2029; padding: 12px; margin-bottom: 12px; }
+		.panel-title { color: #9aa4b8; font-size: 14px; margin-bottom: 6px; }
+		.value { font-size: 24px; color: #ffffff; }
+		.note { color: #808a9c; font-size: 13px; margin-top: 12px; }
+	</style>
+</head>
+
+<!-- `data-model="vacuus"` is the STANDALONE translation model the plugin creates for every
+     view (FVaCuusUIThread::AddView -> VaCuusTranslationVariable::CreateStandaloneModel). It
+     exists precisely so a document that binds no USTRUCT of its own can still use `{{ t.key }}`
+     -- a settings screen, which is where a language actually changes, very often binds nothing.
+     A document that DOES bind a model writes `data-model="<its own model>"` instead and gets
+     `t` there too, because the reserved variable is bound into every model VaCuus creates. -->
+<body data-model="vacuus">
+	<div id="loc-title">VaCuus // LOCALIZATION DEMO</div>
+
+	<!-- THE LIVE HALF. These re-translate in place when the game pushes a new table: one
+	     DirtyVariable("t") re-evaluates every `{{ t.* }}` in the model, and nothing reloads. -->
+	<div class="panel">
+		<div class="panel-title">LIVE &#183; {{ t.demo_label_live }}</div>
+		<div class="value">{{ t.demo_health }}</div>
+		<div class="value">{{ t.demo_menu.settings }}</div>
+	</div>
+
+	<!-- THE PARSE-TIME HALF, and it is here to be SEEN not changing. RmlUi translates element
+	     text once, at instancing (Factory::InstanceElementText), so this line keeps whatever
+	     language it was parsed in until the document is reloaded. Same key as the live line
+	     above it, deliberately: after `vacuus.LocDemo.Lang fr` the two disagree, and that
+	     disagreement is the whole lesson. -->
+	<div class="panel">
+		<div class="panel-title">PARSE-TIME &#183; the same key, translated once at load</div>
+		<div class="value">demo_health</div>
+	</div>
+
+	<div class="note">
+		vacuus.LocDemo.Lang en | fr | ru &#183; `ru` is the font trap: the shipped face is
+		Latin-only, so Cyrillic renders as replacement characters and the log says so once.
+	</div>
+</body>
+</rml>
