@@ -14,11 +14,14 @@ project, read this page first and then
 
 ## The five things that will otherwise cost you the session
 
-1. **The style language is RCSS, not CSS, and unsupported properties are dropped with no
-   diagnostic at all.** No warning, no error, a screen that renders and is wrong. Check
-   [`docs/buyer/rcss-matrix.md`](docs/buyer/rcss-matrix.md) — generated from the exact
-   engine in this package — *before* writing a property. If it is not there, it does not
-   exist. Do not write CSS you remember from the web.
+1. **The style language is RCSS, not CSS.** Do not write CSS you remember from the web —
+   check [`docs/buyer/rcss-matrix.md`](docs/buyer/rcss-matrix.md), generated from the exact
+   engine in this package, *before* writing a property. If it is not there, it does not
+   exist. **Read the log** (`LogVaCuus`): a declaration RmlUi cannot parse produces a
+   Warning naming the file and line, and that answers most "my style does nothing"
+   questions outright. What the log will *not* tell you is a property that parses and this
+   renderer does not draw — `box-shadow`, `mask-image` — or the two silent killers, a
+   capitalised tween keyword and `var()` inside a `transition`.
 2. **Your documents go in `<Project>/Content/DevUI`,** not in this plugin's `Content/DevUI`.
    Paths resolve plugin-first, and a project file **cannot** shadow a same-named plugin
    file — if your screen shows someone else's content, rename it.
