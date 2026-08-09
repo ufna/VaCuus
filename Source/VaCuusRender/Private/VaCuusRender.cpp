@@ -11,6 +11,7 @@
 #include "VaCuusSlateElement.h"
 #include "VaCuusStyleSet.h"
 #include "VaCuusSubsystem.h"
+#include "VaCuusTranslation.h"
 #include "VaCuusUIShaders.h"
 #include "VaCuusView.h"
 
@@ -60,6 +61,7 @@ static const TCHAR* GM5DecoVfsPath = TEXT("m5_deco.rml");
 static const TCHAR* GM5DecoPlainVfsPath = TEXT("m5_deco_plain.rml");
 static const TCHAR* GM5MatSpikeVfsPath = TEXT("m5_matspike.rml");
 static const TCHAR* GM5HudVfsPath = TEXT("M5Hud/m5_hud.rml");
+static const TCHAR* GLocDemoVfsPath = TEXT("loc_demo.rml");
 static const TCHAR* GRefHudVfsPath = TEXT("RefHud/refhud.rml");
 
 /**
@@ -2047,6 +2049,63 @@ static FAutoConsoleCommand GToggleCommand(
 	TEXT("Toggle the M1 render-spike HUD: records an RmlUi document (DevUI/m1_hud.rml, or an inline fallback) ")
 	TEXT("each frame and composites it over the game viewport."),
 	FConsoleCommandDelegate::CreateLambda([] { Toggle(GM1HudVfsPath); }));
+
+/**
+ * The language switch, made watchable. Pushes one of three canned tables into the
+ * process-wide registry; the live `{{ t.* }}` lines in loc_demo.rml change on the next UI
+ * frame while the parse-time line beside them does not, which is the difference the buyer
+ * documentation is about.
+ *
+ * `ru` is included ON PURPOSE even though the plugin ships no Cyrillic face: it is the
+ * fastest way to see the font trap, and with VaCuus patch #5 the log now names the first
+ * character it could not draw instead of saying nothing at all.
+ */
+static void LocDemoLang(const TArray<FString>& Args)
+{
+	const FString Tag = Args.Num() > 0 ? Args[0].ToLower() : TEXT("en");
+
+	TMap<FString, FString> Table;
+	if (Tag == TEXT("fr"))
+	{
+		Table.Add(TEXT("demo_label_live"), TEXT("traduit en direct"));
+		Table.Add(TEXT("demo_health"), TEXT("Sante"));
+		Table.Add(TEXT("demo_menu.settings"), TEXT("Parametres"));
+	}
+	else if (Tag == TEXT("ru"))
+	{
+		Table.Add(TEXT("demo_label_live"), TEXT("живой перевод"));
+		Table.Add(TEXT("demo_health"), TEXT("Здоровье"));
+		Table.Add(TEXT("demo_menu.settings"), TEXT("Настройки"));
+	}
+	else
+	{
+		Table.Add(TEXT("demo_label_live"), TEXT("translated live"));
+		Table.Add(TEXT("demo_health"), TEXT("Health"));
+		Table.Add(TEXT("demo_menu.settings"), TEXT("Settings"));
+	}
+
+	// The registry directly rather than the subsystem, because a console command has no game
+	// instance to reach one through; the subsystem method is a forward over exactly this call.
+	FVaCuusTranslationRegistry::SetTable(Table, Tag);
+
+	UE_LOG(LogVaCuus, Display,
+		TEXT("vacuus.LocDemo.Lang %s: pushed %d entries. The live lines change on the next UI frame; the parse-time ")
+		TEXT("line keeps the language it was loaded in until something reloads the document"),
+		*Tag, Table.Num());
+}
+
+static FAutoConsoleCommand GLocDemoCommand(
+	TEXT("vacuus.LocDemo"),
+	TEXT("Toggle the localization demo (DevUI/loc_demo.rml): live `{{ t.key }}` text beside parse-time text using ")
+	TEXT("the SAME key, so a language switch visibly moves one and not the other. Drive it with ")
+	TEXT("vacuus.LocDemo.Lang. Shares every vacuus.M1HUD.* sub-command."),
+	FConsoleCommandDelegate::CreateLambda([] { Toggle(GLocDemoVfsPath); }));
+
+static FAutoConsoleCommand GLocDemoLangCommand(
+	TEXT("vacuus.LocDemo.Lang"),
+	TEXT("Push a canned translation table: en | fr | ru. No reload happens, so the live lines re-translate in place ")
+	TEXT("and the parse-time line does not. `ru` also demonstrates the Latin-only shipped font."),
+	FConsoleCommandWithArgsDelegate::CreateStatic(&LocDemoLang));
 
 static FAutoConsoleCommand GM2DemoCommand(
 	TEXT("vacuus.M2Demo"),
