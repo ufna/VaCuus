@@ -8,6 +8,7 @@
 #include "VaCuusView.h"
 #include "VaCuusWorldInputProcessor.h"
 #include "VaCuusWorldSink.h"
+#include "VaCuusCoreCompat.h"
 #include "VaCuusWorldSubsystem.h"
 
 #include "DynamicMeshBuilder.h"
@@ -58,7 +59,10 @@ public:
 		bWillEverBeLit = false;
 		if (MaterialInstance)
 		{
-			MaterialRelevance = MaterialInstance->GetRelevance_Concurrent(GetScene().GetShaderPlatform());
+			// Same engine-dependent query key as VaCuusStyleSet's resource lookup, here for a
+			// SPECIFIC scene rather than the running RHI (VaCuusCoreCompat.h).
+			MaterialRelevance = MaterialInstance->GetRelevance_Concurrent(
+				VaCuusCompat::MaterialQueryTarget(GetScene().GetShaderPlatform()));
 		}
 	}
 

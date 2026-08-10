@@ -17,6 +17,8 @@
 #include "VaCuusViewStatus.h"
 #include "VaCuusWriteRouter.h"
 
+#include "VaCuusCoreCompat.h"
+
 #include "Containers/Ticker.h"
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
@@ -28,11 +30,17 @@
 #include "HAL/PlatformTime.h"
 
 UVaCuusSubsystem::UVaCuusSubsystem()
-	: FTickableGameObject(ETickableTickType::Never)
+	VACUUS_TICKABLE_STARTING_TYPE_ARG
 {
 	// Never at construction on purpose: UObjects may be constructed on worker
 	// threads, and FTickableGameObject's registration ensures IsInGameThread().
 	// Initialize() turns ticking on.
+	//
+	// The argument itself is engine-dependent -- 5.6 has no such constructor and
+	// registers unconditionally -- so it comes from VACUUS_TICKABLE_STARTING_TYPE_ARG,
+	// which is where the two engines' registration behaviour is written down
+	// (VaCuusCoreCompat.h). GetTickableTickType() below answers Never until
+	// bInitialized either way, so what ticks does not change with the engine.
 }
 
 void UVaCuusSubsystem::Initialize(FSubsystemCollectionBase& Collection)

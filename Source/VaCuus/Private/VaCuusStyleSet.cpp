@@ -4,6 +4,7 @@
 
 #include "VaCuus.h"
 #include "VaCuusDefines.h"
+#include "VaCuusCoreCompat.h"
 #include "VaCuusUIThread.h"
 
 #include "MaterialDomain.h"
@@ -191,7 +192,9 @@ UMaterialInterface* ValidateEntry(const FString& Key, UMaterialInterface* Materi
 	// GetGameThreadShaderMap() (MaterialShared.h:2778-2782, game-thread checked); the
 	// render-thread twin FMaterial::NeedsSceneTextures() is explicitly not callable here
 	// (check(IsInParallelRenderingThread()), MaterialShared.cpp:1050-1052).
-	if (const FMaterialResource* Resource = Material->GetMaterialResource(GMaxRHIShaderPlatform))
+	// The query key is engine-dependent (feature level before 5.7, shader platform after);
+	// VaCuusCompat::MaterialQueryTarget is where that is written down.
+	if (const FMaterialResource* Resource = Material->GetMaterialResource(VaCuusCompat::MaterialQueryTarget()))
 	{
 		if (const FMaterialShaderMap* ShaderMap = Resource->GetGameThreadShaderMap())
 		{

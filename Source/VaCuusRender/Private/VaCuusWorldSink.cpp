@@ -7,8 +7,10 @@
 #include "VaCuusStats.h"
 
 #include "GenerateMips.h"
-#include "PooledRenderTarget.h"
 #include "RHICommandList.h"
+// IPooledRenderTarget via the umbrella, not the 5.8-only split header -- see the
+// include note in VaCuusWorldSink.h.
+#include "RendererInterface.h"
 #include "RenderGraphBuilder.h"
 
 void FVaCuusWorldSink::SetPendingBuffer_RenderThread(FRHICommandListImmediate& RHICmdList, TUniquePtr<FVaCuusCommandBuffer> InBuffer)
