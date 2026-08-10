@@ -7,15 +7,22 @@
 #include "VaCuusFrameSink.h"
 #include "VaCuusReplayRenderer.h"
 
-// Complete IPooledRenderTarget (PooledRenderTarget.h:433), not a forward declaration:
-// the DestinationPooled member below is a TRefCountPtr, whose destructor calls
-// Reference->Release() (RefCounting.h:341) and so needs the full type at every point
-// this class is destroyed -- including TUs that only construct it, e.g.
+// Complete IPooledRenderTarget (5.8: PooledRenderTarget.h:433), not a forward
+// declaration: the DestinationPooled member below is a TRefCountPtr, whose destructor
+// calls Reference->Release() (RefCounting.h:341) and so needs the full type at every
+// point this class is destroyed -- including TUs that only construct it, e.g.
 // MakeShared<FVaCuusWorldSink>() in Tests/VaCuusWorldComponentTest.cpp. Unity and the
 // shared PCH had been supplying the definition by accident; `BuildPlugin
 // -StrictIncludes` (= -NoPCH -NoSharedPCH -DisableUnity) is where that stopped
 // compiling.
-#include "PooledRenderTarget.h"
+//
+// THE UMBRELLA IS THE SHIM (the 5.6 port; same trick as compat hotspot 4). 5.8 split
+// the struct out into its own header, but kept RendererInterface.h including it
+// (RendererInterface.h:21). On 5.6 that header IS the definition site
+// (5.6 RendererInterface.h:489) and PooledRenderTarget.h does not exist at all.
+// Including the umbrella therefore resolves on both engines with no version guard; naming the
+// split header directly is what breaks 5.6.
+#include "RendererInterface.h"
 
 #include <atomic>
 

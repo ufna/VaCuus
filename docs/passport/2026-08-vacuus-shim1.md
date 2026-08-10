@@ -1,5 +1,14 @@
 # Experiment SHIM-1 — the 5.6/5.7 compat build (owner hardware)
 
+> **RUN, for 5.6.1 / Linux, 2026-08-10 — results in `2026-08-vacuus-shim1-results.md`.**
+> Read that page before this one. Headlines: the plugin builds and passes on 5.6.1 (227/227,
+> and 5.8.1 unregressed at 227/227); **all four hotspots this page predicts were identical
+> across the two engines** and every real break was elsewhere, four of them outside
+> VaCuusRender; and a blocker this page does not mention at all — every committed `.uasset`
+> is refused by 5.6 for carrying a newer package version — turned out to be half the work.
+> Still unrun for 5.6: `RunUAT BuildPlugin -StrictIncludes` (steps 2-4 below), Win64, macOS.
+> 5.7 remains entirely unattempted.
+
 **What this is** (M6 spec §2(f)/§3.3; research `docs/research/m6-api-notes/buildplugin-fab.md`
 §3): the engine-version port, written as an experiment because it CANNOT run on the dev
 machine — no 5.6/5.7 SDK exists here, and the project conventions forbid speculative

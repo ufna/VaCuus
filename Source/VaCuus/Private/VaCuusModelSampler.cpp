@@ -15,6 +15,17 @@
 #include "UObject/UnrealType.h"
 #include "UObject/Utf8StrProperty.h"
 
+// UE_FORCEINLINE_HINT is 5.8's per-target-configurable FORCEINLINE (HAL/Platform.h:766-776):
+// it expands to FORCEINLINE unless the target defines UE_DEFINE_FORCEINLINE_HINT_TO_INLINE,
+// in which case a plain `inline` lets the compiler (or PGO) decide. 5.6 has no such macro --
+// grepping all of its Runtime/Core for the name returns nothing -- so define the same default
+// there. #ifndef and not a version test: the guard is inert on any engine that has the macro,
+// so a 5.7 either way needs no edit, and if a target opts into the `inline` form the engine's
+// own definition still wins.
+#ifndef UE_FORCEINLINE_HINT
+#define UE_FORCEINLINE_HINT FORCEINLINE
+#endif
+
 namespace VaCuusModelSamplerPrivate
 {
 /**

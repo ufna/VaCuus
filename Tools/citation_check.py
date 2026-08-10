@@ -93,6 +93,13 @@ ALLOW = {
         "not a citation -- the literal inline-script name \"vacuus://x.rml:3\", quoted in prose",
     ("VaCuusUMGWidget.h", "VaCuusUMGWidget.gen.cpp:22"):
         "UHT-generated, lives under Intermediate/ and is absent from a clean tree",
+    ("VaCuusWorldSink.h", "RendererInterface.h:489"):
+        "a 5.6 line number, and this gate resolves against ONE engine root (--engine, "
+        "default 5.8). 5.8 moved IPooledRenderTarget out of that header, leaving it 455 "
+        "lines, so line 489 exists only in the 5.6 tree the citation names. NOTE the "
+        "general limitation this exposes: every 5.6-tree citation added by the port is "
+        "unverifiable here, and the ones that pass do so only because 5.8's file happens "
+        "to be long enough -- which is why they are all spelled '5.6 <file>:<line>'",
 }
 
 CITE = re.compile(

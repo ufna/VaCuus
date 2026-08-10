@@ -15,6 +15,44 @@
 
 namespace VaCuusModelLayoutTest
 {
+/**
+ * Constructs an FProperty by whichever signature this engine actually offers, WITHOUT naming a
+ * version. The two are mutually exclusive and both would otherwise cost something:
+ *
+ *   5.6 declares only `FIntProperty(FFieldVariant, const FName&, EObjectFlags)` (5.6
+ *       UnrealType.h:2179), forwarding the flags into FField::FlagsPrivate (5.6
+ *       Field.cpp:289-293). Two arguments do not compile -- that is what the 5.6 port hit.
+ *   5.8 deleted FlagsPrivate. It declares the two-argument form (UnrealType.h:2340) and keeps
+ *       the three-argument one only as `UE_DEPRECATED(5.8, "... remove that parameter.")`
+ *       (:2341-2342), whose message adds "otherwise your project will no longer compile" about
+ *       the release after. So passing flags there is not free and not durable, which is exactly
+ *       what the first attempt at this port got wrong -- it compiled, and warned six times.
+ *
+ * Overload ranking picks: the `int` candidate exists only where the two-argument constructor is
+ * well-formed, so the newer engine takes the new API and the older one falls through to `long`.
+ * Nothing here needs revisiting when the deprecated form is finally removed. RF_Public on the
+ * old path is what the engine's own runtime property builder passes for the same job
+ * (StructUtils/PropertyBag.cpp:316, 361, 425).
+ */
+template <typename TProperty>
+static auto MakeProperty(FFieldVariant Owner, const FName& Name, int) -> decltype(new TProperty(Owner, Name))
+{
+	return new TProperty(Owner, Name);
+}
+
+template <typename TProperty>
+static TProperty* MakeProperty(FFieldVariant Owner, const FName& Name, long)
+{
+	return new TProperty(Owner, Name, RF_Public);
+}
+
+/** The call the tests use; `0` is what makes the `int` candidate win wherever it exists. */
+template <typename TProperty>
+static TProperty* NewProperty(FFieldVariant Owner, const FName& Name)
+{
+	return MakeProperty<TProperty>(Owner, Name, 0);
+}
+
 struct FFieldExpectation
 {
 	const TCHAR* WireName;
@@ -373,7 +411,10 @@ bool FVaCuusModelLayoutAuthoredNameTest::RunTest(const FString& Parameters)
 
 	// Owned by the struct: AddCppProperty prepends to ChildProperties (Class.cpp:723-727)
 	// and the struct destroys its own FProperties, so this is not a leak.
-	FIntProperty* Prop = new FIntProperty(Struct.Get(), FName(MangledName));
+	//
+	// Constructed through NewProperty: the FProperty constructor signature is
+	// engine-dependent (see the helper at the top of this file).
+	FIntProperty* Prop = VaCuusModelLayoutTest::NewProperty<FIntProperty>(Struct.Get(), FName(MangledName));
 	Prop->SetPropertyFlags(CPF_BlueprintVisible);
 	Struct->AddCppProperty(Prop);
 	Struct->Bind();
@@ -434,7 +475,7 @@ static UUserDefinedStruct* NewUserStruct()
 /** Appends `int32 <Name>`, Blueprint-visible, to an un-linked user struct. */
 static void AddIntMember(UUserDefinedStruct* Struct, const TCHAR* Name)
 {
-	FIntProperty* Prop = new FIntProperty(Struct, FName(Name));
+	FIntProperty* Prop = VaCuusModelLayoutTest::NewProperty<FIntProperty>(Struct, FName(Name));
 	Prop->SetPropertyFlags(CPF_BlueprintVisible);
 	Struct->AddCppProperty(Prop);
 }
@@ -442,7 +483,7 @@ static void AddIntMember(UUserDefinedStruct* Struct, const TCHAR* Name)
 /** Appends `<MemberType> <Name>` by value, Blueprint-visible. */
 static void AddStructMember(UUserDefinedStruct* Struct, const TCHAR* Name, UScriptStruct* MemberType)
 {
-	FStructProperty* Prop = new FStructProperty(Struct, FName(Name));
+	FStructProperty* Prop = VaCuusModelLayoutTest::NewProperty<FStructProperty>(Struct, FName(Name));
 	Prop->Struct = MemberType;
 	Prop->SetPropertyFlags(CPF_BlueprintVisible);
 	Struct->AddCppProperty(Prop);
@@ -459,8 +500,9 @@ static void AddStructMember(UUserDefinedStruct* Struct, const TCHAR* Name, UScri
  */
 static void AddArrayOfStructMember(UUserDefinedStruct* Struct, const TCHAR* Name, UScriptStruct* ElementType)
 {
-	FArrayProperty* ArrayProp = new FArrayProperty(Struct, FName(Name));
-	FStructProperty* InnerProp = new FStructProperty(ArrayProp, FName(*(FString(Name) + TEXT("_ElementProp"))));
+	FArrayProperty* ArrayProp = VaCuusModelLayoutTest::NewProperty<FArrayProperty>(Struct, FName(Name));
+	FStructProperty* InnerProp =
+		VaCuusModelLayoutTest::NewProperty<FStructProperty>(ArrayProp, FName(*(FString(Name) + TEXT("_ElementProp"))));
 	InnerProp->Struct = ElementType;
 	ArrayProp->AddCppProperty(InnerProp);
 	ArrayProp->SetPropertyFlags(CPF_BlueprintVisible);
@@ -571,7 +613,8 @@ bool FVaCuusModelLayoutDuplicateNameTest::RunTest(const FString& Parameters)
 		Outer->Status = EUserDefinedStructureStatus::UDSS_UpToDate;
 
 		FStructProperty* PanelProp =
-			new FStructProperty(Outer.Get(), FName(*MangledMemberName(TEXT("Panel"), 0, TEXT("0123456789ABCDEF0123456789ABCDEF"))));
+			VaCuusModelLayoutTest::NewProperty<FStructProperty>(
+				Outer.Get(), FName(*MangledMemberName(TEXT("Panel"), 0, TEXT("0123456789ABCDEF0123456789ABCDEF"))));
 		PanelProp->Struct = Inner.Get();
 		PanelProp->SetPropertyFlags(CPF_BlueprintVisible);
 		Outer->AddCppProperty(PanelProp);

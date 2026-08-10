@@ -13,7 +13,19 @@
 
 #if WITH_EDITOR
 #include "Cooker/CookDependency.h"
+// UE::Cook::FCookDependencyContext, complete (HashBundleTree below calls Update and
+// LogError on it). The 5.6 port: 5.8 forward-declares it in CookDependency.h:22 and
+// defines it in the split-out CookDependencyContext.h, while 5.6 has no such file and
+// defines the struct in 5.6 CookDependency.h:29 itself. Unlike the IPooledRenderTarget
+// split (VaCuusWorldSink.h), no header that exists on both pulls the 5.8 definition --
+// grepping 5.8's Runtime/*/Public for an includer of CookDependencyContext.h returns
+// nothing -- so the include itself has to be conditional. __has_include and not
+// UE_VERSION_OLDER_THAN(5, 7, 0) on purpose: it tests the one fact that was actually
+// checked (the file's presence, in the two trees on this machine) instead of asserting
+// which release performed the split, which nobody here has a 5.7 to verify.
+#if __has_include("Cooker/CookDependencyContext.h")
 #include "Cooker/CookDependencyContext.h"
+#endif
 #include "Interfaces/ITargetPlatform.h"
 #include "Serialization/CompactBinaryWriter.h"
 #endif
