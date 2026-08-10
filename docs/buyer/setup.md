@@ -34,6 +34,18 @@ neither of which the engine tells you about:
   the engine that built the package. A different engine version will warn on load; that is
   a compatibility marker, not a hard block.
 
+  **Which engines this plugin supports: 5.6 and 5.8.** One source tree serves both — each
+  is built (editor and packaged-game targets) and runs the shipped suite green, on Linux.
+  5.7 has never been tried. Take the package stamped with your engine: the stamp is
+  per-package, not per-plugin, so a 5.6 download on 5.8 warns even though the source
+  compiles on both.
+
+  One thing that does NOT travel between engines, if you ever move content between
+  projects: `.uasset` files are forward-compatible only. Anything saved by a 5.8 editor is
+  refused outright by 5.6 — silently, with no version line in the log; the asset simply
+  never appears. The plugin's own content is authored on the oldest supported engine for
+  exactly this reason.
+
 ## 1. Install and enable
 
 1. Drop the plugin into `<Project>/Plugins/VaCuus` (Fab install does the same).
@@ -273,6 +285,11 @@ LogVaCuus: Mounted bundle '<name>': 24 entries, 461881 bytes, resident buffer (.
    UI file edit recooks exactly the bundle package and an unchanged tree skips it —
    the tree-hash cook dependency was verified against edit, add AND delete. The one
    configuration that goes stale is in gotchas.md #19.
+
+   **Measured on 5.8 only.** 5.6 has no `CookIncrementalDefaultIncremental` key in its
+   `BaseEditor.ini` at all, so its incremental-cook behaviour is a different question and
+   nobody here has run the experiment on it. The opt-in line above is harmless either way
+   — without incremental cooking the bundle just repacks every cook.
 
 **When the bundle mounts — the predicate table:**
 

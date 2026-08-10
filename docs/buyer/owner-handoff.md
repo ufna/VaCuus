@@ -92,10 +92,22 @@ compat-seam entry.
 `docs/passport/2026-08-vacuus-shim1.md` is the complete procedure: clean clone →
 `RunUAT BuildPlugin -StrictIncludes` per engine → every break fixed inside
 `VaCuusEngineCompat.h` (the four hotspots with expected failure shapes per engine) →
-5.8 re-run to prove no regression → scan + blank-project smoke. On this machine only
-the 5.8-Linux legs ran (three legs green, `buildplugin-fab-dryrun.md` §7). Note the
-platform asymmetry: a Windows-host BuildPlugin silently drops Linux legs and vice
-versa — a pass on one says nothing about the other.
+5.8 re-run to prove no regression → scan + blank-project smoke.
+
+**RUN for 5.6.1 on 2026-08-10 (Linux) — see `docs/passport/2026-08-vacuus-shim1-results.md`.**
+The procedure above predicted the wrong four places: all four hotspots are identical in
+5.6.1 and 5.8.1, and every real break was elsewhere, four of seven outside VaCuusRender.
+Result: both engines build (editor and packaged-game targets) and pass 227/227, and
+`BuildPlugin -StrictIncludes` on 5.6 produced a package that passes `fab_scan` and
+`fab_inventory` (48/48). Content turned out to be half the job and is not mentioned in the
+procedure at all: every `.uasset` was refused by 5.6 for carrying a newer package version,
+silently, so the fixtures are now authored on the oldest supported engine.
+
+Still unrun: 5.7 (no SDK here), and Win64/macOS on 5.6. Note the platform asymmetry: a
+Windows-host BuildPlugin silently drops Linux legs and vice versa — a pass on one says
+nothing about the other. One engine-side trap when you do repeat this: `RunUAT` on a
+fresh 5.6.1 tree dies in ~2 s with an unhelpful message because NuGet's audit fails UAT's
+own C# script modules; `NuGetAudit=false` in the environment is the fix.
 
 ## 7. The Fab upload
 
