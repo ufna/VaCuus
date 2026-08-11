@@ -446,3 +446,32 @@ register -- proving that half needs a font asset, which is a licensing decision.
 NOT yet offered upstream -- same standing as patches #1-#4. This one is worth offering on
 its own merits even to a project that never uses VaCuus: it costs an int, changes no
 rendering behaviour, and turns a class of silent failure into a one-line warning.
+
+
+Patch #6 -- two data-binding headers leave DataExpression incomplete where libc++ 18
+instantiates the unique_ptr deleter (bead VaCuus-3nl, the first Android compile).
+
+Source/Core/DataViewDefault.h and Source/Core/DataControllerDefault.h each hold a
+`DataExpressionPtr` member (a `UniquePtr<DataExpression>`) behind a forward
+declaration only, relying on every includer instantiating the implicit destructor
+in a TU that has seen the full type. Desktop toolchains here (clang 20/Linux,
+Apple clang/Metal, MSVC) happened to satisfy that through their unity groupings.
+The NDK r27c libc++ (18.x) does not: its unique_ptr destructor is
+_LIBCPP_CONSTEXPR_SINCE_CXX23, and in the Android unity blob for Factory.cpp the
+deleter is instantiated with the type still incomplete --
+`static_assert(sizeof(_Tp) >= 0, "cannot delete an incomplete type")`
+(__memory/unique_ptr.h:64) fails the build.
+
+THE HUNK, same one line in both files: add `#include "DataExpression.h"` (the
+private header in the same directory) so the type is complete for every includer.
+No behavioural change; the forward declarations stay, now redundant but harmless.
+
+VERIFICATION (the re-vendoring check): the Android compile itself.
+`Mac/Build.sh TP_ThirdPerson Android Development -project=<VcHost> -NoXGE` on the
+Mac fails without the includes exactly as above (va-macbook
+~/VaCuusSession-android/build1.log, 2026-08-11) and is green with them
+(build3.log, same day). Desktop targets cannot see this defect either way.
+
+NOT yet offered upstream -- same standing as patches #1-#5. Checked against
+mikke89/RmlUi master 2026-08-11: both headers still carry the forward-declaration-
+only pattern, so the defect is live upstream for any strict-libc++ consumer.

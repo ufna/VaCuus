@@ -5,6 +5,7 @@
 #include "../../Include/RmlUi/Core/Header.h"
 #include "../../Include/RmlUi/Core/Types.h"
 #include "DataController.h"
+#include "DataExpression.h"
 
 namespace Rml {
 

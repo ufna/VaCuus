@@ -17,7 +17,8 @@
 	"SupportedTargetPlatforms": [
 		"Win64",
 		"Mac",
-		"Linux"
+		"Linux",
+		"Android"
 	],
 	"Modules": [
 		{
