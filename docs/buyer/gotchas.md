@@ -273,6 +273,50 @@ Do, and the right answer differs by what the child is:
 - If you genuinely need group semantics, give the group a **single** opacity and keep every
   descendant silent about it. There is no way to nest two.
 
+## Hosting and input
+
+**23. The document is on screen, looks right, and is completely dead to input.**
+Symptom: it renders, animates and retranslates, and not one pointer event reaches it — no
+`:hover`, no clicks, no wheel. Nothing is logged, by the engine or by this plugin, because
+nothing went wrong: the events were delivered, just not to you. Most likely on a project
+whose first VaCuus document is also its first UI.
+Cause: the game viewport owns the pointer capture and your game never said otherwise —
+and no game code is needed for that to happen. Unreal's shipped defaults are
+`bCaptureMouseOnLaunch = true` and
+`DefaultViewportMouseCaptureMode = CapturePermanently_IncludingInitialMouseDown`
+(`Engine/Private/UserInterface/InputSettings.cpp:40,49`), which `UGameViewportClient::Init`
+copies onto the viewport (`Engine/Private/GameViewportClient.cpp:535`). Once a capture
+exists, Slate stops asking what is under the cursor: `ProcessMouseButtonDownEvent` builds
+the path from `GetCaptorPath` and delivers the click to **that path's last widget**
+(`Slate/Private/Framework/Application/SlateApplication.cpp:5125-5128`), so the hit test
+that would have found your document never gets to decide the target. Moves and the wheel go
+the same way — `RoutePointerMoveEvent` routes with `FToLeafmostPolicy(MouseCaptorPath)`
+(`:5610,5630`) and the wheel takes the captor path at `:6023-6025`; the move path still runs
+a hit test, but only to work out enter/leave. Your widget's handlers are not called, whatever
+its visibility or Z-order says.
+This was observed before it was read: with GameOnly, a synthesized move over a demo button
+came back HANDLED — by the captor — while RmlUi's hover never changed
+(`Source/VaCuusRender/Private/VaCuusRender.cpp`, `SetUIInputMode`, which is why the plugin's
+own demos call it).
+Do: put the local player controller into `FInputModeGameAndUI` while your UI is up, and back
+when it goes away. The line that actually fixes it is inside that mode, not in the name:
+`ApplyInputMode` calls `SlateOperations.ReleaseMouseCapture()` and downgrades the viewport to
+`EMouseCaptureMode::CaptureDuringMouseDown` (`Engine/Private/PlayerController.cpp:6260,6265`).
+
+```cpp
+FInputModeGameAndUI Mode;
+Mode.SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock);
+Mode.SetHideCursorDuringCapture(false);
+PlayerController->SetInputMode(Mode);
+PlayerController->SetShowMouseCursor(true);   // separate switch — neither implies the other
+```
+
+GameAndUI rather than UIOnly, so clicks your UI does not claim still reach the game.
+**The plugin will not do this for you on purpose:** a game decides its own input mode, and a
+VaCuus widget hosted inside an existing UMG tree correctly inherits whatever the game already
+set. It is only a project's *first* piece of UI that has nobody to inherit from.
+(Engine line numbers are 5.6; the code at each of them is identical in 5.8.)
+
 ## Data binding and JS
 
 **9. Your data model binds to nothing, one Error at load time.**

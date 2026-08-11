@@ -153,6 +153,13 @@ Viewport->RemoveViewportWidgetContent(SlateWidget);
 Hud->ReleaseSlateResources(/*bReleaseChildren=*/true);
 ```
 
+**If this is the first UI your project has ever shown, that snippet is not yet enough:** the
+game viewport holds the pointer capture by default, so the document comes up looking correct
+and receives no input at all, silently. One `SetInputMode(FInputModeGameAndUI)` on the local
+player controller fixes it — gotchas.md #23 has the mechanism and the code. A widget dropped
+into an existing UMG tree inherits whatever input mode the game already set and needs
+nothing.
+
 Keep a reference to the `UVaCuusWidget` (a `UPROPERTY`, or `TStrongObjectPtr` if it lives
 outside a widget tree) — nothing else roots it. The plugin ships this exact sequence as a
 runnable reference: `vacuus.UMGDemo` (`Source/VaCuusRender/Private/VaCuusUMGWidget.cpp`,

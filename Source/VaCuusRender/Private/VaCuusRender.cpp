@@ -125,11 +125,20 @@ div { display: block; position: absolute; }
  * Puts the local player controller into an input mode that lets Slate route pointer
  * events to viewport overlays at all, and takes it back out again.
  *
- * NOT A NICETY -- WITHOUT IT NO INPUT REACHES THE UI. Under the default
- * FInputModeGameOnly the game viewport holds mouse capture, so
- * FSlateApplication routes every pointer event straight to the captor (the SViewport)
- * and never runs a hit test; SVaCuusWidget's handlers are simply never called, no
- * matter what its visibility says. This was observed, not assumed: with GameOnly, a
+ * NOT A NICETY -- WITHOUT IT NO INPUT REACHES THE UI. A game that never calls
+ * SetInputMode still ends up here: UInputSettings ships bCaptureMouseOnLaunch=true and
+ * DefaultViewportMouseCaptureMode=CapturePermanently_IncludingInitialMouseDown
+ * (Engine/Private/UserInterface/InputSettings.cpp:40,49), which UGameViewportClient::Init
+ * copies onto the viewport (GameViewportClient.cpp:535); GameOnly asks for the same thing
+ * explicitly. Once the capture exists, ProcessMouseButtonDownEvent takes the target from
+ * GetCaptorPath and delivers the click to that path's LAST widget
+ * (SlateApplication.cpp:5125-5128) -- so the hit test never gets to pick the target, and
+ * SVaCuusWidget's handlers are simply never called, no matter what its visibility says.
+ * (The move path does still hit-test, but only to work out enter/leave: ProcessMouseMoveEvent
+ * calls LocateWindowUnderMouse first. It changes nothing here -- when a captor exists,
+ * RoutePointerMoveEvent routes the move itself with FToLeafmostPolicy(MouseCaptorPath)
+ * (:5610,5630), and the wheel takes the same captor route (:6023-6025).)
+ * This was observed, not assumed: with GameOnly, a
  * synthesized move over the demo button was reported HANDLED -- by the captor -- while
  * RmlUi's hover never changed. That run is also why the move/wheel/key commands below no
  * longer name a culprit on their handled branch: Slate's answer there was true and useless.
