@@ -101,6 +101,12 @@ ANNOTATIONS = {
     "variables (ComputedValues.cpp:8-16), so unlike `transition` it never needed a patch.",
     "display": "No CSS Grid in RmlUi (flex-first is the market bar, arch spec 1); the keyword "
     "list here is exhaustive.",
+    "drag": "Only `drag-drop` and `clone` send dragover/dragout/dragdrop/dragmove -- plain `drag` "
+    "sends dragstart/drag/dragend and nothing else (Context.cpp:692 sets drag_verbose for exactly "
+    "those two), and `block` stops an ancestor from becoming the drag source. `clone` ships a "
+    "ghost under the cursor styleable via `:drag` -- the ONE drag pseudo-class, set on the clone "
+    "only (Context.cpp:1504); sources and targets get no pseudo-class at all. Shipped reference: "
+    "vacuus.DragDemo + gotchas.md #24; proven by VaCuus.Js.DragDrop.",
     "position": "absolute resolves against the nearest positioned ancestor; there is no "
     "browser-style default-positioned root chain past the document "
     "(Content/DevUI/M5Hud/vacuus-base.rcss:29-31).",

@@ -63,6 +63,7 @@ static const TCHAR* GM5MatSpikeVfsPath = TEXT("m5_matspike.rml");
 static const TCHAR* GM5HudVfsPath = TEXT("M5Hud/m5_hud.rml");
 static const TCHAR* GLocDemoVfsPath = TEXT("loc_demo.rml");
 static const TCHAR* GRefHudVfsPath = TEXT("RefHud/refhud.rml");
+static const TCHAR* GDragDemoVfsPath = TEXT("drag_demo.rml");
 
 /**
  * The name m3_demo.rml's `data-model` attribute writes, and the name `vacuus.DumpModel hud`
@@ -2262,6 +2263,15 @@ static FAutoConsoleCommand GM5DemoCommand(
 	TEXT("camera so the scene moves under the blur, and the SAME document on a raycast-clickable world quad 16° ")
 	TEXT("right. Shares every vacuus.M1HUD.* sub-command; vacuus.M5Glass.Shot works for the second beat."),
 	FConsoleCommandDelegate::CreateLambda([] { Toggle(GM5HudVfsPath); }));
+
+static FAutoConsoleCommand GDragDemoCommand(
+	TEXT("vacuus.DragDemo"),
+	TEXT("Toggle the drag'n'drop demo (DevUI/drag_demo.rml + drag_demo.js): an inventory of `drag: clone` items ")
+	TEXT("dragged between a stash grid and typed equipment slots -- ghost clone under the cursor, JS-driven ")
+	TEXT("drop-ok/drop-bad target highlights (RmlUi styles targets not at all), typed refusal, and a status line that ")
+	TEXT("names every accepted, refused and cancelled drag. Drive it headless with vacuus.M2Demo.Drag; proven ")
+	TEXT("end-to-end by VaCuus.Js.DragDrop."),
+	FConsoleCommandDelegate::CreateLambda([] { Toggle(GDragDemoVfsPath); }));
 
 static FAutoConsoleCommand GRefHudCommand(
 	TEXT("vacuus.RefHud"),

@@ -543,6 +543,47 @@ bool FVaCuusSlateRoutingTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("The widget's move reached RmlUi and hovered the button"),
 		Host->HoverId, FString(TEXT("btn")));
 
+	// 3b. THE CROSS-RECT DRAG COMPOSITION (bead VaCuus-iim): a drag that starts
+	// inside a covered rect must survive the cursor leaving EVERY rect and must
+	// still own the release wherever the button comes up -- capture, not
+	// coverage, is what keeps it alive (the OnMouseMove/OnMouseButtonUp gates,
+	// SVaCuusWidget.cpp). This is the Slate half of what vacuus.DragDemo and
+	// VaCuus.Js.DragDrop prove on the RmlUi side: without it, an inventory drag
+	// dies the moment the ghost crosses the gap between two panels.
+	{
+		const uint64 QueuedBefore = View->GetNumInputEventsQueued();
+
+		Widget->OnMouseButtonDown(Geometry, MakePointerEvent(GButtonPoint, LeftOnly, EKeys::LeftMouseButton));
+		TestTrue(TEXT("The drag's press takes capture"), Widget->IsTrackingMouseCapture_Debug());
+
+		// THE MOVE'S Handled HALF IS DELIBERATELY NOT ASSERTED HERE. This venue
+		// calls handlers directly and processes no replies, so Slate never enters
+		// the widget in the captor map and HoldsPointerCapture() -- whose answer
+		// is Slate's, one-way (its own comment) -- honestly says no. The
+		// move-under-a-REAL-capture assertion lives in CaptureReconcile, against
+		// a genuine captor-map entry. What THIS venue must pin is the asymmetry
+		// that keeps the drag's bookkeeping alive: Slate's "no" must NOT tear
+		// down the widget's own mid-gesture mirror.
+		Widget->OnMouseMove(Geometry, MakePointerEvent(GEmptyPoint, LeftOnly, FKey()));
+		TestTrue(TEXT("An out-of-rect move mid-drag does not tear down the widget's capture mirror"),
+			Widget->IsTrackingMouseCapture_Debug());
+
+		const FReply UpOut =
+			Widget->OnMouseButtonUp(Geometry, MakePointerEvent(GEmptyPoint, NoButtons, EKeys::LeftMouseButton));
+		TestTrue(TEXT("The release outside every rect is still the drag's to finish"), UpOut.IsEventHandled());
+		TestTrue(TEXT("...and hands the capture back"), UpOut.ShouldReleaseMouse());
+		TestFalse(TEXT("...clearing the tracking flag"), Widget->IsTrackingMouseCapture_Debug());
+
+		TestEqual(TEXT("All three drag events reached the view's queue"),
+			View->GetNumInputEventsQueued() - QueuedBefore, uint64(3));
+
+		// Drain, so the next beat starts from a settled RmlUi state.
+		if (!TestTrue(TEXT("UI frame ran after the cross-rect drag"), RunFrames(*UIThread, 1)))
+		{
+			return false;
+		}
+	}
+
 	// 4. Capture lost without a button-up (window deactivation, another captor) must
 	// clear the flag, or every later move answers Handled and eats the game's camera.
 	{

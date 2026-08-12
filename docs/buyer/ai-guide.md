@@ -141,6 +141,17 @@ Iterate without restarting: the editor watches `Content/DevUI` and reloads a cha
 document during PIE; `vacuus.ReloadUI` does the same at runtime. This is the loop the
 product is built around — a file save, not a compile.
 
+**Building drag'n'drop?** Read `gotchas.md` #24 before writing a handler — all four of its
+surprises (which `drag` values even send drop events, where `dragdrop` fires and what is
+not in it, who highlights targets, and why reparenting inside `dragdrop` kills the drag)
+cost real debugging time in a UI that looks *almost* right. The shipped reference is
+`vacuus.DragDemo` (`Content/DevUI/drag_demo.*`); drive a drag headless with
+`vacuus.M2Demo.Drag <x0> <y0> <x1> <y1>` (press, move, release through real Slate
+routing — works for whichever demo is on), and copy `VaCuus.Js.DragDrop`
+(`Source/VaCuusJs/Private/Tests/VaCuusJsDragDropTest.cpp`) as the template for proving
+your own drag through the input path: enqueue press/moves/release, read the model back
+through JS.
+
 ## 6. Rules for an agent, specifically
 
 **Do not invent RCSS.** If you cannot find the property in `rcss-matrix.md`, it does not

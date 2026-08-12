@@ -82,7 +82,7 @@ A property with multiple parsers accepts any of them, tried in order.
 | `row-gap` | `0px` | no | yes | length_percent |  |
 | `column-gap` | `0px` | no | yes | length_percent |  |
 | `cursor` | `` (empty) | yes | no | string |  |
-| `drag` | `none` | no | no | keyword: none, drag, drag-drop, block, clone |  |
+| `drag` | `none` | no | no | keyword: none, drag, drag-drop, block, clone | Only `drag-drop` and `clone` send dragover/dragout/dragdrop/dragmove -- plain `drag` sends dragstart/drag/dragend and nothing else (Context.cpp:692 sets drag_verbose for exactly those two), and `block` stops an ancestor from becoming the drag source. `clone` ships a ghost under the cursor styleable via `:drag` -- the ONE drag pseudo-class, set on the clone only (Context.cpp:1504); sources and targets get no pseudo-class at all. Shipped reference: vacuus.DragDemo + gotchas.md #24; proven by VaCuus.Js.DragDrop. |
 | `tab-index` | `none` | no | no | keyword: none, auto |  |
 | `focus` | `auto` | yes | no | keyword: none, auto |  |
 | `nav-up` | `none` | no | no | keyword: none, auto, horizontal, vertical, tree-order; string | The nav-* family is NOT inherited: spatial-nav rules must sit on the focusable element itself, and targets use `#id` syntax (rmlui-input.md:190-207, :450). |

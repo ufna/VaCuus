@@ -317,6 +317,49 @@ VaCuus widget hosted inside an existing UMG tree correctly inherits whatever the
 set. It is only a project's *first* piece of UI that has nobody to inherit from.
 (Engine line numbers are 5.6; the code at each of them is identical in 5.8.)
 
+**24. Drag'n'drop: the four surprises, in the order they will find you.**
+The working reference is the shipped demo — `vacuus.DragDemo`
+(`Content/DevUI/drag_demo.rml/.rcss/.js`), proven end-to-end by `VaCuus.Js.DragDrop` —
+but each surprise costs less read here first:
+
+*Plain `drag: drag` gives you no drop events at all.* Of the five RCSS `drag` values,
+only `drag-drop` and `clone` enable `dragover`/`dragout`/`dragdrop`/`dragmove`
+(`Source/ThirdParty/RmlUi/Source/Core/Context.cpp:692` sets `drag_verbose` for exactly
+those two); with `drag` you get `dragstart`/`drag`/`dragend` and nothing else, silently.
+The failure mode is a drag that visibly starts and can never land.
+
+*`dragdrop` fires on the drop TARGET, not on what you dragged — and in JS the dragged
+element is not in the event.* RmlUi passes the source as the `drag_element` void\*, which
+the JS bridge deliberately drops with the other non-convertible variants
+(`Source/VaCuusJs/Private/VaCuusJsEvents.cpp:44-49`). Capture the source yourself in
+`dragstart`; that variable is the only reliable handle. The release order over a target
+is `dragdrop` → `dragout` → `dragend` (`Context.cpp:760-775`), and `dragend` fires on
+the source even when the drop landed on nothing — make it your cleanup point.
+
+*Nothing highlights a drop target for you.* The library's single drag pseudo-class is
+`:drag`, set on the ghost clone only (`Context.cpp:1504`); sources and targets get no
+state at all, and ordinary `:hover` keeps firing on targets mid-drag. Target feedback is
+therefore your handler's job (the demo adds `drop-ok`/`drop-bad` classes from
+`dragover`). Note the events are dispatched per element entering or leaving the
+drag-hover chain and they bubble, so a slot hears its occupying item's transitions too —
+filter highlights on `ev.target === ev.currentTarget`, but do NOT filter `dragdrop`,
+which lands on the occupant and reaches the slot only by bubbling.
+
+*Do not reparent the dragged element inside `dragdrop`.* Moving an attached node goes
+through `RemoveChild`, the detach reaches `Context::OnElementDetach`, and its drag branch
+SILENTLY cancels the drag — `dragend` never fires and whatever cleanup you hung on it
+never runs (`Source/ThirdParty/RmlUi/Source/Core/Element.cpp:2129-2133` →
+`Context.cpp:1150-1159`). Validate in `dragdrop`, apply the move in `dragend`, where the
+same cancellation has nothing left to kill. The demo's header carries the full argument.
+
+Two smaller facts worth knowing before they are questions: there is no movement
+threshold — `dragstart` fires on the first ≥ 1 px move with button 0 held
+(`Context.cpp:1290`) — and a drag by touch is the same machinery, because the touch
+verbs synthesize button-0 mouse events (`Context.cpp:916-919`). A drag whose cursor
+leaves every interactive rect keeps working because the widget holds Slate pointer
+capture from the press; that is `SVaCuusWidget`'s capture gate, not the snapshot, and it
+is what makes dragging between two panels across empty screen possible.
+
 ## Data binding and JS
 
 **9. Your data model binds to nothing, one Error at load time.**

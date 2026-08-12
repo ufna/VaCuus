@@ -1,0 +1,59 @@
+<rml>
+<head>
+	<title>VaCuus Drag'n'Drop Demo</title>
+	<link type="text/rcss" href="drag_demo.rcss"/>
+	<script src="drag_demo.js"></script>
+</head>
+<body>
+	<div id="dd-title">VaCuus // DRAG'N'DROP DEMO</div>
+
+	<!-- STASH. Items carry `drag: clone` (drag_demo.rcss): a styled clone follows
+	     the cursor while the ORIGINAL stays in its slot until a drop is accepted,
+	     so a refused drop needs no undo. The clone is the only element that ever
+	     matches :drag -- RmlUi sets no pseudo-class on the source or on drop
+	     targets (Context.cpp:1504 is the single SetPseudoClass("drag") in the
+	     library) -- which is why every target highlight below is a JS-managed
+	     class, not a selector.
+
+	     `vacuus-interactive` on the grid, NOT on the panel: the slots and items
+	     are plain divs (no interactive tag, no tab-index), so without the marker
+	     the snapshot would not cover them, SVaCuusWidget would answer Unhandled,
+	     and the press that should start a drag would fall through to the game.
+	     The panel title stays inert, m2_demo's discipline. -->
+	<div id="p-stash">
+		<div class="panel-title">STASH &#183; drag items to a matching slot</div>
+		<div id="stash-grid" vacuus-interactive>
+			<div id="st-0" class="slot" accepts="any"><div id="it-rifle" class="item weapon" itemtype="weapon">RIFLE</div></div>
+			<div id="st-1" class="slot" accepts="any"><div id="it-plate" class="item armor" itemtype="armor">PLATE</div></div>
+			<div id="st-2" class="slot" accepts="any"><div id="it-scope" class="item gadget" itemtype="gadget">SCOPE</div></div>
+			<div id="st-3" class="slot" accepts="any"><div id="it-medkit" class="item gadget" itemtype="gadget">MEDKIT</div></div>
+			<div id="st-4" class="slot" accepts="any"></div>
+			<div id="st-5" class="slot" accepts="any"></div>
+			<div id="st-6" class="slot" accepts="any"></div>
+			<div id="st-7" class="slot" accepts="any"></div>
+		</div>
+	</div>
+
+	<!-- EQUIPMENT. Typed slots: `accepts` is a plain attribute the demo script
+	     reads -- NOT `data-accepts`, because data-* is RmlUi's data-binding
+	     namespace and this document has no data model. A drop is accepted only
+	     when the slot is empty and the types match; anything else is refused
+	     with visual feedback, which is the half of drag'n'drop most UIs get
+	     wrong. -->
+	<div id="p-equip">
+		<div class="panel-title">EQUIPMENT &#183; typed slots</div>
+		<div id="equip-col" vacuus-interactive>
+			<div id="eq-weapon" class="slot typed" accepts="weapon"></div><div class="slot-label lb-weapon">WEAPON</div>
+			<div id="eq-armor" class="slot typed" accepts="armor"></div><div class="slot-label lb-armor">ARMOR</div>
+			<div id="eq-gadget" class="slot typed" accepts="gadget"></div><div class="slot-label lb-gadget">GADGET</div>
+		</div>
+	</div>
+
+	<!-- The status line is the demo's observable: every dragstart, accepted drop,
+	     refusal and cancelled drag rewrites it, so a screenshot -- or the
+	     automation test reading it back -- says what the input path just did. -->
+	<div id="p-status">
+		<div id="status">DRAG AN ITEM &#183; drop it on a matching slot</div>
+	</div>
+</body>
+</rml>

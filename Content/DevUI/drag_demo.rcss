@@ -1,0 +1,197 @@
+/* VaCuus drag'n'drop demo - stylesheet.
+
+   RENDERER SUBSET: solid fills (with alpha), 1px borders, border-radius, text --
+   the m2_demo.rcss diet. No decorators, no transitions, and deliberately no
+   `opacity` on the drag ghost: alpha lives in the colours themselves, so this
+   sheet stays inside the recorder's oldest, most-proven vocabulary.
+
+   FIXED-PIXEL LAYOUT, LOAD-BEARING: the automation test (VaCuus.Js.DragDrop)
+   computes its press/move/release coordinates from the numbers in this file.
+   Every slot is ABSOLUTELY positioned -- no inline-block arithmetic anywhere --
+   because RmlUi's inline-block wrapping differs from browser CSS box math (M1
+   finding) and a one-pixel drift here silently moves every drag waypoint. The
+   test self-checks with a hover probe before dragging, so if you re-lay this
+   file out, the failure names the first coordinate that moved.
+
+   The geometry, spelled out once (all screen coords, panel border 1px included;
+   absolute children position against the padding box, inside the border):
+     #stash-grid origin   = (40+1+10, 60+1+36) = (51, 97)
+     stash slot (col,row) = 64px outer boxes on a 72px pitch
+                          -> centre (83 + col*72, 129 + row*72)
+     #equip-col origin    = (420+1+10, 60+1+36) = (431, 97)
+     equip slot i         -> centre (463, 129 + i*80)                        */
+
+div { display: block; }
+span { display: inline; }
+
+body
+{
+	display: block;
+	width: 100%;
+	height: 100%;
+	font-family: LatoLatin;
+	font-size: 16px;
+	color: #D2E9F2;
+}
+
+#dd-title
+{
+	position: absolute;
+	left: 40px;
+	top: 22px;
+	font-size: 19px;
+	color: #7DE6FF;
+}
+
+/* Panels: inert plain divs, m2_demo's rule -- the interactive markers sit on
+   the slot containers inside, so the titles never claim pointer coverage. */
+#p-stash, #p-equip, #p-status
+{
+	position: absolute;
+	background-color: #10202AE6;
+	border: 1px #3A5A6C;
+	border-radius: 8px;
+}
+#p-stash  { left: 40px;  top: 60px;  width: 316px; height: 196px; }
+#p-equip  { left: 420px; top: 60px;  width: 200px; height: 280px; }
+#p-status { left: 40px;  top: 360px; width: 580px; height: 40px; }
+
+.panel-title
+{
+	position: absolute;
+	left: 10px;
+	top: 10px;
+	font-size: 12px;
+	color: #8FA9B5;
+}
+
+#stash-grid
+{
+	position: absolute;
+	left: 10px;
+	top: 36px;
+	width: 280px;
+	height: 136px;
+}
+#equip-col
+{
+	position: absolute;
+	left: 10px;
+	top: 36px;
+	width: 180px;
+	height: 224px;
+}
+
+/* Slots: 62px content + 1px border = 64px outer, on purpose -- RmlUi boxes are
+   content-box, and baking the border into the width keeps the pitch arithmetic
+   above honest without depending on box-sizing. */
+.slot
+{
+	position: absolute;
+	width: 62px;
+	height: 62px;
+	background-color: #0A141AC8;
+	border: 1px #223844;
+	border-radius: 6px;
+}
+#st-0 { left: 0px;   top: 0px; }
+#st-1 { left: 72px;  top: 0px; }
+#st-2 { left: 144px; top: 0px; }
+#st-3 { left: 216px; top: 0px; }
+#st-4 { left: 0px;   top: 72px; }
+#st-5 { left: 72px;  top: 72px; }
+#st-6 { left: 144px; top: 72px; }
+#st-7 { left: 216px; top: 72px; }
+
+#eq-weapon { left: 0px; top: 0px; }
+#eq-armor  { left: 0px; top: 80px; }
+#eq-gadget { left: 0px; top: 160px; }
+
+.slot-label
+{
+	position: absolute;
+	left: 76px;
+	font-size: 12px;
+	color: #8FA9B5;
+}
+.lb-weapon { top: 24px; }
+.lb-armor  { top: 104px; }
+.lb-gadget { top: 184px; }
+
+/* THE TARGET HIGHLIGHTS ARE CLASSES, NOT PSEUDO-CLASSES, BY NECESSITY. RmlUi
+   sets no pseudo-class on a drop target -- the library's one drag pseudo-class
+   is `:drag`, set on the CLONE only (Context.cpp:1504) -- so drag_demo.js adds
+   drop-ok / drop-bad from its dragover handler and clears them on dragout and
+   dragend. Ordinary :hover does keep firing on targets during a drag, which is
+   why the slots have no :hover rule: a hover restyle would be indistinguishable
+   from the drop verdict in a screenshot. */
+.slot.drop-ok
+{
+	background-color: #14301CC8;
+	border-color: #58D07A;
+}
+.slot.drop-bad
+{
+	background-color: #301414C8;
+	border-color: #D05858;
+}
+
+/* Items. `drag: clone` rather than `drag-drop` for two reasons: the ghost that
+   follows the cursor is the feedback users expect from an inventory, and the
+   ORIGINAL never moves until a drop is accepted, so a refused or cancelled
+   drag needs no restore logic at all. (`drag: drag` would be wrong outright:
+   it suppresses dragover/dragout/dragdrop entirely -- only drag-drop and
+   clone set drag_verbose, Context.cpp:692.)
+
+   The clone is reparented under RmlUi's cursor proxy, OUTSIDE this document's
+   tree, so every .item rule stays ancestor-free on purpose: a descendant
+   selector like `.slot .item` would match in the document and silently NOT
+   match on the ghost. */
+.item
+{
+	position: absolute;
+	left: 3px;
+	top: 3px;
+	width: 54px;
+	height: 54px;
+	line-height: 54px;
+	text-align: center;
+	font-size: 11px;
+	background-color: #0D1B22;
+	border: 1px #2F5566;
+	border-radius: 5px;
+	drag: clone;
+	cursor: pointer;
+}
+.item.weapon { color: #FFB25F; border-color: #8A5A2F; }
+.item.armor  { color: #5FA8FF; border-color: #2F5A8A; }
+.item.gadget { color: #7DE67D; border-color: #2F8A46; }
+
+/* The source keeps a `dragging` class for the drag's duration (drag_demo.js),
+   dimmed so the screen reads "this is where it came from". */
+.item.dragging
+{
+	color: #4A5D66;
+	background-color: #0A141A80;
+	border-color: #22384480;
+}
+
+/* The ghost: `:drag` matches ONLY the clone. Element::Clone copies attributes
+   and classes but NOT pseudo-classes, and the proxy document's hard resets
+   (transparent background, zero borders) apply to its BODY, not to the clone
+   itself -- so the clone arrives with .item styling and this rule brightens it
+   over the original. */
+.item:drag
+{
+	background-color: #1A3240E6;
+	border-color: #7DE6FF;
+}
+
+#status
+{
+	position: absolute;
+	left: 10px;
+	top: 11px;
+	font-size: 13px;
+	color: #C4DEE9;
+}
