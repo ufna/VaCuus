@@ -1,5 +1,6 @@
 <script setup>
 import { onMounted, onUnmounted, ref } from 'vue'
+import ICONS from './platformIcons.js'
 
 // The one-liner a buyer pastes into their own CLAUDE.md / AGENTS.md. Verbatim from
 // README.md:35-37 — the site must not paraphrase an instruction the buyer will paste.
@@ -140,24 +141,59 @@ onUnmounted(() => {
 
     <!-- =================================================== platforms == -->
     <div class="vc-wrap" style="padding-top: clamp(18px, 2.5vw, 28px)">
+      <!-- Two slim rows, logos, and a badge only where the status is an exception:
+           supported is the unlabeled default, amber marks in-development, muted marks
+           on-request. The full status story lives in the banner right below. -->
       <div class="vc-plat vc-rise" aria-label="Engines and platforms">
-        <div class="vc-plat-head">
-          <span>Cross-platform &mdash; one source tree, one document format</span>
-          <span>UE 5.6 &ndash; 5.8</span>
+        <div class="vc-plat-group" aria-label="Engines">
+          <span class="vc-plat-label">Engines</span>
+          <ul class="vc-plat-row">
+            <li>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path :d="ICONS.unreal" /></svg>
+              <b>Unreal Engine <span class="vc-plat-ver">5.6 &ndash; 5.8</span></b>
+              <small class="vc-plat-tag">primary</small>
+            </li>
+            <li class="vc-plat-dev">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path :d="ICONS.unity" /></svg>
+              <b>Unity</b>
+              <small class="vc-plat-tag">in development</small>
+            </li>
+            <li class="vc-plat-dev">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path :d="ICONS.godot" /></svg>
+              <b>Godot</b>
+              <small class="vc-plat-tag">in development</small>
+            </li>
+          </ul>
         </div>
-        <ul class="vc-plat-grid vc-plat-engines">
-          <li><b>Unreal Engine</b><small>primary</small></li>
-          <li class="vc-plat-dev"><b>Unity</b><small>in development</small></li>
-          <li class="vc-plat-dev"><b>Godot</b><small>in development</small></li>
-        </ul>
-        <ul class="vc-plat-grid">
-          <li><b>Windows</b><small>supported</small></li>
-          <li><b>macOS</b><small>supported</small></li>
-          <li><b>Linux</b><small>supported</small></li>
-          <li><b>Android</b><small>supported</small></li>
-          <li><b>iOS</b><small>supported</small></li>
-          <li class="vc-plat-req"><b>Consoles</b><small>on request</small></li>
-        </ul>
+        <div class="vc-plat-group" aria-label="Platforms">
+          <span class="vc-plat-label">Platforms</span>
+          <ul class="vc-plat-row">
+            <li>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path :d="ICONS.windows" /></svg>
+              <b>Windows</b>
+            </li>
+            <li>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path :d="ICONS.apple" /></svg>
+              <b>macOS</b>
+            </li>
+            <li>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path :d="ICONS.linux" /></svg>
+              <b>Linux</b>
+            </li>
+            <li>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path :d="ICONS.android" /></svg>
+              <b>Android</b>
+            </li>
+            <li>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path :d="ICONS.apple" /></svg>
+              <b>iOS</b>
+            </li>
+            <li class="vc-plat-req">
+              <b>Consoles</b>
+              <small class="vc-plat-tag">on request</small>
+            </li>
+          </ul>
+        </div>
       </div>
     </div>
 

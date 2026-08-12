@@ -1331,85 +1331,80 @@ a.vc-cite:hover {
   border: 1px solid var(--vc-line);
   background: var(--vc-panel);
 }
-.vc-plat-head {
-  display: flex;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 10px 18px;
-  border-bottom: 1px solid var(--vc-line-soft);
+.vc-plat-group {
+  display: grid;
+  grid-template-columns: 92px 1fr;
+  align-items: center;
+  gap: 18px;
+  padding: 12px 18px;
+}
+.vc-plat-group + .vc-plat-group {
+  border-top: 1px solid var(--vc-line-soft);
+}
+.vc-plat-label {
   font-family: var(--vc-font-mono);
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--vc-ink-3);
 }
-.vc-plat-grid {
-  display: grid;
-  grid-template-columns: repeat(6, 1fr);
+.vc-plat-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 24px;
   list-style: none;
   margin: 0;
   padding: 0;
+  min-width: 0;
 }
-.vc-plat-grid li {
-  padding: 14px 18px 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
+.vc-plat-row li {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
 }
-.vc-plat-grid li + li {
-  border-left: 1px solid var(--vc-line-soft);
+.vc-plat-row svg {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  fill: var(--vc-ink-2);
 }
-.vc-plat-grid b {
+.vc-plat-row b {
   font-family: var(--vc-font-sans);
-  font-weight: 700;
-  font-size: 15px;
+  font-weight: 600;
+  font-size: 13.5px;
   letter-spacing: 0.01em;
   color: var(--vc-ink);
+  white-space: nowrap;
 }
-.vc-plat-grid small {
-  font-family: var(--vc-font-mono);
-  font-size: 10.5px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--vc-cool);
-}
-/* Engine row above the OS row: three tiles, divided from the OS grid below.
-   The 540px media block later in this file wins the tie on purpose — the row
-   collapses to two columns together with the OS grid. */
-.vc-plat-engines {
-  grid-template-columns: repeat(3, 1fr);
-  border-bottom: 1px solid var(--vc-line-soft);
-}
-.vc-plat-dev small {
-  color: var(--vc-accent);
-}
-.vc-plat-req small {
+.vc-plat-ver {
+  font-weight: 500;
+  font-size: 12.5px;
   color: var(--vc-ink-3);
 }
-@media (max-width: 900px) {
-  .vc-plat-grid {
-    grid-template-columns: repeat(3, 1fr);
-  }
-  .vc-plat-grid li:nth-child(4) {
-    border-left: none;
-  }
-  .vc-plat-grid li:nth-child(n + 4) {
-    border-top: 1px solid var(--vc-line-soft);
-  }
+.vc-plat-tag {
+  font-family: var(--vc-font-mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--vc-cool);
+  white-space: nowrap;
+}
+.vc-plat-dev svg {
+  fill: var(--vc-ink-3);
+}
+.vc-plat-dev .vc-plat-tag {
+  color: var(--vc-accent);
+}
+.vc-plat-req .vc-plat-tag {
+  color: var(--vc-ink-3);
 }
 @media (max-width: 540px) {
-  .vc-plat-grid {
-    grid-template-columns: repeat(2, 1fr);
-  }
-  .vc-plat-grid li:nth-child(odd) {
-    border-left: none;
-  }
-  .vc-plat-grid li:nth-child(n + 3) {
-    border-top: 1px solid var(--vc-line-soft);
-  }
-  .vc-plat-grid li:nth-child(4) {
-    border-left: 1px solid var(--vc-line-soft);
+  .vc-plat-group {
+    grid-template-columns: 1fr;
+    gap: 7px;
   }
 }
 
