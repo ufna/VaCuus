@@ -3,6 +3,7 @@
 #include "VaCuusVirtualKeyboard.h"
 
 #include "VaCuus.h"
+#include "VaCuusDefines.h"
 #include "VaCuusInputEvent.h"
 #include "VaCuusView.h"
 
