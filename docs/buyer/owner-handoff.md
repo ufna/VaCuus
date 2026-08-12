@@ -120,8 +120,9 @@ the `-/Binaries/...` `-/Intermediate/...` filter fix). Steps:
    with the platforms Fab requires.
 3. `bash Tools/fab_scan.sh <out>` — it must FAIL its planted fixture first, then
    report CLEAN on the package.
-3b. **If a channel ever gets PRECOMPILED binaries** (Fab's is source-only, so this is
-   the "some day" step): re-run BuildPlugin with `FilterPlugin.ini`'s `-/Binaries/...`
+3b. **If a channel ever gets binaries WE precompiled** (the Fab *upload* is source-only
+   and Epic builds the buyer's binaries from it, so this is the step for a channel where
+   we ship them ourselves): re-run BuildPlugin with `FilterPlugin.ini`'s `-/Binaries/...`
    rule commented out, then run the gate for the platform being delivered:
 
    ```

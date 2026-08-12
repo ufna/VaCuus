@@ -7,16 +7,25 @@ cook-inclusion rule before your first packaged build.
 
 ## 0. What is in the box — read this before you install
 
-**This plugin ships as SOURCE. There are no binaries in the package, and there is no
-`Binaries/` directory in it at all.** That is Fab's rule for UE-facing code, not a
-packaging accident, and it has one consequence that decides whether the next ten minutes
-work:
+There are two ways this plugin arrives, and they install into **different places**:
 
-> **Your project must be a C++ project.** A Blueprint-only project has no build target
-> and no toolchain, so nothing compiles the four runtime modules and the plugin cannot
-> load. Converting is a two-minute job and permanent: in the editor, **Tools → New C++
-> Class → None → Create Class**. That adds `Source/` and a target, and from then on the
-> project builds plugins like any other C++ project.
+**From Fab — the normal way.** Epic builds the binaries for a code plugin itself, and the
+launcher installs the result **into the engine, not into your project**. Nothing compiles
+on your machine, so a **Blueprint-only project works**: enable the plugin (step 2 below)
+and that is the whole install. The full source is in the package regardless — Fab's rule
+for UE-facing code is that sellers upload source, and what we upload carries no
+`Binaries/` directory at all; the binaries a Fab install lands with are Epic's build of
+that source for your engine version.
+
+**From source** — this repository, or the package dropped in by hand. This route goes
+into `<Project>/Plugins/VaCuus` and **does** compile on your machine, so it needs a C++
+project:
+
+> A Blueprint-only project has no build target and no toolchain, so nothing compiles the
+> four runtime modules and the plugin cannot load. Converting is a two-minute job and
+> permanent: in the editor, **Tools → New C++ Class → None → Create Class**. That adds
+> `Source/` and a target, and from then on the project builds plugins like any other C++
+> project.
 
 You also need the platform toolchain the engine already requires to compile anything:
 Visual Studio 2022 with the C++ workload on Win64, Xcode on macOS, the bundled clang
@@ -48,7 +57,8 @@ neither of which the engine tells you about:
 
 ## 1. Install and enable
 
-1. Drop the plugin into `<Project>/Plugins/VaCuus` (Fab install does the same).
+1. Install: a Fab install already put the plugin into the engine — there is nothing to
+   copy. A source install goes into `<Project>/Plugins/VaCuus`.
 2. Enable it (Editor → Plugins, or `"Plugins": [{"Name": "VaCuus", "Enabled": true}]`
    in the `.uproject`). Runtime modules: `VaCuus`, `VaCuusRender`, `VaCuusJs`,
    `VaCuusRml`; `VaCuusEditor` is editor-only (live reload, bundle factory).

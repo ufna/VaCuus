@@ -39,11 +39,15 @@ Plugins/VaCuus/docs/buyer/rcss-matrix.md.
 
 ## Install, in one paragraph
 
-The plugin ships as **source**, so **your project must be a C++ project** — a
-Blueprint-only project has no toolchain to compile it with (converting takes two minutes:
-Tools → New C++ Class → None). Drop the folder into `<YourProject>/Plugins/VaCuus`, so that
-`VaCuus.uplugin` lands at `<YourProject>/Plugins/VaCuus/VaCuus.uplugin`, then enable it in
-`Edit → Plugins` or in your `.uproject`:
+**From Fab**: the launcher installs the plugin **into the engine, not into your project**
+— Epic builds the binaries for code plugins, so nothing compiles on your machine and a
+**Blueprint-only project works**. Enabling it is the whole install. **From source** (this
+repository): your project must be a C++ project — a Blueprint-only project has no
+toolchain to compile it with (converting takes two minutes: Tools → New C++ Class →
+None). Drop the folder into `<YourProject>/Plugins/VaCuus`, so that `VaCuus.uplugin`
+lands at `<YourProject>/Plugins/VaCuus/VaCuus.uplugin`, and the first editor launch
+compiles the modules once. Either way, enable it in `Edit → Plugins` or in your
+`.uproject`:
 
 ```json
 "Plugins": [
@@ -54,9 +58,9 @@ Tools → New C++ Class → None). Drop the folder into `<YourProject>/Plugins/V
 ]
 ```
 
-The package root *is* the plugin folder — there is no extra directory level to strip. First
-editor launch after that compiles the modules once. `setup.md` §0 has the full version of
-this, including the two ways a shipped copy differs from the repository.
+The package root *is* the plugin folder — there is no extra directory level to strip.
+`setup.md` §0 has the full version of this, including the two ways a shipped copy differs
+from the repository.
 
 **Verify it works**: the console knows `vacuus.M2Demo` — run it and an interactive demo
 document appears. `Automation RunTests VaCuus` runs the suite; the test source and its
@@ -86,7 +90,10 @@ Web/                        Optional TypeScript/Preact workflow, source-only (np
 docs/buyer/                 The four pages above
 ```
 
-There is no `Binaries/` directory and that is deliberate: UE-facing code ships as source.
+There is no `Binaries/` directory in the package and that is Fab's rule for sellers of
+UE-facing code: what we upload is source. The binaries a Fab install carries are Epic's
+build of that source, and they land in the engine — a source install compiles them on
+your machine instead.
 
 Every RmlUi call happens on the UI thread; the game thread only enqueues commands and reads
 a published interactive-region snapshot. Runtime code logs under the `LogVaCuus` category

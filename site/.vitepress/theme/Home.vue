@@ -57,7 +57,7 @@ onUnmounted(() => {
         <div class="vc-hero-top vc-anim vc-anim-1">
           <span class="vc-eyebrow">Pre-release &middot; Unreal Engine 5.6 / 5.8</span>
           <span class="vc-dash" />
-          <span class="vc-eyebrow">Source plugin &middot; verified on Linux</span>
+          <span class="vc-eyebrow">Full source included &middot; verified on Linux</span>
         </div>
 
         <h1 class="vc-wordmark vc-anim vc-anim-1">Va<span class="vc-w-a">C</span>uus</h1>
@@ -565,11 +565,12 @@ onUnmounted(() => {
             </p>
           </div>
           <div class="vc-not-item">
-            <h3>Source only, so C++ only</h3>
+            <h3>Not a project-folder install</h3>
             <p>
-              There is no <code>Binaries/</code> directory and that is deliberate. A
-              Blueprint-only project has no toolchain to compile the plugin with &mdash;
-              converting takes two minutes: Tools &rarr; New C++ Class &rarr; None.
+              A Fab install lands <strong>in the engine</strong>, with binaries Epic built
+              &mdash; a Blueprint-only project can enable it and go. The full source ships
+              regardless; drop it into <code>&lt;Project&gt;/Plugins</code> instead and it
+              builds like any C++ plugin (that route does need a C++ project).
             </p>
           </div>
         </div>
