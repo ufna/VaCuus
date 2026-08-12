@@ -746,28 +746,51 @@ onUnmounted(() => {
 
     <!-- ======================================================= footer == -->
     <footer class="vc-foot">
-      <div class="vc-wrap vc-foot-grid">
-        <div>
-          <div class="vc-foot-mark">VaCuus</div>
-          <p style="margin-top: 8px">
-            HTML/CSS user interface for Unreal Engine, rendered off the game thread.
-          </p>
+      <div class="vc-wrap">
+        <div class="vc-foot-grid">
+          <div class="vc-foot-brand">
+            <div class="vc-foot-mark">Va<span class="vc-w-a">C</span>uus</div>
+            <p>HTML/CSS user interface for Unreal Engine, rendered off the game thread.</p>
+            <p class="vc-foot-fine">
+              Every screenshot on this page was rendered headless by the plugin itself.
+            </p>
+          </div>
+
+          <nav class="vc-foot-col" aria-label="Product">
+            <span class="vc-foot-head">Product</span>
+            <a href="/docs/setup">Get started</a>
+            <a href="/docs/gotchas">Documentation</a>
+            <a href="/ai">Built for AI agents</a>
+            <a href="/#why-not-a-browser">Why not a browser?</a>
+          </nav>
+
+          <nav class="vc-foot-col" aria-label="Author">
+            <span class="vc-foot-head">Author</span>
+            <a href="https://ufna.dev" target="_blank" rel="noreferrer">ufna.dev</a>
+            <a href="https://t.me/ufna4" target="_blank" rel="noreferrer">Telegram &middot; @ufna4</a>
+            <a href="https://github.com/ufna/VaCuus/issues" target="_blank" rel="noreferrer"
+              >GitHub issues</a
+            >
+          </nav>
+
+          <div class="vc-foot-col vc-foot-license">
+            <span class="vc-foot-head">License</span>
+            <p>
+              Source under <strong>BUSL&nbsp;1.1</strong> &mdash; free outside production and
+              for noncommercial releases; commercial production use is a purchased license
+              (Fab or direct). Each version converts to MIT four years after release.
+            </p>
+            <p>
+              MIT-licensed <strong>RmlUi 6.x</strong> and <strong>QuickJS-ng</strong> are
+              vendored in-tree, each with its license beside it.
+            </p>
+          </div>
         </div>
-        <p>
-          Issues and questions:
-          <a href="https://github.com/ufna/VaCuus/issues" target="_blank" rel="noreferrer"
-            >github.com/ufna/VaCuus/issues</a
-          >
-        </p>
-        <p>
-          MIT-licensed <strong>RmlUi 6.x</strong> and <strong>QuickJS-ng</strong> are vendored
-          in-tree, each with its license beside it.
-        </p>
-        <p>
-          Source under <strong>BUSL&nbsp;1.1</strong>: free outside production and for
-          noncommercial releases; commercial production use is a purchased license (Fab or
-          direct). Each version converts to MIT four years after release.
-        </p>
+
+        <div class="vc-foot-bar">
+          <span>&copy; 2026 Vladimir Alyamkin</span>
+          <span>vacuus.ufna.dev</span>
+        </div>
       </div>
     </footer>
   </div>

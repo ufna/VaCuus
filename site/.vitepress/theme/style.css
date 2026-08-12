@@ -535,7 +535,8 @@ a.vc-cite:hover {
   line-height: 0.86;
   color: var(--vc-ink);
 }
-.vc-wordmark .vc-w-a {
+.vc-wordmark .vc-w-a,
+.vc-foot-mark .vc-w-a {
   color: var(--vc-accent);
 }
 
@@ -1330,11 +1331,10 @@ a.vc-cite:hover {
   padding-block: clamp(34px, 5vw, 56px);
 }
 .vc-foot-grid {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 24px 48px;
-  justify-content: space-between;
-  align-items: flex-start;
+  display: grid;
+  grid-template-columns: minmax(230px, 1.5fr) 1fr 1fr minmax(250px, 1.6fr);
+  gap: 32px 48px;
+  align-items: start;
 }
 .vc-foot p {
   margin: 0;
@@ -1342,6 +1342,13 @@ a.vc-cite:hover {
   line-height: 1.65;
   color: var(--vc-ink-2);
   max-width: 46ch;
+}
+.vc-foot-brand p {
+  margin-top: 10px;
+}
+.vc-foot-fine {
+  font-size: 12px;
+  color: var(--vc-ink-3);
 }
 .vc-foot a {
   color: var(--vc-ink);
@@ -1351,6 +1358,56 @@ a.vc-cite:hover {
 .vc-foot a:hover {
   color: var(--vc-accent);
   border-bottom-color: var(--vc-accent);
+}
+.vc-foot-head {
+  display: block;
+  font-family: var(--vc-font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--vc-ink-3);
+  margin-bottom: 4px;
+}
+.vc-foot-col {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: flex-start;
+}
+.vc-foot-col a {
+  font-size: 13px;
+  line-height: 1.4;
+  border-bottom-color: transparent;
+}
+.vc-foot-col a:hover {
+  border-bottom-color: var(--vc-accent);
+}
+.vc-foot-license p + p {
+  margin-top: 8px;
+}
+.vc-foot-bar {
+  margin-top: clamp(30px, 4vw, 46px);
+  padding-top: 16px;
+  border-top: 1px solid var(--vc-line-soft);
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  font-family: var(--vc-font-mono);
+  font-size: 11.5px;
+  letter-spacing: 0.06em;
+  color: var(--vc-ink-3);
+}
+@media (max-width: 900px) {
+  .vc-foot-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+@media (max-width: 540px) {
+  .vc-foot-grid {
+    grid-template-columns: 1fr;
+    gap: 28px;
+  }
 }
 .vc-foot .vc-foot-mark {
   font-family: var(--vc-font-sans);
