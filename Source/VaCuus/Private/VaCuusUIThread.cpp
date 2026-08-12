@@ -203,6 +203,44 @@ void DispatchInputEvent(Rml::Context& Context, const FVaCuusInputEvent& Event)
 			Context.ProcessMouseLeave();
 			break;
 
+		case EVaCuusInputEventKind::TouchStart:
+		case EVaCuusInputEventKind::TouchMove:
+		case EVaCuusInputEventKind::TouchEnd:
+		case EVaCuusInputEventKind::TouchCancel:
+		{
+			// A ONE-ELEMENT LIST, and not because we only ever have one finger: the
+			// singular overloads are PRIVATE (Context.h:432-439; the public API is the
+			// TouchList quartet at :209-230), and the plural ones are a bare loop over them
+			// (Context.cpp:860-890). So batching N fingers into one call and making N calls
+			// are the same thing to RmlUi, and one event per finger is what the queue
+			// already carries.
+			const Rml::TouchList Touches{Rml::Touch{static_cast<Rml::TouchId>(Event.TouchId),
+				Rml::Vector2f(float(Event.Position.X), float(Event.Position.Y))}};
+
+			// NO ProcessMouseMove BEFORE THESE, unlike the button kinds above -- every touch
+			// verb already does its own at the touch's own position (start:916, move:987,
+			// end:1019), so an extra one here would be a second hit test per event and, on
+			// the end, a move to a position RmlUi is about to move to anyway.
+			switch (Event.Kind)
+			{
+				case EVaCuusInputEventKind::TouchStart:
+					Context.ProcessTouchStart(Touches, Modifiers);
+					break;
+				case EVaCuusInputEventKind::TouchMove:
+					Context.ProcessTouchMove(Touches, Modifiers);
+					break;
+				case EVaCuusInputEventKind::TouchEnd:
+					Context.ProcessTouchEnd(Touches, Modifiers);
+					break;
+				default:
+					// ProcessTouchCancel takes no modifier state at all (Context.h:230): a
+					// cancelled gesture has no key semantics to report.
+					Context.ProcessTouchCancel(Touches);
+					break;
+			}
+			break;
+		}
+
 		case EVaCuusInputEventKind::KeyDown:
 		{
 			const Rml::Input::KeyIdentifier KeyId = VaCuusInput::ToRmlKey(Event.Key);

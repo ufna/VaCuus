@@ -466,6 +466,61 @@ void SVaCuusWidget::SendInput(const FVaCuusInputEvent& Event)
 }
 
 /**
+ * THE ONE CHOKE POINT FOR THE MOUSE-SHAPED HANDLERS, and the answer to double delivery
+ * (bead VaCuus-ujm).
+ *
+ * THE PROBLEM. Slate offers a touch to the widget's TOUCH handler first and, if that handler
+ * answers Unhandled, delivers the very same FPointerEvent again through the MOUSE handler:
+ * `if (!Event.IsTouchEvent() || (!TempReply.IsEventHandled() && this->bTouchFallbackToMouse))`
+ * -- press at SlateApplication.cpp:5455 (bubble) and :5369 (captor), release at :5644 and
+ * :5576, move at :5967 and :5872. `bTouchFallbackToMouse` defaults TRUE and is only ever
+ * turned off by a project's `[MobileSlateUI] bTouchFallbackToMouse` (:905, :929), so the
+ * fallback must be assumed live.
+ *
+ * WHY THAT WOULD BE A BUG RATHER THAN A DUPLICATE NO-OP. RmlUi's touch verbs already do the
+ * mouse half themselves -- ProcessTouchStart ends in ProcessMouseButtonDown(0)
+ * (Context.cpp:916-919) and ProcessTouchEnd in ProcessMouseButtonUp(0) (:1019-1022) -- so a
+ * finger that ALSO arrived as a synthesized mouse press would press button 0 twice and
+ * release it twice. Two presses in a row is exactly what RmlUi synthesises `dblclick` from
+ * (Context.cpp:653-661), so every pass-through tap would fire a phantom double-click at the
+ * document.
+ *
+ * THE RULE, therefore: a touch is queued by the touch handlers and by nobody else. This
+ * function is where that is enforced, rather than an `if` repeated in each handler, because
+ * the failure mode of the repeated form is silent -- a fifth pointer handler added later
+ * simply forgets it, and the phantom press is invisible until a document acts on dblclick.
+ *
+ * WHAT STILL RUNS FOR A TOUCH: everything after the enqueue. The caller's FReply, its capture
+ * bookkeeping and its focus decision are all computed exactly as before, which is what makes
+ * a pass-through touch keep reaching the game (the mouse handler answers Unhandled, so Slate
+ * bubbles it on to SViewport) without the UI hearing the press twice.
+ *
+ * NOT USED BY OnMouseEnter/OnMouseLeave, which Slate ALSO drives from touch
+ * (SlateApplication.cpp:5467-5478 on begin, :5584-5591 on end). Those are the engine's
+ * deliberate hover synthesis for a device with no hover, they carry no button, and both are
+ * harmless after a touch verb: the enter's MouseMove lands on the position ProcessTouchStart
+ * already moved to, and ProcessMouseMove dispatches nothing when the position is unchanged
+ * (Context.cpp:584, :593); the end's MouseLeave clears a hover a lifted finger should not keep.
+ * Nor by OnMouseWheel: a wheel or gesture event is never IsTouchEvent() (only the touch
+ * constructors set that flag, Events.h:893-947), so the question does not arise there.
+ */
+void SVaCuusWidget::SendMouseInput(const FPointerEvent& PointerEvent, const FVaCuusInputEvent& Event)
+{
+	if (PointerEvent.IsTouchEvent())
+	{
+		return;
+	}
+
+	SendInput(Event);
+}
+
+/** The touch identity RmlUi keys its per-finger state on; the composition is the event's own. */
+uint64 SVaCuusWidget::ToTouchId(const FPointerEvent& TouchEvent)
+{
+	return FVaCuusInputEvent::MakeTouchId(TouchEvent.GetUserIndex(), TouchEvent.GetPointerIndex());
+}
+
+/**
  * WHICH SVaCuusWidget holds Slate's mouse capture, process-wide, or nothing.
  *
  * ONE WRITER BY CONSTRUCTION: FVaCuusMouseCaptureState::Set() below is the only mutator of the
@@ -566,7 +621,7 @@ FReply SVaCuusWidget::OnMouseMove(const FGeometry& MyGeometry, const FPointerEve
 	VACUUS_PERF_SCOPE(Input);
 
 	const FIntPoint Position = ToViewPixels(MyGeometry, MouseEvent.GetScreenSpacePosition());
-	SendInput(FVaCuusInputEvent::MouseMove(Position, ToModifierState(MouseEvent)));
+	SendMouseInput(MouseEvent, FVaCuusInputEvent::MouseMove(Position, ToModifierState(MouseEvent)));
 
 	// While we hold capture the answer is Handled regardless of coverage: a drag that
 	// started on a scrollbar must keep being ours even after the pointer wanders off
@@ -584,9 +639,29 @@ FReply SVaCuusWidget::OnMouseButtonDown(const FGeometry& MyGeometry, const FPoin
 	VACUUS_PERF_SCOPE(Input);
 
 	const FIntPoint Position = ToViewPixels(MyGeometry, MouseEvent.GetScreenSpacePosition());
-	SendInput(FVaCuusInputEvent::MouseButton(
-		/*bDown=*/true, Position, MouseEvent.GetEffectingButton(), ToModifierState(MouseEvent)));
+	SendMouseInput(MouseEvent,
+		FVaCuusInputEvent::MouseButton(
+			/*bDown=*/true, Position, MouseEvent.GetEffectingButton(), ToModifierState(MouseEvent)));
 
+	return AnswerPointerDown(Position);
+}
+
+/**
+ * The reply half of a press, shared by the mouse's OnMouseButtonDown and the finger's
+ * OnTouchStarted (bead VaCuus-ujm).
+ *
+ * SHARED RATHER THAN COPIED because all three decisions below are subtle and were each the
+ * subject of a bug: which question the focus branch asks (D11), which frame the IME surface is
+ * pushed on (D14a), and whose bookkeeping the capture branch consults (VaCuus-86x). A second
+ * copy of them for touch would be three chances to drift, on the platform with the fewest
+ * people looking. The touch caller is the *reason* the split exists -- there is no third
+ * caller and none is expected.
+ *
+ * DEVICE-BLIND ON PURPOSE: it takes a position and nothing else. A press is a press, and every
+ * answer here is a property of the published geometry at that point.
+ */
+FReply SVaCuusWidget::AnswerPointerDown(FIntPoint Position)
+{
 	const FVaCuusInteractiveSnapshot& Snapshot = GetSnapshot();
 	if (!Snapshot.Contains(Position))
 	{
@@ -663,8 +738,9 @@ FReply SVaCuusWidget::OnMouseButtonUp(const FGeometry& MyGeometry, const FPointe
 	VACUUS_PERF_SCOPE(Input);
 
 	const FIntPoint Position = ToViewPixels(MyGeometry, MouseEvent.GetScreenSpacePosition());
-	SendInput(FVaCuusInputEvent::MouseButton(
-		/*bDown=*/false, Position, MouseEvent.GetEffectingButton(), ToModifierState(MouseEvent)));
+	SendMouseInput(MouseEvent,
+		FVaCuusInputEvent::MouseButton(
+			/*bDown=*/false, Position, MouseEvent.GetEffectingButton(), ToModifierState(MouseEvent)));
 
 	// The mirror, for the same reason as the press: "are we in the middle of a gesture we
 	// took", not "does Slate route to us".
@@ -752,6 +828,140 @@ FReply SVaCuusWidget::OnMouseWheel(const FGeometry& MyGeometry, const FPointerEv
 	return FReply::Unhandled();
 }
 
+/**
+ * A finger goes down (bead VaCuus-ujm).
+ *
+ * WHAT MAKES THIS DIFFERENT FROM A MOUSE PRESS, and the only reason it exists: RmlUi's
+ * ProcessTouchStart records the press position and looks up the closest scrollable ancestor
+ * of the element under it (Context.cpp:894-914) -- state that ProcessMouseButtonDown does not
+ * have and cannot reconstruct. Without it, ProcessTouchMove has nothing to scroll, which is
+ * why a finger drag over a list did nothing on a phone before this.
+ *
+ * QUEUED BEFORE THE VERDICT, exactly like the mouse press: RmlUi must see the press whether or
+ * not the game also hears it (it may close a dropdown), and the snapshot only decides who
+ * ELSE hears it.
+ *
+ * THE REPLY IS THE SNAPSHOT'S, unchanged from the mouse path -- which is what makes the two
+ * pass-through rules one rule. Handled over a covered point (and capture with it, so a drag
+ * that starts on a list keeps being ours after the finger leaves the list); Unhandled over a
+ * bare point, so the press bubbles to SViewport and the game hears it. In the Unhandled case
+ * Slate ALSO re-offers this event to OnMouseButtonDown (SlateApplication.cpp:5455, :5369);
+ * SendMouseInput is what stops that from pressing button 0 a second time, and its comment
+ * carries the argument.
+ */
+FReply SVaCuusWidget::OnTouchStarted(const FGeometry& MyGeometry, const FPointerEvent& InTouchEvent)
+{
+	VACUUS_PERF_SCOPE(Input);
+
+	const FIntPoint Position = ToViewPixels(MyGeometry, InTouchEvent.GetScreenSpacePosition());
+
+	// Ledgered even when the press is pass-through: the finger is one RmlUi now knows about,
+	// so it is one that must be ended or cancelled. Ledgering only the covered ones would
+	// leak exactly the fingers whose gesture ends somewhere else.
+	TouchLedger.NoteStart(ToTouchId(InTouchEvent));
+
+	SendInput(FVaCuusInputEvent::Touch(
+		EVaCuusInputEventKind::TouchStart, ToTouchId(InTouchEvent), Position, ToModifierState(InTouchEvent)));
+
+	return AnswerPointerDown(Position);
+}
+
+FReply SVaCuusWidget::OnTouchMoved(const FGeometry& MyGeometry, const FPointerEvent& InTouchEvent)
+{
+	VACUUS_PERF_SCOPE(Input);
+
+	const FIntPoint Position = ToViewPixels(MyGeometry, InTouchEvent.GetScreenSpacePosition());
+
+	// THE EVENT THAT ACTUALLY SCROLLS. ProcessTouchMove applies the frame's delta to the
+	// container the start latched onto, accumulates the decayed inertia position the release
+	// will fling with, and cancels the pending click once the finger has travelled
+	// TOUCH_CLICK_MAX_DISTANCE (Context.cpp:928-981). None of that is reproduced here: the
+	// host's job is an honest position, and the tap-vs-drag decision is RmlUi's.
+	SendInput(FVaCuusInputEvent::Touch(
+		EVaCuusInputEventKind::TouchMove, ToTouchId(InTouchEvent), Position, ToModifierState(InTouchEvent)));
+
+	// The mouse move's rule verbatim: while we hold capture the answer is Handled whatever the
+	// coverage, because a drag that started on a scrollable list must keep being ours after
+	// the finger wanders off it -- which is the case the snapshot cannot express.
+	if (HoldsPointerCapture() || GetSnapshot().Contains(Position))
+	{
+		return FReply::Handled();
+	}
+
+	return FReply::Unhandled();
+}
+
+FReply SVaCuusWidget::OnTouchFirstMove(const FGeometry& MyGeometry, const FPointerEvent& InTouchEvent)
+{
+	// NOT OPTIONAL, and not a duplicate of OnTouchMoved. Slate routes the first move of a
+	// gesture here instead of OnTouchMoved and sets bAllowMouseFallback = false for it
+	// (SlateApplication.cpp:5856-5863 captor, :5951-5958 bubble), so an unoverridden
+	// OnTouchFirstMove drops that event on the floor -- it does not even fall back to
+	// OnMouseMove. The first delta is the one that decides the scroll's direction in
+	// ProcessTouchMove (Context.cpp:958-964), so losing it is not cosmetic.
+	return OnTouchMoved(MyGeometry, InTouchEvent);
+}
+
+/**
+ * A finger lifts.
+ *
+ * THE RELEASE PREDICATE IS THE LEDGER'S, not the event's button set, and that is the whole
+ * lesson of bead VaCuus-61d restated on this side: a touch release carries a CONSTANT
+ * PressedButtons = {LeftMouseButton} (OnTouchEnded passes bPressLeftMouseButton = true,
+ * SlateApplication.cpp:6837-6843; the touch constructor bakes FTouchKeySet::StandardSet into
+ * the value copy, Events.h:938 and Events.cpp:15), so no predicate over that set can tell a
+ * touch press from a touch release. OnMouseButtonUp's `GetPressedButtons().IsEmpty()` branch
+ * is therefore unreachable for a finger -- it was saved only by the engine force-releasing
+ * capture behind it (FSlateUser::NotifyPointerReleased, SlateUser.cpp:1284-1290) -- and this
+ * handler no longer relies on that net: it releases when the last finger IT recorded is gone.
+ *
+ * The engine's net still fires afterwards and is still welcome; it finds the mirror already
+ * down and OnMouseCaptureLost does nothing, exactly as on the mouse's orderly release.
+ */
+FReply SVaCuusWidget::OnTouchEnded(const FGeometry& MyGeometry, const FPointerEvent& InTouchEvent)
+{
+	VACUUS_PERF_SCOPE(Input);
+
+	const FIntPoint Position = ToViewPixels(MyGeometry, InTouchEvent.GetScreenSpacePosition());
+
+	if (!TouchLedger.NoteEnd(ToTouchId(InTouchEvent)))
+	{
+		// A finger whose press this widget never saw -- it started over another widget and
+		// Slate routed the end here, or a cancel already accounted for it. RmlUi would treat
+		// the end as a no-op anyway (ProcessTouchEnd returns before touching anything when
+		// LookupTouch finds nothing, Context.cpp:992-994), so not sending it is what keeps
+		// "one start, one end" true by construction rather than by RmlUi's tolerance.
+		UE_LOG(LogVaCuus, Verbose, TEXT("VaCuus widget saw a touch end for a finger it never started; ignored"));
+		return FReply::Unhandled();
+	}
+
+	const bool bWasCapturing = MouseCapture.IsHeld();
+
+	// ProcessTouchEnd, which releases button 0 and -- if the finger was still travelling --
+	// converts the accumulated velocity into an inertial fling (Context.cpp:996-1014, :1022).
+	SendInput(FVaCuusInputEvent::Touch(
+		EVaCuusInputEventKind::TouchEnd, ToTouchId(InTouchEvent), Position, ToModifierState(InTouchEvent)));
+
+	// The mouse's "last button up" rule, with fingers instead of buttons: the gesture ends
+	// when the last finger we recorded is gone, so a second finger still down keeps it.
+	if (bWasCapturing && TouchLedger.Num() == 0)
+	{
+		// SetMouseCapture, not the cancel path: this is the ORDERLY end and RmlUi must not be
+		// told the pointer left -- the finger was over the element, it just came up.
+		SetMouseCapture(false);
+		return FReply::Handled().ReleaseMouseCapture();
+	}
+
+	if (bWasCapturing || GetSnapshot().Contains(Position))
+	{
+		return FReply::Handled();
+	}
+
+	// The press was pass-through, so the release must be too -- swallowing it would leave the
+	// game holding a button down forever.
+	return FReply::Unhandled();
+}
+
 void SVaCuusWidget::OnMouseEnter(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent)
 {
 	// Returns void, so there is nothing to answer -- but the move still has to be
@@ -772,6 +982,28 @@ void SVaCuusWidget::OnMouseLeave(const FPointerEvent& MouseEvent)
 
 void SVaCuusWidget::OnMouseCaptureLost(const FCaptureLostEvent& CaptureLostEvent)
 {
+	// SLATE'S ONLY "the gesture was taken away" SIGNAL, and therefore the only place a touch
+	// can be cancelled (bead VaCuus-ujm). SWidget has no touch-cancel virtual at all and
+	// FSlateApplication has no ProcessTouchCancelled: a stolen gesture surfaces here or
+	// nowhere. Left unhandled, RmlUi would keep the finger in its touch_states map forever
+	// (only ProcessTouchEnd/Cancel erase it, Context.cpp:1017, :1031) and keep button 0 down.
+	//
+	// OUTSIDE the mirror check below, deliberately. That check asks "did WE think we had
+	// capture", which is about the mouse bookkeeping; the fingers are outstanding regardless,
+	// and a cancel that ran only when the mirror agreed would be the same class of
+	// load-bearing-condition mistake as VaCuus-61d.
+	//
+	// EMPTY ON THE ORDERLY PATH, which is why this is not a doubled release: OnTouchEnded has
+	// already drained its finger by the time the engine's force-release
+	// (FSlateUser::NotifyPointerReleased, SlateUser.cpp:1284-1290) drives this callback.
+	for (const uint64 TouchId : TouchLedger.Drain())
+	{
+		SendInput(FVaCuusInputEvent::TouchCancel(TouchId));
+
+		UE_LOG(LogVaCuus, Verbose, TEXT("VaCuus widget cancelled touch %llu; Slate revoked the pointer stream"),
+			static_cast<unsigned long long>(TouchId));
+	}
+
 	// Slate can take capture away without ever sending the matching button-up: the
 	// window loses focus, another widget captures, the viewport changes input mode.
 	// Without this the flag would stay set forever and every later mouse move would

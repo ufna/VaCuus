@@ -325,6 +325,16 @@ bool FVaCuusWorldInputOcclusionTableTest::RunTest(const FString& Parameters)
  *      the gesture", "C3: a FOREIGN finger's release does not end the gesture",
  *      "C5: releasing Left with Right still held keeps the drag", and both D2 rows.
  * With the real rule in, all rows pass.
+ *
+ * ALSO THE NO-REGRESS CHECK FOR THE TOUCH FORWARDING (bead VaCuus-ujm), which changed the
+ * handlers D drives: HandleMouseMoveEvent and HandleMouseButtonUpEvent now translate a touch
+ * into EVaCuusInputEventKind::TouchMove/TouchEnd rather than into a mouse move and release
+ * (VaCuusWorldInput::MakeForwardedMove / MakeForwardedPress). Every row of D goes through that
+ * branch, because every event D synthesizes is a real touch. What D still cannot see is WHICH
+ * kind came out: ResolveLatchedPixel declines without a game viewport (see SeedLatchForTest),
+ * so nothing is enqueued to assert on, and an editor automation session has no viewport. The
+ * kind itself is proved on the Slate side instead, end to end into RmlUi, by
+ * VaCuus.Input.TouchRouting.
  */
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusWorldInputLatchReleaseTest, "VaCuus.World.InputLatchRelease",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)

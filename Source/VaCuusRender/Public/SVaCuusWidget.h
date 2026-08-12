@@ -45,6 +45,57 @@ private:
 };
 
 /**
+ * The fingers this widget has told RmlUi about and has not yet ended (bead VaCuus-ujm).
+ *
+ * WHY A LEDGER IS NEEDED AT ALL. RmlUi keeps per-touch state in a map keyed by identifier
+ * and erases an entry only in ProcessTouchEnd or ProcessTouchCancel (Context.cpp:1017,
+ * :1031). Slate has no "cancel" hook to mirror: a gesture can be taken away instead of
+ * finished -- capture revoked, the window deactivated, the widget destroyed mid-drag -- and
+ * when that happens the only notification is OnMouseCaptureLost, which names no finger. So
+ * the widget has to remember which fingers are outstanding, or a stolen gesture leaves RmlUi
+ * holding a touch that will never end AND a button 0 it will never see released.
+ *
+ * WHY IT IS NOT "MULTI-TOUCH SUPPORT", which is a separate and larger item (mobile-support
+ * .md 3.1: the capture state is one bool and every finger dispatches RmlUi button 0). This
+ * set decides only WHOM TO CANCEL. It grants no per-finger capture, no per-finger hover and
+ * no second button; two fingers still share one gesture, exactly as before.
+ *
+ * ENFORCEMENT BY SHAPE: the set is private and every mutator answers whether the id was
+ * actually new/known, so "send TouchEnd for a finger we never started" and "cancel a finger
+ * twice" are decided here rather than by a condition at each call site. Drain() empties in
+ * the same call that reports the contents, so a cancel loop cannot forget to clear.
+ *
+ * Game thread only, like every input handler that touches it.
+ */
+class FVaCuusTouchLedger
+{
+public:
+	/** @return true if this id was NOT already outstanding -- i.e. this really is a new finger. */
+	bool NoteStart(uint64 TouchId)
+	{
+		bool bAlreadyPresent = false;
+		ActiveTouchIds.Add(TouchId, &bAlreadyPresent);
+		return !bAlreadyPresent;
+	}
+
+	/** @return true if this id was outstanding (and is now gone): the finger was ours to end. */
+	bool NoteEnd(uint64 TouchId) { return ActiveTouchIds.Remove(TouchId) > 0; }
+
+	/** Everything still outstanding, removed in the same call. The cancel path's only input. */
+	TArray<uint64> Drain()
+	{
+		TArray<uint64> Outstanding = ActiveTouchIds.Array();
+		ActiveTouchIds.Reset();
+		return Outstanding;
+	}
+
+	int32 Num() const { return ActiveTouchIds.Num(); }
+
+private:
+	TSet<uint64> ActiveTouchIds;
+};
+
+/**
  * The Slate face of one VaCuus view: composites the UI thread's frames and routes
  * input into it.
  *
@@ -193,6 +244,24 @@ public:
 	virtual FReply OnMouseButtonUp(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override;
 	virtual FReply OnMouseButtonDoubleClick(const FGeometry& InMyGeometry, const FPointerEvent& InMouseEvent) override;
 	virtual FReply OnMouseWheel(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override;
+
+	//~ TOUCH (bead VaCuus-ujm). These exist so a finger reaches RmlUi's own touch
+	//~ pipeline -- drag-to-scroll, inertia and click-cancel-on-scroll -- instead of being
+	//~ laundered into a mouse press that can do none of it. The .cpp carries the
+	//~ double-delivery argument, which is the whole reason overriding these is not free.
+	//~
+	//~ OnTouchForceChanged and OnTouchGesture are deliberately NOT overridden: a force
+	//~ change carries no new position (SlateApplication.cpp:6866-6874 reuses Location for
+	//~ both), so forwarding one would be a zero-delta move, and RmlUi has no pressure
+	//~ concept to spend it on. OnTouchFirstMove IS overridden, because Slate routes the
+	//~ first move of a drag there instead of OnTouchMoved and suppresses the mouse
+	//~ fallback for it (SlateApplication.cpp:5856-5863, :5951-5958) -- so without it the
+	//~ first delta of every drag is simply lost.
+	virtual FReply OnTouchStarted(const FGeometry& MyGeometry, const FPointerEvent& InTouchEvent) override;
+	virtual FReply OnTouchMoved(const FGeometry& MyGeometry, const FPointerEvent& InTouchEvent) override;
+	virtual FReply OnTouchFirstMove(const FGeometry& MyGeometry, const FPointerEvent& InTouchEvent) override;
+	virtual FReply OnTouchEnded(const FGeometry& MyGeometry, const FPointerEvent& InTouchEvent) override;
+
 	virtual void OnMouseEnter(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override;
 	virtual void OnMouseLeave(const FPointerEvent& MouseEvent) override;
 	virtual void OnMouseCaptureLost(const FCaptureLostEvent& CaptureLostEvent) override;
@@ -220,6 +289,16 @@ public:
 	 * can disagree, and a stuck flag makes every later mouse move answer Handled.
 	 */
 	bool IsTrackingMouseCapture_Debug() const { return MouseCapture.IsHeld(); }
+
+	/**
+	 * How many fingers this widget has started with RmlUi and not yet ended.
+	 *
+	 * Exposed for VaCuus.Input.TouchRouting: "every start is matched" is the invariant that
+	 * keeps RmlUi's touch_states map from accumulating fingers that never lift, and an
+	 * invariant with no observable cannot be tested and will rot. It is also what separates
+	 * "we cancelled the gesture" from "the engine happened to send an end anyway".
+	 */
+	int32 GetNumActiveTouches_Debug() const { return TouchLedger.Num(); }
 
 	/**
 	 * WHICH VaCuus widget holds Slate's mouse capture right now, process-wide, or null.
@@ -346,6 +425,27 @@ private:
 
 	/** Queues one event for this view, if there still is one. */
 	void SendInput(const FVaCuusInputEvent& Event);
+
+	/**
+	 * Queues a MOUSE-shaped translation of a pointer event -- unless the pointer is a finger,
+	 * in which case the touch handlers already queued it and this drops it.
+	 *
+	 * THE SINGLE ANSWER TO SLATE'S TOUCH->MOUSE FALLBACK (bead VaCuus-ujm). Every
+	 * mouse-shaped handler that enqueues goes through here rather than repeating the test,
+	 * because the failure mode of the repeated form is a silent phantom double-click. The
+	 * .cpp carries the engine lines and the argument.
+	 */
+	void SendMouseInput(const FPointerEvent& PointerEvent, const FVaCuusInputEvent& Event);
+
+	/** The RmlUi touch identity of a Slate pointer; FVaCuusInputEvent::MakeTouchId is the composer. */
+	static uint64 ToTouchId(const FPointerEvent& TouchEvent);
+
+	/**
+	 * The reply half of a press -- capture, D11 focus and D14a IME -- shared by the mouse's
+	 * OnMouseButtonDown and the finger's OnTouchStarted. See the .cpp for why it is shared
+	 * rather than copied.
+	 */
+	FReply AnswerPointerDown(FIntPoint Position);
 
 	/**
 	 * Services the AutoShot debug screenshot for WHATEVER view this widget hosts, on the
@@ -488,6 +588,16 @@ private:
 	 * that type's comment says why the bool is not a plain member any more.
 	 */
 	FVaCuusMouseCaptureState MouseCapture;
+
+	/**
+	 * The fingers RmlUi still believes are down for this view; see FVaCuusTouchLedger.
+	 *
+	 * SEPARATE FROM MouseCapture ON PURPOSE. Capture answers "does Slate route this stream
+	 * to us" and is one flag for the whole gesture; this answers "which touch identifiers
+	 * has RmlUi been told about", which is a set and has to be, because the cancel path
+	 * needs to name every one of them.
+	 */
+	FVaCuusTouchLedger TouchLedger;
 
 	/**
 	 * Pending UTF-16 high surrogate from a previous OnKeyChar, or 0.

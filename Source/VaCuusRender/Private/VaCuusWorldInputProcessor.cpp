@@ -115,6 +115,58 @@ static FVaCuusModifierState ToModifiers(const FInputEvent& Event)
 	return State;
 }
 
+/**
+ * The forwarded pointer event, IN THE VOCABULARY OF THE DEVICE THAT PRODUCED IT (bead
+ * VaCuus-ujm).
+ *
+ * WHY THE PROCESSOR HAS TO ASK AT ALL, when the Slate widget gets the question answered for
+ * it: IInputProcessor has no touch hook -- its complete surface is IInputProcessor.h:20-53 --
+ * and FSlateApplication funnels every touch through the MOUSE processing entry points
+ * (ProcessTouchStartedEvent -> ProcessMouseButtonDownEvent, SlateApplication.cpp:6800;
+ * ProcessTouchMovedEvent -> ProcessMouseMoveEvent, :6829; ProcessTouchEndedEvent ->
+ * ProcessMouseButtonUpEvent, :6858). So a finger arrives at these handlers wearing a mouse's
+ * name, and the ONLY thing that distinguishes it is FPointerEvent::IsTouchEvent(). That is
+ * the same fact bead VaCuus-61d turned on, from the other end.
+ *
+ * WHY IT MATTERS: forwarded as a mouse press, a finger reaches RmlUi through
+ * ProcessMouseButtonDown, which has no per-finger state and no scroll container -- so a world
+ * panel's list could never drag-scroll, however hard the finger pulled. Forwarded as a touch
+ * it reaches ProcessTouchStart/Move/End, where all of that lives (Context.cpp:892-1034).
+ *
+ * NO DOUBLE-DELIVERY QUESTION HERE, unlike the Slate widget's: a preprocessor is offered each
+ * event exactly once, before all routing, and there is no fallback path that re-offers it.
+ *
+ * THE ONE HONEST GAP, stated rather than papered over: a finger whose press did not resolve
+ * onto a panel gets no ProcessTouchStart, and RmlUi's ProcessTouchMove then returns before it
+ * does anything -- including before its trailing ProcessMouseMove at :987 (the early return is Context.cpp:924-926). So a
+ * finger that misses a panel on the press and crosses onto one mid-drag updates nothing until
+ * it lifts. That is the correct outcome for a gesture that began somewhere else; the mouse
+ * path differs only because a mouse can hover with no button down at all.
+ */
+static FVaCuusInputEvent MakeForwardedMove(const FPointerEvent& Event, FIntPoint Pixel)
+{
+	if (Event.IsTouchEvent())
+	{
+		return FVaCuusInputEvent::Touch(EVaCuusInputEventKind::TouchMove,
+			FVaCuusInputEvent::MakeTouchId(Event.GetUserIndex(), Event.GetPointerIndex()), Pixel, ToModifiers(Event));
+	}
+
+	return FVaCuusInputEvent::MouseMove(Pixel, ToModifiers(Event));
+}
+
+static FVaCuusInputEvent MakeForwardedPress(const FPointerEvent& Event, FIntPoint Pixel, bool bDown)
+{
+	if (Event.IsTouchEvent())
+	{
+		// GetEffectingButton is deliberately not consulted: it is LeftMouseButton for every
+		// finger (Events.h:939-940) and RmlUi's touch verbs hard-code button 0 anyway.
+		return FVaCuusInputEvent::Touch(bDown ? EVaCuusInputEventKind::TouchStart : EVaCuusInputEventKind::TouchEnd,
+			FVaCuusInputEvent::MakeTouchId(Event.GetUserIndex(), Event.GetPointerIndex()), Pixel, ToModifiers(Event));
+	}
+
+	return FVaCuusInputEvent::MouseButton(bDown, Pixel, Event.GetEffectingButton(), ToModifiers(Event));
+}
+
 /** The FWidget3DHitTester player resolution (WidgetComponent.cpp:171-173): local player 0's controller. */
 static APlayerController* ResolvePlayerController(const UGameViewportClient* ViewportClient)
 {
@@ -395,7 +447,7 @@ bool FVaCuusWorldInputProcessor::HandleMouseMoveEvent(FSlateApplication& SlateAp
 			FIntPoint Pixel;
 			if (ResolveLatchedPixel(MouseEvent, Panel, Pixel))
 			{
-				Panel->GetView()->SendInput(FVaCuusInputEvent::MouseMove(Pixel, VaCuusWorldInput::ToModifiers(MouseEvent)));
+				Panel->GetView()->SendInput(VaCuusWorldInput::MakeForwardedMove(MouseEvent, Pixel));
 			}
 			// Consumed regardless of coverage while latched -- the widget's capture
 			// rule (SVaCuusWidget.cpp:534-537): a drag that started on a scrollbar
@@ -428,7 +480,7 @@ bool FVaCuusWorldInputProcessor::HandleMouseMoveEvent(FSlateApplication& SlateAp
 	HoveredPanel = Hit.Component;
 
 	UVaCuusView* View = Hit.Component->GetView();
-	View->SendInput(FVaCuusInputEvent::MouseMove(Hit.Pixel, VaCuusWorldInput::ToModifiers(MouseEvent)));
+	View->SendInput(VaCuusWorldInput::MakeForwardedMove(MouseEvent, Hit.Pixel));
 
 	if (View->GetSnapshot().Contains(Hit.Pixel))
 	{
@@ -458,8 +510,7 @@ bool FVaCuusWorldInputProcessor::HandleMouseButtonDownEvent(FSlateApplication& S
 			FIntPoint Pixel;
 			if (ResolveLatchedPixel(MouseEvent, Panel, Pixel))
 			{
-				Panel->GetView()->SendInput(FVaCuusInputEvent::MouseButton(
-					/*bDown=*/true, Pixel, MouseEvent.GetEffectingButton(), VaCuusWorldInput::ToModifiers(MouseEvent)));
+				Panel->GetView()->SendInput(VaCuusWorldInput::MakeForwardedPress(MouseEvent, Pixel, /*bDown=*/true));
 			}
 			++NumConsumed;
 			return true;
@@ -492,8 +543,7 @@ bool FVaCuusWorldInputProcessor::HandleMouseButtonDownEvent(FSlateApplication& S
 	// RmlUi sees the press either way (it may close a dropdown); coverage only
 	// decides whether the game ALSO hears it.
 	UVaCuusView* View = Hit.Component->GetView();
-	View->SendInput(FVaCuusInputEvent::MouseButton(
-		/*bDown=*/true, Hit.Pixel, MouseEvent.GetEffectingButton(), VaCuusWorldInput::ToModifiers(MouseEvent)));
+	View->SendInput(VaCuusWorldInput::MakeForwardedPress(MouseEvent, Hit.Pixel, /*bDown=*/true));
 
 	if (View->GetSnapshot().Contains(Hit.Pixel))
 	{
@@ -521,8 +571,7 @@ bool FVaCuusWorldInputProcessor::HandleMouseButtonUpEvent(FSlateApplication& Sla
 			FIntPoint Pixel;
 			if (ResolveLatchedPixel(MouseEvent, Panel, Pixel))
 			{
-				Panel->GetView()->SendInput(FVaCuusInputEvent::MouseButton(
-					/*bDown=*/false, Pixel, MouseEvent.GetEffectingButton(), VaCuusWorldInput::ToModifiers(MouseEvent)));
+				Panel->GetView()->SendInput(VaCuusWorldInput::MakeForwardedPress(MouseEvent, Pixel, /*bDown=*/false));
 			}
 		}
 
@@ -565,8 +614,7 @@ bool FVaCuusWorldInputProcessor::HandleMouseButtonUpEvent(FSlateApplication& Sla
 	// no-capture rule (SVaCuusWidget.cpp:647-654): swallowing a release whose press
 	// the game heard would leave the game holding a button down forever.
 	UVaCuusView* View = Hit.Component->GetView();
-	View->SendInput(FVaCuusInputEvent::MouseButton(
-		/*bDown=*/false, Hit.Pixel, MouseEvent.GetEffectingButton(), VaCuusWorldInput::ToModifiers(MouseEvent)));
+	View->SendInput(VaCuusWorldInput::MakeForwardedPress(MouseEvent, Hit.Pixel, /*bDown=*/false));
 
 	if (View->GetSnapshot().Contains(Hit.Pixel))
 	{

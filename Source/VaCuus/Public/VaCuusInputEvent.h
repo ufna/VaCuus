@@ -29,6 +29,52 @@ enum class EVaCuusInputEventKind : uint8
 	/** No payload. Required, or RmlUi's `:hover` styling sticks forever. */
 	MouseLeave,
 
+	//~ TOUCH (bead VaCuus-ujm). Position + TouchId; NO Key, and that absence is the
+	//~ enforcement -- see the factories.
+	//~
+	//~ WHY THESE EXIST AT ALL, given that a touch already reached RmlUi as a mouse press:
+	//~ ProcessMouseButtonDown/Up carry no finger identity and no drag history, so RmlUi
+	//~ could never do the one thing a phone needs -- turn a finger's travel into a scroll.
+	//~ Its touch verbs do: ProcessTouchStart records the press position and the closest
+	//~ scrollable ancestor (Context.cpp:892-916), ProcessTouchMove scrolls that container by
+	//~ the frame's delta, accumulates a decayed inertia position and cancels the pending
+	//~ click once the finger has travelled TOUCH_CLICK_MAX_DISTANCE (:928-981), and
+	//~ ProcessTouchEnd converts the accumulated velocity into a fling (:996-1014).
+	//~
+	//~ NONE OF THAT IS RE-IMPLEMENTED HOST-SIDE, deliberately: drag-vs-tap, the distance
+	//~ threshold and the inertia model are RmlUi's, and the embedder's whole job is to feed
+	//~ honest starts, moves and ends. What the host DOES owe is that each finger's stream is
+	//~ well formed -- one start, then moves, then exactly one end or cancel -- because
+	//~ RmlUi's duplicate-touch guard is an RMLUI_ASSERTMSG (Context.cpp:895) that this build
+	//~ compiles out: UBT sets NDEBUG in every configuration the plugin ships, so RMLUI_DEBUG is
+	//~ never defined and Debug.h:47-48 expands the macro to nothing (VaCuusRml.Build.cs:99-115
+	//~ makes the same point from the build side). A malformed stream degrades silently rather
+	//~ than complaining.
+	//~
+	//~ EACH VERB ALSO DOES THE MOUSE HALF ITSELF -- ProcessMouseMove plus
+	//~ ProcessMouseButtonDown(0) on start (Context.cpp:916-919), the matching
+	//~ ProcessMouseButtonUp(0) on end (:1019-1022) and, with no move before it, on cancel
+	//~ (:1033) -- which is what keeps hover, `:active`, focus and `click` working for a tap. It is also why a touch that
+	//~ was ALSO delivered as a synthesized mouse event would press twice; see
+	//~ SVaCuusWidget's touch handlers for how that is prevented.
+
+	/** Finger down. Starts RmlUi's per-touch state and presses button 0. */
+	TouchStart,
+
+	/** Finger moved. Scrolls the container the start latched onto, or does nothing if there was none. */
+	TouchMove,
+
+	/** Finger lifted. Releases button 0 and may start an inertial fling. */
+	TouchEnd,
+
+	/**
+	 * The gesture was taken away rather than finished -- Slate revoked capture, the widget
+	 * died mid-drag, the OS stole the touch. Distinct from TouchEnd because it must NOT
+	 * fling: ProcessTouchCancel drops the touch state and releases button 0 with no
+	 * inertia and no final move (Context.cpp:1025-1034).
+	 */
+	TouchCancel,
+
 	/** Key + Modifiers. Distinct from TextInput: this is the navigation/shortcut path. */
 	KeyDown,
 	KeyUp,
@@ -168,6 +214,23 @@ struct FVaCuusInputEvent
 	 */
 	uint32 CodePoint = 0;
 
+	/**
+	 * Touch* only: WHICH FINGER, in the identifier space RmlUi keys its per-touch state on
+	 * (Rml::Touch::identifier, Types.h:92-96 -- a `uintptr_t`, hence 64 bits here).
+	 *
+	 * COMPOSED, NEVER ASSIGNED: the factories below build it from the Slate pointer's
+	 * (UserIndex, PointerIndex) pair and nothing else can, so a producer cannot invent an
+	 * identifier that two fingers share. Both halves are load-bearing -- a touch puts every
+	 * finger on its own PointerIndex (FSlateApplication::OnTouchStarted passes the finger
+	 * index straight through, SlateApplication.cpp:6781-6787) while UserIndex is what keeps
+	 * two local players' finger 0 apart (FInputEvent::GetUserIndex, Events.h:332).
+	 *
+	 * A MOUSE NEVER PRODUCES ONE. Mouse events all carry CursorPointerIndex
+	 * (SlateApplication.cpp:6109-6118) and none of the mouse kinds reads this field, so
+	 * there is no id space to collide in.
+	 */
+	uint64 TouchId = 0;
+
 	//~ IME mutation payload. Unused (and untouched) by every other kind.
 
 	/**
@@ -235,6 +298,56 @@ struct FVaCuusInputEvent
 	{
 		FVaCuusInputEvent Event;
 		Event.Kind = EVaCuusInputEventKind::MouseLeave;
+		return Event;
+	}
+
+	//~ TOUCH FACTORIES. Four verbs, one shape, and TWO deliberate absences:
+	//~
+	//~ NO FKey PARAMETER. RmlUi's touch verbs hard-code button 0 internally
+	//~ (Context.cpp:919, :1022, :1033) -- there is no other button a finger can
+	//~ press -- so a signature that accepted one would accept something it then dropped on
+	//~ the floor. Slate would happily supply it: every touch event names LeftMouseButton as
+	//~ its effecting button, for every finger (Events.h:939-940).
+	//~
+	//~ NO ASSIGNABLE TouchId. MakeTouchId below is the only composer in the codebase, and
+	//~ the id it returns is what these take -- so "two fingers accidentally sharing an id"
+	//~ has one place it could be got wrong instead of one per call site. The id rather than
+	//~ the (user, pointer) pair, because the CANCEL path has only an id: it replays fingers
+	//~ recorded earlier, from a ledger, with no event in hand to re-derive them from.
+
+	/** UserIndex/PointerIndex are FPointerEvent::GetUserIndex()/GetPointerIndex(); see TouchId. */
+	static uint64 MakeTouchId(uint32 UserIndex, uint32 PointerIndex)
+	{
+		return (uint64(UserIndex) << 32) | uint64(PointerIndex);
+	}
+
+	static FVaCuusInputEvent Touch(
+		EVaCuusInputEventKind InKind, uint64 InTouchId, FIntPoint InPosition, const FVaCuusModifierState& InModifiers)
+	{
+		checkf(InKind == EVaCuusInputEventKind::TouchStart || InKind == EVaCuusInputEventKind::TouchMove ||
+				InKind == EVaCuusInputEventKind::TouchEnd,
+			TEXT("FVaCuusInputEvent::Touch built with a kind that is not a positioned touch verb"));
+
+		FVaCuusInputEvent Event;
+		Event.Kind = InKind;
+		Event.TouchId = InTouchId;
+		Event.Position = InPosition;
+		Event.Modifiers = InModifiers;
+		return Event;
+	}
+
+	/**
+	 * A cancel needs no position and no modifiers, and this signature is why that cannot be
+	 * got wrong: ProcessTouchCancel takes no modifier state (Context.h:230) and does not move
+	 * the pointer -- it drops the touch state and releases button 0, nothing else
+	 * (Context.cpp:1031-1033). Passing a position here would imply a final move that never
+	 * happens.
+	 */
+	static FVaCuusInputEvent TouchCancel(uint64 InTouchId)
+	{
+		FVaCuusInputEvent Event;
+		Event.Kind = EVaCuusInputEventKind::TouchCancel;
+		Event.TouchId = InTouchId;
 		return Event;
 	}
 
