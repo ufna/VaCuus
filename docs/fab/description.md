@@ -60,8 +60,8 @@ the generated support matrix in the docs is its exact boundary. The full source 
 the package; a Fab install arrives with Epic-built binaries in your engine, so
 Blueprint-only projects work out of the box.
 
-**Status — pre-release (beta).** UE 5.6 and 5.8, built and tested from one source tree,
-verified on Linux; 5.7 untested. Android is supported (compiles, cooks, boots and
+**Status — pre-release (beta).** UE 5.6, 5.7 and 5.8, built and tested from one source
+tree, verified on Linux. Android is supported (compiles, cooks, boots and
 renders; two recorded gaps: no on-screen-keyboard text entry yet, no touch-drag
 scrolling yet). iOS is in development. The API is not yet stable — expect renames
 between pre-release versions. The docs state every known limitation by name: read
@@ -115,10 +115,11 @@ MIT licenses beside them: RmlUi 6.x and QuickJS-ng. Full source included.
 
 ## Decisions the owner still has to make (from bead VaCuus-jne)
 
-1. **Engine versions on the listing.** Bead VaCuus-93v is still open: `BuildPlugin` has
-   only ever run on 5.8, so the only package proven end-to-end is the 5.8 one. Either
-   run the 5.6 BuildPlugin leg and close 93v before the listing claims 5.6, or launch
-   the listing as 5.8-only and widen it after.
+1. **Engine versions on the listing.** Runtime is tested on 5.6, 5.7 and 5.8 (owner
+   runs, 2026-08). But bead VaCuus-93v is still open: `BuildPlugin` — the packaging
+   step — has only ever run on 5.8, so the only *package* proven end-to-end is the 5.8
+   one. Run the 5.6/5.7 BuildPlugin legs and close 93v before the listing claims them,
+   or launch 5.8-only and widen after.
 2. **Beta presentation.** `IsBetaVersion: true` + `VersionName "0.1"` put a warning in
    the buyer's plugin browser. The copy above states pre-release plainly rather than
    hiding it — recommended to keep both flags as they are; they match what the manual

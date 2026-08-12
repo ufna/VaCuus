@@ -43,9 +43,13 @@ neither of which the engine tells you about:
   the engine that built the package. A different engine version will warn on load; that is
   a compatibility marker, not a hard block.
 
-  **Which engines this plugin supports: 5.6 and 5.8.** One source tree serves both — each
-  is built (editor and packaged-game targets) and runs the shipped suite green, on Linux.
-  5.7 has never been tried. Take the package stamped with your engine: the stamp is
+  **Which engines this plugin supports: 5.6, 5.7 and 5.8.** One source tree serves all
+  three — built (editor and packaged-game targets) and tested, on Linux. The plugin
+  itself needed no changes for 5.7; a project created on an older engine may need its
+  `Target.cs` brought to the engine's current defaults
+  (`DefaultBuildSettings = BuildSettingsVersion.V6;
+  IncludeOrderVersion = EngineIncludeOrderVersion.Unreal5_7;`) — that is a project-side
+  setting, not a plugin one. Take the package stamped with your engine: the stamp is
   per-package, not per-plugin, so a 5.6 download on 5.8 warns even though the source
   compiles on both.
 

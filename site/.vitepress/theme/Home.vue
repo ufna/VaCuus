@@ -55,7 +55,7 @@ onUnmounted(() => {
     <section class="vc-hero">
       <div class="vc-wrap">
         <div class="vc-hero-top vc-anim vc-anim-1">
-          <span class="vc-eyebrow">Pre-release &middot; Unreal Engine 5.6 / 5.8</span>
+          <span class="vc-eyebrow">Pre-release &middot; Unreal Engine 5.6 &ndash; 5.8</span>
           <span class="vc-dash" />
           <span class="vc-eyebrow">Full source included &middot; verified on Linux</span>
         </div>
@@ -148,12 +148,11 @@ onUnmounted(() => {
             <a class="vc-cite" href="https://github.com/ufna/VaCuus#readme">README.md</a>
           </div>
           <p>
-            <strong>UE 5.6 and UE 5.8</strong> are both built and tested from this one
+            <strong>UE 5.6, 5.7 and 5.8</strong> are built and tested from this one
             source tree &mdash; editor and packaged-game targets, plus the
             <strong>227-test automation suite</strong> that ships with the plugin and that
-            you can run yourself, green on each. A package is stamped with the engine that
-            built it, so take the download that matches yours. Verified on Linux;
-            <strong>5.7 is untested</strong>.
+            you can run yourself. A package is stamped with the engine that built it, so
+            take the download that matches yours. Verified on Linux.
           </p>
           <p>
             The API is <strong>not yet stable</strong> &mdash; expect renames between
@@ -691,9 +690,9 @@ onUnmounted(() => {
         <small>budget 0.10 ms &middot; dev build</small>
       </div>
       <div class="vc-num">
-        <b>5.6<i> &middot; </i>5.8</b>
+        <b>5.6<i>&ndash;</i>5.8</b>
         <em>engines, built and tested from one tree</em>
-        <small>5.7 untested &middot; verified on Linux</small>
+        <small>5.6 &middot; 5.7 &middot; 5.8 &middot; verified on Linux</small>
       </div>
     </section>
 
