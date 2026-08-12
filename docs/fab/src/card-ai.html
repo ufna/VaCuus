@@ -1,0 +1,291 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>VaCuus — built for AI agents</title>
+    <link rel="stylesheet" href="base.css" />
+    <style>
+      /* --------------------------------------------------------- card: AI --
+         Instrument-panel infographic, four registers top to bottom: the claim,
+         the line you paste, what ships, and the loop that closes it. Content is
+         the landing's pillar 03 verbatim in substance (docs/buyer/ai-guide.md);
+         the snippet is README.md:35-37 character for character. */
+
+      .head {
+        position: absolute;
+        left: 84px;
+        right: 84px;
+        top: 88px;
+      }
+      .lede {
+        position: absolute;
+        left: 84px;
+        top: 190px;
+        width: 1560px;
+        margin: 0;
+        font-size: 27px;
+        line-height: 1.55;
+        color: var(--vc-ink-2);
+      }
+      .lede strong {
+        color: var(--vc-ink);
+        font-weight: 650;
+      }
+      .lede em {
+        font-style: normal;
+        color: var(--vc-accent);
+        font-weight: 650;
+      }
+
+      /* ---- the paste line ---- */
+      .snippet {
+        position: absolute;
+        left: 84px;
+        right: 84px;
+        top: 322px;
+      }
+      .snippet-head {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        padding-bottom: 12px;
+        font-family: var(--vc-font-mono);
+        font-size: 17px;
+        letter-spacing: 0.11em;
+        text-transform: uppercase;
+        color: var(--vc-ink-3);
+      }
+      .snippet-head b {
+        color: var(--vc-accent);
+        font-weight: 600;
+      }
+      pre.code {
+        margin: 0;
+        font-family: var(--vc-font-mono);
+        font-size: 25px;
+        line-height: 1.62;
+        white-space: pre;
+        background: var(--vc-bg-deep);
+        border: 1px solid var(--vc-line);
+        border-left: 3px solid var(--vc-accent);
+        border-radius: 3px;
+        padding: 24px 30px;
+        color: #c6d0dc;
+      }
+
+      /* ---- what ships ---- */
+      .ships {
+        position: absolute;
+        left: 84px;
+        right: 84px;
+        top: 556px;
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 1px;
+        background: var(--vc-line);
+        border: 1px solid var(--vc-line);
+        border-radius: 3px;
+        overflow: hidden;
+      }
+      .ship {
+        background: var(--vc-panel);
+        padding: 24px 28px 26px;
+      }
+      .ship h3 {
+        margin: 0 0 10px;
+        font-family: var(--vc-font-mono);
+        font-size: 23px;
+        font-weight: 600;
+        letter-spacing: 0.01em;
+        color: var(--vc-accent);
+      }
+      .ship p {
+        margin: 0;
+        font-size: 21px;
+        line-height: 1.5;
+        color: var(--vc-ink-2);
+      }
+      .ship p strong {
+        color: var(--vc-ink);
+        font-weight: 650;
+      }
+
+      /* ---- the loop ---- */
+      .loop {
+        position: absolute;
+        left: 84px;
+        right: 84px;
+        top: 782px;
+        border-top: 1px solid var(--vc-line);
+        padding-top: 20px;
+      }
+      .loop-cap {
+        font-family: var(--vc-font-mono);
+        font-size: 17px;
+        letter-spacing: 0.13em;
+        text-transform: uppercase;
+        color: var(--vc-ink-3);
+        margin-bottom: 18px;
+      }
+      .loop-cap b {
+        color: var(--vc-ink-2);
+        font-weight: 400;
+      }
+      .steps {
+        display: flex;
+        align-items: stretch;
+        gap: 22px;
+      }
+      .step {
+        flex: 1 1 0;
+        display: flex;
+        gap: 16px;
+      }
+      .step .n {
+        flex: none;
+        font-family: var(--vc-font-mono);
+        font-size: 19px;
+        font-weight: 600;
+        letter-spacing: 0.06em;
+        color: var(--vc-accent);
+        padding-top: 3px;
+      }
+      .step h4 {
+        margin: 0 0 6px;
+        font-size: 23px;
+        font-weight: 700;
+        font-stretch: 108%;
+        letter-spacing: -0.005em;
+        color: var(--vc-ink);
+      }
+      .step p {
+        margin: 0;
+        font-size: 20px;
+        line-height: 1.45;
+        color: var(--vc-ink-2);
+      }
+      .step p code,
+      .ship p code,
+      .lede code {
+        font-family: var(--vc-font-mono);
+        font-size: 0.86em;
+        color: var(--vc-ink);
+        background: var(--vc-accent-wash);
+        border: 1px solid var(--vc-line-soft);
+        border-radius: 2px;
+        padding: 1px 6px;
+        white-space: nowrap;
+      }
+      .arrow {
+        flex: none;
+        align-self: center;
+        font-family: var(--vc-font-mono);
+        font-size: 30px;
+        color: var(--vc-accent);
+        opacity: 0.75;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="tile">
+      <div class="bg-grid"></div>
+      <div class="bg-glow"></div>
+      <span class="ticks"><i></i><i></i><i></i><i></i></span>
+
+      <header class="head sec-head">
+        <span class="idx">03</span>
+        <h1>Built for AI agents</h1>
+        <span class="rule"></span>
+        <span class="cite">docs/buyer/ai-guide.md</span>
+      </header>
+
+      <p class="lede">
+        The whole interface is <strong>plain text an agent can read and write</strong> &mdash;
+        <code>.rml</code> markup, <code>.rcss</code> styles, files on disk. The hard half:
+        most mistakes here produce no error and <em>a screen that renders</em>, just not the
+        one you asked for &mdash; and an agent cannot see the screen.
+      </p>
+
+      <section class="snippet">
+        <div class="snippet-head">
+          <span>One line in your project's <b>CLAUDE.md</b> / <b>AGENTS.md</b></span>
+          <span>README.md</span>
+        </div>
+        <pre class="code">UI is VaCuus (HTML/CSS off the game thread). Before touching anything under
+Content/DevUI, read Plugins/VaCuus/docs/buyer/ai-guide.md and
+Plugins/VaCuus/docs/buyer/rcss-matrix.md.</pre>
+      </section>
+
+      <section class="ships">
+        <div class="ship">
+          <h3>AGENTS.md</h3>
+          <p>
+            <strong>At the package root</strong>, where an agent looks first. Short by design:
+            the five things that would otherwise cost the session.
+          </p>
+        </div>
+        <div class="ship">
+          <h3>ai-guide.md</h3>
+          <p>
+            The full brief. Which mistakes warn, which are drawn wrong in silence, and how to
+            tell the two apart.
+          </p>
+        </div>
+        <div class="ship">
+          <h3>rcss-matrix.md</h3>
+          <p>
+            99 properties, 20 shorthands, 16 decorators &mdash;
+            <strong>generated from the exact RmlUi vendored in the package</strong>, not from
+            training data.
+          </p>
+        </div>
+      </section>
+
+      <section class="loop">
+        <div class="loop-cap">The verification loop &mdash; <b>an agent checking its own work, without eyes</b></div>
+        <div class="steps">
+          <div class="step">
+            <span class="n">01</span>
+            <div>
+              <h4>It warns, and it names the line</h4>
+              <p>
+                A declaration RmlUi cannot parse logs <code>file:line</code> &mdash; in every
+                configuration, <strong>including Shipping</strong>.
+              </p>
+            </div>
+          </div>
+          <span class="arrow">&rarr;</span>
+          <div class="step">
+            <span class="n">02</span>
+            <div>
+              <h4>It renders, headless</h4>
+              <p>
+                A documented <strong>1920&times;1080 offscreen</strong> recipe: the agent gets a
+                picture of what it just wrote.
+              </p>
+            </div>
+          </div>
+          <span class="arrow">&rarr;</span>
+          <div class="step">
+            <span class="n">03</span>
+            <div>
+              <h4>It runs the suite</h4>
+              <p>
+                <strong>227 tests</strong> ship in the box &mdash;
+                <code>Automation RunTests VaCuus</code>.
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <div class="foot">
+        <span class="mark">Va<span>C</span>uus</span>
+        <span class="note">
+          Every file above ships inside the plugin &mdash; <b>Plugins/VaCuus/docs/buyer/</b>.
+          No account, no download, nothing to fetch at author time.
+        </span>
+      </div>
+    </div>
+  </body>
+</html>

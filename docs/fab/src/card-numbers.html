@@ -1,0 +1,352 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>VaCuus — measured, not promised</title>
+    <link rel="stylesheet" href="base.css" />
+    <style>
+      /* ---------------------------------------------------- card: numbers --
+         A readout, not a marketing card — the landing's .vc-readout grown to
+         1080p. Every figure is a cell from docs/buyer/perf-guide.md's budget
+         table; the headroom bar is measured/budget, nothing else. */
+
+      .hdr {
+        position: absolute;
+        left: 84px;
+        right: 84px;
+        top: 92px;
+      }
+      .lede {
+        position: absolute;
+        left: 84px;
+        top: 192px;
+        width: 1520px;
+        margin: 0;
+        font-size: 27px;
+        line-height: 1.55;
+        color: var(--vc-ink-2);
+      }
+      .lede strong {
+        color: var(--vc-ink);
+        font-weight: 650;
+      }
+
+      .caps {
+        position: absolute;
+        left: 84px;
+        right: 84px;
+        top: 312px;
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        font-family: var(--vc-font-mono);
+        font-size: 17px;
+        letter-spacing: 0.11em;
+        text-transform: uppercase;
+        color: var(--vc-ink-3);
+      }
+
+      /* table-layout: fixed + colgroup. Auto layout collapses the bar column to
+         its min-content (the divs have no intrinsic width) and hands the slack to
+         the multiplier column; the columns here are a grid, so they are declared. */
+      table.readout {
+        position: absolute;
+        left: 84px;
+        top: 350px;
+        width: 1752px;
+        table-layout: fixed;
+        border-collapse: collapse;
+        font-family: var(--vc-font-mono);
+        font-variant-numeric: tabular-nums;
+      }
+      table.readout th,
+      table.readout td {
+        border-bottom: 1px solid var(--vc-line-soft);
+        padding: 15px 0;
+        vertical-align: top;
+      }
+      table.readout thead th {
+        border-bottom: 1px solid var(--vc-line);
+        padding-bottom: 12px;
+        font-weight: 400;
+        font-size: 16px;
+        letter-spacing: 0.13em;
+        text-transform: uppercase;
+        color: var(--vc-ink-3);
+        text-align: right;
+      }
+      table.readout thead th:first-child {
+        text-align: left;
+      }
+      table.readout tbody tr:last-child th,
+      table.readout tbody tr:last-child td {
+        border-bottom: 0;
+      }
+
+      th.metric {
+        text-align: left;
+        font-weight: 400;
+        padding-right: 24px;
+      }
+      th.metric b {
+        display: block;
+        font-family: var(--vc-font-sans);
+        font-size: 25px;
+        font-weight: 600;
+        font-stretch: 106%;
+        letter-spacing: -0.005em;
+        color: var(--vc-ink);
+        line-height: 1.2;
+      }
+      th.metric span {
+        display: block;
+        margin-top: 6px;
+        font-size: 16px;
+        letter-spacing: 0.04em;
+        color: var(--vc-ink-3);
+      }
+
+      td.val {
+        text-align: right;
+        font-size: 33px;
+        font-weight: 600;
+        color: var(--vc-ink);
+        letter-spacing: -0.01em;
+        line-height: 1.05;
+      }
+      td.val.dev {
+        color: var(--vc-ink-2);
+        font-weight: 400;
+        font-size: 30px;
+      }
+      td.val.ship b {
+        color: var(--vc-accent);
+        font-weight: 600;
+      }
+      td.val u {
+        display: block;
+        margin-top: 5px;
+        text-decoration: none;
+        font-size: 15px;
+        font-weight: 400;
+        letter-spacing: 0.05em;
+        color: var(--vc-ink-3);
+      }
+
+      /* Headroom: the bar is width = measured / budget. Nothing is exaggerated —
+         a nearly-empty bar is what an 8x margin actually looks like. */
+      /* Specificity note: `table.readout td` (0,1,2) outranks a bare `td.budget`
+         (0,1,1), and its `padding: 15px 0` shorthand would silently win. */
+      table.readout td.budget {
+        padding: 15px 56px 15px 60px;
+      }
+      td.budget .track {
+        position: relative;
+        height: 12px;
+        background: rgba(231, 237, 245, 0.07);
+        border: 1px solid var(--vc-line);
+        border-radius: 1px;
+      }
+      td.budget .fill {
+        position: absolute;
+        left: 0;
+        top: 0;
+        bottom: 0;
+        background: var(--vc-accent);
+      }
+      td.budget .lbl {
+        display: flex;
+        justify-content: space-between;
+        margin-top: 9px;
+        font-size: 16px;
+        letter-spacing: 0.05em;
+        color: var(--vc-ink-3);
+      }
+      td.mult {
+        text-align: right;
+        font-size: 26px;
+        color: var(--vc-cool);
+        letter-spacing: -0.01em;
+      }
+      td.mult u {
+        display: block;
+        text-decoration: none;
+        margin-top: 5px;
+        font-size: 15px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--vc-ink-3);
+      }
+
+      /* The idle gate gets its own block: it is a ratio, not a budget row. */
+      .gate {
+        position: absolute;
+        left: 84px;
+        right: 84px;
+        bottom: 168px;
+        display: grid;
+        grid-template-columns: 14px minmax(0, 1fr);
+        border: 1px solid var(--vc-line);
+        border-radius: 3px;
+        background: var(--vc-panel);
+        overflow: hidden;
+      }
+      .gate-body {
+        display: flex;
+        align-items: center;
+        gap: 40px;
+        padding: 26px 34px;
+      }
+      .gate .num {
+        font-family: var(--vc-font-mono);
+        font-size: 58px;
+        font-weight: 600;
+        letter-spacing: -0.02em;
+        color: var(--vc-ink);
+        font-variant-numeric: tabular-nums;
+        line-height: 1;
+        flex: none;
+      }
+      .gate .num span {
+        color: var(--vc-accent);
+      }
+      .gate p {
+        margin: 0;
+        font-size: 24px;
+        line-height: 1.5;
+        color: var(--vc-ink-2);
+      }
+      .gate p strong {
+        color: var(--vc-ink);
+        font-weight: 650;
+      }
+      .gate code {
+        font-family: var(--vc-font-mono);
+        font-size: 0.88em;
+        color: var(--vc-ink);
+        background: var(--vc-accent-wash);
+        border: 1px solid var(--vc-line-soft);
+        border-radius: 2px;
+        padding: 1px 6px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="tile">
+      <div class="bg-grid"></div>
+      <div class="bg-glow"></div>
+      <span class="ticks"><i></i><i></i><i></i><i></i></span>
+
+      <header class="hdr sec-head">
+        <span class="idx">01</span>
+        <h1>Measured, not promised</h1>
+        <span class="rule"></span>
+        <span class="cite">docs/buyer/perf-guide.md</span>
+      </header>
+
+      <p class="lede">
+        The workload is the plugin's own <strong>1,732-node reference HUD</strong> &mdash; the
+        worst case it ships, animating every frame on purpose. The game thread pays for a queue
+        write and a snapshot read &mdash; nothing else.
+      </p>
+
+      <div class="caps">
+        <span>Reference worst case &mdash; 1,732 live nodes, 908 draws/frame, 1080p</span>
+        <span>Venue &mdash; 7950X3D &middot; Linux &middot; Vulkan &middot; UE 5.8.1</span>
+      </div>
+
+      <table class="readout">
+        <colgroup>
+          <col style="width: 590px" />
+          <col style="width: 190px" />
+          <col style="width: 280px" />
+          <col style="width: 480px" />
+          <col style="width: 212px" />
+        </colgroup>
+        <thead>
+          <tr>
+            <th>Metric</th>
+            <th>Dev</th>
+            <th>Shipping</th>
+            <th style="text-align: left; padding-left: 46px">Against budget</th>
+            <th>Headroom</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th class="metric">
+              <b>Game thread, per frame</b>
+              <span>at the 1,732-node reference worst case</span>
+            </th>
+            <td class="val dev">0.012<u>ms</u></td>
+            <td class="val ship"><b>0.008&ndash;0.009</b><u>ms</u></td>
+            <td class="budget">
+              <div class="track"><div class="fill" style="width: 12%"></div></div>
+              <div class="lbl"><span>0.012</span><span>budget 0.10 ms</span></div>
+            </td>
+            <td class="mult">~8&ndash;11&times;<u>pass</u></td>
+          </tr>
+          <tr>
+            <th class="metric">
+              <b>Composite only, idle UI</b>
+              <span>what a static screen costs to draw</span>
+            </th>
+            <td class="val dev">0.003<u>ms</u></td>
+            <td class="val ship"><b>0.002</b><u>ms</u></td>
+            <td class="budget">
+              <div class="track"><div class="fill" style="width: 4%"></div></div>
+              <div class="lbl"><span>0.002</span><span>budget 0.05 ms</span></div>
+            </td>
+            <td class="mult">~12&ndash;25&times;<u>pass</u></td>
+          </tr>
+          <tr>
+            <th class="metric">
+              <b>Added RAM</b>
+              <span>A/B median, JS heap included</span>
+            </th>
+            <td class="val dev">&mdash;</td>
+            <td class="val ship"><b>+14.3</b><u>MB</u></td>
+            <td class="budget">
+              <div class="track"><div class="fill" style="width: 45%"></div></div>
+              <div class="lbl"><span>+14.3</span><span>budget 32 MB</span></div>
+            </td>
+            <td class="mult">~2.2&times;<u>pass</u></td>
+          </tr>
+          <tr>
+            <th class="metric">
+              <b>Added disk, shipping</b>
+              <span>binary + cooked bundle, Linux proxy</span>
+            </th>
+            <td class="val dev">&mdash;</td>
+            <td class="val ship"><b>+3.22</b><u>MiB</u></td>
+            <td class="budget">
+              <div class="track"><div class="fill" style="width: 34%"></div></div>
+              <div class="lbl"><span>+3.22</span><span>budget 10 MB</span></div>
+            </td>
+            <td class="mult">~3&times;<u>pass</u></td>
+          </tr>
+        </tbody>
+      </table>
+
+      <aside class="gate">
+        <div class="hazard"></div>
+        <div class="gate-body">
+          <div class="num">1<span>:</span>6,910</div>
+          <p>
+            Frames a <strong>static</strong> HUD actually published. Publication is withheld
+            while the content hash is unchanged, so a pause menu stops costing anything to draw
+            &mdash; <code>vacuus.M1HUD.PerfLog 1</code> prints the ratio in your own project.
+          </p>
+        </div>
+      </aside>
+
+      <div class="foot">
+        <span class="mark">Va<span>C</span>uus</span>
+        <span class="note">
+          Every number re-runnable: <b>vacuus.RefHud</b> + <b>vacuus.M1HUD.PerfLog 1</b>
+          &mdash; the perf guide ships in the package.
+        </span>
+      </div>
+    </div>
+  </body>
+</html>

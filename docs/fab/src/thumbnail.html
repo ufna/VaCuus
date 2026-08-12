@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>VaCuus — Fab thumbnail</title>
+    <link rel="stylesheet" href="base.css" />
+    <style>
+      /* ------------------------------------------------------ thumbnail --
+         The store tile. Read at 1/4 size in a search grid, so exactly three
+         things have to survive the downscale: the wordmark, the tagline, and
+         the silhouette of a dense HUD. Everything else is texture. */
+
+      .top {
+        position: absolute;
+        left: 84px;
+        right: 84px;
+        top: 62px;
+      }
+
+      .lead {
+        position: absolute;
+        left: 84px;
+        top: 350px;
+        width: 1000px;
+        display: flex;
+        gap: 34px;
+      }
+      /* The hazard column is the landing's beta-status decorator, reused as the
+         left margin rule of the mark. */
+      .lead .bar {
+        width: 14px;
+        flex: none;
+        align-self: stretch;
+      }
+
+      .wordmark {
+        font-size: 220px;
+        margin: -30px 0 0;
+      }
+
+      .tagline {
+        margin: 28px 0 0;
+        font-size: 50px;
+        line-height: 1.18;
+        font-weight: 450;
+        font-stretch: 104%;
+        letter-spacing: -0.017em;
+        color: var(--vc-ink);
+      }
+      .tagline em {
+        font-style: normal;
+        font-weight: 650;
+        color: var(--vc-accent);
+      }
+
+      .badges {
+        display: flex;
+        gap: 16px;
+        margin-top: 46px;
+        flex-wrap: wrap;
+      }
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 12px;
+        padding: 14px 20px;
+        background: var(--vc-panel);
+        border: 1px solid var(--vc-line);
+        border-left: 3px solid var(--vc-accent);
+        border-radius: 2px;
+        font-family: var(--vc-font-mono);
+        font-size: 23px;
+        letter-spacing: 0.02em;
+        color: var(--vc-ink-2);
+        font-variant-numeric: tabular-nums;
+        white-space: nowrap;
+      }
+      .badge b {
+        color: var(--vc-ink);
+        font-weight: 600;
+      }
+
+      /* ---- the visual: a real capture, cropped to its densest corner ---- */
+
+      .shot {
+        position: absolute;
+        left: 1130px;
+        right: -1px;
+        top: 110px;
+        height: 860px;
+        background: var(--vc-bezel);
+        border: 1px solid var(--vc-line);
+        border-right: 0;
+        border-radius: 4px 0 0 4px;
+        padding: 12px 0 0 12px;
+        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.5), 0 18px 48px rgba(0, 0, 0, 0.45);
+      }
+      .shot .frame {
+        position: relative;
+        display: block;
+        width: 100%;
+        height: 792px;
+        overflow: hidden;
+        border-radius: 2px 0 0 0;
+        /* 1.45x of the source, anchored so the frame holds source x 640..1177,
+           y 8..554 — the wave title, the ALPHA scoreboard entire (header plus all
+           24 rows) and the seam into BRAVO. The killfeed and minimap are dropped
+           on purpose: their type dissolves at store-tile scale, the scoreboard's
+           does not. 778 / 1.45 = 537 source px wide, 792 / 1.45 = 546 tall. */
+        background-image: url('/site/public/shots/refhud.png');
+        background-size: 2784px auto;
+        background-position: -928px -12px;
+        background-repeat: no-repeat;
+      }
+      /* Left edge of the plate fades into the ground so the crop reads as a
+         window onto something larger, not a pasted rectangle. */
+      .shot .frame::after {
+        content: '';
+        position: absolute;
+        inset: 0;
+        background: linear-gradient(90deg, rgba(8, 10, 13, 0.92) 0%, transparent 13%);
+      }
+      .shot .bar {
+        display: flex;
+        align-items: baseline;
+        gap: 14px;
+        padding: 14px 18px 0 4px;
+        font-family: var(--vc-font-mono);
+        font-size: 19px;
+        color: #8b95a2;
+        letter-spacing: 0.02em;
+        white-space: nowrap;
+      }
+      .shot .bar .tag {
+        color: var(--vc-accent-bright);
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        font-weight: 600;
+        flex: none;
+      }
+      .shot .ticks i {
+        border-color: rgba(255, 255, 255, 0.34);
+        width: 20px;
+        height: 20px;
+      }
+      .shot .ticks i:nth-child(1) {
+        top: 24px;
+        left: 24px;
+      }
+      .shot .ticks i:nth-child(2) {
+        top: 24px;
+        right: 24px;
+      }
+      .shot .ticks i:nth-child(3) {
+        bottom: 92px;
+        left: 24px;
+      }
+      .shot .ticks i:nth-child(4) {
+        bottom: 92px;
+        right: 24px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="tile">
+      <div class="bg-grid"></div>
+      <div class="bg-glow"></div>
+      <span class="ticks"><i></i><i></i><i></i><i></i></span>
+
+      <div class="top rail">
+        <span class="eyebrow">HTML / CSS UI for Unreal Engine</span>
+        <span class="dash"></span>
+        <span class="eyebrow"><b>vacuus.ufna.dev</b></span>
+      </div>
+
+      <div class="lead">
+        <span class="bar hazard"></span>
+        <div>
+          <div class="wordmark">Va<span class="c">C</span>uus</div>
+          <p class="tagline">
+            Game UI in HTML/CSS &mdash;<br /><em>off the game thread</em>
+          </p>
+          <div class="badges">
+            <span class="badge"><b>UE 5.6 &middot; 5.8</b></span>
+            <span class="badge"><b>227</b> tests ship in the box</span>
+          </div>
+        </div>
+      </div>
+
+      <figure class="shot">
+        <span class="frame"></span>
+        <span class="ticks"><i></i><i></i><i></i><i></i></span>
+        <figcaption class="bar">
+          <span class="tag">vacuus.RefHud</span>
+          <span>1,732-node reference HUD, headless 1080p</span>
+        </figcaption>
+      </figure>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,260 @@
+/*
+ * Fab store art — shared ground.
+ *
+ * Same instrument-panel language as the site: the --vc-* tokens are copied verbatim from
+ * site/.vitepress/theme/style.css (dark scale only — every card is dark), and the
+ * primitives reused here are the ones that make the landing look like an instrument:
+ * corner reticle ticks, hazard stripes, mono eyebrows, indexed section heads, hairlines.
+ *
+ * Rendered at exactly 1920x1080 by Playwright (deviceScaleFactor 1), so every size in
+ * these files is a real pixel at the delivered resolution — no clamp(), no vw.
+ */
+
+@font-face {
+  font-family: 'Archivo';
+  font-style: normal;
+  font-weight: 100 900;
+  font-stretch: 62% 125%;
+  font-display: block;
+  src: url('/site/public/fonts/archivo-latin.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'IBM Plex Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: block;
+  src: url('/site/public/fonts/plexmono-400-latin.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'IBM Plex Mono';
+  font-style: normal;
+  font-weight: 600;
+  font-display: block;
+  src: url('/site/public/fonts/plexmono-600-latin.woff2') format('woff2');
+}
+
+:root {
+  --vc-font-sans: 'Archivo', ui-sans-serif, system-ui, sans-serif;
+  --vc-font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+
+  --vc-bg: #080a0d;
+  --vc-bg-deep: #05070a;
+  --vc-panel: #0e1218;
+  --vc-panel-2: #12171f;
+  --vc-ink: #e7edf5;
+  --vc-ink-2: #9aa6b4;
+  --vc-ink-3: #68737f;
+  --vc-line: rgba(231, 237, 245, 0.11);
+  --vc-line-soft: rgba(231, 237, 245, 0.06);
+  --vc-line-strong: rgba(231, 237, 245, 0.26);
+  --vc-grid: rgba(231, 237, 245, 0.045);
+
+  --vc-accent: #ffb43c;
+  --vc-accent-bright: #ffc766;
+  --vc-accent-wash: rgba(255, 180, 60, 0.1);
+  --vc-cool: #6fd3f7;
+  --vc-cool-wash: rgba(111, 211, 247, 0.09);
+
+  --vc-bezel: #05070a;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  width: 1920px;
+  height: 1080px;
+  overflow: hidden;
+  background: var(--vc-bg);
+  color: var(--vc-ink);
+  font-family: var(--vc-font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+.tile {
+  position: relative;
+  width: 1920px;
+  height: 1080px;
+  overflow: hidden;
+  background: var(--vc-bg);
+}
+
+/* Atmosphere: the hero's masked 68px grid plus its amber corner glow, at tile scale. */
+.bg-grid,
+.bg-glow {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.bg-grid {
+  background-image: linear-gradient(to right, var(--vc-grid) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--vc-grid) 1px, transparent 1px);
+  background-size: 68px 68px;
+  -webkit-mask-image: radial-gradient(ellipse 78% 68% at 16% 4%, #000 5%, transparent 76%);
+  mask-image: radial-gradient(ellipse 78% 68% at 16% 4%, #000 5%, transparent 76%);
+}
+.bg-glow {
+  background: radial-gradient(920px 520px at 10% -6%, rgba(255, 180, 60, 0.13) 0%, transparent 70%);
+}
+
+/* Four corner ticks — the reticle motif, here framing the whole tile. */
+.ticks i {
+  position: absolute;
+  width: 26px;
+  height: 26px;
+  border: 0 solid var(--vc-line-strong);
+  pointer-events: none;
+}
+.ticks i:nth-child(1) {
+  top: 30px;
+  left: 30px;
+  border-top-width: 2px;
+  border-left-width: 2px;
+}
+.ticks i:nth-child(2) {
+  top: 30px;
+  right: 30px;
+  border-top-width: 2px;
+  border-right-width: 2px;
+}
+.ticks i:nth-child(3) {
+  bottom: 30px;
+  left: 30px;
+  border-bottom-width: 2px;
+  border-left-width: 2px;
+}
+.ticks i:nth-child(4) {
+  bottom: 30px;
+  right: 30px;
+  border-bottom-width: 2px;
+  border-right-width: 2px;
+}
+
+.mono {
+  font-family: var(--vc-font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.eyebrow {
+  font-family: var(--vc-font-mono);
+  font-size: 19px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--vc-ink-3);
+  white-space: nowrap;
+}
+.eyebrow b {
+  color: var(--vc-ink-2);
+  font-weight: 400;
+}
+
+/* Top rail: eyebrow — hairline — eyebrow, the landing's .vc-hero-top. */
+.rail {
+  display: flex;
+  align-items: center;
+  gap: 22px;
+}
+.rail .dash {
+  flex: 1 1 auto;
+  height: 1px;
+  background: var(--vc-line);
+}
+
+/* Hazard stripes: the decorator the plugin's own demo draws (shots/deco.png). */
+.hazard {
+  background: repeating-linear-gradient(
+    45deg,
+    var(--vc-accent-bright) 0 9px,
+    transparent 9px 18px
+  );
+  opacity: 0.85;
+}
+
+/* Section head: index · title · rule · cite. Same grammar as every landing section. */
+.sec-head {
+  display: flex;
+  align-items: baseline;
+  gap: 22px;
+}
+.sec-head .idx {
+  font-family: var(--vc-font-mono);
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: var(--vc-accent);
+  flex: none;
+}
+.sec-head h1 {
+  margin: 0;
+  font-size: 66px;
+  font-weight: 800;
+  font-stretch: 116%;
+  letter-spacing: -0.018em;
+  line-height: 1;
+  flex: none;
+}
+.sec-head .rule {
+  flex: 1 1 auto;
+  height: 1px;
+  background: var(--vc-line);
+  transform: translateY(-14px);
+}
+.sec-head .cite {
+  flex: none;
+  font-family: var(--vc-font-mono);
+  font-size: 19px;
+  letter-spacing: 0.04em;
+  color: var(--vc-ink-3);
+}
+
+.wordmark {
+  font-weight: 800;
+  font-stretch: 116%;
+  letter-spacing: -0.035em;
+  line-height: 0.86;
+  color: var(--vc-ink);
+}
+.wordmark .c {
+  color: var(--vc-accent);
+}
+
+/* Bottom rail shared by the two gallery cards. */
+.foot {
+  position: absolute;
+  left: 84px;
+  right: 84px;
+  bottom: 62px;
+  display: flex;
+  align-items: center;
+  gap: 26px;
+  border-top: 1px solid var(--vc-line);
+  padding-top: 22px;
+}
+.foot .mark {
+  font-family: var(--vc-font-sans);
+  font-weight: 800;
+  font-stretch: 116%;
+  letter-spacing: -0.015em;
+  font-size: 30px;
+  line-height: 1;
+  color: var(--vc-ink);
+  flex: none;
+}
+.foot .mark span {
+  color: var(--vc-accent);
+}
+.foot .note {
+  font-family: var(--vc-font-mono);
+  font-size: 19px;
+  line-height: 1.4;
+  color: var(--vc-ink-3);
+  flex: 1 1 auto;
+}
+.foot .note b {
+  color: var(--vc-ink-2);
+  font-weight: 400;
+}
