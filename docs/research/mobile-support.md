@@ -95,7 +95,7 @@ Does **not** work:
 |---|---|
 | **Text entry — absent, not degraded** | `ITextInputMethodSystem` has exactly two implementations, Windows and Mac (`GenericApplication.h:550` returns NULL; overrides only at `WindowsApplication.h:390`, `MacApplication.h:198`). Our comment says the degradation is "typing keeps working through `OnKeyChar`" (`Source/VaCuus/Private/VaCuusTextInput.h:161-165`) — true on Linux, false on a phone, where nothing ever produces a char. Mobile uses `IVirtualKeyboardEntry`, a whole-value push API, which we do not implement. |
 | **World panel: first touch kills all input, forever** | `HandleMouseButtonUpEvent` clears its latch only under `MouseEvent.GetPressedButtons().IsEmpty()` (`Source/VaCuusRender/Private/VaCuusWorldInputProcessor.cpp:518`), which is **never true for touch**: `OnTouchEnded` builds the event with `bPressLeftMouseButton=true` (`SlateApplication.cpp:6832-6845`) and the touch ctor bakes `PressedButtons = FTouchKeySet::StandardSet` into the value copy (`Events.h:938`, `Events.cpp:15`). The processor holds no Slate capture by design, so no engine safety net fires; every later pointer event in the application is consumed. |
-| **Scrolling** | Our only scroll path is `ProcessMouseWheel` (`Source/VaCuus/Private/VaCuusUIThread.cpp:194`). There is no wheel on a phone, and we never call RmlUi's own `ProcessTouchStart/Move/End/Cancel` (`Source/ThirdParty/RmlUi/Include/RmlUi/Core/Context.h:209-230`) — which is where drag-to-scroll, inertia and click-cancel-on-scroll live (`Context.cpp:922-1014`). A touch-drag over a scrollable list does nothing today. |
+| **Scrolling** | ~~A touch-drag over a scrollable list does nothing~~ **DONE 2026-08-12** (bead VaCuus-ujm, commit d7bbe56): Slate touch events now feed `Context::ProcessTouchStart/Move/End/Cancel`; drag-to-scroll, inertia and click-cancel-on-scroll are RmlUi's own. Proven by `VaCuus.Input.TouchRouting` with a two-way restore-the-bug. Still open from this row's family: `SetDensityIndependentPixelRatio` (click/scroll threshold uses ratio 1.0 — several times too tight on a high-DPI phone) and multi-touch capture. |
 
 **The single biggest surprise:** the world-panel lockout is not a mobile bug that needs a device to
 find. `FSlateApplication` turns every left click into a real touch event under `-faketouches`
@@ -137,7 +137,7 @@ the plugin's test suite has never seen a touch event — every synthesized `FPoi
 | World-panel latch on touch | **blocked — see §0** | app-wide input lockout | app-wide input lockout | small |
 | Multi-touch | **needs work** | one shared capture bool, one RmlUi button | same, plus system gesture steal | medium |
 | Hover / cursor with no cursor | **needs work** | `:hover` flashes per tap; cursor real for DeX/mouse | cursor reporting unknown | medium |
-| Touch scrolling (RmlUi touch API) | **needs work** | unused; no wheel exists | unused; needs `ProcessTouchCancel` | medium |
+| Touch scrolling (RmlUi touch API) | **done** (2026-08-12, VaCuus-ujm, d7bbe56) | wired incl. `ProcessTouchCancel` on capture loss | same path | — |
 | Text entry / virtual keyboard | **blocked** | modal dialog by default | popup by default; iPad+keyboard = neither route | large |
 | Gamepad + analog nav | works unchanged | same `FKey` names, stick digitized | same, plus Siri Remote | none |
 | Hardware Back button | **needs work** | `Android_Back` unmapped, reaches nothing | n/a | small |
