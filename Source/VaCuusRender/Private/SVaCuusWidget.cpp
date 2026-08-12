@@ -9,12 +9,14 @@
 #include "VaCuusSlateElement.h"
 #include "VaCuusStats.h"
 #include "VaCuusView.h"
+#include "VaCuusVirtualKeyboard.h"
 
 #include "Framework/Application/NavigationConfig.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/Application/SlateUser.h"
 #include "GenericPlatform/GenericWindow.h"
 #include "HAL/IConsoleManager.h"
+#include "HAL/PlatformApplicationMisc.h"
 #include "Rendering/DrawElements.h"
 #include "RenderingThread.h"
 #include "UnrealClient.h"
@@ -180,6 +182,17 @@ void SVaCuusWidget::DetachView()
 	// pointing at this widget's window -- and this widget is usually pulled out of the tree
 	// immediately after this call. Waiting for a destructor is not an option: it can run frames
 	// later, and an IME left mid-composition would call EndComposition() on a dead owner.
+	// THE SAME ARGUMENT, FOR THE OTHER TEXT-INPUT BRIDGE. The platform holds the virtual-keyboard
+	// entry by TWeakPtr and pushes the buffer back into it on dismiss (AndroidJNI.cpp:1234-1245),
+	// so an on-screen keyboard left up here would deliver its result into a detached view. Before
+	// the IME teardown for no reason beyond reading order -- the two are independent.
+	DismissVirtualKeyboard(TEXT("the view was detached"));
+	if (VirtualKeyboardEntry.IsValid())
+	{
+		VirtualKeyboardEntry->Shutdown();
+		VirtualKeyboardEntry.Reset();
+	}
+
 	if (UVaCuusView* ViewPtr = View.Get())
 	{
 		ViewPtr->DetachIme();
@@ -271,6 +284,11 @@ void SVaCuusWidget::Tick(const FGeometry& AllottedGeometry, const double InCurre
 		// rect it publishes is what the OS candidate window is anchored to and a viewport can be
 		// resized or dragged without any input reaching this widget at all.
 		PushImeSurface();
+
+		// The mobile counterpart, and the reason it is a per-frame reconcile rather than a hook
+		// on the press is in its own declaration. No-op wherever the platform's input method is
+		// not a virtual keyboard, which is every desktop.
+		TickVirtualKeyboard();
 
 		TickAutoShot();
 	}
@@ -430,6 +448,134 @@ void SVaCuusWidget::PushImeSurface(TOptional<bool> bFocusOverride)
 	Surface.bHostHasFocus = bFocusOverride.IsSet() ? bFocusOverride.GetValue() : HasAnyUserFocus().IsSet();
 
 	ViewPtr->UpdateIme(Surface);
+}
+
+void SVaCuusWidget::TickVirtualKeyboard()
+{
+	check(IsInGameThread());
+
+	if (!FSlateApplication::IsInitialized())
+	{
+		return;
+	}
+
+	UVaCuusView* const ViewPtr = View.Get();
+
+	// THE ARBITRATION, AND IT IS THE ENGINE'S OWN. FSlateEditableTextLayout asks exactly this
+	// question and takes exactly these two branches -- ShowVirtualKeyboard when it is true,
+	// EnableTextInputMethodContext when it is false (SlateEditableTextLayout.cpp:879-893), with
+	// the mirror image in HandleFocusLost (:939-957). Asking it here is what keeps the two
+	// bridges from ever driving one field: on Win64 and Mac the answer is false and this
+	// function does nothing at all, leaving the ITextInputMethodSystem path exactly as it was;
+	// where it is true, the platform has no ITextInputMethodSystem to drive anyway.
+	//
+	// A RUNTIME SIGNAL RATHER THAN `#if PLATFORM_ANDROID`, and not merely for tidiness: on iOS
+	// the answer changes while the app runs -- FIOSPlatformApplicationMisc::RequiresVirtualKeyboard
+	// is `!IsAnyPhysicalKeyboardConnected()` (IOSPlatformApplicationMisc.cpp:361-369) -- so an
+	// iPad's Magic Keyboard being attached or detached must flip the branch mid-session. A
+	// compile-time gate could not. The generic answer is
+	// `PLATFORM_HAS_TOUCH_MAIN_SCREEN || bAllowVirtualKeyboard`
+	// (GenericPlatformApplicationMisc.cpp:110-113), which is 0 on every desktop
+	// (HAL/Platform.h:500) unless the `AllowVirtualKeyboard` cvar (:34-42) says otherwise --
+	// which is also the only reason this path is reachable from a Linux automation test.
+	//
+	// THE IPAD-WITH-A-KEYBOARD HOLE IS REAL AND IS NOT CLOSED HERE: that configuration answers
+	// false, and iOS has no ITextInputMethodSystem either, so neither bridge engages. What
+	// carries it is the third path -- OnKeyChar -> Rml::Context::ProcessTextInput -- which a
+	// hardware keyboard does feed. Composition (a CJK IME on an iPad) is genuinely unavailable.
+	const bool bVirtualKeyboardIsTheInputMethod = FPlatformApplicationMisc::RequiresVirtualKeyboard();
+
+	const FVaCuusInteractiveSnapshot& Snapshot = GetSnapshot();
+
+	// READ-ONLY FIELDS GET NO KEYBOARD, which is Slate's rule too (`!OwnerWidget->IsTextReadOnly()`
+	// guards the whole show at SlateEditableTextLayout.cpp:881). A modal keyboard over a field
+	// that will refuse every character is worse than none.
+	const bool bWantKeyboard = bVirtualKeyboardIsTheInputMethod && ViewPtr != nullptr &&
+		Snapshot.bTextInputFocused && Snapshot.TextField.Generation != 0 && !Snapshot.TextField.bReadOnly;
+
+	if (!bWantKeyboard)
+	{
+		// Unconditionally, including when the cvar was turned off underneath us: the dismiss is
+		// keyed on OUR bookkeeping, not on the platform predicate, so flipping the answer while a
+		// keyboard is up retracts it instead of stranding it.
+		DismissVirtualKeyboard(TEXT("no writable text field holds focus"));
+		return;
+	}
+
+	if (!VirtualKeyboardEntry.IsValid())
+	{
+		VirtualKeyboardEntry = FVaCuusVirtualKeyboardEntry::Create(*ViewPtr);
+	}
+
+	// THE SHADOW FIRST, THE SHOW SECOND, and the order is load-bearing for the same reason it is
+	// in FVaCuusImeHandler::OnSnapshotRefreshed: ShowVirtualKeyboard reads GetText(),
+	// GetHintText(), GetVirtualKeyboardType() and IsMultilineEntry() back out of this object
+	// synchronously before it returns (AndroidPlatformTextField.cpp:41-102). Showing against last
+	// frame's shadow would open the keyboard on the previous field's contents.
+	VirtualKeyboardEntry->SetShadowState(Snapshot.TextField);
+
+	// EDGE-TRIGGERED, ON THE FIELD'S IDENTITY. Re-showing for a field that is already up is not
+	// idempotent on Android: AndroidThunkCpp_ShowVirtualKeyboardInput HIDES the keyboard when the
+	// entry it is handed is the one already registered (the UE-49139 workaround,
+	// AndroidJNI.cpp:1205-1210), so an unguarded per-frame show would flicker it at frame rate.
+	if (ShownVirtualKeyboardFieldGeneration == Snapshot.TextField.Generation)
+	{
+		return;
+	}
+
+	ShownVirtualKeyboardFieldGeneration = Snapshot.TextField.Generation;
+
+	// User 0. Slate's own editable text passes the focus event's user through
+	// (SlateEditableTextLayout.cpp:887); we have no focus event here -- this is a reconcile, not
+	// a callback -- and both platform implementations ignore the index entirely
+	// (FAndroidPlatformTextField and FIOSPlatformTextField never read it), so 0 is the honest
+	// constant rather than a guess dressed up as a lookup.
+	FSlateApplication::Get().ShowVirtualKeyboard(/*bShow=*/true, /*UserIndex=*/0, VirtualKeyboardEntry);
+
+	UE_LOG(LogVaCuus, Verbose,
+		TEXT("Virtual keyboard: shown for field generation %llu (%d characters, %s, %s)"),
+		Snapshot.TextField.Generation, Snapshot.TextField.Value.Len(),
+		Snapshot.TextField.bPassword ? TEXT("password") : TEXT("default type"),
+		Snapshot.TextField.bMultiline ? TEXT("multiline") : TEXT("single line"));
+}
+
+void SVaCuusWidget::DismissVirtualKeyboard(const TCHAR* Reason)
+{
+	check(IsInGameThread());
+
+	if (ShownVirtualKeyboardFieldGeneration == 0)
+	{
+		return;
+	}
+
+	ShownVirtualKeyboardFieldGeneration = 0;
+
+	if (!FSlateApplication::IsInitialized())
+	{
+		// Slate is going down (a teardown path can run after it). Our bookkeeping is cleared
+		// above, and there is no platform text field left to tell.
+		return;
+	}
+
+	// NULL ENTRY IS THE DISMISS IDIOM, and it is the engine's: FSlateApplication::ShowVirtualKeyboard
+	// declares TextEntryWidget with a `= nullptr` default (SlateApplication.h:1036) and every hide
+	// site calls the two-argument form -- SlateEditableTextLayout.cpp:269 and :941,
+	// SVirtualKeyboardEntry.cpp:295. Both platform implementations branch on bShow BEFORE touching
+	// the entry (AndroidPlatformTextField.cpp:41 and :104-119, the hide path calling
+	// AndroidThunkCpp_HideVirtualKeyboardInput with no entry at all), so the null is not merely
+	// tolerated -- it is never dereferenced.
+	FSlateApplication::Get().ShowVirtualKeyboard(/*bShow=*/false, /*UserIndex=*/0);
+
+	// The ENTRY OBJECT SURVIVES, deliberately: the platform may still push a final value into it
+	// as its keyboard animates away (Android's dismiss path, AndroidJNI.cpp:1267-1269), and that
+	// push is legitimate -- it is what the player typed. Shutdown() is teardown, in DetachView.
+	UE_LOG(LogVaCuus, Verbose, TEXT("Virtual keyboard: dismissed -- %s"), Reason);
+}
+
+TSharedPtr<IVirtualKeyboardEntry> SVaCuusWidget::GetShownVirtualKeyboardEntry_Debug() const
+{
+	// "Shown", not "built" -- see the declaration.
+	return ShownVirtualKeyboardFieldGeneration != 0 ? VirtualKeyboardEntry : nullptr;
 }
 
 FVaCuusModifierState SVaCuusWidget::ToModifierState(const FInputEvent& Event)
@@ -720,13 +866,30 @@ FReply SVaCuusWidget::AnswerPointerDown(FIntPoint Position)
 	//
 	// The surface is pushed first so the handler has a window and a rect to register with: a
 	// press can be the first thing that ever happens to a freshly built widget.
+	//
+	// AND THE MOBILE BRANCH IS THE `else`, which is the same if/else Slate's own editable text
+	// writes around FPlatformApplicationMisc::RequiresVirtualKeyboard()
+	// (SlateEditableTextLayout.cpp:879-893). Nothing is shown from HERE -- the keyboard is a
+	// whole-value PUSH and the field's value does not exist yet on this frame, so the show
+	// happens one frame later in TickVirtualKeyboard, which is where that argument lives. What
+	// this branch buys is structural rather than behavioural: on a platform whose input method is
+	// a virtual keyboard, the IME activation hint is not set at all, so the two bridges cannot
+	// both believe they own the field. (Today it would be harmless -- no mobile platform has an
+	// ITextInputMethodSystem, so every IME call is already a no-op there -- but "harmless because
+	// the other thing happens to be dead" is not an invariant.)
+	//
+	// THE FINGER ARRIVES HERE TOO: OnTouchStarted shares this function, so a tap raises the
+	// keyboard by exactly the path a click does, with no touch-specific code anywhere.
 	if (Snapshot.IsTextInputAt(Position))
 	{
 		PushImeSurface();
 
 		if (UVaCuusView* ViewPtr = View.Get())
 		{
-			ViewPtr->NotifyImeTextInputClicked();
+			if (!FPlatformApplicationMisc::RequiresVirtualKeyboard())
+			{
+				ViewPtr->NotifyImeTextInputClicked();
+			}
 		}
 	}
 
@@ -1694,6 +1857,15 @@ void SVaCuusWidget::OnFocusLost(const FFocusEvent& InFocusEvent)
 	// and selection in RmlUi, exactly as the comment above says, so returning to the widget
 	// resumes composing where the player stopped. Unregistration belongs to teardown (D18).
 	PushImeSurface(/*bFocusOverride=*/false);
+
+	// The mobile bridge is retracted here too, and unlike the IME it is retracted HARD. Slate's
+	// own editable text does the same thing on the same edge -- ShowVirtualKeyboard(false) in
+	// HandleFocusLost (SlateEditableTextLayout.cpp:939-941) -- and the asymmetry with the IME
+	// above is right: a deactivated TSF context is invisible, while an on-screen keyboard left up
+	// covers half the screen and would deliver its result into a view that no longer receives
+	// keys. RmlUi's own focus, and therefore the caret, still survives; the reconcile brings the
+	// keyboard back on the frame after focus returns.
+	DismissVirtualKeyboard(TEXT("the widget lost Slate focus"));
 
 	UE_LOG(LogVaCuus, Verbose, TEXT("VaCuus widget lost Slate focus (cause %d)"), int32(InFocusEvent.GetCause()));
 }

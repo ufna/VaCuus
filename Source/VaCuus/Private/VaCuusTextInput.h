@@ -160,10 +160,35 @@ bool ComputeMinimalChangedRange(
  * owner (the CEF comment at CEFImeHandler.cpp:92).
  *
  * NO-OP WHEN THE PLATFORM HAS NO IME SYSTEM, which is the tested path here (controller
- * decision D16): FLinuxApplication never overrides
- * GenericApplication::GetTextInputMethodSystem(), so it returns null and typing degrades to
- * SVaCuusWidget::OnKeyChar -> EVaCuusInputEventKind::TextInput -> Context::ProcessTextInput.
- * Epic's own CEF IME handler is compiled out entirely on Linux (CEFImeHandler.h:7).
+ * decision D16). `ITextInputMethodSystem` has exactly two implementations in the engine:
+ * FWindowsApplication (WindowsApplication.h:390) and FMacApplication (MacApplication.h:198).
+ * Everything else -- FLinuxApplication included -- inherits
+ * `GenericApplication::GetTextInputMethodSystem()`'s `return NULL` (GenericApplication.h:550),
+ * and Epic's own CEF IME handler is compiled out entirely on Linux for the same reason
+ * (CEFImeHandler.h:7).
+ *
+ * WHAT THAT DEGRADES TO IS NOT THE SAME EVERYWHERE, and an earlier revision of this comment
+ * said it was. It claimed, flatly, that with no IME system "typing degrades to
+ * SVaCuusWidget::OnKeyChar -> EVaCuusInputEventKind::TextInput -> Context::ProcessTextInput".
+ * That is true on a DESKTOP with no IME system (Linux, which is where it was written and
+ * where it is tested), and it is false on a phone: with no hardware keyboard nothing ever
+ * produces a character, so `OnKeyChar` never fires and the "degradation" delivers nothing at
+ * all. There are three text paths, not two, and which of them is live is a property of the
+ * platform's INPUT METHOD rather than of this interface's absence:
+ *
+ *   FPlatformApplicationMisc::RequiresVirtualKeyboard()   what actually types
+ *   ---------------------------------------------------  ---------------------------------
+ *   false, IME system present   (Win64, Mac)              this file: full composition
+ *   false, IME system absent    (Linux; iPad + hardware   OnKeyChar -> ProcessTextInput;
+ *                                keyboard)                 no composition
+ *   true                        (Android, iPhone, iPad     IVirtualKeyboardEntry --
+ *                                with no keyboard)          FVaCuusVirtualKeyboardEntry,
+ *                                                           over in VaCuusRender
+ *
+ * The third row is the one this class cannot serve: the interface it implements does not
+ * exist on those platforms, and the interface that does is in the Slate module, which is why
+ * its bridge lives beside SVaCuusWidget instead of here. The arbitration between rows is the
+ * engine's own -- see SlateEditableTextLayout.cpp:879-893.
  *
  * Game thread only.
  */

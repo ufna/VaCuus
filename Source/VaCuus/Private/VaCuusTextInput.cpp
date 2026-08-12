@@ -8,6 +8,11 @@
 #include "VaCuusUIThread.h"
 #include "VaCuusView.h"
 
+// FPlatformApplicationMisc::RequiresVirtualKeyboard (ApplicationCore) and
+// FPlatformProperties::IniPlatformName (Core), both for the one-shot platform log below.
+#include "HAL/PlatformApplicationMisc.h"
+#include "HAL/PlatformProperties.h"
+
 // Types.h FIRST, and this is not include hygiene for its own sake: TextInputHandler.h has
 // ZERO #includes of its own yet uses RMLUICORE_API and NonCopyMoveable, so it only compiles
 // when something has already pulled Header.h and Traits.h in. The Win32 backend gets away
@@ -353,6 +358,26 @@ bool FillTextFieldState(Rml::Context& Context, FVaCuusTextFieldState& OutState)
 	// compose here", so both map onto the one flag TSF asks about.
 	OutState.bReadOnly = Control->IsDisabled() || Focus->HasAttribute("readonly");
 
+	// WHAT KEYBOARD THE FIELD WANTS -- read here rather than asked for later, because
+	// IVirtualKeyboardEntry's three getters are pulled on the game thread (see the fields'
+	// comment in VaCuusInteractiveSnapshot.h).
+	//
+	// `password` is compared against the same attribute RmlUi dispatches on, with the same
+	// default: ElementFormControlInput::OnAttributeChange reads type with a "text" fallback
+	// and only "password" reaches InputTypeText::OBSCURED (ElementFormControlInput.cpp:93-119).
+	// Everything else is either plain text or not a text control at all, and IsTextInputElement
+	// above has already excluded the latter.
+	OutState.bPassword = Focus->GetAttribute<Rml::String>("type", Rml::String("text")) == "password";
+
+	// <textarea> is the only multi-line control RmlUi has; tags are lowercased by the parser
+	// (XMLParser.cpp:136,167), same as in IsTextInputElement.
+	OutState.bMultiline = Focus->GetTagName() == "textarea";
+
+	// Read off the ELEMENT, not off the widget: RmlUi's own comment calls the attribute the
+	// source of truth for the placeholder (WidgetTextInput.h:32-35), and WidgetTextInput's
+	// getter is on an internal class no public header reaches (cpp:283-286).
+	OutState.HintText = UTF8_TO_TCHAR(Focus->GetAttribute<Rml::String>("placeholder", Rml::String()).c_str());
+
 	OutState.BoundingBox = GetElementViewRect(*Focus);
 
 	// LAST, and after Update(): the caret latch is written from inside RmlUi -- from
@@ -500,6 +525,57 @@ void ApplyMutation(Rml::Context& Context, uint32 ViewId, const FVaCuusInputEvent
 			const int32 CaretChars =
 				Event.RangeBegin + int32(Rml::StringUtilities::LengthUTF8(Rml::StringView(Utf8Text)));
 			Target->SetCursorPosition(CaretChars);
+			break;
+		}
+
+		case EVaCuusInputEventKind::VirtualKeyboardValue:
+		{
+			// THE WHOLE-VALUE PUSH FROM A MOBILE KEYBOARD. Everything different about this case
+			// follows from the range being measured HERE rather than carried -- see the kind's
+			// comment in VaCuusInputEvent.h for why that is the only place it can be right.
+			Rml::ElementFormControl* const Control = VaCuusCastFormControl(*Focus);
+			if (Control == nullptr)
+			{
+				// IsTextInputElement said "input" or "textarea" by tag, but the author registered
+				// their own element under that name. Nothing to push into.
+				UE_LOG(LogVaCuus, Verbose,
+					TEXT("View %u: virtual-keyboard value dropped -- the focused element is not a form control"), ViewId);
+				break;
+			}
+
+			const Rml::String Current = Control->GetValue();
+			const Rml::String Utf8Text(TCHAR_TO_UTF8(*Event.Text));
+
+			// ECHO SUPPRESSION, AND IT IS NOT AN OPTIMISATION. Both mobile backends re-push the
+			// buffer on events that changed nothing -- iOS on every selection move
+			// (IOSPlatformTextField.cpp:509) and Android once more on dismiss
+			// (AndroidJNI.cpp:1267-1269, the Cancelled path re-sending the same contents). Letting
+			// those through would call ElementFormControl::SetValue, which dispatches RmlUi's
+			// `change` event and therefore re-enters JS and the write router, on every keystroke's
+			// worth of caret movement.
+			if (Current == Utf8Text)
+			{
+				break;
+			}
+
+			// [0, all of it). ConvertCharacterOffsetToByteOffset clamps an offset at or past the
+			// end to the whole string (StringUtilities.cpp:559-562), so this cannot overshoot even
+			// if the value changed between the measure and the replace -- but it is measured
+			// exactly rather than left to the clamp, because a silent clamp is not a contract.
+			const int32 CurrentChars = int32(Rml::StringUtilities::LengthUTF8(Rml::StringView(Current)));
+			Target->SetText(Rml::StringView(Utf8Text), 0, CurrentChars);
+
+			// After the pushed text, which is where every mobile keyboard leaves its own caret --
+			// and the only caret position this event can justify, since it carries no selection.
+			Target->SetCursorPosition(int32(Rml::StringUtilities::LengthUTF8(Rml::StringView(Utf8Text))));
+
+			// MAXLENGTH IS NOT ENFORCED HERE, and the alternative is worse. Rml::TextInputContext
+			// documents SetText as not respecting it (TextInputContext.h:44-49) while
+			// CommitComposition does (WidgetTextInput.cpp:134-150) -- but a commit needs a live
+			// composition range, which a virtual keyboard never establishes. Truncating ourselves
+			// would silently discard characters the player watched themselves type into the OS's
+			// own edit field, with no way to show them why. A document that needs the limit should
+			// enforce it in its change handler, where it can say so.
 			break;
 		}
 
@@ -954,24 +1030,42 @@ void FVaCuusImeHandler::UpdateSurface(const FVaCuusImeSurface& InSurface)
 	}
 
 	// LOGGED ONCE, AND LOUDLY, because it is the whole reason Task 9's tested behaviour is
-	// the degradation (controller decision D16): FLinuxApplication never overrides
-	// GenericApplication::GetTextInputMethodSystem(), so it returns null, and Epic's own CEF
-	// IME handler is compiled out on Linux for the same reason (CEFImeHandler.h:7). Without a
-	// line here the platform difference is invisible and "IME does nothing" looks like a bug.
+	// the degradation (controller decision D16). Without a line here the platform difference is
+	// invisible and "IME does nothing" looks like a bug.
+	//
+	// IT NAMES THE RUNNING PLATFORM AND ITS OWN FALLBACK, not Linux (bead VaCuus-8ga). The
+	// earlier wording hard-coded "FLinuxApplication does not" and asserted the OnKeyChar
+	// degradation unconditionally -- both written on, and true of, the dev box. On Android or
+	// iPhone the same null means something else entirely: there is no OnKeyChar fallback either,
+	// because with no hardware keyboard nothing produces a character, and what actually types is
+	// the virtual keyboard (FVaCuusVirtualKeyboardEntry, in VaCuusRender). A warning that told a
+	// mobile developer to expect OnKeyChar would send them looking in the wrong module.
 	static bool bLoggedPlatformSupport = false;
 	if (!bLoggedPlatformSupport)
 	{
 		bLoggedPlatformSupport = true;
 		if (InSurface.TextInputMethodSystem == nullptr)
 		{
+			// The same predicate Slate's own editable text branches on
+			// (SlateEditableTextLayout.cpp:879), so the line describes the route text will
+			// actually take rather than the one this platform happens not to have.
+			const bool bVirtualKeyboard = FPlatformApplicationMisc::RequiresVirtualKeyboard();
 			UE_LOG(LogVaCuus, Warning,
-				TEXT("IME: this platform exposes no ITextInputMethodSystem (GetTextInputMethodSystem() returned null), ")
-				TEXT("so composition is unavailable and text entry degrades to OnKeyChar -> Rml::Context::ProcessTextInput. ")
-				TEXT("Only FWindowsApplication and FMacApplication implement it; FLinuxApplication does not."));
+				TEXT("IME: %hs exposes no ITextInputMethodSystem (GetTextInputMethodSystem() returned null), so ")
+				TEXT("composition is unavailable. Only FWindowsApplication (WindowsApplication.h:390) and ")
+				TEXT("FMacApplication (MacApplication.h:198) implement it; everything else inherits ")
+				TEXT("GenericApplication.h:550's null. Text entry here goes through %s."),
+				FPlatformProperties::IniPlatformName(),
+				bVirtualKeyboard
+					? TEXT("the platform's virtual keyboard (FPlatformApplicationMisc::RequiresVirtualKeyboard() is "
+						   "true), i.e. FVaCuusVirtualKeyboardEntry in VaCuusRender")
+					: TEXT("SVaCuusWidget::OnKeyChar -> Rml::Context::ProcessTextInput, which needs a hardware "
+						   "keyboard"));
 		}
 		else
 		{
-			UE_LOG(LogVaCuus, Log, TEXT("IME: platform ITextInputMethodSystem present; composition is available"));
+			UE_LOG(LogVaCuus, Log, TEXT("IME: %hs exposes an ITextInputMethodSystem; composition is available"),
+				FPlatformProperties::IniPlatformName());
 		}
 	}
 

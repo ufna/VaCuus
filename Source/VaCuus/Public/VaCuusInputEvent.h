@@ -134,7 +134,34 @@ enum class EVaCuusInputEventKind : uint8
 	 * `SetText` explicitly does not (TextInputContext.h:48) -- and the commit is exactly
 	 * the moment maxlength has to hold.
 	 */
-	ImeCommitComposition
+	ImeCommitComposition,
+
+	/**
+	 * Text + FieldGeneration: the whole field becomes this string, caret after it.
+	 *
+	 * THE MOBILE HALF OF TEXT ENTRY, and it is a different shape from every Ime* kind above
+	 * because the interface behind it is a different shape. `ITextInputMethodContext` is a
+	 * SPAN editor -- it names ranges and expects us to splice. `IVirtualKeyboardEntry` is a
+	 * WHOLE-VALUE push: the platform hands over the complete contents of its own edit buffer
+	 * and nothing else (`SetTextFromVirtualKeyboard(const FText&, ETextEntryType)`,
+	 * IVirtualKeyboardEntry.h:64). Android literally reads the field's value once when the
+	 * dialog opens and hands back the finished string
+	 * (AndroidPlatformTextField.cpp:102 out, AndroidJNI.cpp:1234-1245 back).
+	 *
+	 * SO IT CARRIES NO RANGE AT ALL, deliberately, and that is what keeps it out of the
+	 * index-space trap the Ime* kinds live in. RangeBegin/RangeEnd above are RmlUi CHARACTER
+	 * offsets converted by the producer against a shadow value that is one UI frame old --
+	 * correct there, because the OS derived those indices from that same shadow. A whole-value
+	 * push has no such anchor: the OS's string is authoritative and the live element's value
+	 * is whatever it is now, so the only range that can be right is "all of it", and the only
+	 * side that can measure "all of it" is the UI thread. It does, with RmlUi's own
+	 * LengthUTF8; nothing about an index space crosses the queue.
+	 *
+	 * STILL STAMPED. A whole-value push into the WRONG field is the worst mutation in this
+	 * enum -- it would not corrupt an offset, it would overwrite a different field's contents
+	 * entirely -- so the generation guard matters more here, not less.
+	 */
+	VirtualKeyboardValue
 };
 
 /**
@@ -421,6 +448,21 @@ struct FVaCuusInputEvent
 		Event.FieldGeneration = InFieldGeneration;
 		Event.RangeBegin = InRangeBegin;
 		Event.RangeEnd = InRangeEnd;
+		Event.Text = MoveTemp(InText);
+		return Event;
+	}
+
+	/**
+	 * The whole-value push from a mobile virtual keyboard. NO RANGE ARGUMENT -- see the kind.
+	 *
+	 * The absent range is the enforcement: a caller cannot accidentally hand this an offset in
+	 * the wrong index space, because there is nowhere to put one.
+	 */
+	static FVaCuusInputEvent VirtualKeyboardValue(uint64 InFieldGeneration, FString InText)
+	{
+		FVaCuusInputEvent Event;
+		Event.Kind = EVaCuusInputEventKind::VirtualKeyboardValue;
+		Event.FieldGeneration = InFieldGeneration;
 		Event.Text = MoveTemp(InText);
 		return Event;
 	}

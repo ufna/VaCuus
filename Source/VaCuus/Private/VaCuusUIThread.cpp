@@ -349,6 +349,7 @@ void DispatchInputEvent(Rml::Context& Context, const FVaCuusInputEvent& Event)
 		case EVaCuusInputEventKind::ImeSetSelectionRange:
 		case EVaCuusInputEventKind::ImeSetCompositionRange:
 		case EVaCuusInputEventKind::ImeCommitComposition:
+		case EVaCuusInputEventKind::VirtualKeyboardValue:
 			// The only game -> UI half of the IME contract (controller decision D15). Handled
 			// in VaCuusTextInput because every one of these needs the active
 			// Rml::TextInputContext, the field-generation guard and the character-offset index
@@ -356,7 +357,10 @@ void DispatchInputEvent(Rml::Context& Context, const FVaCuusInputEvent& Event)
 			//
 			// ON THIS QUEUE rather than a separate one so that ordering against the KeyDown and
 			// TextInput events the same composition produced is preserved; see the comment on
-			// the Ime* kinds in VaCuusInputEvent.h.
+			// the Ime* kinds in VaCuusInputEvent.h. VirtualKeyboardValue rides the same queue
+			// for the same reason: a phone with a hardware keyboard attached produces BOTH a
+			// keyboard push and ordinary TextInput events, and two queues would let the push
+			// overtake the keystrokes it is supposed to follow.
 			VaCuusTextInput::ApplyMutation(Context, Event.ViewId, Event);
 			break;
 

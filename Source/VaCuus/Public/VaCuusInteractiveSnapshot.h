@@ -224,6 +224,38 @@ struct FVaCuusTextFieldState
 	/** RmlUi: the element carries `readonly`, or is disabled. */
 	bool bReadOnly = false;
 
+	//~ WHAT KIND OF KEYBOARD THE FIELD WANTS. Three facts, published for one consumer:
+	//~ `IVirtualKeyboardEntry`, whose GetVirtualKeyboardType/GetHintText/IsMultilineEntry
+	//~ (IVirtualKeyboardEntry.h:84-103) are pulled synchronously on the GAME thread by
+	//~ FSlateApplication::ShowVirtualKeyboard -> FAndroidPlatformTextField::ShowVirtualKeyboard,
+	//~ which reads all three before it crosses into Java (AndroidPlatformTextField.cpp:41-102).
+	//~ They are properties of the FOCUSED ELEMENT, which lives on the UI thread, so they ride
+	//~ the same publish as the value rather than being asked for on demand.
+	//~
+	//~ ONLY WHAT RmlUi ACTUALLY EXPOSES. EKeyboardType has six members (Number, Web, Email,
+	//~ AlphaNumeric...) and RmlUi's <input> dispatch names exactly seven types, of which only
+	//~ `password` is a TEXT type distinct from plain text (ElementFormControlInput.cpp:105-119
+	//~ -- the other six instance a non-text widget with no caret at all). So there is one bit
+	//~ here and not an enum: inventing an Email or Number mapping would mean inventing the
+	//~ RmlUi attribute that selects it.
+
+	/** `<input type="password">`, i.e. InputTypeText::OBSCURED -- the one non-default keyboard. */
+	bool bPassword = false;
+
+	/** `<textarea>`. IVirtualKeyboardEntry::IsMultilineEntry; Android adds TYPE_TEXT_FLAG_MULTI_LINE. */
+	bool bMultiline = false;
+
+	/**
+	 * The element's `placeholder` attribute, which RmlUi treats as the source of truth for
+	 * the shown placeholder (WidgetTextInput.h:32-35, cpp:283-286).
+	 *
+	 * IVirtualKeyboardEntry::GetHintText, which Android uses as the LABEL of its input dialog
+	 * (AndroidPlatformTextField.cpp:102) -- so on the default Android route this is the only
+	 * text telling the player what they are typing into, the document behind the dialog being
+	 * hidden by it.
+	 */
+	FString HintText;
+
 	void Reset()
 	{
 		Generation = 0;
@@ -237,6 +269,9 @@ struct FVaCuusTextFieldState
 		bCaretValid = false;
 		BoundingBox = FIntRect(0, 0, 0, 0);
 		bReadOnly = false;
+		bPassword = false;
+		bMultiline = false;
+		HintText.Reset();
 	}
 };
 

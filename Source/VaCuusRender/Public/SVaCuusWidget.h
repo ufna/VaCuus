@@ -10,6 +10,8 @@
 
 class FNavigationConfig;
 class FVaCuusSlateElement;
+class FVaCuusVirtualKeyboardEntry;
+class IVirtualKeyboardEntry;
 class SVaCuusWidget;
 class UVaCuusView;
 struct FVaCuusInputEvent;
@@ -354,6 +356,32 @@ public:
 	 */
 	bool HasSelfRequestedUserFocus_Debug() const { return bSelfRequestedUserFocus; }
 
+	/**
+	 * The `IVirtualKeyboardEntry` this widget currently has SHOWN, or null when no on-screen
+	 * keyboard is up for this view.
+	 *
+	 * THE OBSERVABLE FOR VaCuus.Input.VirtualKeyboard, and it has to be ours because the engine
+	 * offers none: `FSlateApplication::ShowVirtualKeyboard` is a one-way call into a platform
+	 * text field (SlateApplication.cpp:4283-4298) with no query counterpart anywhere, and on a
+	 * desktop the platform side is `FGenericPlatformTextField`, whose ShowVirtualKeyboard has an
+	 * empty body (GenericPlatformTextField.h:12). So "did the OS raise a keyboard" is not
+	 * answerable off a device, and this answers the question that IS ours: whether the widget
+	 * registered an entry and handed it over. An invariant with no observable cannot be tested.
+	 *
+	 * NON-NULL IS EXACTLY "SHOWN", not "built": the entry object outlives an individual show, and
+	 * a stale handle would make the dismiss assertion vacuous.
+	 */
+	TSharedPtr<IVirtualKeyboardEntry> GetShownVirtualKeyboardEntry_Debug() const;
+
+	/**
+	 * FVaCuusTextFieldState::Generation of the field the shown keyboard belongs to; 0 when none.
+	 *
+	 * Separate from the pointer above because the entry object is REUSED across fields -- the
+	 * reconciler re-shows on a generation edge, never on a new object -- so identity is the only
+	 * way a test can tell "the keyboard moved to another field" from "it never moved".
+	 */
+	uint64 GetShownVirtualKeyboardFieldGeneration_Debug() const { return ShownVirtualKeyboardFieldGeneration; }
+
 private:
 	/** Which way the left stick is currently pushed, once the dead zone has been applied. */
 	enum class EAnalogNavDirection : uint8
@@ -415,6 +443,39 @@ private:
 	 * Tick wants.
 	 */
 	void PushImeSurface(TOptional<bool> bFocusOverride = TOptional<bool>());
+
+	/**
+	 * Reconciles the platform's on-screen keyboard with the focused RmlUi text field, once per
+	 * game frame (bead VaCuus-ujm). The mobile counterpart of PushImeSurface; a complete no-op
+	 * on every platform whose input method is not a virtual keyboard.
+	 *
+	 * WHY A PER-FRAME RECONCILE AND NOT A HOOK ON THE PRESS, given that the D14a click site
+	 * right next to it exists precisely so the IME does not wait a frame. Because the two
+	 * interfaces need different things at different times. TSF is a PULL API: activating it
+	 * early costs nothing, since it reads the field only when it wants to. A virtual keyboard is
+	 * a PUSH: FSlateApplication::ShowVirtualKeyboard reads GetText(), GetHintText(),
+	 * GetVirtualKeyboardType() and IsMultilineEntry() synchronously and ships them to the OS
+	 * before returning (AndroidPlatformTextField.cpp:41-102). At press time RmlUi has not yet
+	 * processed the press, so none of those four answers exists -- showing then would open the
+	 * keyboard on an empty, unlabelled, always-default-type field. One frame later they are all
+	 * published, and the press path is shared with touch (AnswerPointerDown), so a finger tap
+	 * and a mouse click arrive here by exactly the same route.
+	 *
+	 * EDGE-TRIGGERED ON THE FIELD'S IDENTITY, never re-shown for the same field, and that is a
+	 * hard requirement rather than tidiness: Android treats a show for the SAME entry as a
+	 * request to hide (the UE-49139 workaround, AndroidJNI.cpp:1205-1210), so a per-frame show
+	 * would toggle the keyboard on and off at frame rate.
+	 */
+	void TickVirtualKeyboard();
+
+	/**
+	 * Dismisses the on-screen keyboard if this widget has one up. Idempotent.
+	 *
+	 * Called from the reconcile (the field lost focus), from OnFocusLost (keys stopped reaching
+	 * us at all) and from DetachView (D18's teardown, where the platform must let go of the
+	 * entry before the view does).
+	 */
+	void DismissVirtualKeyboard(const TCHAR* Reason);
 
 	/**
 	 * The view's newest published snapshot, or a permanently empty one when there is
@@ -628,6 +689,22 @@ private:
 	 */
 	TSharedPtr<FNavigationConfig> SavedNavigationConfig;
 	TSharedPtr<FNavigationConfig> InstalledNavigationConfig;
+
+	//~ Mobile text entry (bead VaCuus-ujm). See TickVirtualKeyboard.
+
+	/**
+	 * This widget's `IVirtualKeyboardEntry`, built on first use and REUSED for every field.
+	 *
+	 * One object rather than one per field, because the platform keeps a TWeakPtr to whatever
+	 * it was handed (AndroidJNI.cpp:1213-1220) and a per-field object would leave a trail of
+	 * them alive inside the OS for as long as it took the keyboard to close. The field identity
+	 * lives in the shadow state the entry carries, not in the object's address --
+	 * ShownVirtualKeyboardFieldGeneration below is what makes an identity change observable.
+	 */
+	TSharedPtr<FVaCuusVirtualKeyboardEntry> VirtualKeyboardEntry;
+
+	/** Field the shown keyboard belongs to; 0 means "no keyboard is up for this view". */
+	uint64 ShownVirtualKeyboardFieldGeneration = 0;
 
 	//~ Left-stick navigation state (D13). Latched from OnAnalogValueChanged, consumed by
 	//~ Tick -- see TickAnalogNavigation for why the clock and not the event drives it.

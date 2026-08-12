@@ -157,6 +157,17 @@ public class VaCuusRender : ModuleRules
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[] {
+			// FPlatformApplicationMisc::RequiresVirtualKeyboard, the runtime signal
+			// SVaCuusWidget::TickVirtualKeyboard arbitrates the IME and the on-screen
+			// keyboard with (the same one SlateEditableTextLayout.cpp:879 uses). Engine
+			// re-exports ApplicationCore only when bCompileAgainstApplicationCore is set,
+			// and its include path arrives here via VaCuus in any case -- but the LINK
+			// dependency does not, which this module found out as
+			// `undefined symbol: FGenericPlatformApplicationMisc::RequiresVirtualKeyboard()`.
+			// Same rule VaCuus.Build.cs states for InputCore: the dependency is ours, so it
+			// is declared rather than inherited.
+			"ApplicationCore",
+
 			// PRIVATE, not public: no header under Public/ includes RmlUi, and none has
 			// since M1's wrap-up moved VaCuusRecordingRenderInterface.h -- the one that
 			// derives from Rml::RenderInterface -- into Private/. The record/replay pair
