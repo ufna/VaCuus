@@ -34,9 +34,12 @@ jobs:
     steps:
       # Full history: `lastUpdated` reads each page's last commit, and a depth-1 checkout
       # has no commit to read for a file the head commit did not touch.
+      # lfs: the repo routes *.png through git-lfs (.gitattributes:10); without it the
+      # checkout leaves 132-byte pointer files and the site ships those as images.
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          lfs: true
 
       - uses: actions/setup-node@v4
         with:
