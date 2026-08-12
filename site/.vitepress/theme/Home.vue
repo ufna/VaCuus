@@ -763,6 +763,11 @@ onUnmounted(() => {
           MIT-licensed <strong>RmlUi 6.x</strong> and <strong>QuickJS-ng</strong> are vendored
           in-tree, each with its license beside it.
         </p>
+        <p>
+          Source under <strong>BUSL&nbsp;1.1</strong>: free outside production and for
+          noncommercial releases; commercial production use is a purchased license (Fab or
+          direct). Each version converts to MIT four years after release.
+        </p>
       </div>
     </footer>
   </div>

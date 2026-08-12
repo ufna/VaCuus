@@ -109,7 +109,13 @@ Both are vendored in-tree with their licenses beside them, and both are MIT:
 - **QuickJS-ng** — `Source/ThirdParty/quickjs-ng/LICENSE`. The JavaScript runtime, with its
   symbols deliberately kept out of the module's export table.
 
-Terms for the plugin itself are the ones on its store listing.
+The plugin's own source is licensed under the **Business Source License 1.1**
+([`LICENSE.md`](LICENSE.md)): free to read, modify and use outside production, free in
+production for noncommercial purposes, and each version converts to MIT four years after
+release. **Commercial production use needs a purchased license** — on Fab (under the Fab
+EULA) or directly from the author; [`COMMERCIAL.md`](COMMERCIAL.md) is the plain-language
+version. A copy bought on a store is governed by that store's terms. Contributions
+require the CLA ([`CLA.md`](CLA.md)).
 
 ## Support
 

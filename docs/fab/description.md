@@ -124,8 +124,13 @@ MIT licenses beside them: RmlUi 6.x and QuickJS-ng. Full source included.
    the buyer's plugin browser. The copy above states pre-release plainly rather than
    hiding it — recommended to keep both flags as they are; they match what the manual
    matrix can still not show (bead VaCuus-cob).
-3. **Price and license text.** Deliberately not drafted here — owner's call; the docs
-   and this copy stay silent on both.
+3. **License — decided 2026-08-12: BUSL 1.1.** Public source under Business Source
+   License 1.1 (`LICENSE.md`): non-production use free for everyone, noncommercial
+   production free (Additional Use Grant), commercial production = purchased license,
+   each version → MIT after four years. Fab channel is covered by the Fab EULA;
+   direct sales use `COMMERCIAL.md`. Contributions gated by `CLA.md`. **Price** remains
+   the owner's open call. Listing copy may say: "Full source available — free for
+   noncommercial use; commercial use via this listing or a direct license."
 4. **The MarketplaceURL loop.** After the listing exists: set the Fab product URL in
    `VaCuus.uplugin` → `MarketplaceURL`, re-run `Tools/fab_package.sh` so the shipped
    descriptor carries it (the script WARNs on the empty field today, deliberately).
