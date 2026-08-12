@@ -140,11 +140,16 @@ onUnmounted(() => {
 
     <!-- =================================================== platforms == -->
     <div class="vc-wrap" style="padding-top: clamp(18px, 2.5vw, 28px)">
-      <div class="vc-plat vc-rise" aria-label="Platforms">
+      <div class="vc-plat vc-rise" aria-label="Engines and platforms">
         <div class="vc-plat-head">
           <span>Cross-platform &mdash; one source tree, one document format</span>
           <span>UE 5.6 &ndash; 5.8</span>
         </div>
+        <ul class="vc-plat-grid vc-plat-engines">
+          <li><b>Unreal Engine</b><small>primary</small></li>
+          <li class="vc-plat-dev"><b>Unity</b><small>in development</small></li>
+          <li class="vc-plat-dev"><b>Godot</b><small>in development</small></li>
+        </ul>
         <ul class="vc-plat-grid">
           <li><b>Windows</b><small>supported</small></li>
           <li><b>macOS</b><small>supported</small></li>

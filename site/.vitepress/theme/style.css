@@ -1374,6 +1374,13 @@ a.vc-cite:hover {
   text-transform: uppercase;
   color: var(--vc-cool);
 }
+/* Engine row above the OS row: three tiles, divided from the OS grid below.
+   The 540px media block later in this file wins the tie on purpose — the row
+   collapses to two columns together with the OS grid. */
+.vc-plat-engines {
+  grid-template-columns: repeat(3, 1fr);
+  border-bottom: 1px solid var(--vc-line-soft);
+}
 .vc-plat-dev small {
   color: var(--vc-accent);
 }
