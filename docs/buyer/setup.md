@@ -86,12 +86,14 @@ entitlement), with the device log confirming the UI thread is off the game threa
 the phone too. Building, signing and packaging for either platform is standard Unreal —
 nothing plugin-specific to set up.
 
-Two mobile gaps are known and recorded rather than hidden, on both platforms: **text
-entry** — mobile text input needs `IVirtualKeyboardEntry`, which is not implemented
-yet, so a text field does not summon the on-screen keyboard; and **touch-drag
-scrolling** — the only scroll path today is the mouse wheel, so a finger drag over a
-scrollable list does nothing. A HUD or panel that needs neither works today; taps,
-including on world panels, work.
+Mobile input is wired end to end, verified by hand on the iPhone: a tap clicks (once —
+Slate's touch-to-mouse fallback is answered, not duplicated), a finger drag scrolls
+with RmlUi's own inertia and cancels the click as a scroll should, and focusing a text
+field summons the platform's on-screen keyboard, with typed text landing in the
+document and a tap outside dismissing it. World panels take taps too. The finer edges
+still recorded in the tracker rather than hidden: the click-vs-scroll threshold is not
+yet DPI-scaled on very dense screens, multi-finger gestures share one capture, and an
+iPad with a hardware keyboard types without IME composition.
 
 Unreal's own refusal for an unsupported platform is quiet, so here is what you will
 actually see:

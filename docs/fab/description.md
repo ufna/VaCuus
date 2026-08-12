@@ -62,9 +62,9 @@ Blueprint-only projects work out of the box.
 
 **Status — pre-release (beta).** UE 5.6, 5.7 and 5.8, built and tested from one source
 tree, verified on Linux. Android and iOS are supported — both build, cook and render
-on hardware (iOS verified on an iPhone 11 Pro); two recorded mobile gaps on both: no
-on-screen-keyboard text entry yet, no touch-drag scrolling yet. The API is not yet
-stable — expect renames
+on hardware, and mobile input is wired: touch-drag scrolling with native inertia, and
+the platform on-screen keyboard for text fields (verified by hand on an iPhone 11
+Pro). The API is not yet stable — expect renames
 between pre-release versions. The docs state every known limitation by name: read
 them before you buy at https://vacuus.ufna.dev
 
