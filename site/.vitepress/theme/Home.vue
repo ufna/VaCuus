@@ -138,6 +138,24 @@ onUnmounted(() => {
       </div>
     </section>
 
+    <!-- =================================================== platforms == -->
+    <div class="vc-wrap" style="padding-top: clamp(18px, 2.5vw, 28px)">
+      <div class="vc-plat vc-rise" aria-label="Platforms">
+        <div class="vc-plat-head">
+          <span>Cross-platform &mdash; one source tree, one document format</span>
+          <span>UE 5.6 &ndash; 5.8</span>
+        </div>
+        <ul class="vc-plat-grid">
+          <li><b>Windows</b><small>supported</small></li>
+          <li><b>macOS</b><small>supported</small></li>
+          <li><b>Linux</b><small>supported</small></li>
+          <li><b>Android</b><small>supported</small></li>
+          <li class="vc-plat-dev"><b>iOS</b><small>in development</small></li>
+          <li class="vc-plat-req"><b>Consoles</b><small>on request</small></li>
+        </ul>
+      </div>
+    </div>
+
     <!-- ====================================================== status == -->
     <div class="vc-wrap" style="padding-bottom: clamp(20px, 3vw, 34px)">
       <aside class="vc-status vc-rise">

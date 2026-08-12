@@ -86,6 +86,8 @@ https://github.com/ufna/VaCuus/issues
   support matrix, log-first diagnostics, headless render recipe
 - 227-test automation suite ships in the package (source and fixtures, on purpose)
 - Localization support incl. live language switch; IME on desktop platforms
+- Cross-platform from one source tree: Windows, macOS, Linux, Android supported;
+  iOS in development; consoles on request
 
 **Code modules:**
 - `VaCuusRml` (Runtime) — vendored RmlUi 6.x built as a module
