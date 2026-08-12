@@ -84,10 +84,10 @@
 
       .shot {
         position: absolute;
-        left: 1130px;
+        left: 1100px;
         right: -1px;
-        top: 110px;
-        height: 860px;
+        top: 101px;
+        height: 877px;
         background: var(--vc-bezel);
         border: 1px solid var(--vc-line);
         border-right: 0;
@@ -99,17 +99,17 @@
         position: relative;
         display: block;
         width: 100%;
-        height: 792px;
+        height: 809px;
         overflow: hidden;
         border-radius: 2px 0 0 0;
-        /* 1.45x of the source, anchored so the frame holds source x 640..1177,
-           y 8..554 — the wave title, the ALPHA scoreboard entire (header plus all
-           24 rows) and the seam into BRAVO. The killfeed and minimap are dropped
-           on purpose: their type dissolves at store-tile scale, the scoreboard's
-           does not. 778 / 1.45 = 537 source px wide, 792 / 1.45 = 546 tall. */
-        background-image: url('/site/public/shots/refhud.png');
-        background-size: 2784px auto;
-        background-position: -928px -12px;
+        /* 0.85x of the vacuus.M5World capture, window ≈ source x 514..1466,
+           y 40..992 — the JS-demo panel cluster (killfeed, damage numbers, bound
+           bars) centred, with sky above and the tiled plane converging below so
+           the quad reads as IN the world. Chosen over the flat scoreboard crop
+           for the same reason as its WorldDemo predecessor: converging edges. */
+        background-image: url('/site/public/shots/world.png');
+        background-size: 1632px auto;
+        background-position: -437px -34px;
         background-repeat: no-repeat;
       }
       /* Left edge of the plate fades into the ground so the crop reads as a
@@ -181,7 +181,7 @@
             Game UI in HTML/CSS &mdash;<br /><em>off the game thread</em>
           </p>
           <div class="badges">
-            <span class="badge"><b>UE 5.6 &middot; 5.8</b></span>
+            <span class="badge"><b>UE 5.6 &ndash; 5.8</b></span>
             <span class="badge"><b>227</b> tests ship in the box</span>
           </div>
         </div>
@@ -191,8 +191,8 @@
         <span class="frame"></span>
         <span class="ticks"><i></i><i></i><i></i><i></i></span>
         <figcaption class="bar">
-          <span class="tag">vacuus.RefHud</span>
-          <span>1,732-node reference HUD, headless 1080p</span>
+          <span class="tag">vacuus.M5World</span>
+          <span>JS + data binding live on a world quad, headless</span>
         </figcaption>
       </figure>
     </div>
