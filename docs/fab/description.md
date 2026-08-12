@@ -63,7 +63,8 @@ Blueprint-only projects work out of the box.
 **Status — pre-release (beta).** UE 5.6, 5.7 and 5.8, built and tested from one source
 tree, verified on Linux. Android is supported (compiles, cooks, boots and
 renders; two recorded gaps: no on-screen-keyboard text entry yet, no touch-drag
-scrolling yet). iOS is in development. The API is not yet stable — expect renames
+scrolling yet). iOS is in development — it builds, cooks, and has rendered its
+reference HUD on an iPhone. The API is not yet stable — expect renames
 between pre-release versions. The docs state every known limitation by name: read
 them before you buy at https://vacuus.ufna.dev
 
