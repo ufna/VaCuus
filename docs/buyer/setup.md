@@ -68,12 +68,20 @@ neither of which the engine tells you about:
 
 ### Platforms — and what refusal looks like
 
-`VaCuus.uplugin` declares `"SupportedTargetPlatforms": ["Win64", "Mac", "Linux"]`.
-That list is the honest one: those are the platforms the plugin is built, tested and
-shipped on. **Android and iOS are not supported and have never been built** — not just
-unbuilt, either: text entry, touch scrolling and app-lifecycle handling are
-unimplemented there. Ask if you need them; it is scoped work, not a refusal on
-principle.
+`VaCuus.uplugin` declares `"SupportedTargetPlatforms": ["Win64", "Mac", "Linux",
+"Android"]`.
+
+**Android is supported**: the arm64 Vulkan (ES3_1) pipeline compiles, cooks, packages,
+boots and renders (first proven 2026-08-11; the NDK r27c header fix it took is recorded
+as vendored patch #6 in `Source/ThirdParty/RmlUi/VENDORED_TAG.txt`). Two mobile-specific
+gaps are known and recorded rather than hidden: **text entry** — mobile text input needs
+`IVirtualKeyboardEntry`, which is not implemented yet, so a text field does not summon
+the on-screen keyboard; and **touch-drag scrolling** — the only scroll path today is the
+mouse wheel, so a finger drag over a scrollable list does nothing. A HUD or panel that
+needs neither works today; taps, including on world panels, work.
+
+**iOS is in development.** It is not in the descriptor yet and has not been built; ask
+if you need it — it is scoped work in progress, not a refusal on principle.
 
 Unreal's own refusal for an unsupported platform is quiet, so here is what you will
 actually see:
@@ -82,7 +90,7 @@ actually see:
   `Ignoring plugin 'VaCuus' … due to unsupported target platform` at `-VeryVerbose`
   only — a normal build prints nothing, exits 0, and produces a binary with no VaCuus
   modules. The `.uplugin` is not staged, `/VaCuus/` content is not cooked, and your UI
-  is simply absent at runtime with no error. **If a mobile build comes back with no UI
+  is simply absent at runtime with no error. **If an iOS build comes back with no UI
   and no message, this is why.**
 - **Step 2 above protects you from that.** Listing the plugin in your `.uproject`
   turns the silence into a hard build failure that names the plugin:
