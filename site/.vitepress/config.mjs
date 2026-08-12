@@ -15,6 +15,33 @@ export default defineConfig({
   cleanUrls: true,
   lastUpdated: true,
 
+  // Favicon (rendered from the wordmark in Archivo; sources regenerable per docs/fab/src
+  // pattern) and the social preview card. og:image must be an ABSOLUTE url — scrapers do
+  // not resolve relative paths; og.jpg is the Fab thumbnail at 1200×630.
+  head: [
+    ['link', { rel: 'icon', type: 'image/png', sizes: '32x32', href: '/favicon-32.png' }],
+    ['link', { rel: 'icon', type: 'image/png', sizes: '512x512', href: '/favicon-512.png' }],
+    ['link', { rel: 'apple-touch-icon', href: '/apple-touch-icon.png' }],
+    ['meta', { property: 'og:type', content: 'website' }],
+    ['meta', { property: 'og:site_name', content: 'VaCuus' }],
+    ['meta', { property: 'og:title', content: 'VaCuus — Game UI in HTML/CSS, off the game thread' }],
+    [
+      'meta',
+      {
+        property: 'og:description',
+        content:
+          "Build your game's interface in HTML and CSS, rendered entirely off the game " +
+          'thread. Plain-text screens, live reload, UPROPERTY data binding — built for AI agents.'
+      }
+    ],
+    ['meta', { property: 'og:url', content: 'https://vacuus.ufna.dev/' }],
+    ['meta', { property: 'og:image', content: 'https://vacuus.ufna.dev/og.jpg' }],
+    ['meta', { property: 'og:image:width', content: '1200' }],
+    ['meta', { property: 'og:image:height', content: '630' }],
+    ['meta', { name: 'twitter:card', content: 'summary_large_image' }],
+    ['meta', { name: 'twitter:image', content: 'https://vacuus.ufna.dev/og.jpg' }]
+  ],
+
   markdown: {
     // VitePress marks fenced blocks `v-pre` but not INLINE code, so Vue's template
     // compiler interpolates `{{ ... }}` inside a `<code>` span. localization.md documents
