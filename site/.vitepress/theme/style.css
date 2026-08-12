@@ -1004,6 +1004,234 @@ a.vc-cite:hover {
   }
 }
 
+/* -------------------------------------- landing: why not a browser (06) -- */
+/* The second loud block on the page. Pillar 03 owns the amber wash, so this one is
+   built on the cool token instead — same instrument-panel grammar, unmistakably a
+   different reading. Nothing here restyles an existing section: every selector is
+   under .vc-why or .vc-vs. */
+
+.vc-why {
+  position: relative;
+  border-top: 1px solid var(--vc-cool);
+  border-bottom: 1px solid var(--vc-cool);
+  background: linear-gradient(180deg, var(--vc-cool-wash) 0%, transparent 58%),
+    var(--vc-panel-2);
+  overflow: hidden;
+}
+.vc-why::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image: linear-gradient(to right, var(--vc-grid) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--vc-grid) 1px, transparent 1px);
+  background-size: 34px 34px;
+  -webkit-mask-image: linear-gradient(180deg, #000, transparent 60%);
+  mask-image: linear-gradient(180deg, #000, transparent 60%);
+  pointer-events: none;
+}
+.vc-why > .vc-wrap {
+  position: relative;
+}
+.vc-why .vc-sec-head h2 {
+  font-size: clamp(26px, 4.2vw, 46px);
+  font-weight: 800;
+  font-stretch: 116%;
+}
+.vc-why .vc-sec-head .vc-idx {
+  font-size: 13px;
+  color: var(--vc-cool);
+}
+.vc-why-lede {
+  max-width: 68ch;
+  margin: 0 0 clamp(24px, 3.4vw, 36px);
+  font-size: clamp(15.5px, 1.45vw, 18px);
+}
+
+/* The two cost columns. Same readout primitive as pillar 01, one per side, with the
+   row labels kept parallel so the eye can compare across the gap. */
+.vc-vs {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: clamp(16px, 2.2vw, 26px);
+  align-items: start;
+}
+@media (max-width: 900px) {
+  .vc-vs {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.vc-vs-col {
+  position: relative;
+  padding: clamp(18px, 2.4vw, 26px) clamp(16px, 2.2vw, 24px);
+  border: 1px solid var(--vc-line);
+  border-radius: 3px;
+  background: var(--vc-panel);
+}
+.vc-vs-col h3 {
+  margin: 0 0 4px;
+  font-family: var(--vc-font-mono);
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--vc-ink-2);
+}
+.vc-vs-us {
+  border-color: var(--vc-cool);
+  box-shadow: var(--vc-shadow);
+}
+.vc-vs-us h3 {
+  color: var(--vc-cool);
+}
+/* Only the plugin's own column gets the accent numerals — the browser column is
+   deliberately grey, because it is quoting someone else's product, not selling it. */
+.vc-vs-them .vc-readout td b {
+  color: var(--vc-ink);
+}
+.vc-vs-us .vc-readout td b {
+  color: var(--vc-accent);
+}
+/* The stock caption is uppercase with wide tracking, which is unreadable at the length
+   of an attribution line; here it is a sentence. */
+.vc-vs .vc-readout caption {
+  text-transform: none;
+  letter-spacing: 0.01em;
+  line-height: 1.5;
+  padding-bottom: 14px;
+}
+/* These values are phrases, not figures — they must be allowed to wrap at any width. */
+.vc-vs .vc-readout td {
+  white-space: normal;
+}
+/* The two tables are read ACROSS the gap, so their rows have to line up: a height of two
+   mono lines, which `height` on a table cell applies as a minimum, makes every row the
+   same pitch on both sides regardless of whether its value took one line or two. */
+.vc-vs .vc-readout th,
+.vc-vs .vc-readout td {
+  line-height: 1.55;
+  /* two mono lines plus the cell's own 9px/9px padding — browsers treat a cell height as
+     a minimum that includes the padding, so a one-line row gets the same pitch as a
+     two-line one and the rows stay level across the gap. */
+  height: calc(3.1em + 18px);
+}
+.vc-vs .vc-readout td code,
+.vc-vs .vc-readout caption code {
+  font-family: var(--vc-font-mono);
+  font-size: 0.95em;
+  color: var(--vc-ink-2);
+  overflow-wrap: anywhere;
+}
+.vc-vs-foot {
+  margin: 14px 0 0;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--vc-ink-3);
+}
+.vc-vs-foot code {
+  font-family: var(--vc-font-mono);
+  font-size: 0.92em;
+  color: var(--vc-ink-2);
+  overflow-wrap: anywhere;
+}
+.vc-vs-foot a {
+  color: var(--vc-ink-2);
+  text-decoration: none;
+  border-bottom: 1px solid var(--vc-line-strong);
+}
+.vc-vs-foot a:hover {
+  color: var(--vc-accent);
+  border-bottom-color: var(--vc-accent);
+}
+
+.vc-why-two {
+  margin-top: clamp(30px, 4vw, 46px);
+}
+.vc-why-h {
+  margin: 0 0 12px;
+  font-size: clamp(17px, 1.8vw, 21px);
+  font-weight: 700;
+  font-stretch: 108%;
+  letter-spacing: -0.008em;
+  color: var(--vc-ink);
+}
+
+/* The AI argument sits in its own panel: the owner wants it read, not skimmed past. */
+.vc-why-ai {
+  padding: clamp(20px, 2.6vw, 28px);
+  border: 1px solid var(--vc-cool);
+  border-left-width: 3px;
+  border-radius: 3px;
+  background: var(--vc-cool-wash);
+}
+.vc-why-ai .vc-why-h {
+  color: var(--vc-cool);
+}
+.vc-why-ai p {
+  margin: 0;
+  font-size: 14.5px;
+  line-height: 1.65;
+  color: var(--vc-ink-2);
+}
+.vc-why-ai p + p {
+  margin-top: 0.9em;
+}
+.vc-why-ai strong {
+  color: var(--vc-ink);
+  font-weight: 650;
+}
+.vc-why-ai em {
+  font-style: normal;
+  color: var(--vc-ink);
+  font-weight: 600;
+}
+.vc-why-ai code {
+  font-family: var(--vc-font-mono);
+  font-size: 0.88em;
+  color: var(--vc-ink);
+  background: var(--vc-code-bg);
+  padding: 1px 5px;
+  border-radius: 2px;
+  white-space: nowrap;
+}
+.vc-why-ai .vc-btn {
+  margin-top: 20px;
+}
+
+.vc-why-honest {
+  margin-top: clamp(26px, 3.4vw, 38px);
+  padding-top: 16px;
+  border-top: 1px solid var(--vc-line);
+  display: grid;
+  grid-template-columns: minmax(0, 210px) minmax(0, 1fr);
+  gap: 8px 28px;
+  align-items: baseline;
+}
+@media (max-width: 760px) {
+  .vc-why-honest {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.vc-why-honest strong {
+  font-family: var(--vc-font-mono);
+  font-size: 11.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--vc-accent);
+  font-weight: 600;
+}
+.vc-why-honest p {
+  margin: 0;
+  font-size: 14.5px;
+  line-height: 1.65;
+  color: var(--vc-ink-2);
+  max-width: 74ch;
+}
+.vc-why-honest em {
+  font-style: normal;
+  color: var(--vc-ink);
+  font-weight: 600;
+}
+
 /* ---------------------------------------------------- landing: numbers -- */
 
 .vc-numbers {

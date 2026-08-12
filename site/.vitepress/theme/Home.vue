@@ -505,6 +505,174 @@ onUnmounted(() => {
       </div>
     </section>
 
+    <!-- ============================================= why not a browser == -->
+    <!-- The competitive question, and the one section that names a competitor class.
+         Every browser-side figure comes from docs/research/2026-07-29-webui-middleware.md
+         (§3 candidate table and head-to-head, §4 "anti-pattern found in Epic's own code");
+         every VaCuus-side figure from docs/buyer/perf-guide.md's budget table. That
+         research is repo-internal, so its cite is text, not a link. -->
+    <section id="why-not-a-browser" class="vc-sec vc-why">
+      <div class="vc-wrap">
+        <header class="vc-sec-head vc-rise">
+          <span class="vc-idx">06</span>
+          <h2>Why not a browser?</h2>
+          <span class="vc-rule" />
+          <span class="vc-cite">middleware research &middot; 2026-07</span>
+        </header>
+
+        <p class="vc-lede vc-why-lede vc-rise">
+          Every other web-UI plugin for Unreal on Fab is a Chromium wrapper &mdash; CEF under
+          one name or another &mdash; so this is the comparison that decides the purchase.
+          Here is what a browser costs inside a game, beside what this costs, with both
+          columns measured.
+        </p>
+
+        <div class="vc-vs vc-rise">
+          <div class="vc-vs-col vc-vs-them">
+            <span class="vc-ticks" aria-hidden="true"><i /><i /><i /><i /></span>
+            <h3>A browser in your game</h3>
+            <table class="vc-readout">
+              <caption>
+                CEF 128/147 &mdash; measured in the plugin's middleware research, 2026-07
+              </caption>
+              <tbody>
+                <tr>
+                  <th scope="row">Added to the build</th>
+                  <td><b>330&ndash;390</b> MB<br />shipped payload</td>
+                </tr>
+                <tr>
+                  <th scope="row">Runtime RAM</th>
+                  <td><b>150&ndash;300+</b> MB</td>
+                </tr>
+                <tr>
+                  <th scope="row">Processes</th>
+                  <td><b>4&ndash;5</b><br />separate, plus their IPC</td>
+                </tr>
+                <tr>
+                  <th scope="row">Input path</th>
+                  <td><b>+1&ndash;2</b> frames<br />across the process boundary</td>
+                </tr>
+                <tr>
+                  <th scope="row">Game thread</th>
+                  <td>
+                    pumps the browser's<br />message loop
+                    <code>CefDoMessageLoopWork</code>
+                  </td>
+                </tr>
+                <tr>
+                  <th scope="row">Upkeep</th>
+                  <td>a <b>two-week</b><br />Chromium security cycle</td>
+                </tr>
+                <tr>
+                  <th scope="row">HTML/CSS core on disk</th>
+                  <td><b>256</b> MB<br />Chrome-class, stripped</td>
+                </tr>
+              </tbody>
+            </table>
+            <p class="vc-vs-foot">
+              And in UE specifically: the message-loop pump above was found in Epic's own
+              integration, and accelerated off-screen rendering on Linux/NVIDIA is broken.
+            </p>
+          </div>
+
+          <div class="vc-vs-col vc-vs-us">
+            <span class="vc-ticks" aria-hidden="true"><i /><i /><i /><i /></span>
+            <h3>VaCuus, measured</h3>
+            <table class="vc-readout">
+              <caption>
+                the shipped reference workload &mdash;
+                <code>vacuus.RefHud</code>, 1,732 live nodes
+              </caption>
+              <tbody>
+                <tr>
+                  <th scope="row">Added to the build</th>
+                  <td><b>+3.22</b> MiB<br />Linux Shipping proxy</td>
+                </tr>
+                <tr>
+                  <th scope="row">Runtime RAM</th>
+                  <td><b>+14.3</b> MB<br />A/B median</td>
+                </tr>
+                <tr>
+                  <th scope="row">Processes</th>
+                  <td><b>0</b> extra<br />in-process, one UI thread</td>
+                </tr>
+                <tr>
+                  <th scope="row">Input path</th>
+                  <td>answered in-process<br />from the frame's snapshot</td>
+                </tr>
+                <tr>
+                  <th scope="row">Game thread</th>
+                  <td><b>0.012</b> ms / frame<br />enqueue input, read snapshot</td>
+                </tr>
+                <tr>
+                  <th scope="row">Upkeep</th>
+                  <td>no Chromium<br />in your build</td>
+                </tr>
+                <tr>
+                  <th scope="row">HTML/CSS core on disk</th>
+                  <td><b>3.8</b> MB<br />the vendored RmlUi library</td>
+                </tr>
+              </tbody>
+            </table>
+            <p class="vc-vs-foot">
+              Disk, RAM and game-thread rows are the plugin's own
+              <a href="/docs/perf-guide">budget table</a>, re-runnable in your project:
+              <code>vacuus.RefHud</code> then <code>vacuus.M1HUD.PerfLog 1</code>. The
+              game-thread figure is the dev build; cooked Shipping measures 0.008&ndash;0.009
+              ms.
+            </p>
+          </div>
+        </div>
+
+        <div class="vc-two vc-why-two">
+          <div class="vc-rise">
+            <h3 class="vc-why-h">The part you need survives the cut</h3>
+            <p class="vc-lede">
+              Dropping the browser is not dropping motion. RCSS has
+              <strong>transitions and <code>@keyframes</code></strong>, decorators &mdash;
+              linear, repeating, radial and conic gradients, plus a built-in shader &mdash;
+              <strong>backdrop blur over the live 3D scene</strong>, and updates driven
+              straight from your <code>UPROPERTY</code> fields, all inside a deterministic
+              in-process core.
+            </p>
+            <p class="vc-lede">
+              The screenshots directly above this section are not mockups and not a
+              competitor's demo reel: they are this pipeline rendering itself, headless, at
+              1920&times;1080.
+            </p>
+          </div>
+
+          <div class="vc-why-ai vc-rise">
+            <h3 class="vc-why-h">A bounded surface is the AI feature</h3>
+            <p>
+              An agent can only build a UI it can hold in its head. The supported language
+              here is small, closed and <strong>generated</strong> &mdash; 99 properties, 20
+              shorthands, 16 decorators, parsed out of the exact RmlUi vendored in your
+              package &mdash; so the whole surface fits in an agent's context as ground
+              truth. A mistake surfaces as a log warning naming <code>file:line</code>, in
+              every configuration including Shipping, instead of a devtools session nobody is
+              sitting in front of; a screen verifies with one headless render.
+            </p>
+            <p>
+              That is why an agent can build flashy, animated UI <em>here</em>: the surface is
+              bounded and instrumented. Against a full browser it is guessing across the whole
+              web platform, and it cannot see the screen it guessed wrong on.
+            </p>
+            <a class="vc-btn vc-btn-accent" href="/ai">How that works &rarr;</a>
+          </div>
+        </div>
+
+        <aside class="vc-why-honest vc-rise">
+          <strong>The counterpoint, stated</strong>
+          <p>
+            If what you need is <em>the actual web</em> &mdash; arbitrary sites, embedded
+            video, WebGL, a page somebody else controls &mdash; then a browser is the right
+            tool and this plugin is not one. VaCuus is for game UI you author yourself.
+          </p>
+        </aside>
+      </div>
+    </section>
+
     <!-- ====================================================== numbers == -->
     <section class="vc-numbers vc-rise">
       <div class="vc-num">
@@ -533,7 +701,7 @@ onUnmounted(() => {
     <section class="vc-sec">
       <div class="vc-wrap">
         <header class="vc-sec-head vc-rise">
-          <span class="vc-idx">06</span>
+          <span class="vc-idx">07</span>
           <h2>What it is not</h2>
           <span class="vc-rule" />
           <a class="vc-cite" href="/docs/rcss-matrix">docs/rcss-matrix</a>

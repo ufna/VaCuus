@@ -155,6 +155,12 @@ they bind to nothing.
 `UVaCuusView` from the game thread. That is not an API surface we forgot to add; code that
 routes around it will assert.
 
+Every one of those limits is also the reason this works for agents at all: the surface is
+small, closed and generated, so it fits in a context window as ground truth rather than being
+recalled from the whole web platform. The landing page puts that beside what a real browser
+costs in a game — payload, RAM, processes, input latency — in
+[Why not a browser?](/#why-not-a-browser).
+
 An agent arriving with web habits will be wrong in each of these ways, and it will be wrong
 *confidently*, because each of them is a thing that works everywhere else it has read about.
 That is precisely why the shipped documentation exists in the shape it does: the failures are
