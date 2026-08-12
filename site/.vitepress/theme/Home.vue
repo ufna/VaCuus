@@ -150,7 +150,7 @@ onUnmounted(() => {
           <li><b>macOS</b><small>supported</small></li>
           <li><b>Linux</b><small>supported</small></li>
           <li><b>Android</b><small>supported</small></li>
-          <li class="vc-plat-dev"><b>iOS</b><small>in development</small></li>
+          <li><b>iOS</b><small>supported</small></li>
           <li class="vc-plat-req"><b>Consoles</b><small>on request</small></li>
         </ul>
       </div>

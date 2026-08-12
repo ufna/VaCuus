@@ -75,56 +75,23 @@ neither of which the engine tells you about:
 `VaCuus.uplugin` declares `"SupportedTargetPlatforms": ["Win64", "Mac", "Linux",
 "Android", "IOS"]`.
 
-**Android is supported**: the arm64 Vulkan (ES3_1) pipeline compiles, cooks, packages,
-boots and renders (first proven 2026-08-11; the NDK r27c header fix it took is recorded
-as vendored patch #6 in `Source/ThirdParty/RmlUi/VENDORED_TAG.txt`). Two mobile-specific
-gaps are known and recorded rather than hidden: **text entry** — mobile text input needs
-`IVirtualKeyboardEntry`, which is not implemented yet, so a text field does not summon
-the on-screen keyboard; and **touch-drag scrolling** — the only scroll path today is the
-mouse wheel, so a finger drag over a scrollable list does nothing. A HUD or panel that
-needs neither works today; taps, including on world panels, work.
+**Android and iOS are supported.** Android: the arm64 Vulkan (ES3_1) pipeline compiles,
+cooks, packages, boots and renders (first proven 2026-08-11; the NDK r27c header fix it
+took is recorded as vendored patch #6 in `Source/ThirdParty/RmlUi/VENDORED_TAG.txt`).
+iOS: zero plugin source changes to build, a full cook passes (every VaCuus global
+shader cross-compiles to Metal ES3_1), and the signed build runs on hardware — verified
+2026-08-12 on an iPhone 11 Pro (iOS 26.0.1, UE 5.8.1): the 1,732-node reference HUD
+rendered over the live scene, driven by its JavaScript (quickjs-ng needs no JIT and no
+entitlement), with the device log confirming the UI thread is off the game thread on
+the phone too. Building, signing and packaging for either platform is standard Unreal —
+nothing plugin-specific to set up.
 
-**iOS is in development — and it runs on hardware.** The arm64 Development target
-compiles and links with zero plugin source changes (Xcode 26, iOS SDK 26.0); a full
-cook passes — every VaCuus global shader cross-compiles to Metal ES3_1 and the
-world-panel UI material compiles for mobile Metal; and the signed build has run on an
-iPhone 11 Pro (iOS 26.0.1, UE 5.8.1, verified 2026-08-12): the 1,732-node reference HUD
-rendered over the live scene, driven by its JavaScript — quickjs-ng needs no JIT and no
-entitlement — with the device log confirming the UI thread is off the game thread on
-the phone too. The two mobile gaps named for Android above apply to iOS equally, which
-is why the label stays "in development" rather than done.
-
-**Running it on your own iPhone.** Three traps, each of which cost a session:
-
-1. **The signing settings live in a different section than every older UE guide says.**
-   On 5.8, modern Xcode is the only build path, and it reads
-   `[/Script/MacTargetPlatform.XcodeProjectSettings]` — not
-   `[/Script/IOSRuntimeSettings.IOSRuntimeSettings]`, which only the removed legacy
-   path consulted. In your project's `Config/DefaultEngine.ini`:
-
-   ```ini
-   [/Script/MacTargetPlatform.XcodeProjectSettings]
-   bUseAutomaticCodeSigning=True
-   CodeSigningTeam=XXXXXXXXXX
-   CodeSigningPrefix=com.yourcompany
-   BundleIdentifier=com.yourcompany.yourgame
-   ```
-
-2. **Your Team ID is the certificate's OU, not the value in brackets after your name.**
-   `security find-certificate -a -c "Apple Development" -p | openssl x509 -noout
-   -subject` — take the 10 characters after `OU=`; the parenthesised id in the CN is
-   the certificate id, the obvious misread.
-3. **Building over SSH: unlock the login keychain in the same shell that launches the
-   build.** The unlock does not cross SSH sessions; get it wrong and codesign fails
-   with `errSecInternalComponent` while `security find-identity` looks perfectly
-   healthy.
-
-   Then build normally — UBT already passes `-allowProvisioningUpdates`, so Xcode mints
-   the profile against your registered device (it lands in
-   `~/Library/Developer/Xcode/UserData/Provisioning Profiles/`, not the MobileDevice
-   directory older guides name). Verified end-to-end with a **paid** Apple Developer
-   account; a **free** Apple ID should behave the same but is not measured here — Apple
-   gives free teams 7-day profiles and a 3-device cap, so expect to re-sign weekly.
+Two mobile gaps are known and recorded rather than hidden, on both platforms: **text
+entry** — mobile text input needs `IVirtualKeyboardEntry`, which is not implemented
+yet, so a text field does not summon the on-screen keyboard; and **touch-drag
+scrolling** — the only scroll path today is the mouse wheel, so a finger drag over a
+scrollable list does nothing. A HUD or panel that needs neither works today; taps,
+including on world panels, work.
 
 Unreal's own refusal for an unsupported platform is quiet, so here is what you will
 actually see:
@@ -133,7 +100,8 @@ actually see:
   `Ignoring plugin 'VaCuus' … due to unsupported target platform` at `-VeryVerbose`
   only — a normal build prints nothing, exits 0, and produces a binary with no VaCuus
   modules. The `.uplugin` is not staged, `/VaCuus/` content is not cooked, and your UI
-  is simply absent at runtime with no error. **If an iOS build comes back with no UI
+  is simply absent at runtime with no error. **If a build for a platform outside the
+  declared list comes back with no UI
   and no message, this is why.**
 - **Step 2 above protects you from that.** Listing the plugin in your `.uproject`
   turns the silence into a hard build failure that names the plugin:

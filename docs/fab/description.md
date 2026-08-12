@@ -61,10 +61,10 @@ the package; a Fab install arrives with Epic-built binaries in your engine, so
 Blueprint-only projects work out of the box.
 
 **Status — pre-release (beta).** UE 5.6, 5.7 and 5.8, built and tested from one source
-tree, verified on Linux. Android is supported (compiles, cooks, boots and
-renders; two recorded gaps: no on-screen-keyboard text entry yet, no touch-drag
-scrolling yet). iOS is in development — it builds, cooks, and has rendered its
-reference HUD on an iPhone. The API is not yet stable — expect renames
+tree, verified on Linux. Android and iOS are supported — both build, cook and render
+on hardware (iOS verified on an iPhone 11 Pro); two recorded mobile gaps on both: no
+on-screen-keyboard text entry yet, no touch-drag scrolling yet. The API is not yet
+stable — expect renames
 between pre-release versions. The docs state every known limitation by name: read
 them before you buy at https://vacuus.ufna.dev
 
@@ -87,8 +87,8 @@ https://github.com/ufna/VaCuus/issues
   support matrix, log-first diagnostics, headless render recipe
 - 227-test automation suite ships in the package (source and fixtures, on purpose)
 - Localization support incl. live language switch; IME on desktop platforms
-- Cross-platform from one source tree: Windows, macOS, Linux, Android supported;
-  iOS in development; consoles on request
+- Cross-platform from one source tree: Windows, macOS, Linux, Android and iOS
+  supported; consoles on request
 
 **Code modules:**
 - `VaCuusRml` (Runtime) — vendored RmlUi 6.x built as a module
