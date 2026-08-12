@@ -18,7 +18,8 @@
 		"Win64",
 		"Mac",
 		"Linux",
-		"Android"
+		"Android",
+		"IOS"
 	],
 	"Modules": [
 		{

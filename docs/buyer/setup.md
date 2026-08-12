@@ -69,7 +69,7 @@ neither of which the engine tells you about:
 ### Platforms — and what refusal looks like
 
 `VaCuus.uplugin` declares `"SupportedTargetPlatforms": ["Win64", "Mac", "Linux",
-"Android"]`.
+"Android", "IOS"]`.
 
 **Android is supported**: the arm64 Vulkan (ES3_1) pipeline compiles, cooks, packages,
 boots and renders (first proven 2026-08-11; the NDK r27c header fix it took is recorded
@@ -80,8 +80,14 @@ the on-screen keyboard; and **touch-drag scrolling** — the only scroll path to
 mouse wheel, so a finger drag over a scrollable list does nothing. A HUD or panel that
 needs neither works today; taps, including on world panels, work.
 
-**iOS is in development.** It is not in the descriptor yet and has not been built; ask
-if you need it — it is scoped work in progress, not a refusal on principle.
+**iOS is in development — it builds and cooks, and has not yet run on a device.** The
+arm64 Development target compiles and links with zero plugin source changes (Xcode 26,
+iOS SDK 26.0), and a full cook passes: every VaCuus global shader cross-compiles to
+Metal ES3_1 and the world-panel UI material compiles for mobile Metal. The `.app`
+assembles without a signing identity; running on hardware needs your Apple team in the
+project's iOS settings, which is an account matter, not a plugin one. The two mobile
+gaps named for Android above apply to iOS equally — until a screen has rendered on a
+phone, treat iOS as in development rather than done.
 
 Unreal's own refusal for an unsupported platform is quiet, so here is what you will
 actually see:
