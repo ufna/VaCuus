@@ -1,0 +1,8 @@
+# docs/ here is a COPY of docs/buyer/, produced by scripts/sync-docs.mjs on every dev and
+# build run. docs/buyer/ is the single source of truth; a copy committed here would be a
+# second one, and the two would drift.
+docs/
+
+node_modules/
+.vitepress/dist/
+.vitepress/cache/

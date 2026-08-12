@@ -1,0 +1,20 @@
+Webfonts self-hosted by this site
+=================================
+
+Both families are licensed under the SIL Open Font License 1.1, which permits
+redistribution and web embedding. The subsets here are the `latin` and `latin-ext`
+woff2 files Google Fonts serves for each family (the docs contain no other scripts —
+checked before subsetting).
+
+archivo-latin.woff2, archivo-latin-ext.woff2
+    Archivo (variable: wght 100..900, wdth 62..125)
+    Copyright (c) Omnibus-Type
+    https://github.com/Omnibus-Type/Archivo — OFL 1.1
+
+plexmono-400-latin.woff2, plexmono-400-latin-ext.woff2,
+plexmono-600-latin.woff2, plexmono-600-latin-ext.woff2
+    IBM Plex Mono
+    Copyright (c) 2017 IBM Corp.
+    https://github.com/IBM/plex — OFL 1.1
+
+License text: https://openfontlicense.org/open-font-license-official-text/

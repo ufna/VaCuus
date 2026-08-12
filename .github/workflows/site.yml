@@ -1,0 +1,71 @@
+# Build and deploy the docs site (vacuus.ufna.dev) to GitHub Pages.
+#
+# docs/buyer/** is a trigger path as well as site/**: the six published pages are copied
+# out of it at build time by site/scripts/sync-docs.mjs, so editing a buyer page is what
+# changes the site most often.
+#
+# Enabling Pages (Settings -> Pages -> Source: GitHub Actions) and the vacuus.ufna.dev DNS
+# record are the repository owner's steps; site/public/CNAME carries the domain.
+
+name: site
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'site/**'
+      - 'docs/buyer/**'
+      - '.github/workflows/site.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never cancel a deploy in flight; queue behind it instead.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      # Full history: `lastUpdated` reads each page's last commit, and a depth-1 checkout
+      # has no commit to read for a file the head commit did not touch.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+
+      - name: Install
+        run: npm ci
+        working-directory: site
+
+      # `prebuild` runs sync-docs.mjs, which reads ../docs/buyer — hence the full checkout
+      # above rather than a sparse one.
+      - name: Build
+        run: npm run build
+        working-directory: site
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site/.vitepress/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

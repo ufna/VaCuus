@@ -1,0 +1,1242 @@
+/*
+ * VaCuus brand theme.
+ *
+ * Two jobs in one file:
+ *   1. Re-skin the DEFAULT VitePress theme for /docs/* — those pages need the stock
+ *      sidebar/search/outline UX, so the brand arrives through VitePress's own CSS
+ *      variables (vars.css in the vendored theme) plus a handful of narrow overrides.
+ *   2. Provide the `--vc-*` design tokens and primitives the landing page is built from.
+ *
+ * Aesthetic: instrument panel. Hairlines, corner ticks, mono numerals, indexed section
+ * heads that cite the repo file the section's claims come from. Dark first; light mode is
+ * warm paper (the screenshots are shot in a desert) and stays fully legible.
+ *
+ * Fonts are self-hosted from public/fonts (OFL, see public/fonts/OFL-NOTICE.txt): the site
+ * must render identically with no third-party request. The default theme is imported as
+ * `vitepress/theme-without-fonts` so Inter is never fetched.
+ */
+
+/* ---------------------------------------------------------------- fonts -- */
+
+/* Archivo — variable (wght 100..900, wdth 62..125). A signage grotesque; the width axis
+   is what gives section heads their instrument-panel stance without a second family. */
+@font-face {
+  font-family: 'Archivo';
+  font-style: normal;
+  font-weight: 100 900;
+  font-stretch: 62% 125%;
+  font-display: swap;
+  src: url('/fonts/archivo-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215,
+    U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Archivo';
+  font-style: normal;
+  font-weight: 100 900;
+  font-stretch: 62% 125%;
+  font-display: swap;
+  src: url('/fonts/archivo-latin-ext.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304,
+    U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0,
+    U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+/* IBM Plex Mono — every number, label and code span on the site. */
+@font-face {
+  font-family: 'IBM Plex Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/plexmono-400-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215,
+    U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'IBM Plex Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/plexmono-400-latin-ext.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304,
+    U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0,
+    U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: 'IBM Plex Mono';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('/fonts/plexmono-600-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215,
+    U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'IBM Plex Mono';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('/fonts/plexmono-600-latin-ext.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304,
+    U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0,
+    U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+/* --------------------------------------------------------------- tokens -- */
+
+:root {
+  --vc-font-sans: 'Archivo', ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --vc-font-mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --vc-max: 1340px;
+  --vc-gutter: clamp(20px, 4vw, 56px);
+
+  /* Light mode — warm paper. The screenshots are desert scenes; the page meets them. */
+  --vc-bg: #f3efe7;
+  --vc-bg-deep: #eae4d8;
+  --vc-panel: #fbf9f5;
+  --vc-panel-2: #f6f2ea;
+  --vc-ink: #14181d;
+  --vc-ink-2: #4c5560;
+  --vc-ink-3: #7b8590;
+  --vc-line: rgba(20, 24, 29, 0.14);
+  --vc-line-soft: rgba(20, 24, 29, 0.08);
+  --vc-line-strong: rgba(20, 24, 29, 0.3);
+  --vc-grid: rgba(20, 24, 29, 0.055);
+
+  --vc-accent: #8a5300; /* signal amber, darkened for contrast on paper */
+  --vc-accent-bright: #d98c14;
+  --vc-accent-wash: rgba(217, 140, 20, 0.12);
+  --vc-cool: #0c6482; /* the cyan of the demo titles, darkened */
+  --vc-cool-wash: rgba(12, 100, 130, 0.1);
+
+  /* The bezel around every screenshot is dark in BOTH modes: these are 1080p captures of
+     a game viewport, and a dark surround is what stops them reading as loose artwork. */
+  --vc-bezel: #0a0d11;
+  --vc-bezel-line: rgba(255, 255, 255, 0.14);
+  --vc-bezel-ink: #b9c3cf;
+
+  --vc-code-bg: rgba(20, 24, 29, 0.055);
+
+  --vc-shadow: 0 1px 2px rgba(20, 24, 29, 0.06), 0 12px 32px rgba(20, 24, 29, 0.07);
+}
+
+.dark {
+  --vc-bg: #080a0d;
+  --vc-bg-deep: #05070a;
+  --vc-panel: #0e1218;
+  --vc-panel-2: #12171f;
+  --vc-ink: #e7edf5;
+  --vc-ink-2: #9aa6b4;
+  --vc-ink-3: #68737f;
+  --vc-line: rgba(231, 237, 245, 0.11);
+  --vc-line-soft: rgba(231, 237, 245, 0.06);
+  --vc-line-strong: rgba(231, 237, 245, 0.26);
+  --vc-grid: rgba(231, 237, 245, 0.045);
+
+  --vc-accent: #ffb43c;
+  --vc-accent-bright: #ffc766;
+  --vc-accent-wash: rgba(255, 180, 60, 0.1);
+  --vc-cool: #6fd3f7;
+  --vc-cool-wash: rgba(111, 211, 247, 0.09);
+
+  --vc-bezel: #05070a;
+  --vc-bezel-line: rgba(255, 255, 255, 0.1);
+  --vc-bezel-ink: #8b95a2;
+
+  --vc-code-bg: rgba(231, 237, 245, 0.07);
+
+  --vc-shadow: 0 1px 2px rgba(0, 0, 0, 0.5), 0 18px 48px rgba(0, 0, 0, 0.45);
+}
+
+/* ------------------------------------------- default theme, re-skinned -- */
+/* /docs/* keeps VitePress's layout and gets the brand through its own variables. */
+
+:root {
+  --vp-font-family-base: var(--vc-font-sans);
+  --vp-font-family-mono: var(--vc-font-mono);
+
+  --vp-c-bg: var(--vc-bg);
+  --vp-c-bg-alt: var(--vc-bg-deep);
+  --vp-c-bg-soft: var(--vc-panel-2);
+  --vp-c-bg-elv: var(--vc-panel);
+
+  --vp-c-text-1: var(--vc-ink);
+  --vp-c-text-2: var(--vc-ink-2);
+  --vp-c-text-3: var(--vc-ink-3);
+
+  --vp-c-divider: var(--vc-line);
+  --vp-c-gutter: var(--vc-line);
+  --vp-c-border: var(--vc-line);
+
+  --vp-c-brand-1: var(--vc-accent);
+  --vp-c-brand-2: var(--vc-accent-bright);
+  --vp-c-brand-3: var(--vc-accent-bright);
+  --vp-c-brand-soft: var(--vc-accent-wash);
+
+  --vp-c-default-soft: var(--vc-panel-2);
+  --vp-c-tip-1: var(--vc-cool);
+  --vp-c-tip-soft: var(--vc-cool-wash);
+
+  --vp-button-brand-bg: var(--vc-accent);
+  --vp-button-brand-border: var(--vc-accent);
+  --vp-button-brand-text: #fffaf0;
+  --vp-button-brand-hover-bg: #6d4200;
+  --vp-button-brand-hover-border: #6d4200;
+
+  --vp-code-block-bg: var(--vc-bg-deep);
+  --vp-custom-block-info-bg: var(--vc-panel-2);
+  --vp-nav-height: 60px;
+  --vp-layout-max-width: 1520px;
+}
+
+.dark {
+  --vp-button-brand-text: #14100a;
+  --vp-button-brand-hover-bg: var(--vc-accent-bright);
+  --vp-button-brand-hover-border: var(--vc-accent-bright);
+  --vp-code-block-bg: #05070a;
+}
+
+/* Nav: thin rule instead of a shadow, mono lettering, wordmark in the display face. */
+.VPNav .VPNavBar {
+  border-bottom: 1px solid var(--vc-line);
+  background-color: color-mix(in srgb, var(--vc-bg) 88%, transparent);
+  backdrop-filter: blur(12px);
+}
+.VPNavBar.has-sidebar .content,
+.VPNavBar .divider {
+  border-color: var(--vc-line);
+}
+/* Casing is part of the mark: VaCuus, never VACUUS. */
+.VPNavBarTitle .title {
+  font-family: var(--vc-font-sans);
+  font-weight: 800;
+  font-stretch: 114%;
+  letter-spacing: -0.005em;
+  font-size: 18px;
+}
+.VPNavBarMenuLink,
+.VPNavBarMenuGroup .VPFlyout .text {
+  font-family: var(--vc-font-mono);
+  font-size: 12.5px !important;
+  letter-spacing: 0.045em;
+  text-transform: uppercase;
+}
+
+/* Sidebar + outline: mono, so /docs/* reads as the same instrument as the landing. */
+.VPSidebarItem .text,
+.VPDocOutlineItem a,
+.VPDocAsideOutline .outline-title {
+  font-family: var(--vc-font-mono);
+  letter-spacing: 0.01em;
+}
+.VPSidebarItem.level-0 > .item > .text {
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  font-size: 12px;
+  color: var(--vc-ink-3);
+}
+
+/* Doc prose: display face for headings, hairline rules, mono tables. */
+.vp-doc h1,
+.vp-doc h2,
+.vp-doc h3 {
+  font-family: var(--vc-font-sans);
+  font-stretch: 108%;
+  letter-spacing: -0.01em;
+}
+.vp-doc h1 {
+  font-weight: 800;
+  font-stretch: 114%;
+}
+.vp-doc h2 {
+  border-top: 1px solid var(--vc-line);
+  padding-top: 26px;
+}
+.vp-doc table {
+  font-size: 14px;
+}
+.vp-doc th {
+  font-family: var(--vc-font-mono);
+  font-size: 11.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--vc-ink-2);
+  background: transparent;
+}
+.vp-doc tr {
+  background: transparent;
+  border-top-color: var(--vc-line-soft);
+}
+.vp-doc td,
+.vp-doc th {
+  border-color: var(--vc-line-soft);
+}
+/* These pages run several inline code spans per sentence (perf-guide names a console
+   command in almost every one), so the span is tinted neutrally — an accent wash on each
+   would read as highlighter. The accent is reserved for the landing, where they are rare. */
+.vp-doc :not(pre) > code {
+  font-size: 0.86em;
+  background: var(--vc-code-bg);
+  color: var(--vc-ink);
+  border: 1px solid var(--vc-line-soft);
+  border-radius: 3px;
+}
+
+/* The buyer docs are table-heavy — the budget table is five columns, the RCSS matrix six —
+   and VitePress's 688px measure wraps nearly every cell onto three lines. 780px is the
+   smallest widening that lets the budget table's rows sit on one or two.
+   The `#VPContent` id is load-bearing: VPDoc.vue's own rule is `.VPDoc.has-aside
+   .content-container[data-v-…]` (specificity 0,4,0), which a plain class selector cannot
+   outrank. */
+#VPContent .VPDoc.has-aside .content-container {
+  max-width: 780px;
+}
+#VPContent .VPDoc:not(.has-aside) .content-container {
+  max-width: 860px;
+}
+.VPDocOutlineItem a {
+  font-size: 12px;
+}
+.vp-doc blockquote {
+  border-left: 2px solid var(--vc-accent);
+  background: var(--vc-panel-2);
+  padding: 12px 18px;
+  border-radius: 0 4px 4px 0;
+}
+.vp-doc blockquote > p {
+  margin: 0;
+  color: var(--vc-ink-2);
+}
+.vp-doc a {
+  text-underline-offset: 3px;
+}
+
+/* ------------------------------------------------- landing: primitives -- */
+
+.vc-landing {
+  --vp-c-bg: var(--vc-bg);
+}
+.vc-landing .VPHome {
+  margin-bottom: 0;
+}
+.vc-landing .VPContent {
+  background: var(--vc-bg);
+}
+
+.vc-wrap {
+  width: 100%;
+  max-width: var(--vc-max);
+  margin: 0 auto;
+  padding-inline: var(--vc-gutter);
+}
+
+/* Four corner ticks — the reticle motif from the reference HUD, reused as the frame
+   language for anything that is a "reading": a screenshot, a panel, a figure. */
+.vc-ticks {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.vc-ticks i {
+  position: absolute;
+  width: 9px;
+  height: 9px;
+  border: 0 solid var(--vc-line-strong);
+}
+.vc-ticks i:nth-child(1) {
+  top: -1px;
+  left: -1px;
+  border-top-width: 1px;
+  border-left-width: 1px;
+}
+.vc-ticks i:nth-child(2) {
+  top: -1px;
+  right: -1px;
+  border-top-width: 1px;
+  border-right-width: 1px;
+}
+.vc-ticks i:nth-child(3) {
+  bottom: -1px;
+  left: -1px;
+  border-bottom-width: 1px;
+  border-left-width: 1px;
+}
+.vc-ticks i:nth-child(4) {
+  bottom: -1px;
+  right: -1px;
+  border-bottom-width: 1px;
+  border-right-width: 1px;
+}
+
+.vc-mono {
+  font-family: var(--vc-font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.vc-eyebrow {
+  font-family: var(--vc-font-mono);
+  font-size: 11.5px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--vc-ink-3);
+}
+
+/* Section head: index · title · rule · source cite. The cite is not decoration — every
+   section names the repo file its claims come from, and links it where it is published. */
+.vc-sec {
+  padding-block: clamp(56px, 8vw, 104px);
+  border-top: 1px solid var(--vc-line-soft);
+}
+.vc-sec-head {
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+  margin-bottom: clamp(28px, 4vw, 44px);
+}
+.vc-sec-head .vc-idx {
+  font-family: var(--vc-font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--vc-accent);
+  letter-spacing: 0.06em;
+  flex: none;
+}
+.vc-sec-head h2 {
+  font-size: clamp(22px, 3.1vw, 34px);
+  font-weight: 750;
+  font-stretch: 110%;
+  letter-spacing: -0.012em;
+  line-height: 1.1;
+  margin: 0;
+  color: var(--vc-ink);
+  flex: none;
+  max-width: 100%;
+}
+.vc-sec-head .vc-rule {
+  flex: 1 1 24px;
+  height: 1px;
+  background: var(--vc-line);
+  transform: translateY(-6px);
+  min-width: 12px;
+}
+.vc-sec-head .vc-cite {
+  font-family: var(--vc-font-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--vc-ink-3);
+  flex: none;
+  text-decoration: none;
+  border-bottom: 1px dotted transparent;
+  white-space: nowrap;
+}
+a.vc-cite:hover {
+  color: var(--vc-accent);
+  border-bottom-color: currentColor;
+}
+
+.vc-lede {
+  font-size: clamp(15px, 1.35vw, 17px);
+  line-height: 1.65;
+  color: var(--vc-ink-2);
+  max-width: 62ch;
+}
+.vc-lede strong {
+  color: var(--vc-ink);
+  font-weight: 650;
+}
+.vc-lede + .vc-lede {
+  margin-top: 1em;
+}
+
+.vc-panel {
+  position: relative;
+  background: var(--vc-panel);
+  border: 1px solid var(--vc-line);
+  border-radius: 3px;
+}
+
+.vc-code {
+  position: relative;
+  font-family: var(--vc-font-mono);
+  font-size: 12.5px;
+  line-height: 1.7;
+  background: var(--vc-bg-deep);
+  border: 1px solid var(--vc-line);
+  border-radius: 3px;
+  padding: 16px 18px;
+  overflow-x: auto;
+  color: var(--vc-ink-2);
+  margin: 0;
+  white-space: pre;
+  tab-size: 2;
+}
+.dark .vc-code {
+  background: #05070a;
+}
+
+/* ------------------------------------------------------- landing: hero -- */
+
+.vc-hero {
+  position: relative;
+  overflow: hidden;
+  padding-top: clamp(48px, 7vw, 84px);
+  padding-bottom: clamp(36px, 5vw, 56px);
+}
+.vc-hero::before {
+  content: '';
+  position: absolute;
+  inset: -1px 0 0;
+  background-image: linear-gradient(to right, var(--vc-grid) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--vc-grid) 1px, transparent 1px);
+  background-size: 68px 68px;
+  -webkit-mask-image: radial-gradient(ellipse 80% 62% at 22% 0%, #000 5%, transparent 78%);
+  mask-image: radial-gradient(ellipse 80% 62% at 22% 0%, #000 5%, transparent 78%);
+  pointer-events: none;
+}
+.vc-hero::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(
+    900px 420px at 12% -8%,
+    var(--vc-accent-wash) 0%,
+    transparent 70%
+  );
+  pointer-events: none;
+}
+.vc-hero > .vc-wrap {
+  position: relative;
+  z-index: 1;
+}
+
+.vc-hero-top {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.vc-hero-top .vc-dash {
+  height: 1px;
+  flex: 1 1 40px;
+  background: var(--vc-line);
+  min-width: 20px;
+}
+
+.vc-wordmark {
+  margin: 18px 0 0;
+  font-size: clamp(3.4rem, 11vw, 8.2rem);
+  font-weight: 800;
+  font-stretch: 116%;
+  letter-spacing: -0.035em;
+  line-height: 0.86;
+  color: var(--vc-ink);
+}
+.vc-wordmark .vc-w-a {
+  color: var(--vc-accent);
+}
+
+.vc-hero-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
+  gap: clamp(24px, 4vw, 56px);
+  align-items: start;
+  margin-top: clamp(20px, 3vw, 30px);
+}
+@media (max-width: 900px) {
+  .vc-hero-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.vc-hero-claim {
+  font-size: clamp(18px, 2.1vw, 23px);
+  line-height: 1.42;
+  font-weight: 450;
+  color: var(--vc-ink);
+  letter-spacing: -0.011em;
+  margin: 0;
+  max-width: 26ch;
+}
+.vc-hero-claim em {
+  font-style: normal;
+  color: var(--vc-accent);
+  font-weight: 650;
+}
+.vc-hero-sub {
+  margin: 18px 0 0;
+  font-size: 15px;
+  line-height: 1.62;
+  color: var(--vc-ink-2);
+  max-width: 52ch;
+}
+
+/* The measurement chip: the one number a buyer should leave the hero with. */
+.vc-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 22px;
+  padding: 8px 12px 8px 10px;
+  border: 1px solid var(--vc-line);
+  border-left: 2px solid var(--vc-accent);
+  border-radius: 2px;
+  background: var(--vc-panel);
+  font-family: var(--vc-font-mono);
+  font-size: 12px;
+  color: var(--vc-ink-2);
+  line-height: 1.35;
+  flex-wrap: wrap;
+}
+.vc-chip b {
+  color: var(--vc-ink);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.vc-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 28px;
+}
+.vc-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  padding: 11px 18px;
+  border-radius: 2px;
+  border: 1px solid var(--vc-line-strong);
+  font-family: var(--vc-font-mono);
+  font-size: 12.5px;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  text-decoration: none;
+  color: var(--vc-ink);
+  background: transparent;
+  transition: background-color 0.16s ease, border-color 0.16s ease, color 0.16s ease,
+    transform 0.16s ease;
+}
+.vc-btn:hover {
+  transform: translateY(-1px);
+  border-color: var(--vc-ink);
+}
+.vc-btn-primary {
+  background: var(--vc-accent);
+  border-color: var(--vc-accent);
+  color: #fff8ec;
+  font-weight: 600;
+}
+.dark .vc-btn-primary {
+  color: #16110a;
+}
+.vc-btn-primary:hover {
+  background: var(--vc-accent-bright);
+  border-color: var(--vc-accent-bright);
+  color: #16110a;
+}
+.vc-btn-accent {
+  border-color: var(--vc-cool);
+  color: var(--vc-cool);
+}
+.vc-btn-accent:hover {
+  background: var(--vc-cool-wash);
+  border-color: var(--vc-cool);
+  color: var(--vc-cool);
+}
+.vc-btn svg {
+  width: 14px;
+  height: 14px;
+  flex: none;
+}
+
+/* ------------------------------------------------ landing: screenshots -- */
+
+.vc-shot {
+  position: relative;
+  background: var(--vc-bezel);
+  border: 1px solid var(--vc-line);
+  border-radius: 4px;
+  padding: 8px;
+  box-shadow: var(--vc-shadow);
+}
+.vc-shot-frame {
+  position: relative;
+  display: block;
+  overflow: hidden;
+  border-radius: 2px;
+  background: #10151c;
+}
+.vc-shot img {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+}
+.vc-shot-bar {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 9px 4px 2px;
+  font-family: var(--vc-font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--vc-bezel-ink);
+  letter-spacing: 0.02em;
+}
+.vc-shot-bar .vc-tag {
+  color: var(--vc-accent-bright);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  flex: none;
+  font-weight: 600;
+}
+.vc-shot-hero {
+  margin-top: clamp(28px, 4vw, 44px);
+}
+.vc-shot-hero .vc-shot-bar {
+  font-size: 11.5px;
+}
+/* The interaction demo puts all four panels in the top half of the 16:9 capture; the rest
+   is empty ground. Cropping to 21:9 from the top keeps every panel and drops the sand. */
+.vc-shot-wide img {
+  aspect-ratio: 21 / 9;
+  object-position: top center;
+}
+
+/* ----------------------------------------------------- landing: status -- */
+
+.vc-status {
+  position: relative;
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr);
+  gap: 0;
+  border: 1px solid var(--vc-line);
+  border-radius: 3px;
+  background: var(--vc-panel);
+  overflow: hidden;
+}
+/* Hazard stripes: the same repeating-linear-gradient decorator the plugin's own demo
+   draws (shots/deco.png, "REPEATING LINEAR 45deg"). A beta warning that is on-brand. */
+.vc-status-hazard {
+  background: repeating-linear-gradient(
+    45deg,
+    var(--vc-accent-bright) 0 7px,
+    transparent 7px 14px
+  );
+  opacity: 0.85;
+}
+.vc-status-body {
+  padding: clamp(18px, 2.6vw, 26px) clamp(18px, 2.6vw, 30px);
+}
+.vc-status-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 20px;
+  margin-bottom: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--vc-line-soft);
+  flex-wrap: wrap;
+}
+.vc-status-head strong {
+  font-family: var(--vc-font-mono);
+  font-size: 12px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--vc-accent);
+  font-weight: 600;
+}
+.vc-status-body p {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.68;
+  color: var(--vc-ink-2);
+  max-width: 92ch;
+}
+.vc-status-body p + p {
+  margin-top: 0.85em;
+}
+.vc-status-body strong {
+  color: var(--vc-ink);
+  font-weight: 650;
+}
+
+/* ---------------------------------------------------- landing: pillars -- */
+
+.vc-two {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: clamp(26px, 4vw, 60px);
+  align-items: start;
+}
+@media (max-width: 900px) {
+  .vc-two {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.vc-two-narrow {
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr);
+}
+@media (max-width: 900px) {
+  .vc-two-narrow {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* Budget table — deliberately a readout, not a marketing card. */
+.vc-readout {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--vc-font-mono);
+  font-size: 12.5px;
+}
+.vc-readout caption {
+  text-align: left;
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--vc-ink-3);
+  padding-bottom: 10px;
+}
+.vc-readout th {
+  text-align: left;
+  font-weight: 400;
+  color: var(--vc-ink-2);
+  padding: 9px 10px 9px 0;
+  border-bottom: 1px solid var(--vc-line-soft);
+  vertical-align: top;
+}
+.vc-readout td {
+  padding: 9px 0 9px 10px;
+  border-bottom: 1px solid var(--vc-line-soft);
+  text-align: right;
+  color: var(--vc-ink);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  vertical-align: top;
+}
+.vc-readout td b {
+  font-weight: 600;
+  color: var(--vc-accent);
+}
+.vc-readout .vc-budget {
+  color: var(--vc-ink-3);
+  font-size: 11.5px;
+  display: block;
+}
+.vc-readout tr:last-child th,
+.vc-readout tr:last-child td {
+  border-bottom: 0;
+}
+
+.vc-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  counter-reset: vcstep;
+}
+.vc-steps li {
+  position: relative;
+  padding: 14px 0 14px 42px;
+  border-top: 1px solid var(--vc-line-soft);
+  font-size: 14.5px;
+  line-height: 1.6;
+  color: var(--vc-ink-2);
+}
+.vc-steps li:last-child {
+  border-bottom: 1px solid var(--vc-line-soft);
+}
+.vc-steps li::before {
+  counter-increment: vcstep;
+  content: counter(vcstep, decimal-leading-zero);
+  position: absolute;
+  left: 0;
+  top: 15px;
+  font-family: var(--vc-font-mono);
+  font-size: 11px;
+  color: var(--vc-accent);
+  letter-spacing: 0.05em;
+}
+.vc-steps li strong {
+  color: var(--vc-ink);
+  font-weight: 600;
+}
+.vc-steps code,
+.vc-lede code,
+.vc-status-body code,
+.vc-not code {
+  font-family: var(--vc-font-mono);
+  font-size: 0.88em;
+  color: var(--vc-ink);
+  background: var(--vc-accent-wash);
+  padding: 1px 5px;
+  border-radius: 2px;
+  border: 1px solid var(--vc-line-soft);
+  white-space: nowrap;
+}
+
+/* --- pillar 03: the accent. Loudest block on the page. --------------------- */
+
+.vc-ai {
+  position: relative;
+  border-top: 1px solid var(--vc-accent);
+  border-bottom: 1px solid var(--vc-accent);
+  background: linear-gradient(180deg, var(--vc-accent-wash) 0%, transparent 55%),
+    var(--vc-accent-wash), var(--vc-panel-2);
+  overflow: hidden;
+}
+.vc-ai::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image: linear-gradient(to right, var(--vc-grid) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--vc-grid) 1px, transparent 1px);
+  background-size: 34px 34px;
+  -webkit-mask-image: linear-gradient(180deg, #000, transparent 60%);
+  mask-image: linear-gradient(180deg, #000, transparent 60%);
+  pointer-events: none;
+}
+.vc-ai > .vc-wrap {
+  position: relative;
+}
+.vc-ai .vc-sec-head h2 {
+  font-size: clamp(26px, 4.2vw, 46px);
+  font-weight: 800;
+  font-stretch: 116%;
+}
+.vc-ai .vc-sec-head .vc-idx {
+  font-size: 13px;
+}
+
+.vc-ships {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(215px, 1fr));
+  gap: 1px;
+  background: var(--vc-line);
+  border: 1px solid var(--vc-line);
+  border-radius: 3px;
+  margin-top: 30px;
+  overflow: hidden;
+}
+.vc-ship {
+  background: var(--vc-panel);
+  padding: 20px 20px 22px;
+}
+.vc-ship h3 {
+  margin: 0 0 8px;
+  font-family: var(--vc-font-mono);
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--vc-accent);
+  overflow-wrap: anywhere;
+}
+.vc-ship p {
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--vc-ink-2);
+}
+.vc-ship p code {
+  font-family: var(--vc-font-mono);
+  font-size: 0.9em;
+  color: var(--vc-ink);
+}
+
+.vc-snippet {
+  margin-top: 30px;
+}
+.vc-snippet-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 0 9px;
+  font-family: var(--vc-font-mono);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--vc-ink-3);
+}
+.vc-copy {
+  font-family: var(--vc-font-mono);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--vc-ink-2);
+  background: transparent;
+  border: 1px solid var(--vc-line);
+  border-radius: 2px;
+  padding: 5px 10px;
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+.vc-copy:hover {
+  color: var(--vc-accent);
+  border-color: var(--vc-accent);
+}
+.vc-snippet .vc-code {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ---------------------------------------------------- landing: gallery -- */
+
+.vc-gallery {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: clamp(16px, 2.4vw, 26px);
+}
+.vc-gallery > *:last-child {
+  grid-column: 1 / -1;
+}
+@media (max-width: 760px) {
+  .vc-gallery {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .vc-gallery > *:last-child {
+    grid-column: auto;
+  }
+}
+
+/* ---------------------------------------------------- landing: numbers -- */
+
+.vc-numbers {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1px;
+  background: var(--vc-line);
+  border-block: 1px solid var(--vc-line);
+}
+@media (max-width: 860px) {
+  .vc-numbers {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+.vc-num {
+  background: var(--vc-bg-deep);
+  padding: clamp(22px, 3vw, 34px) clamp(14px, 2vw, 26px);
+}
+.vc-num b {
+  display: block;
+  font-family: var(--vc-font-mono);
+  font-size: clamp(26px, 3.6vw, 40px);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--vc-ink);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+.vc-num b span {
+  color: var(--vc-accent);
+}
+.vc-num b i {
+  font-style: normal;
+  font-size: 0.5em;
+  color: var(--vc-ink-3);
+  letter-spacing: 0;
+}
+.vc-num em {
+  display: block;
+  margin-top: 12px;
+  font-style: normal;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--vc-ink-2);
+}
+.vc-num small {
+  display: block;
+  margin-top: 7px;
+  font-family: var(--vc-font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  color: var(--vc-ink-3);
+}
+
+/* -------------------------------------------------------- landing: NOT -- */
+
+.vc-not {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: clamp(18px, 2.6vw, 34px);
+}
+.vc-not-item {
+  border-top: 1px solid var(--vc-line);
+  padding-top: 16px;
+}
+.vc-not-item h3 {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  margin: 0 0 8px;
+  font-size: 15px;
+  font-weight: 650;
+  font-stretch: 106%;
+  color: var(--vc-ink);
+  letter-spacing: -0.005em;
+}
+.vc-not-item h3::before {
+  content: '\00d7';
+  font-family: var(--vc-font-mono);
+  color: var(--vc-accent);
+  font-size: 14px;
+  flex: none;
+}
+.vc-not-item p {
+  margin: 0;
+  font-size: 13.8px;
+  line-height: 1.62;
+  color: var(--vc-ink-2);
+}
+
+/* ----------------------------------------------------- landing: footer -- */
+
+.vc-foot {
+  border-top: 1px solid var(--vc-line);
+  background: var(--vc-bg-deep);
+  padding-block: clamp(34px, 5vw, 56px);
+}
+.vc-foot-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 24px 48px;
+  justify-content: space-between;
+  align-items: flex-start;
+}
+.vc-foot p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.65;
+  color: var(--vc-ink-2);
+  max-width: 46ch;
+}
+.vc-foot a {
+  color: var(--vc-ink);
+  text-decoration: none;
+  border-bottom: 1px solid var(--vc-line-strong);
+}
+.vc-foot a:hover {
+  color: var(--vc-accent);
+  border-bottom-color: var(--vc-accent);
+}
+.vc-foot .vc-foot-mark {
+  font-family: var(--vc-font-sans);
+  font-weight: 800;
+  font-stretch: 116%;
+  letter-spacing: -0.015em;
+  font-size: 22px;
+  line-height: 1;
+  color: var(--vc-ink);
+}
+
+/* -------------------------------------------------------- narrow view -- */
+/* One breakpoint's worth of rules the desktop layout cannot express: the section head is
+   a single baseline row by design, and at phone width its three flex-none parts (index,
+   title, cite) are wider than the viewport. It becomes two rows instead. */
+
+@media (max-width: 760px) {
+  .vc-sec-head {
+    flex-wrap: wrap;
+    gap: 6px 12px;
+    align-items: baseline;
+  }
+  .vc-sec-head h2 {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+  .vc-sec-head .vc-rule {
+    display: none;
+  }
+  .vc-sec-head .vc-cite {
+    flex: 1 0 100%;
+    white-space: normal;
+  }
+
+  /* Caption text under a 390px-wide screenshot has no room beside its tag. */
+  .vc-shot-bar {
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  /* The two hero eyebrows stack; the rule between them has nothing left to span. */
+  .vc-hero-top {
+    row-gap: 4px;
+  }
+  .vc-hero-top .vc-dash {
+    display: none;
+  }
+  .vc-hero-top .vc-eyebrow {
+    flex: 1 0 100%;
+  }
+
+  .vc-status-head {
+    justify-content: flex-start;
+  }
+  .vc-readout td {
+    white-space: normal;
+  }
+}
+
+/* -------------------------------------------------------------- motion -- */
+
+/* Hidden only under .vc-motion, which Home.vue adds after its JS guards pass —
+   a no-JS render (and any full-page snapshot) shows every section. */
+.vc-motion .vc-rise {
+  opacity: 0;
+  transform: translateY(14px);
+  transition: opacity 0.6s cubic-bezier(0.22, 0.7, 0.25, 1),
+    transform 0.6s cubic-bezier(0.22, 0.7, 0.25, 1);
+}
+.vc-motion .vc-rise.is-in {
+  opacity: 1;
+  transform: none;
+}
+
+/* The hero animates on load rather than on scroll — it is already in view. */
+@keyframes vc-in {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.vc-hero .vc-anim {
+  opacity: 0;
+  animation: vc-in 0.7s cubic-bezier(0.22, 0.7, 0.25, 1) forwards;
+}
+.vc-hero .vc-anim-1 {
+  animation-delay: 0.02s;
+}
+.vc-hero .vc-anim-2 {
+  animation-delay: 0.1s;
+}
+.vc-hero .vc-anim-3 {
+  animation-delay: 0.18s;
+}
+.vc-hero .vc-anim-4 {
+  animation-delay: 0.26s;
+}
+.vc-hero .vc-anim-5 {
+  animation-delay: 0.36s;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vc-rise,
+  .vc-hero .vc-anim {
+    opacity: 1;
+    transform: none;
+    animation: none;
+    transition: none;
+  }
+  .vc-btn:hover {
+    transform: none;
+  }
+}
