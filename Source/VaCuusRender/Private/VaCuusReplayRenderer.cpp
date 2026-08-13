@@ -509,6 +509,34 @@ uint64 FVaCuusReplayRenderer::GetClipMaskStencilBytes() const
 	return uint64(Size.X) * uint64(Size.Y) * BytesPerSample * uint64(StencilRT->GetDesc().NumSamples);
 }
 
+int32 FVaCuusReplayRenderer::GetResidentTextureCount() const
+{
+	check(IsInRenderingThread());
+	return Textures.Num();
+}
+
+uint64 FVaCuusReplayRenderer::GetResidentTextureBytes() const
+{
+	check(IsInRenderingThread());
+
+	uint64 Total = 0;
+	for (const TPair<FVaCuusTextureHandle, FTextureRHIRef>& Pair : Textures)
+	{
+		// A null ref cannot be in this map -- both upload paths install a created texture --
+		// but the map outlives individual frames and a skipped entry is a wrong TOTAL rather
+		// than a crash, which is the failure this census exists to not have.
+		if (!Pair.Value.IsValid())
+		{
+			continue;
+		}
+
+		const FRHITextureDesc& Desc = Pair.Value->GetDesc();
+		const uint64 BytesPerBlock = uint64(GPixelFormats[Desc.Format].BlockBytes);
+		Total += uint64(Desc.Extent.X) * uint64(Desc.Extent.Y) * BytesPerBlock;
+	}
+	return Total;
+}
+
 void FVaCuusReplayRenderer::BeginAsyncTextureUploads(FRHICommandListImmediate& RHICmdList, FVaCuusCommandBuffer& Buffer)
 {
 	check(IsInRenderingThread());

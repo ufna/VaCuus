@@ -258,6 +258,36 @@ public:
 	uint64 GetClipMaskStencilBytes() const;
 
 	/**
+	 * How many UI textures this view is holding, and what they cost. VaCuus-dqs.1.
+	 *
+	 * THE EPIC'S WHOLE PREMISE HAD NO OBSERVABLE UNTIL THIS PAIR. What existed was per-buffer
+	 * DELTAS -- FVaCuusCommandBuffer::NewTextures / ReleasedTextures -- which can say what
+	 * changed and never what is resident, plus this class's own `Textures` map, which is
+	 * render-thread-private. So "a catalogue accumulates images for the life of the UI thread"
+	 * was a claim read out of RmlUi's source (FileTextureDatabase has no eviction at all,
+	 * TextureDatabase.cpp:151-178) with no way to watch it happen. This project has already
+	 * watched an invariant with no observable rot once, in M2's cache bug.
+	 *
+	 * DERIVED, NOT ACCOUNTED, and that is the design rather than the lazy option. The obvious
+	 * shape is a running count bumped at Textures.Add and Textures.Remove; the obvious shape
+	 * also has two sites that can drift from the map and one teardown path (ReleaseResources)
+	 * that must remember to zero them. Summing the map at the call cannot be wrong about the
+	 * map, because it IS the map. The cost is O(n) per CALL -- and the callers are a console
+	 * command, an automation test and at most a once-per-window log line, never a draw.
+	 *
+	 * BYTES ARE THE LOGICAL FOOTPRINT AND SAY SO. This reads each texture's own extent and
+	 * GPixelFormats rather than assuming the 4 that MakeUITextureDesc's PF_R8G8B8A8 implies
+	 * (the same reason GetClipMaskStencilBytes above reads it), but the RHI may still pad row
+	 * pitch and this cannot see that. It is what the payload occupies, not what the driver
+	 * allocated, and the console command prints that caveat next to the number.
+	 *
+	 * RENDER THREAD, like every other read of `Textures`. A test calls it after
+	 * FlushRenderingCommands(); nothing else may.
+	 */
+	int32 GetResidentTextureCount() const;
+	uint64 GetResidentTextureBytes() const;
+
+	/**
 	 * Texture payloads this replayer sent down the async path, and the ones it uploaded inline.
 	 *
 	 * THE OBSERVABLE FOR THE THRESHOLD, which otherwise has none: both paths leave the same
