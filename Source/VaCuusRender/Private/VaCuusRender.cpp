@@ -61,6 +61,8 @@ static const TCHAR* GM5GlassVfsPath = TEXT("m5_glass.rml");
 static const TCHAR* GM5DecoVfsPath = TEXT("m5_deco.rml");
 static const TCHAR* GM5DecoPlainVfsPath = TEXT("m5_deco_plain.rml");
 static const TCHAR* GM5MatSpikeVfsPath = TEXT("m5_matspike.rml");
+/** VaCuus-dqs.4 step one: the @spritesheet spike. See the document's own header for the claim. */
+static const TCHAR* GSpriteSpikeVfsPath = TEXT("spritesheet_spike.rml");
 static const TCHAR* GM5HudVfsPath = TEXT("M5Hud/m5_hud.rml");
 static const TCHAR* GLocDemoVfsPath = TEXT("loc_demo.rml");
 static const TCHAR* GRefHudVfsPath = TEXT("RefHud/refhud.rml");
@@ -2161,6 +2163,20 @@ static void ReleaseTexturesCommand(const TArray<FString>& Args)
 	}
 	ScheduleAfter(DelaySeconds, [Source] { ReleaseTexturesNow(Source); });
 }
+
+/**
+ * `vacuus.SpriteSpike` — VaCuus-dqs.4's blocking unknown, made runnable.
+ *
+ * Nothing in this plugin has ever used an @spritesheet, so the atlas plan rested on the
+ * vendored parser accepting the at-rule and on a sprite-backed decorator recording like any
+ * other textured draw. This toggles the document that asks. Pair it with vacuus.TextureStats:
+ * four sprites out of one file must cost ONE texture.
+ */
+static FAutoConsoleCommand GSpriteSpikeCommand(
+	TEXT("vacuus.SpriteSpike"),
+	TEXT("Toggle the @spritesheet spike (DevUI/spritesheet_spike.rml): four sprites cut from one ")
+	TEXT("64x64 file plus the whole-file control. Measure with vacuus.TextureStats; see VaCuus-dqs.4."),
+	FConsoleCommandDelegate::CreateLambda([] { Toggle(GSpriteSpikeVfsPath); }));
 
 static FAutoConsoleCommand GReleaseTexturesCommand(
 	TEXT("vacuus.ReleaseTextures"),
