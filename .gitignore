@@ -42,3 +42,10 @@ Thumbs.db
 # the pattern holds wherever the probe lands.
 vacuus_livereload_probe.rcss
 vacuus_root_order_probe.rml.tmptest
+
+# The catalogue demo's art (VaCuus-dqs.4), written by Tools/gen_catalog_art.py. It is 200
+# generated PNGs plus a packed atlas plus two generated documents -- derived, reproducible in a
+# second, and with no reviewable content. The script is the artefact; this is its output.
+Content/DevUI/Catalog/
+Content/DevUI/catalog_loose.rml
+Content/DevUI/catalog_atlas.rml
