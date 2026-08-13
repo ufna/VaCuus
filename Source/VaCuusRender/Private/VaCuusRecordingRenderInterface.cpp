@@ -245,6 +245,16 @@ void FVaCuusRecordingRenderInterface::RenderGeometry(Rml::CompiledGeometryHandle
 	Command.Geometry = FVaCuusGeometryHandle(Handle);
 	Command.Texture = FVaCuusTextureHandle(Texture);
 	Command.Translation = FVector2f(Translation.x, Translation.y);
+
+	// THE EVICTION SIGNAL, AND IT COSTS ONE HASH LOOKUP PER DRAW. This is the only place in
+	// the process that sees every texture actually used in a frame -- Context::Render runs on
+	// every RECORDED frame, so the set is complete whether or not the frame publishes. A miss
+	// is the normal case for a font atlas or the flat-colour texture: they are not file
+	// textures, so they are not in the map and are excluded from eviction for free.
+	if (FFileTexture* Tracked = FileTextures.Find(Command.Texture))
+	{
+		Tracked->LastDrawnFrame = RecordedFrames;
+	}
 }
 
 void FVaCuusRecordingRenderInterface::ReleaseGeometry(Rml::CompiledGeometryHandle Handle)
@@ -581,6 +591,14 @@ Rml::TextureHandle FVaCuusRecordingRenderInterface::LoadTexture(Rml::Vector2i& O
 	Work.ProbedSize = Size;
 	Work.Format = Format;
 
+	// Tracked from the moment the handle exists, and seeded as drawn NOW: a texture loads
+	// because something is about to draw it, and starting its idle clock at zero would make
+	// the first sweep after a big load evict what was just asked for.
+	FFileTexture& Tracked = FileTextures.Add(Handle);
+	Tracked.Source = Work.Source;
+	Tracked.LastDrawnFrame = RecordedFrames;
+	Tracked.Bytes = uint64(Size.X) * uint64(Size.Y) * 4ull;
+
 	UE::Tasks::FTask DecodeTask = UE::Tasks::Launch(UE_SOURCE_LOCATION,
 		[Work = MoveTemp(Work)]() mutable
 		{
@@ -802,8 +820,67 @@ void FVaCuusRecordingRenderInterface::ReleaseTexture(Rml::TextureHandle Handle)
 	// create an RHI texture whose only ReleasedTextures entry it already consumed —
 	// a leak that lives until the whole replayer is torn down.
 	InFlightTextures.Remove(Local);
+	FileTextures.Remove(Local);
 
 	GetPending().ReleasedTextures.Add(Local);
+}
+
+uint64 FVaCuusRecordingRenderInterface::GetTrackedTextureBytes() const
+{
+	CheckOwnerThread();
+
+	uint64 Total = 0;
+	for (const TPair<FVaCuusTextureHandle, FFileTexture>& Pair : FileTextures)
+	{
+		Total += Pair.Value.Bytes;
+	}
+	return Total;
+}
+
+void FVaCuusRecordingRenderInterface::CollectEvictableSources(
+	uint64 BudgetBytes, uint64 IdleFrames, TArray<FString>& OutSources) const
+{
+	CheckOwnerThread();
+	OutSources.Reset();
+
+	uint64 Tracked = GetTrackedTextureBytes();
+	if (Tracked <= BudgetBytes)
+	{
+		return;
+	}
+
+	// Candidates are the ones NOT DRAWN RECENTLY, and that test is the whole design. Evicting
+	// by size, or by age of load, would keep freeing what is on screen -- which frees NOTHING,
+	// because RmlUi reloads on next use (measured under VaCuus-dqs.2: releasing live art left
+	// 13 textures at 13). Only art the view has stopped drawing actually goes away.
+	struct FCandidate
+	{
+		const FFileTexture* Texture;
+		uint64 Idle;
+	};
+	TArray<FCandidate> Candidates;
+	for (const TPair<FVaCuusTextureHandle, FFileTexture>& Pair : FileTextures)
+	{
+		const uint64 Idle = RecordedFrames - Pair.Value.LastDrawnFrame;
+		if (Idle >= IdleFrames)
+		{
+			Candidates.Add({&Pair.Value, Idle});
+		}
+	}
+
+	// Coldest first, so a budget that needs three evictions takes the three least likely to
+	// come straight back.
+	Candidates.Sort([](const FCandidate& A, const FCandidate& B) { return A.Idle > B.Idle; });
+
+	for (const FCandidate& Candidate : Candidates)
+	{
+		if (Tracked <= BudgetBytes)
+		{
+			break;
+		}
+		OutSources.Add(Candidate.Texture->Source);
+		Tracked -= FMath::Min(Tracked, Candidate.Texture->Bytes);
+	}
 }
 
 void FVaCuusRecordingRenderInterface::EnableScissorRegion(bool bEnable)
@@ -1338,6 +1415,7 @@ void FVaCuusRecordingRenderInterface::BeginFrame(FIntPoint ViewSize)
 	GetPending().ViewSize = ViewSize;
 	OwnerThreadId = FPlatformTLS::GetCurrentThreadId();
 	bInFrame = true;
+	++RecordedFrames;	// the eviction clock; see FFileTexture::LastDrawnFrame
 
 	// Layer handles restart every frame — see the declaration for why this is what keeps
 	// a static glass document idle-gated.

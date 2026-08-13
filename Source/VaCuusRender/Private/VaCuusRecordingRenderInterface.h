@@ -441,6 +441,60 @@ private:
 	 */
 	TSet<FVaCuusTextureHandle> InFlightTextures;
 
+	/**
+	 * VaCuus-dqs.3, the eviction bookkeeping. One entry per FILE texture this recorder has
+	 * loaded and not yet released.
+	 *
+	 * ONLY FILE TEXTURES ARE IN HERE, AND THAT IS THE SAFETY PROPERTY, not an omission. Font
+	 * atlases arrive through GenerateTexture and live in RmlUi's CALLBACK database; only
+	 * Rml::ReleaseTexture(source, ...) can be spelled for a file, and a callback texture has
+	 * no source to name. A sweep that worked off drawn HANDLES instead would see the font
+	 * atlas, try to evict it, and produce a spectacular intermittent bug. Absence from this
+	 * map is what excludes it, and it costs nothing to maintain.
+	 */
+	struct FFileTexture
+	{
+		/** The VFS source RmlUi keys its cache on -- the only handle a release can use. */
+		FString Source;
+
+		/** Recorded frame this was last drawn in. The clock is RECORDED frames, never
+		 *  published ones: a static HUD records thousands per publication, so a published-frame
+		 *  clock would evict a screen nobody is touching, which is exactly backwards. */
+		uint64 LastDrawnFrame = 0;
+
+		/** W*H*4 from the synchronous probe, so a sweep can meet a byte budget without waiting
+		 *  for the decode or asking the render thread. */
+		uint64 Bytes = 0;
+	};
+	TMap<FVaCuusTextureHandle, FFileTexture> FileTextures;
+
+	/** Frames this recorder has BEGUN. See FFileTexture::LastDrawnFrame for why it counts these. */
+	uint64 RecordedFrames = 0;
+
+public:
+	/**
+	 * Sources worth evicting right now: not drawn for at least IdleFrames, oldest first, only
+	 * as many as it takes to get the tracked total under BudgetBytes. Empty when the budget is
+	 * already met. UI thread.
+	 *
+	 * IT ONLY REPORTS; THE CALLER RELEASES. The sweep has to happen between frames -- calling
+	 * Rml::ReleaseTexture in the middle of a record would mutate RmlUi's cache while it is
+	 * being walked -- and the recorder does not own the frame. The document host does, so it
+	 * asks for this list at the top of its frame and spends it there.
+	 *
+	 * HYSTERESIS IS THE CALLER'S BUDGET ARGUMENT, and it is why this takes a target rather
+	 * than a limit: eviction is not one-in-one-out. A returning texture costs a synchronous
+	 * probe plus a decode, and EnsureLoaded recovers its source with a LINEAR SCAN over the
+	 * whole database (TextureDatabase.cpp:121) -- so thrash is super-linear in exactly the
+	 * database big enough to need evicting. Pass a low-water mark, not the ceiling.
+	 */
+	void CollectEvictableSources(uint64 BudgetBytes, uint64 IdleFrames, TArray<FString>& OutSources) const;
+
+	/** Bytes of file textures this recorder is tracking. The number a budget is compared against. */
+	uint64 GetTrackedTextureBytes() const;
+
+private:
+
 #if WITH_DEV_AUTOMATION_TESTS
 	/** Launched decode tasks, pruned as they complete; only WaitForTextureDecodes reads them. */
 	TArray<UE::Tasks::FTask> DecodeTasks;

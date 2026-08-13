@@ -72,6 +72,10 @@ public:
 	virtual void DrainAsyncArrivals() override;
 	virtual bool ReleaseTextures(const FString& Source) override;
 
+	/** VaCuus-dqs.3: evict undrawn file textures when this view is over vacuus.TextureBudgetMB.
+	 *  Called at the TOP of the frame; see the definition for why it cannot be anywhere else. */
+	void SweepTextureBudget();
+
 	virtual Rml::Context* GetContext() const override;
 	virtual void RecordAndPublishFrame() override;
 	//~ End IVaCuusDocumentHost

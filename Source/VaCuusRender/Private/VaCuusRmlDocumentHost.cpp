@@ -478,6 +478,96 @@ Rml::Context* FVaCuusRmlDocumentHost::GetContext() const
 	return Context;
 }
 
+/**
+ * VaCuus-dqs.3: the texture budget, and it is OFF BY DEFAULT.
+ *
+ * A plugin that silently unloads a buyer's art because of a heuristic is a support ticket, so
+ * this ships as something you turn on with a number you chose after looking at
+ * vacuus.TextureStats on your own screen. Zero means the behaviour every version until now
+ * had: nothing is ever evicted, which is also RmlUi's own (FileTextureDatabase has no
+ * eviction at all).
+ */
+static TAutoConsoleVariable<int32> CVarVaCuusTextureBudgetMB(
+	TEXT("vacuus.TextureBudgetMB"),
+	0,
+	TEXT("0 (default) = never evict UI textures, which is RmlUi's own behaviour.\n")
+		TEXT("N = evict file textures not drawn recently until this view's tracked total is under N MiB. ")
+		TEXT("Measure with vacuus.TextureStats; see VaCuus-dqs.3."));
+
+/**
+ * How long a texture must go UNDRAWN before it is evictable, in RECORDED frames.
+ *
+ * RECORDED, NOT PUBLISHED, and the difference is the whole gate: a static HUD records
+ * thousands of frames per publication, so a published-frame clock would evict a screen nobody
+ * is touching. The default is deliberately long -- at a few hundred frames a second, 1800 is
+ * several seconds of not being drawn, which no scrolled-off catalogue row reaches by accident
+ * and no visible element ever reaches at all.
+ */
+static TAutoConsoleVariable<int32> CVarVaCuusTextureEvictIdleFrames(
+	TEXT("vacuus.TextureEvictIdleFrames"),
+	1800,
+	TEXT("Recorded frames a texture must go undrawn before vacuus.TextureBudgetMB may evict it."));
+
+/**
+ * THE SWEEP, at the top of the frame and never inside it.
+ *
+ * Rml::ReleaseTexture walks and mutates the FileTextureDatabase; doing that between
+ * Context::Update() and Context::Render() would change the cache while the render is walking
+ * it. Here, before BeginFrame, the previous frame's draw record is complete and nothing is
+ * mid-walk -- so this is the one point where the question "what has not been drawn lately"
+ * has a settled answer and acting on it is safe.
+ *
+ * THE LOW-WATER MARK IS 80% OF THE BUDGET, not the budget itself, and that is the hysteresis
+ * the recorder's CollectEvictableSources asks its caller for: evicting down to the ceiling
+ * would put the very next load back over it and start a decode-per-frame loop. A returning
+ * texture costs a synchronous probe plus a decode, and EnsureLoaded recovers its source with
+ * a linear scan of the whole database, so thrash is super-linear in exactly the database big
+ * enough to need this.
+ */
+void FVaCuusRmlDocumentHost::SweepTextureBudget()
+{
+	check(FVaCuusUIThread::IsInUIThread());
+
+	const int32 BudgetMB = CVarVaCuusTextureBudgetMB.GetValueOnAnyThread();
+	if (BudgetMB <= 0 || !Recorder.IsValid())
+	{
+		return;
+	}
+
+	const uint64 BudgetBytes = uint64(BudgetMB) * 1024ull * 1024ull;
+	const uint64 LowWater = (BudgetBytes * 4ull) / 5ull;
+	const uint64 Tracked = Recorder->GetTrackedTextureBytes();
+	if (Tracked <= BudgetBytes)
+	{
+		return;
+	}
+
+	TArray<FString> Evictable;
+	Recorder->CollectEvictableSources(
+		LowWater, uint64(FMath::Max(0, CVarVaCuusTextureEvictIdleFrames.GetValueOnAnyThread())), Evictable);
+	if (Evictable.Num() == 0)
+	{
+		// OVER BUDGET WITH NOTHING COLD ENOUGH TO DROP is a legitimate state -- a screen really
+		// can be showing more art than the budget allows -- and it must not be silent, because
+		// the alternative reading is "the budget does not work". Logged once per frame it
+		// happens would be a flood, so this rides the same gate as the eviction itself: it can
+		// only be reached while over budget, which is already the exceptional case.
+		UE_LOG(LogVaCuus, Verbose,
+			TEXT("View %u: over the %d MiB texture budget (%.2f MiB) but nothing has been undrawn long enough"),
+			ViewId, BudgetMB, double(Tracked) / (1024.0 * 1024.0));
+		return;
+	}
+
+	for (const FString& Source : Evictable)
+	{
+		Rml::ReleaseTexture(Rml::String(TCHAR_TO_UTF8(*Source)), Recorder.Get());
+	}
+
+	UE_LOG(LogVaCuus, Display,
+		TEXT("View %u: texture budget %d MiB exceeded at %.2f MiB — evicted %d undrawn texture(s)"),
+		ViewId, BudgetMB, double(Tracked) / (1024.0 * 1024.0), Evictable.Num());
+}
+
 void FVaCuusRmlDocumentHost::RecordAndPublishFrame()
 {
 	check(FVaCuusUIThread::IsInUIThread());
@@ -504,6 +594,9 @@ void FVaCuusRmlDocumentHost::RecordAndPublishFrame()
 	//    pixels are gone either way, and clearing first would only add a one-frame blank
 	//    between two documents.
 	bOwesClearingFrame = false;
+
+	// BEFORE BeginFrame, deliberately -- see SweepTextureBudget.
+	SweepTextureBudget();
 
 	Recorder->BeginFrame(ViewSize);
 
