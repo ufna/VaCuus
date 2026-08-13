@@ -2186,6 +2186,49 @@ static void ReleaseTexturesCommand(const TArray<FString>& Args)
  *
  * Measure memory with vacuus.TextureStats and draws with vacuus.M1HUD.PerfLog 1.
  */
+/**
+ * `vacuus.LoadBlank [delaySeconds]` — swap the demo view's document for an empty one, KEEPING
+ * THE VIEW (VaCuus-dqs.4 / dqs.2).
+ *
+ * IT EXISTS BECAUSE `Toggle` CANNOT DO THIS. Toggle tears the whole view down and builds a new
+ * one for a different document, which takes the replayer -- and therefore the census -- with
+ * it. That makes "the screen changed" indistinguishable from "the view died", which is exactly
+ * the confusion this measurement has to avoid: the epic's central claim is that a document
+ * going away does NOT release its textures, and you can only see that on a view that survives.
+ *
+ * The document is the smallest legal one. No text, so no font atlas is pulled in and the count
+ * that remains is purely the outgoing screen's images.
+ */
+static void LoadBlankCommand(const TArray<FString>& Args)
+{
+	const float DelaySeconds = Args.Num() > 0 ? FCString::Atof(*Args[0]) : 0.0f;
+	const auto Load = []
+	{
+		if (GState == nullptr || !GState->View.IsValid())
+		{
+			UE_LOG(LogVaCuus, Warning, TEXT("vacuus.LoadBlank: no demo view is up"));
+			return;
+		}
+		GState->View->LoadDocumentFromMemory(
+			TEXT("<rml><head><style>body { width: 100%; height: 100%; background-color: #101014; }</style>")
+			TEXT("</head><body/></rml>"));
+		UE_LOG(LogVaCuus, Display, TEXT("vacuus.LoadBlank: the view now shows an empty document"));
+	};
+
+	if (DelaySeconds <= 0.0f)
+	{
+		Load();
+		return;
+	}
+	ScheduleAfter(DelaySeconds, Load);
+}
+
+static FAutoConsoleCommand GLoadBlankCommand(
+	TEXT("vacuus.LoadBlank"),
+	TEXT("Replace the demo view's document with an empty one after [delaySeconds], keeping the view. ")
+	TEXT("The other half of the VaCuus-dqs measurement: a screen change frees no textures on its own."),
+	FConsoleCommandWithArgsDelegate::CreateStatic(&LoadBlankCommand));
+
 static FAutoConsoleCommand GCatalogLooseCommand(
 	TEXT("vacuus.CatalogLoose"),
 	TEXT("Toggle the catalogue drawn from 200 separate PNG files. Needs Tools/gen_catalog_art.py to have run."),
