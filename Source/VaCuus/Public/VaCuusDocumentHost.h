@@ -140,6 +140,34 @@ public:
 	virtual void DrainAsyncArrivals() {}
 
 	/**
+	 * Drops cached file textures for this view: one by VFS source, or ALL when Source is
+	 * empty. Answers whether anything was actually released. UI thread (VaCuus-dqs.2).
+	 *
+	 * WHY THIS EXISTS AT ALL. RmlUi's FileTextureDatabase has NO eviction: an entry is
+	 * cleared only by an explicit release, and closing a document or destroying the element
+	 * does not do it (TextureDatabase.cpp:151-178, and the recorder's own note at
+	 * VaCuusRecordingRenderInterface.cpp:1436). A catalogue screen therefore accumulates
+	 * images for the life of the UI thread unless someone asks.
+	 *
+	 * IT IS SAFE ON A LIVE IMAGE, and that is what makes it usable rather than a footgun:
+	 * ReleaseTexture assigns `texture = {}`, clearing the handle AND the load-failed flag, so
+	 * the next EnsureLoaded re-runs LoadTextureEntry (TextureDatabase.cpp:117-129). Elements
+	 * hold a TextureFileIndex rather than a handle, so nothing dangles.
+	 *
+	 * THE COROLLARY IS THE THING TO KNOW, and it was measured rather than reasoned: on art the
+	 * view is STILL DRAWING, a release frees nothing at all -- the next frame reloads every
+	 * handle it just dropped. One -game run, release between two vacuus.TextureStats beats:
+	 * 13 textures / 1.50 MiB before, 13 / 1.50 MiB after. So this API is for art a screen has
+	 * stopped showing, and an auto-eviction policy built on it (VaCuus-dqs.3) MUST key on what
+	 * was recently DRAWN rather than on what is merely cached, or it will burn decodes in a
+	 * loop and free nothing.
+	 *
+	 * DEFAULT-EMPTY, the same "a host with no X owes nothing" shape DrainAsyncArrivals above
+	 * uses: the ~two dozen test probe hosts have no render manager to ask.
+	 */
+	virtual bool ReleaseTextures(const FString& Source) { return false; }
+
+	/**
 	 * This view's RmlUi context, or null before Initialize() / after Shutdown().
 	 *
 	 * WHY THE HOST HANDS ITS CONTEXT OUT: input dispatch lives on the UI thread, in

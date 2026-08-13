@@ -202,6 +202,24 @@ interface VaCuusHost {
 	 * the documented behaviour rather than a leak.
 	 */
 	textureStats(): { count: number; bytes: number };
+	/**
+	 * Drop this view's cached copy of one file texture, keyed by the VFS source an `<img src>`
+	 * was written with (VaCuus-dqs.2). Answers whether anything was actually cached under it —
+	 * a mistyped source is the likeliest bug here, and false is how you find out.
+	 *
+	 * THE REASON THIS EXISTS: RmlUi's texture cache has NO EVICTION. Closing a document does
+	 * not drop its images, so a catalogue screen holds every icon it has ever shown for the
+	 * life of the UI thread. `vacuus.onUnload` is the natural place to call this.
+	 *
+	 * SAFE ON AN IMAGE STILL ON SCREEN — it reloads on next use, because elements hold an
+	 * index rather than a handle. Releasing too eagerly costs a decode (a hitch), never a blank
+	 * element. Per view by construction; a script cannot reach another view's cache.
+	 *
+	 * Throws TypeError on a non-string, and on '' — use releaseTextures() to mean all of them.
+	 */
+	releaseTexture(source: string): boolean;
+	/** Every cached file texture in THIS view. See releaseTexture. */
+	releaseTextures(): void;
 	/** Getter, computed per read: width/height track the context through resizes. 0x0 before a document binds. */
 	readonly view: { id: number; width: number; height: number };
 	/**

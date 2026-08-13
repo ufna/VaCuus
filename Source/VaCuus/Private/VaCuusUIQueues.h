@@ -39,6 +39,17 @@ enum class EVaCuusCommandKind : uint8
 	RemoveView,
 
 	/**
+	 * Drops this view's cached file textures -- one by VFS source (Payload), or all of them
+	 * when Payload is empty (VaCuus-dqs.2).
+	 *
+	 * PER-VIEW AND NOT THREAD-LEVEL, unlike ClearAssetCaches below, and the difference is
+	 * RmlUi's rather than ours: a RenderManager -- and therefore a FileTextureDatabase -- is
+	 * keyed on the RENDER INTERFACE, and every view has its own. There is no process-wide
+	 * texture cache to clear.
+	 */
+	ReleaseTextures,
+
+	/**
 	 * Drops RmlUi's parsed stylesheet/template caches. Carries nothing, and
 	 * deliberately carries no ViewId: the caches are process-global statics, so this is
 	 * a THREAD-level command and is handled before the drain's per-view routing -- which

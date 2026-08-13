@@ -162,6 +162,13 @@ public:
 	void EnqueueExecuteScript(uint32 ViewId, const FString& Source, const FString& SourceName);
 
 	/**
+	 * Drops one of this view's cached file textures by VFS source, or all of them when Source
+	 * is empty (VaCuus-dqs.2). Per-view, because a FileTextureDatabase is keyed on the render
+	 * interface and every view has its own -- there is no process-wide texture cache.
+	 */
+	void EnqueueReleaseTextures(uint32 ViewId, const FString& Source);
+
+	/**
 	 * Queues a call to the JS function at FunctionPath with Args (VaCuus-asv). Same ordering
 	 * and same refusals as EnqueueExecuteScript above; Args are copied into the command
 	 * because the caller's array dies at the return.
@@ -363,6 +370,17 @@ public:
 	 * every host call that wants this, sees a stable pointer. MUST NOT BE
 	 * STORED: it dies with the thread.
 	 */
+	/**
+	 * Drops one of a view's cached file textures by VFS source, or all of them when Source is
+	 * empty; answers whether anything went (VaCuus-dqs.2). UI THREAD ONLY, and unlike
+	 * EnqueueReleaseTextures above it acts IMMEDIATELY -- the caller is a facade thunk that is
+	 * already on this thread and wants the outcome, not a receipt.
+	 *
+	 * Static for the same reason GetActiveScriptHost below is: the caller lives in a module
+	 * that depends on this one and holds no FVaCuusUIThread.
+	 */
+	static bool ReleaseTexturesForView(uint32 ViewId, const FString& Source);
+
 	static IVaCuusScriptHost* GetActiveScriptHost();
 
 	//~ Begin FRunnable interface

@@ -2110,6 +2110,64 @@ static void DumpTextureStats(const TArray<FString>& Args)
 	ScheduleAfter(DelaySeconds, [] { ReportTextureStats(); });
 }
 
+/**
+ * `vacuus.ReleaseTextures [source]` — the manual half of VaCuus-dqs.2, on the demo view.
+ *
+ * IT DRIVES THE TOGGLE'S VIEW rather than every view, because that is the only view a console
+ * command in this file can name: `GState->View` is the HUD the vacuus.M1HUD / vacuus.RefHud
+ * family put up. A game addresses its own views through UVaCuusView::ReleaseTexture(s), which
+ * is the shipping API; this exists so the effect can be MEASURED headlessly against
+ * vacuus.TextureStats without writing a game.
+ */
+static void ReleaseTexturesNow(const FString& Source)
+{
+	if (GState == nullptr || !GState->View.IsValid())
+	{
+		UE_LOG(LogVaCuus, Warning, TEXT("vacuus.ReleaseTextures: no demo view is up (try vacuus.RefHud first)"));
+		return;
+	}
+
+	UVaCuusView* View = GState->View.Get();
+	if (!Source.IsEmpty())
+	{
+		View->ReleaseTexture(Source);
+	}
+	else
+	{
+		View->ReleaseAllTextures();
+	}
+}
+
+/**
+ * THE DELAY IS LOAD-BEARING FOR EXACTLY THE REASON vacuus.TextureStats' is, and this command
+ * proved it the hard way: `-ExecCmds` dispatches every entry at FRAME 0, so a release written
+ * after a document toggle in the same recipe runs BEFORE that document has loaded a single
+ * image, reports "released" (there was a host to ask) and drops nothing. Measured that way
+ * once: 13 textures before and 13 after.
+ */
+static void ReleaseTexturesCommand(const TArray<FString>& Args)
+{
+	// DELAY FIRST, SOURCE SECOND, and the order is not cosmetic. The obvious spelling put the
+	// source first with an empty string meaning "all" -- and UE's console tokenizer DROPS an
+	// empty `''` argument, so `vacuus.ReleaseTextures '' 9` arrived as no arguments at all: it
+	// released at frame 0, before the document had an image, and reported success. Measured
+	// exactly that way, twice, 13 textures before and after. A leading number cannot vanish.
+	const float DelaySeconds = Args.Num() > 0 ? FCString::Atof(*Args[0]) : 0.0f;
+	const FString Source = Args.Num() > 1 ? Args[1] : FString();
+	if (DelaySeconds <= 0.0f)
+	{
+		ReleaseTexturesNow(Source);
+		return;
+	}
+	ScheduleAfter(DelaySeconds, [Source] { ReleaseTexturesNow(Source); });
+}
+
+static FAutoConsoleCommand GReleaseTexturesCommand(
+	TEXT("vacuus.ReleaseTextures"),
+	TEXT("Drop the demo view's cached file textures after [delaySeconds], all of them or just [source]. ")
+	TEXT("Measure with vacuus.TextureStats; see VaCuus-dqs."),
+	FConsoleCommandWithArgsDelegate::CreateStatic(&ReleaseTexturesCommand));
+
 static FAutoConsoleCommand GTextureStatsCommand(
 	TEXT("vacuus.TextureStats"),
 	TEXT("Resident UI texture count and logical bytes, summed over every live view, after [delaySeconds]. ")

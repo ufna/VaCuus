@@ -251,6 +251,36 @@ void UVaCuusView::ExecuteScript(const FString& Source)
 	UIThread->EnqueueExecuteScript(ViewId, Source, FString::Printf(TEXT("<ExecuteScript view %u>"), ViewId));
 }
 
+void UVaCuusView::ReleaseTexture(const FString& VfsPath)
+{
+	check(IsInGameThread());
+
+	if (VfsPath.IsEmpty())
+	{
+		// REFUSED RATHER THAN FORWARDED, because an empty payload is how the command spells
+		// "all of them" on the wire -- so a caller that passed an empty variable by accident
+		// would silently flush the whole view instead of one image.
+		UE_LOG(LogVaCuus, Warning,
+			TEXT("View %u: ReleaseTexture('') ignored; call ReleaseAllTextures() to mean that."), ViewId);
+		return;
+	}
+
+	if (FVaCuusUIThread* UIThread = GetUIThread())
+	{
+		UIThread->EnqueueReleaseTextures(ViewId, VfsPath);
+	}
+}
+
+void UVaCuusView::ReleaseAllTextures()
+{
+	check(IsInGameThread());
+
+	if (FVaCuusUIThread* UIThread = GetUIThread())
+	{
+		UIThread->EnqueueReleaseTextures(ViewId, FString());
+	}
+}
+
 void UVaCuusView::CallJs(const FString& FunctionPath, const TArray<FVaCuusJsValue>& Args)
 {
 	check(IsInGameThread());

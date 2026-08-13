@@ -60,6 +60,8 @@
       "model",
       "onLanguageChanged",
       "onUnload",
+      "releaseTexture",
+      "releaseTextures",
       "stats",
       "textureStats",
       "translate",

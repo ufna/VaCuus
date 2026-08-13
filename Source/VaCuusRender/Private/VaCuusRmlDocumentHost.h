@@ -70,6 +70,8 @@ public:
 	virtual void SetVisible(bool bVisible) override;
 	virtual bool HasView() const override;
 	virtual void DrainAsyncArrivals() override;
+	virtual bool ReleaseTextures(const FString& Source) override;
+
 	virtual Rml::Context* GetContext() const override;
 	virtual void RecordAndPublishFrame() override;
 	//~ End IVaCuusDocumentHost

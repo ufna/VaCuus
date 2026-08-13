@@ -432,6 +432,42 @@ FVaCuusUnsupportedTally FVaCuusRmlDocumentHost::GetUnsupportedTally() const
 	return Recorder ? Recorder->GetUnsupportedTally() : FVaCuusUnsupportedTally{};
 }
 
+/**
+ * VaCuus-dqs.2. THE CORE-LEVEL ENTRY POINTS, MATCHED ON THIS VIEW'S RENDER INTERFACE.
+ *
+ * RenderManager::ReleaseTexture / ReleaseAllTextures look public in RenderManager.h:98-99 and
+ * are NOT -- they sit behind the class's private section, which is why Core.cpp reaches them
+ * through its friend RenderManagerAccess (Core.cpp:386-408). The supported door is
+ * Rml::ReleaseTexture(source, render_interface) / Rml::ReleaseTextures(render_interface)
+ * (Core.h:156, :161), and handing them THIS host's recorder is what keeps the release
+ * per-view: RmlUi keys a RenderManager -- and therefore a FileTextureDatabase -- on the render
+ * interface, and every view has its own.
+ *
+ * The release lands in the recorder as ordinary ReleasedTextures traffic, so it rides the
+ * existing publish path: resource traffic defeats the idle gate, the replayer retires the
+ * handles on the next replayed buffer, and vacuus.TextureStats / vacuus.textureStats() drop
+ * accordingly. Nothing new had to be told about this.
+ */
+bool FVaCuusRmlDocumentHost::ReleaseTextures(const FString& Source)
+{
+	check(FVaCuusUIThread::IsInUIThread());
+
+	if (!Recorder.IsValid())
+	{
+		return false;
+	}
+
+	if (Source.IsEmpty())
+	{
+		// No count comes back (Rml::ReleaseTextures returns void), so this answers "there was
+		// a render interface to ask" rather than inventing a number. The census is where the
+		// size of the effect is read.
+		Rml::ReleaseTextures(Recorder.Get());
+		return true;
+	}
+	return Rml::ReleaseTexture(Rml::String(TCHAR_TO_UTF8(*Source)), Recorder.Get());
+}
+
 Rml::Context* FVaCuusRmlDocumentHost::GetContext() const
 {
 	// Handed to the UI thread's input drain, which owns every FKey/modifier/button

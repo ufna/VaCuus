@@ -64,6 +64,20 @@ std::atomic<uint32> GVaCuusUIThreadId{0};
 IVaCuusScriptHost* GVaCuusActiveScriptHost = nullptr;
 
 /**
+ * The live UI thread, for the SAME reason and with the same discipline as the slot above --
+ * one writer, on the UI thread, published in Init() and retracted in Exit(), read only under
+ * check(IsInUIThread()).
+ *
+ * It exists because the traffic runs BOTH WAYS across the module boundary now (VaCuus-dqs.2).
+ * The slot above lets a document host in VaCuusRender reach the script host; this one lets a
+ * facade thunk in VaCuusJs reach a per-view DOCUMENT HOST, which is where a texture release
+ * has to land -- RmlUi keys a FileTextureDatabase on the render interface, and only the
+ * document host holds this view's. Neither module may hold an FVaCuusUIThread of its own, and
+ * neither may go looking for one through FModuleManager off the game thread.
+ */
+FVaCuusUIThread* GVaCuusActiveUIThread = nullptr;
+
+/**
  * Stack size for the UI thread, chosen rather than inherited: the platform default
  * 8 MB per thread is far more than a UI tree needs, while RmlUi's layout and style
  * resolution recurse with the document tree. 512 KB carried M1-M3; M4 raises it to
@@ -739,6 +753,15 @@ void FVaCuusUIThread::EnqueueDumpNodeCount(uint32 ViewId)
 	Enqueue(MoveTemp(Command));
 }
 
+void FVaCuusUIThread::EnqueueReleaseTextures(uint32 ViewId, const FString& Source)
+{
+	FVaCuusUICommand Command;
+	Command.Kind = EVaCuusCommandKind::ReleaseTextures;
+	Command.ViewId = ViewId;
+	Command.Payload = Source;
+	Enqueue(MoveTemp(Command));
+}
+
 void FVaCuusUIThread::EnqueueExecuteScript(uint32 ViewId, const FString& Source, const FString& SourceName)
 {
 	FVaCuusUICommand Command;
@@ -929,6 +952,23 @@ bool FVaCuusUIThread::HasScriptHost() const
 	return bScriptHostLive.load(std::memory_order_acquire);
 }
 
+bool FVaCuusUIThread::ReleaseTexturesForView(uint32 ViewId, const FString& Source)
+{
+	// DIRECT, NOT ENQUEUED, and that is the point of it existing beside EnqueueReleaseTextures:
+	// the caller is already ON the UI thread (a JS facade thunk), so it can have the boolean
+	// answer this call returns instead of a fire-and-forget with no outcome. The game-thread
+	// entry point still goes through the queue, because it must.
+	check(IsInUIThread());
+
+	if (GVaCuusActiveUIThread == nullptr)
+	{
+		return false;
+	}
+
+	const TUniquePtr<IVaCuusDocumentHost>* Host = GVaCuusActiveUIThread->Hosts.Find(ViewId);
+	return Host != nullptr && Host->IsValid() ? (*Host)->ReleaseTextures(Source) : false;
+}
+
 IVaCuusScriptHost* FVaCuusUIThread::GetActiveScriptHost()
 {
 	// The assert IS the synchronization story: one writer, same thread, no
@@ -1017,6 +1057,7 @@ bool FVaCuusUIThread::Init()
 	// here, on the UI thread, before any command can be drained; Exit() retracts
 	// it right after the host dies.
 	GVaCuusActiveScriptHost = ScriptHost.Get();
+	GVaCuusActiveUIThread = this;
 	if (ScriptHost.IsValid())
 	{
 		UE_LOG(LogVaCuus, Log, TEXT("UI thread created its script host; JS phases are live"));
@@ -1105,6 +1146,7 @@ void FVaCuusUIThread::Exit()
 		bScriptHostLive.store(false, std::memory_order_release);
 	}
 	GVaCuusActiveScriptHost = nullptr;
+	GVaCuusActiveUIThread = nullptr;
 
 	// 1c. Every view lets go of its context (and releases its render-side
 	// resources), still on this thread. The per-host Shutdown() still contains
@@ -1554,6 +1596,19 @@ void FVaCuusUIThread::DrainCommands()
 			case EVaCuusCommandKind::BindModel:
 				BindModel(Command->ViewId, *Host, Command->Model);
 				break;
+
+			case EVaCuusCommandKind::ReleaseTextures:
+			{
+				// LOGGED EITHER WAY, at Display, because both outcomes are informative and
+				// neither is an error: "nothing was cached under that source" is the normal
+				// answer for a screen that dropped its icons twice, and a silent no-op here
+				// would be indistinguishable from a release that did not reach the UI thread.
+				const bool bReleased = Host->ReleaseTextures(Command->Payload);
+				UE_LOG(LogVaCuus, Display, TEXT("View %u: release %s -> %s"), Command->ViewId,
+					Command->Payload.IsEmpty() ? TEXT("ALL textures") : *Command->Payload,
+					bReleased ? TEXT("released") : TEXT("nothing cached"));
+				break;
+			}
 
 			case EVaCuusCommandKind::SetVisible:
 				Host->SetVisible(Command->bVisible);

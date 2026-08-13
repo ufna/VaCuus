@@ -206,6 +206,32 @@ public:
 	void LoadDocumentFromMemory(const FString& RmlSource);
 
 	/**
+	 * Drops this view's cached file textures: one by VFS source, or ALL of them
+	 * (VaCuus-dqs.2). Fire and forget like every mutator here -- the release runs when the
+	 * UI thread drains the command, and its outcome is logged at Display for that view.
+	 *
+	 * WHY A GAME CAN NEED THIS. RmlUi's texture cache has NO EVICTION: an entry is dropped
+	 * only by an explicit release, and closing a document or destroying the element does
+	 * NOT do it. A catalogue screen therefore holds every icon it has ever shown for the
+	 * life of the UI thread. Call this when a screen that loaded a lot of art goes away.
+	 *
+	 * IT IS SAFE ON AN IMAGE THAT IS STILL ON SCREEN -- AND ON ONE, IT IS ALSO POINTLESS.
+	 * RmlUi reloads on next use, because elements hold an index rather than a handle, so
+	 * releasing art the view is still drawing costs a decode and frees NOTHING. Measured, one
+	 * -game run, vacuus.RefHud then vacuus.ReleaseTextures between two vacuus.TextureStats
+	 * beats: 13 textures / 1.50 MiB before, 13 / 1.50 MiB after. Call this for art a screen has
+	 * STOPPED showing; that is the only case where the number moves.
+	 *
+	 * `vacuus.TextureStats` and `vacuus.textureStats()` are how you see the effect.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "VaCuus")
+	void ReleaseTexture(const FString& VfsPath);
+
+	/** Every cached file texture in THIS view. See ReleaseTexture. */
+	UFUNCTION(BlueprintCallable, Category = "VaCuus")
+	void ReleaseAllTextures();
+
+	/**
 	 * Evaluates Source as JavaScript against this view's context (M4). Fire and
 	 * forget like every mutator here: the script runs when the UI thread drains
 	 * the command, its errors land in the log (LogVaCuusJS) named after this

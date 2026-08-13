@@ -131,6 +131,38 @@ bool FVaCuusJsTextureStatsTest::RunTest(const FString& Parameters)
 	int64 HugeSeen = FCString::Atoi64(*Huge);
 	TestEqual(TEXT("a byte count past 2^31 survives the crossing"), HugeSeen - B0, HugeBytes);
 
+	// ---------------------------------------------------------------------------------
+	// VaCuus-dqs.2: the release surface, on the same view.
+	//
+	// WHAT IS CHECKABLE HERE AND WHAT IS NOT. This document loads no images, so there is
+	// nothing cached to drop -- which makes it exactly the right rig for the SEMANTICS: that
+	// the call reaches the view's real document host and reports honestly, and that the two
+	// refusals fire. Whether a release actually retires an RHI texture is a render-thread
+	// question, measured in a -game run through vacuus.TextureStats.
+	// ---------------------------------------------------------------------------------
+
+	TestEqual(TEXT("releaseTexture on a source this view never cached answers false"),
+		Rig.Eval(ViewId, "String(vacuus.releaseTexture('img/never_loaded.png'))"),
+		FString(TEXT("false")));
+
+	// AN EMPTY STRING IS THE ONE ARGUMENT THAT MUST NOT SILENTLY WORK: it is how the wire
+	// spells "all of them", so a script passing an undefined variable through String() would
+	// flush the whole view instead of one image.
+	TestEqual(TEXT("releaseTexture('') throws rather than flushing the view"),
+		Rig.Eval(ViewId,
+			"(() => { try { vacuus.releaseTexture(''); return 'no-throw'; }"
+			" catch (e) { return e.constructor.name; } })()"),
+		FString(TEXT("TypeError")));
+
+	TestEqual(TEXT("releaseTexture(non-string) throws"),
+		Rig.Eval(ViewId,
+			"(() => { try { vacuus.releaseTexture(42); return 'no-throw'; }"
+			" catch (e) { return e.constructor.name; } })()"),
+		FString(TEXT("TypeError")));
+
+	TestEqual(TEXT("releaseTextures() is callable and answers undefined"),
+		Rig.Eval(ViewId, "String(vacuus.releaseTextures())"), FString(TEXT("undefined")));
+
 	return true;
 }
 

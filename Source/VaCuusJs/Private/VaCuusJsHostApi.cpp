@@ -17,6 +17,7 @@
 #include "VaCuusJsViewContext.h"
 #include "VaCuusStats.h"
 #include "VaCuusTranslation.h"
+#include "VaCuusUIThread.h"
 
 #include <RmlUi/Core/Context.h>
 #include <RmlUi/Core/ElementDocument.h>
@@ -202,6 +203,10 @@ void FVaCuusJsViewContext::InstallHostApi(JSValue Vacuus)
 	JS_SetPropertyStr(Ctx, Vacuus, "stats", JS_NewCFunction(Ctx, &FVaCuusJsViewContext::StatsThunk, "stats", 0));
 	JS_SetPropertyStr(Ctx, Vacuus, "textureStats",
 		JS_NewCFunction(Ctx, &FVaCuusJsViewContext::TextureStatsThunk, "textureStats", 0));
+	JS_SetPropertyStr(Ctx, Vacuus, "releaseTexture",
+		JS_NewCFunction(Ctx, &FVaCuusJsViewContext::ReleaseTextureThunk, "releaseTexture", 1));
+	JS_SetPropertyStr(Ctx, Vacuus, "releaseTextures",
+		JS_NewCFunction(Ctx, &FVaCuusJsViewContext::ReleaseTexturesThunk, "releaseTextures", 0));
 	JS_SetPropertyStr(
 		Ctx, Vacuus, "translate", JS_NewCFunction(Ctx, &FVaCuusJsViewContext::TranslateThunk, "translate", 2));
 
@@ -602,4 +607,73 @@ JSValue FVaCuusJsViewContext::TextureStatsThunk(JSContext* Ctx, JSValueConst /*T
 	// integer type wider than the double this becomes anyway.
 	JS_SetPropertyStr(Ctx, Out, "bytes", JS_NewFloat64(Ctx, double(FVaCuusPerfLog::GetResidentTextureBytes())));
 	return Out;
+}
+
+/**
+ * `vacuus.releaseTexture(source)` / `vacuus.releaseTextures()` — drop this view's cached file
+ * textures (VaCuus-dqs.2).
+ *
+ * THE POINT OF HAVING IT IN JS AT ALL is that the screen that loaded the art is the thing that
+ * knows when it is done with it, and `vacuus.onUnload` is where it can say so. RmlUi's
+ * FileTextureDatabase has no eviction: closing a document does NOT drop its images
+ * (TextureDatabase.cpp:151-178), so without a call like this a catalogue holds every icon it
+ * has ever shown for the life of the UI thread.
+ *
+ * IMMEDIATE AND ANSWERED, unlike `vacuus.emit`. The thunk already runs on the UI thread, which
+ * is where RmlUi wants the call, so it acts now and returns whether anything was actually
+ * cached under that source. A fire-and-forget here would give a script no way to tell "dropped
+ * it" from "that path was never a texture" -- and a mistyped source is the likeliest bug at
+ * this call site, since a texture is keyed on the string an <img src> was written with.
+ *
+ * PER VIEW, and that is structural rather than a policy choice: a FileTextureDatabase belongs
+ * to a RenderManager, which RmlUi keys on the RENDER INTERFACE, and every VaCuus view has its
+ * own. A script cannot reach another view's cache from here even by accident.
+ *
+ * SAFE ON AN IMAGE THAT IS STILL ON SCREEN: the entry is cleared handle-and-all, and the next
+ * EnsureLoaded reloads it (TextureDatabase.cpp:117-129), because elements hold a
+ * TextureFileIndex and not a handle. The cost of releasing too eagerly is a decode, i.e. a
+ * hitch on the next frame that needs the picture -- never a blank element.
+ */
+JSValue FVaCuusJsViewContext::ReleaseTextureThunk(JSContext* Ctx, JSValueConst /*This*/, int Argc, JSValueConst* Argv)
+{
+	using namespace VaCuusJsHostApiInternal;
+
+	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	if (Self == nullptr)
+	{
+		return JS_FALSE;	// dead context: the bool-shaped no-op, as vacuus.emit answers
+	}
+
+	if (Argc < 1 || !JS_IsString(Argv[0]))
+	{
+		return JS_ThrowTypeError(Ctx, "vacuus.releaseTexture(source) needs a string source");
+	}
+
+	FString Source;
+	if (!ToFString(Ctx, Argv[0], Source))
+	{
+		return JS_EXCEPTION;
+	}
+
+	if (Source.IsEmpty())
+	{
+		// REFUSED, NOT FORWARDED. An empty string is how the wire spells "all of them", so a
+		// script that passed an undefined variable through String() would flush the whole view
+		// instead of one image. releaseTextures() is how you mean that, and it says so.
+		return JS_ThrowTypeError(Ctx, "vacuus.releaseTexture(''): call vacuus.releaseTextures() to drop all of them");
+	}
+
+	return FVaCuusUIThread::ReleaseTexturesForView(Self->GetViewId(), Source) ? JS_TRUE : JS_FALSE;
+}
+
+JSValue FVaCuusJsViewContext::ReleaseTexturesThunk(JSContext* Ctx, JSValueConst /*This*/, int /*Argc*/, JSValueConst* /*Argv*/)
+{
+	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	if (Self == nullptr)
+	{
+		return JS_UNDEFINED;
+	}
+
+	FVaCuusUIThread::ReleaseTexturesForView(Self->GetViewId(), FString());
+	return JS_UNDEFINED;
 }
