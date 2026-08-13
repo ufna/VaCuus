@@ -17,6 +17,9 @@ DerivedDataCache/
 *.VC.opendb
 compile_commands.json
 
+# Local secrets (TinyPNG API key etc. — see docs/dev/site-images.md)
+.env
+
 # OS junk
 .DS_Store
 Thumbs.db
