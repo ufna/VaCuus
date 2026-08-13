@@ -10,13 +10,14 @@ Optional JavaScript (QuickJS) and a TypeScript/Preact workflow sit on top. Rende
 through the engine's RHI into a persistent render target that Slate composites, so a
 document can be a full-screen HUD or a panel on a quad in the world.
 
-> **Status: pre-release (`IsBetaVersion`). Engines: UE 5.6, 5.7 and 5.8.** All three are
-> built and tested from this one source tree — editor and packaged-game targets, plus the
+> **Status: released, 1.0. Engines: UE 5.6, 5.7 and 5.8.** All three are built and
+> tested from this one source tree — editor and packaged-game targets, plus the
 > 227-test automation suite that ships with the plugin and that you can run yourself
-> (below). Verified on Linux. A package is stamped with
-> the engine that built it, so take the download that matches yours (see
-> [`docs/buyer/setup.md`](docs/buyer/setup.md)). The API is not yet stable — expect
-> renames between pre-release versions.
+> (below). Every shipping platform is supported: Windows, macOS, Linux, Android and
+> iOS; consoles on request. A package is stamped with the engine that built it, so take
+> the download that matches yours (see [`docs/buyer/setup.md`](docs/buyer/setup.md)).
+> The API is stable — breaking changes are reserved for major versions and carry
+> release notes.
 
 ## Read these, in this order
 

@@ -1,7 +1,7 @@
 {
 	"FileVersion": 3,
 	"Version": 1,
-	"VersionName": "0.1",
+	"VersionName": "1.0",
 	"FriendlyName": "VaCuus",
 	"Description": "Build your game's interface in HTML and CSS, rendered entirely off the game thread — menus, HUDs and in-world panels that cost the game thread nothing but input. Screens are plain-text documents, so a change is a file save and a live reload rather than a recompile, and the whole UI is a surface AI coding agents can read and write directly. Data binds straight from your UPROPERTYs; JavaScript and a TypeScript workflow are there when you want them.",
 	"Category": "Vladimir Alyamkin",
@@ -12,7 +12,7 @@
 	"SupportURL": "https://github.com/ufna/VaCuus/issues",
 	"EnabledByDefault": true,
 	"CanContainContent": true,
-	"IsBetaVersion": true,
+	"IsBetaVersion": false,
 	"Installed": false,
 	"SupportedTargetPlatforms": [
 		"Win64",

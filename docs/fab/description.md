@@ -1,8 +1,9 @@
-# Fab listing — copy, technical fields, and the decisions still open
+# Fab listing — copy, technical fields, and the decisions behind them
 
-Drafted 2026-08-12 for bead VaCuus-jne. Voice matches the shipped docs: every number
-below traces to `docs/buyer/perf-guide.md`, the README, or the descriptor — nothing is
-promised that a buyer cannot re-run. Assets live in `docs/fab/gallery/`.
+Drafted 2026-08-12 for bead VaCuus-jne; updated 2026-08-13 for the 1.0 release. Voice
+matches the shipped docs: every number below traces to `docs/buyer/perf-guide.md`, the
+README, or the descriptor — nothing is promised that a buyer cannot re-run. Assets live
+in `docs/fab/gallery/`.
 
 ---
 
@@ -60,13 +61,14 @@ the generated support matrix in the docs is its exact boundary. The full source 
 the package; a Fab install arrives with Epic-built binaries in your engine, so
 Blueprint-only projects work out of the box.
 
-**Status — pre-release (beta).** UE 5.6, 5.7 and 5.8, built and tested from one source
-tree, verified on Linux. Android and iOS are supported — both build, cook and render
-on hardware, and mobile input is wired: touch-drag scrolling with native inertia, and
-the platform on-screen keyboard for text fields (verified by hand on an iPhone 11
-Pro). The API is not yet stable — expect renames
-between pre-release versions. The docs state every known limitation by name: read
-them before you buy at https://vacuus.ufna.dev
+**Status — 1.0, released.** UE 5.6, 5.7 and 5.8, built and packaged from one source
+tree. Every shipping platform is supported: Windows, macOS, Linux, Android and iOS all
+build, cook and render, and mobile input is wired — touch-drag scrolling with native
+inertia and the platform on-screen keyboard for text fields (verified by hand on an
+iPhone 11 Pro), with full IME on desktop. Consoles on request. The API is stable:
+breaking changes are reserved for major versions and carry release notes. The docs
+still state every known limitation by name — read them before you buy at
+https://vacuus.ufna.dev
 
 Documentation: https://vacuus.ufna.dev · Issues and questions:
 https://github.com/ufna/VaCuus/issues
@@ -100,8 +102,9 @@ https://github.com/ufna/VaCuus/issues
 **Number of C++ classes:** 10 UCLASSes (the Blueprint-facing surface); the C++ API
 beneath is larger.
 **Number of Blueprints:** 0 — the plugin is code plus plain-text UI documents.
+**Supported engine versions:** 5.6, 5.7, 5.8
 **Supported development platforms:** Win64, Mac, Linux
-**Supported target build platforms:** Win64, Mac, Linux, Android
+**Supported target build platforms:** Win64, Mac, Linux, Android, iOS
 **Documentation:** https://vacuus.ufna.dev
 **Example/demo content:** yes — `Content/DevUI` ships interactive demos
   (`vacuus.M2Demo`, `vacuus.RefHud`, decorator and glass galleries) plus the test
@@ -116,17 +119,20 @@ MIT licenses beside them: RmlUi 6.x and QuickJS-ng. Full source included.
 
 ---
 
-## Decisions the owner still has to make (from bead VaCuus-jne)
+## Decisions (settled) and the one thing left open
 
-1. **Engine versions on the listing.** Runtime is tested on 5.6, 5.7 and 5.8 (owner
-   runs, 2026-08). But bead VaCuus-93v is still open: `BuildPlugin` — the packaging
-   step — has only ever run on 5.8, so the only *package* proven end-to-end is the 5.8
-   one. Run the 5.6/5.7 BuildPlugin legs and close 93v before the listing claims them,
-   or launch 5.8-only and widen after.
-2. **Beta presentation.** `IsBetaVersion: true` + `VersionName "0.1"` put a warning in
-   the buyer's plugin browser. The copy above states pre-release plainly rather than
-   hiding it — recommended to keep both flags as they are; they match what the manual
-   matrix can still not show (bead VaCuus-cob).
+1. **Engine versions — decided 2026-08-13: the listing claims 5.6, 5.7 and 5.8.**
+   Runtime is tested on all three from one source tree (owner runs, 2026-08).
+   **Pre-publish gate:** bead VaCuus-93v is still open — `BuildPlugin`, the packaging
+   step, has only ever run on 5.8, so the 5.6 and 5.7 *packages* are not yet proven
+   end-to-end. Run those two legs (procedure: `docs/passport/2026-08-vacuus-shim1.md`)
+   and close 93v before the page goes live; the copy above is written for the state
+   after that run.
+2. **Release presentation — decided 2026-08-13: 1.0, not beta.** `VersionName "1.0"`
+   and `IsBetaVersion: false` in `VaCuus.uplugin`, so the buyer's plugin browser shows
+   no pre-release warning, and the status paragraph says the API is stable. Known
+   limitations stay documented by name rather than implied by a beta flag (bead
+   VaCuus-cob covers what the manual matrix still cannot show).
 3. **License — decided 2026-08-12: BUSL 1.1.** Public source under Business Source
    License 1.1 (`LICENSE.md`): non-production use free for everyone, noncommercial
    production free (Additional Use Grant), commercial production = purchased license,

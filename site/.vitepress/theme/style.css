@@ -722,7 +722,7 @@ a.vc-cite:hover {
   overflow: hidden;
 }
 /* Hazard stripes: the same repeating-linear-gradient decorator the plugin's own demo
-   draws (shots/deco.png, "REPEATING LINEAR 45deg"). A beta warning that is on-brand. */
+   draws (shots/deco.png, "REPEATING LINEAR 45deg"). A status marker that is on-brand. */
 .vc-status-hazard {
   background: repeating-linear-gradient(
     45deg,

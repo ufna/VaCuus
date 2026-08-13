@@ -203,7 +203,7 @@ onUnmounted(() => {
         <div class="vc-status-hazard" aria-hidden="true" />
         <div class="vc-status-body">
           <div class="vc-status-head">
-            <strong>Status &mdash; pre-release (beta)</strong>
+            <strong>Status &mdash; released (1.0)</strong>
             <a class="vc-cite" href="https://github.com/ufna/VaCuus#readme">README.md</a>
           </div>
           <p>
@@ -211,11 +211,12 @@ onUnmounted(() => {
             source tree &mdash; editor and packaged-game targets, plus the
             <strong>227-test automation suite</strong> that ships with the plugin and that
             you can run yourself. A package is stamped with the engine that built it, so
-            take the download that matches yours. Verified on Linux.
+            take the download that matches yours.
           </p>
           <p>
-            The API is <strong>not yet stable</strong> &mdash; expect renames between
-            pre-release versions.
+            <strong>Windows, macOS, Linux, Android and iOS</strong> are supported;
+            consoles on request. The API is <strong>stable</strong> &mdash; breaking
+            changes are reserved for major versions and carry release notes.
           </p>
         </div>
       </aside>

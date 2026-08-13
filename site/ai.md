@@ -167,7 +167,8 @@ That is precisely why the shipped documentation exists in the shape it does: the
 enumerated, numbered, and attributed to the source line that causes them, so the agent can
 look the answer up instead of deriving it from a screen it cannot see.
 
-VaCuus is **pre-release** and its API is not yet stable — expect renames between versions.
+VaCuus is **released (1.0)** and its API is stable — breaking changes are reserved for
+major versions and carry release notes.
 If your agent is going to write your UI, read [the full agent guide](/docs/ai-guide) and
 [the gotchas](/docs/gotchas) before you decide; both are the same text that ships in the
 package, published here so you can judge them before you buy.
