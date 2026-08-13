@@ -329,6 +329,7 @@ private:
 
 	/** vacuus.stats(): {updateMs, renderMs, fps} from the always-on last-sample store (FVaCuusPerfLog). */
 	static JSValue StatsThunk(JSContext* Ctx, JSValueConst This, int Argc, JSValueConst* Argv);
+	static JSValue TextureStatsThunk(JSContext* Ctx, JSValueConst This, int Argc, JSValueConst* Argv);
 
 	/**
 	 * vacuus.translate(key, params?) (M5 Task 8, spec §2(l)): synchronous lookup in

@@ -337,6 +337,13 @@ void FVaCuusReplayRenderer::RetireBufferResources(const FVaCuusCommandBuffer& Bu
 	}
 
 	LastConsumedGeneration = Buffer.Generation;
+
+	// The census can only have moved on a buffer that carried resource traffic, so the
+	// republish is gated on exactly that rather than run per frame. See PublishCensus.
+	if (Buffer.HasResourceTraffic())
+	{
+		PublishCensus();
+	}
 }
 
 void FVaCuusReplayRenderer::ReleaseResources()
@@ -345,6 +352,9 @@ void FVaCuusReplayRenderer::ReleaseResources()
 	Geometry.Empty();
 	Textures.Empty();
 	Shaders.Empty();
+	// Teardown is a census change like any other, and the loudest one: without this a view
+	// that dropped every texture would keep its last published figure until it was destroyed.
+	PublishCensus();
 	OutputRT.SafeRelease();
 	MSAART.SafeRelease();
 	StencilRT.SafeRelease();
@@ -518,6 +528,15 @@ namespace VaCuusReplayRegistry
  */
 static FCriticalSection Mutex;
 static TArray<FVaCuusReplayRenderer*> Live;
+
+/*
+ * THE PUBLISHED TOTAL LIVES IN THE VaCuus MODULE, not here, and the reason is a module edge
+ * rather than taste: the reader that most needs it is the JS facade, and VaCuusJs depends on
+ * Core, InputCore, VaCuus and VaCuusRml -- not on VaCuusRender (VaCuusJs.Build.cs). Both
+ * modules already depend on VaCuus, so FVaCuusPerfLog is the seam that exists rather than a
+ * dependency edge added to carry two integers. See its AddResidentTextures for why the total
+ * is moved by DELTAS of each replayer's own derived census and not accounted per-Add.
+ */
 }	 // namespace VaCuusReplayRegistry
 
 FVaCuusReplayRenderer::FVaCuusReplayRenderer()
@@ -528,8 +547,38 @@ FVaCuusReplayRenderer::FVaCuusReplayRenderer()
 
 FVaCuusReplayRenderer::~FVaCuusReplayRenderer()
 {
+	// A view's whole contribution leaves with it. Without this the published total would keep
+	// counting a closed screen's icons forever, which is precisely the wrong answer to give
+	// the question this epic is about.
+	FVaCuusPerfLog::AddResidentTextures(-PublishedTextureCount, -int64(PublishedTextureBytes));
+
 	FScopeLock Lock(&VaCuusReplayRegistry::Mutex);
 	VaCuusReplayRegistry::Live.RemoveSingleSwap(this, EAllowShrinking::No);
+}
+
+void FVaCuusReplayRenderer::PublishCensus()
+{
+	check(IsInRenderingThread());
+
+	const int32 Count = GetResidentTextureCount();
+	const uint64 Bytes = GetResidentTextureBytes();
+
+	FVaCuusPerfLog::AddResidentTextures(Count - PublishedTextureCount, int64(Bytes) - int64(PublishedTextureBytes));
+
+	PublishedTextureCount = Count;
+	PublishedTextureBytes = Bytes;
+}
+
+// Thin forwarders, kept so that the test and vacuus.TextureStats read the census through the
+// class that produces it rather than having to know where it is stored.
+int32 FVaCuusReplayRenderer::GetPublishedTextureCount()
+{
+	return FVaCuusPerfLog::GetResidentTextureCount();
+}
+
+uint64 FVaCuusReplayRenderer::GetPublishedTextureBytes()
+{
+	return FVaCuusPerfLog::GetResidentTextureBytes();
 }
 
 void FVaCuusReplayRenderer::SumLiveTextures(int32& OutViews, int32& OutTextures, uint64& OutBytes)

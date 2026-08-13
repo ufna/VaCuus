@@ -201,6 +201,24 @@ public:
 	static void SumLiveTextures(int32& OutViews, int32& OutTextures, uint64& OutBytes);
 
 	/**
+	 * The same census, PUBLISHED: readable from any thread, with no lock and no render-thread
+	 * round trip. This is the one the JS facade reads (`vacuus.textureStats()`).
+	 *
+	 * WHY A SECOND SHAPE AT ALL. SumLiveTextures walks live maps, so it must run on the render
+	 * thread -- and the only way to call it from the UI thread is FlushRenderingCommands(),
+	 * which would stall the UI thread on the renderer once per JS call. A UI that could ask
+	 * "how much am I holding" only by pausing itself would not be asked.
+	 *
+	 * IT IS A SUM OF DERIVED TRUTHS, republished by each replayer whenever its texture set
+	 * actually changed (the buffer carried resource traffic) and retracted in full when the
+	 * replayer dies. So it is not an accounting that can drift from the maps; it is the same
+	 * derivation, sampled. What it CAN be is one frame stale, which is the trade a lock-free
+	 * read makes and is stated here rather than discovered.
+	 */
+	static int32 GetPublishedTextureCount();
+	static uint64 GetPublishedTextureBytes();
+
+	/**
 	 * Uploads the buffer's resource delta, replays its commands into the
 	 * persistent output RT (recreated on ViewSize change), then retires the
 	 * buffer's released handles.
@@ -425,6 +443,19 @@ private:
 
 	TMap<FVaCuusGeometryHandle, FGeometry> Geometry;
 	TMap<FVaCuusTextureHandle, FTextureRHIRef> Textures;
+
+	/**
+	 * Recompute this view's census and move the published process-wide total by the
+	 * difference against what this view last contributed. Render thread; called only where the
+	 * texture set can actually have changed.
+	 */
+	void PublishCensus();
+
+	/** What this replayer last contributed to the published total, so the delta above is exact
+	 *  and the destructor knows how much to take back. Render thread, no synchronisation of
+	 *  their own: only PublishCensus and the destructor touch them. */
+	int32 PublishedTextureCount = 0;
+	uint64 PublishedTextureBytes = 0;
 
 	/**
 	 * Compiled shaders, beside Geometry/Textures with the same upload/retire lifecycle —

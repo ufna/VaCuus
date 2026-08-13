@@ -214,6 +214,32 @@ public:
 	static void AddDraws(int32 NumDraws);
 
 	/**
+	 * The resident UI-texture census, published by the render thread and readable from
+	 * anywhere (VaCuus-dqs.1).
+	 *
+	 * WHY IT LIVES IN THIS MODULE AND NOT WHERE IT IS PRODUCED. The numbers are computed by
+	 * FVaCuusReplayRenderer, in VaCuusRender; the reader that most needs them is the JS facade,
+	 * in VaCuusJs — and VaCuusJs does not depend on VaCuusRender (VaCuusJs.Build.cs: Core,
+	 * InputCore, VaCuus, VaCuusRml). Both DO depend on this module, so this is the seam that
+	 * already exists rather than a dependency edge added to carry two integers.
+	 *
+	 * ALWAYS ON, UNLIKE AddDraws ABOVE. Everything else here is window accounting that a cvar
+	 * legitimately switches off; a memory figure that answered zero unless someone had turned
+	 * the perf log on would be a trap, since the question it answers ("is this catalogue
+	 * growing") is asked by people who have not.
+	 *
+	 * A DELTA, NOT A SET, and that is what keeps it honest with several views alive. Each
+	 * replayer recomputes its OWN census from its own map and moves this total by the
+	 * difference against what it last contributed, retracting the lot when it dies. So the
+	 * total is a sum of numbers that were each true when written — never an accounting that
+	 * can quietly drift from the maps it describes. Lock-free: two atomics, relaxed, because
+	 * the reader wants a recent number and not a synchronised one.
+	 */
+	static void AddResidentTextures(int32 CountDelta, int64 BytesDelta);
+	static int32 GetResidentTextureCount();
+	static uint64 GetResidentTextureBytes();
+
+	/**
 	 * Record one RECORDED UI frame and whether it was published. No-op while
 	 * disabled. UI thread.
 	 *

@@ -70,11 +70,21 @@ bool FVaCuusTextureCensusTest::RunTest(const FString& Parameters)
 	int32 CountEmpty = -1, CountAfterThree = -1, CountAfterRelease = -1, CountAfterTeardown = -1;
 	uint64 BytesEmpty = MAX_uint64, BytesAfterThree = 0, BytesAfterRelease = 0, BytesAfterTeardown = MAX_uint64;
 
+	// THE PUBLISHED TOTAL IS ASSERTED AS A DELTA, never as an absolute. It is process-wide, so a
+	// replayer another automation test happens to be holding is legitimately part of it; what is
+	// deterministic is how much THIS replayer moved it. That difference is the invariant that
+	// matters -- the lock-free number JS reads has to agree with the walk the console command
+	// does, or one of the two readers is lying.
+	int32 PublishedBefore = 0, PublishedAfterThree = 0, PublishedAfterRelease = 0;
+	uint64 PublishedBytesBefore = 0, PublishedBytesAfterThree = 0, PublishedBytesAfterRelease = 0;
+
 	ENQUEUE_RENDER_COMMAND(VaCuusTextureCensus)
 	([&](FRHICommandListImmediate& RHICmdList)
 		{
 			CountEmpty = Replayer->GetResidentTextureCount();
 			BytesEmpty = Replayer->GetResidentTextureBytes();
+			PublishedBefore = FVaCuusReplayRenderer::GetPublishedTextureCount();
+			PublishedBytesBefore = FVaCuusReplayRenderer::GetPublishedTextureBytes();
 
 			// Three textures in one buffer.
 			{
@@ -88,6 +98,8 @@ bool FVaCuusTextureCensusTest::RunTest(const FString& Parameters)
 			}
 			CountAfterThree = Replayer->GetResidentTextureCount();
 			BytesAfterThree = Replayer->GetResidentTextureBytes();
+			PublishedAfterThree = FVaCuusReplayRenderer::GetPublishedTextureCount();
+			PublishedBytesAfterThree = FVaCuusReplayRenderer::GetPublishedTextureBytes();
 
 			// A SECOND GENERATION, not the same buffer replayed twice: ShouldConsume() refuses
 			// one it has already seen, so a repeated generation would return before retiring
@@ -101,6 +113,8 @@ bool FVaCuusTextureCensusTest::RunTest(const FString& Parameters)
 			}
 			CountAfterRelease = Replayer->GetResidentTextureCount();
 			BytesAfterRelease = Replayer->GetResidentTextureBytes();
+			PublishedAfterRelease = FVaCuusReplayRenderer::GetPublishedTextureCount();
+			PublishedBytesAfterRelease = FVaCuusReplayRenderer::GetPublishedTextureBytes();
 
 			Replayer->ReleaseResources();
 			CountAfterTeardown = Replayer->GetResidentTextureCount();
@@ -118,6 +132,15 @@ bool FVaCuusTextureCensusTest::RunTest(const FString& Parameters)
 
 	TestEqual(TEXT("retiring one leaves two"), CountAfterRelease, 2);
 	TestEqual(TEXT("...and takes exactly that texture's bytes with it"), BytesAfterRelease, TinyBytes + WideBytes);
+
+	TestEqual(TEXT("the published total tracks the walk when textures arrive"),
+		PublishedAfterThree - PublishedBefore, 3);
+	TestEqual(TEXT("...in bytes too"),
+		PublishedBytesAfterThree - PublishedBytesBefore, IconBytes + TinyBytes + WideBytes);
+	TestEqual(TEXT("...and when one is retired"),
+		PublishedAfterRelease - PublishedBefore, 2);
+	TestEqual(TEXT("...in bytes too, on the way down"),
+		PublishedBytesAfterRelease - PublishedBytesBefore, TinyBytes + WideBytes);
 
 	TestEqual(TEXT("teardown releases everything"), CountAfterTeardown, 0);
 	TestEqual(TEXT("...down to zero bytes"), BytesAfterTeardown, uint64(0));

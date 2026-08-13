@@ -257,6 +257,37 @@ double FVaCuusPerfLog::GetLastUIFrameIntervalSeconds()
 	return VaCuusPerfLogPrivate::GLastJsPumpIntervalSeconds;
 }
 
+namespace VaCuusTextureCensus
+{
+/** See FVaCuusPerfLog::AddResidentTextures for why these are deltas and why they are here. */
+static std::atomic<int64> Textures{0};
+static std::atomic<int64> Bytes{0};
+}	 // namespace VaCuusTextureCensus
+
+void FVaCuusPerfLog::AddResidentTextures(int32 CountDelta, int64 BytesDelta)
+{
+	// NO IsEnabled() GATE, deliberately -- see the header. This is the one figure here that a
+	// buyer asks for without having turned the perf log on first.
+	VaCuusTextureCensus::Textures.fetch_add(CountDelta, std::memory_order_relaxed);
+	VaCuusTextureCensus::Bytes.fetch_add(BytesDelta, std::memory_order_relaxed);
+}
+
+int32 FVaCuusPerfLog::GetResidentTextureCount()
+{
+	const int64 Value = VaCuusTextureCensus::Textures.load(std::memory_order_relaxed);
+	return Value > 0 ? int32(Value) : 0;
+}
+
+uint64 FVaCuusPerfLog::GetResidentTextureBytes()
+{
+	const int64 Value = VaCuusTextureCensus::Bytes.load(std::memory_order_relaxed);
+	// CLAMPED RATHER THAN CAST. The two atomics move one after the other, so a reader on another
+	// thread can legally catch the instant where a retraction has landed and its matching
+	// addition has not. Momentarily low is a stale number; momentarily negative, printed through
+	// an unsigned type, is a 16-exabyte bug report.
+	return Value > 0 ? uint64(Value) : 0;
+}
+
 void FVaCuusPerfLog::AddDraws(int32 NumDraws)
 {
 	if (!IsEnabled())

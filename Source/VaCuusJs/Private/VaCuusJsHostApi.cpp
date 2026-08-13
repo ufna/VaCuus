@@ -200,6 +200,8 @@ void FVaCuusJsViewContext::InstallHostApi(JSValue Vacuus)
 	JS_SetPropertyStr(Ctx, Vacuus, "emit", JS_NewCFunction(Ctx, &FVaCuusJsViewContext::EmitThunk, "emit", 2));
 	JS_SetPropertyStr(Ctx, Vacuus, "model", JS_NewCFunction(Ctx, &FVaCuusJsViewContext::ModelThunk, "model", 1));
 	JS_SetPropertyStr(Ctx, Vacuus, "stats", JS_NewCFunction(Ctx, &FVaCuusJsViewContext::StatsThunk, "stats", 0));
+	JS_SetPropertyStr(Ctx, Vacuus, "textureStats",
+		JS_NewCFunction(Ctx, &FVaCuusJsViewContext::TextureStatsThunk, "textureStats", 0));
 	JS_SetPropertyStr(
 		Ctx, Vacuus, "translate", JS_NewCFunction(Ctx, &FVaCuusJsViewContext::TranslateThunk, "translate", 2));
 
@@ -562,4 +564,42 @@ JSValue FVaCuusJsViewContext::StatsThunk(JSContext* Ctx, JSValueConst /*This*/, 
 	JS_SetPropertyStr(Ctx, Stats, "renderMs", JS_NewFloat64(Ctx, RecordMs));
 	JS_SetPropertyStr(Ctx, Stats, "fps", JS_NewFloat64(Ctx, IntervalSeconds > 0.0 ? 1.0 / IntervalSeconds : 0.0));
 	return Stats;
+}
+
+/**
+ * `vacuus.textureStats()` — what the UI is holding in texture memory (VaCuus-dqs.1).
+ *
+ * ITS OWN CALL RATHER THAN TWO MORE FIELDS ON stats(). That one is per-FRAME wall clock from
+ * the sampler store and is read every frame by anything drawing a debug overlay; this is a
+ * MEMORY figure that only moves when a document loads or drops an image. Folding them together
+ * would invite a per-frame reader to think the texture numbers were per-frame too.
+ *
+ * A PUBLISHED SNAPSHOT, NOT A LIVE WALK, and it could not be otherwise. The truth lives in the
+ * render thread's texture maps, and the only way to read those from here is
+ * FlushRenderingCommands() — which would stall the UI thread on the renderer once per call. So
+ * the render thread publishes a total whenever a replayed buffer actually changed a texture set
+ * (FVaCuusReplayRenderer::PublishCensus) and this reads the last one, lock-free. It can be one
+ * frame stale; it cannot be wrong about what it saw.
+ *
+ * `bytes` IS THE LOGICAL FOOTPRINT — extent x format block bytes. The RHI may pad row pitch and
+ * nothing on this side of the bridge can see that. Documented in vacuus.d.ts, because a JS
+ * author reading a number called `bytes` will otherwise take it for VRAM.
+ */
+JSValue FVaCuusJsViewContext::TextureStatsThunk(JSContext* Ctx, JSValueConst /*This*/, int /*Argc*/, JSValueConst* /*Argv*/)
+{
+	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	if (Self == nullptr)
+	{
+		return JS_NULL;	   // dead context, the same shape stats() answers with
+	}
+
+	// PROCESS-WIDE, like stats() and for the same reason: the published total sums every live
+	// view, and RmlUi shares a file texture by SOURCE across every document in a view anyway, so
+	// a per-view split would report precision the mechanism does not have.
+	JSValue Out = JS_NewObject(Ctx);
+	JS_SetPropertyStr(Ctx, Out, "count", JS_NewInt32(Ctx, FVaCuusPerfLog::GetResidentTextureCount()));
+	// Float64: a byte count passes 2^31 at 2 GiB, which a texture budget reaches, and JS has no
+	// integer type wider than the double this becomes anyway.
+	JS_SetPropertyStr(Ctx, Out, "bytes", JS_NewFloat64(Ctx, double(FVaCuusPerfLog::GetResidentTextureBytes())));
+	return Out;
 }

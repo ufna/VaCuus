@@ -186,6 +186,22 @@ interface VaCuusHost {
 	model(name: string): { readonly name: string; get(path: string): boolean | number | string | null };
 	/** Process-wide UI-frame figures from the always-on last-sample store; zeros until the scopes have run. */
 	stats(): { updateMs: number; renderMs: number; fps: number };
+	/**
+	 * Resident UI textures, process-wide (VaCuus-dqs.1). SEPARATE FROM stats() on purpose:
+	 * that one is per-frame wall clock, this only moves when a document loads or drops an
+	 * image, and a per-frame reader should not mistake one for the other.
+	 *
+	 * `bytes` IS THE LOGICAL FOOTPRINT — each texture's extent times its format's block bytes.
+	 * The RHI may pad row pitch and nothing on this side can see that, so this is what the
+	 * payloads occupy and NOT a VRAM figure.
+	 *
+	 * A PUBLISHED SNAPSHOT, so it can be one frame stale: the truth lives in the render
+	 * thread's texture maps and reading them synchronously would stall the UI thread on the
+	 * renderer once per call. Textures are shared by SOURCE, so N elements with one `src` count
+	 * once — and RmlUi never evicts a file texture on its own, so a number that only grows is
+	 * the documented behaviour rather than a leak.
+	 */
+	textureStats(): { count: number; bytes: number };
 	/** Getter, computed per read: width/height track the context through resizes. 0x0 before a document binds. */
 	readonly view: { id: number; width: number; height: number };
 	/**

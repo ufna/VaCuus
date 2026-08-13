@@ -61,6 +61,7 @@
       "onLanguageChanged",
       "onUnload",
       "stats",
+      "textureStats",
       "translate",
       "view"
     ],
