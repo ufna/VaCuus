@@ -165,6 +165,42 @@ class VACUUSRENDER_API FVaCuusReplayRenderer
 {
 public:
 	/**
+	 * Enrol in / leave the process-wide live list the census walks (VaCuus-dqs.1).
+	 *
+	 * A REGISTRY RATHER THAN A TRAVERSAL, because there is no one tree to traverse. Two
+	 * unrelated owners hold a replayer BY VALUE -- FVaCuusSlateElement for a screen view and
+	 * FVaCuusWorldSink for a world panel -- so a console command that wanted "every live
+	 * replayer" would otherwise have to know about Slate widgets AND world components AND
+	 * whatever the third owner turns out to be. Self-enrolment costs each owner nothing and
+	 * cannot go stale.
+	 *
+	 * LOCKED, AND THE LOCK IS NOT DEFENSIVE. The class header says render thread only, and
+	 * every method that touches RHI state honours that -- but both production owners are
+	 * built with MakeShared on the GAME thread (VaCuusUMGWidget.cpp:67,
+	 * VaCuusWorldComponent.cpp:272), so these two run there while the census walk runs on the
+	 * render thread. Two threads, one array. The lock is taken exactly twice per replayer
+	 * lifetime plus once per census call, which is never in a frame.
+	 */
+	FVaCuusReplayRenderer();
+	~FVaCuusReplayRenderer();
+
+	/** Neither copyable nor movable: the registry stores `this`, so a copy would enrol a second
+	 *  entry for the same RHI resources and a move would leave a dangling one. */
+	FVaCuusReplayRenderer(const FVaCuusReplayRenderer&) = delete;
+	FVaCuusReplayRenderer& operator=(const FVaCuusReplayRenderer&) = delete;
+
+	/**
+	 * Sum the resident-texture census over every live replayer. RENDER THREAD -- it reads
+	 * `Textures` through each one.
+	 *
+	 * A TEST MUST NOT ASSERT ON THIS. It is process-wide, so a replayer another automation
+	 * test happens to be holding is legitimately part of the answer; VaCuus.Render.Texture.Census
+	 * asserts on ONE replayer it owns, which is the deterministic question. This exists for
+	 * `vacuus.TextureStats`, i.e. for a human with a build in front of them.
+	 */
+	static void SumLiveTextures(int32& OutViews, int32& OutTextures, uint64& OutBytes);
+
+	/**
 	 * Uploads the buffer's resource delta, replays its commands into the
 	 * persistent output RT (recreated on ViewSize change), then retires the
 	 * buffer's released handles.

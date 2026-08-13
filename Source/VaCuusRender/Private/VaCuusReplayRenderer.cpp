@@ -509,6 +509,46 @@ uint64 FVaCuusReplayRenderer::GetClipMaskStencilBytes() const
 	return uint64(Size.X) * uint64(Size.Y) * BytesPerSample * uint64(StencilRT->GetDesc().NumSamples);
 }
 
+namespace VaCuusReplayRegistry
+{
+/**
+ * Every live replayer. A plain array rather than a set: it is walked far more often than it is
+ * mutated (never in a frame either way), the counts are single digits, and RemoveSingleSwap on
+ * a handful of pointers is cheaper than the hashing a TSet would do on every enrolment.
+ */
+static FCriticalSection Mutex;
+static TArray<FVaCuusReplayRenderer*> Live;
+}	 // namespace VaCuusReplayRegistry
+
+FVaCuusReplayRenderer::FVaCuusReplayRenderer()
+{
+	FScopeLock Lock(&VaCuusReplayRegistry::Mutex);
+	VaCuusReplayRegistry::Live.Add(this);
+}
+
+FVaCuusReplayRenderer::~FVaCuusReplayRenderer()
+{
+	FScopeLock Lock(&VaCuusReplayRegistry::Mutex);
+	VaCuusReplayRegistry::Live.RemoveSingleSwap(this, EAllowShrinking::No);
+}
+
+void FVaCuusReplayRenderer::SumLiveTextures(int32& OutViews, int32& OutTextures, uint64& OutBytes)
+{
+	check(IsInRenderingThread());
+
+	OutViews = 0;
+	OutTextures = 0;
+	OutBytes = 0;
+
+	FScopeLock Lock(&VaCuusReplayRegistry::Mutex);
+	for (const FVaCuusReplayRenderer* Replayer : VaCuusReplayRegistry::Live)
+	{
+		++OutViews;
+		OutTextures += Replayer->GetResidentTextureCount();
+		OutBytes += Replayer->GetResidentTextureBytes();
+	}
+}
+
 int32 FVaCuusReplayRenderer::GetResidentTextureCount() const
 {
 	check(IsInRenderingThread());

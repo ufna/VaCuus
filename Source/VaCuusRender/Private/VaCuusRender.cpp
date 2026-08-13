@@ -7,6 +7,7 @@
 #include "VaCuusRefHudModel.h"
 #include "VaCuusMaterialDraw.h"
 #include "VaCuusRecordingRenderInterface.h"
+#include "VaCuusReplayRenderer.h"
 #include "VaCuusRmlDocumentHost.h"
 #include "VaCuusSlateElement.h"
 #include "VaCuusStyleSet.h"
@@ -2053,6 +2054,67 @@ static FAutoConsoleCommand GNavShotCommand(
 	TEXT("Focus the HUD and send a key sequence after 2s, then take a UI screenshot at 3s. ")
 	TEXT("No arguments: two DPad-right steps."),
 	FConsoleCommandWithArgsDelegate::CreateStatic(&NavShot));
+
+/**
+ * `vacuus.TextureStats` — what the UI is holding in texture memory right now (VaCuus-dqs.1).
+ *
+ * THE HUMAN READER of the census. The other two are an automation test (which asserts on one
+ * replayer it owns, because a process-wide total is not a deterministic question) and, later,
+ * the JS facade. This one exists for someone with a build in front of them asking the question
+ * VaCuus-dqs opens with: a catalogue of icons accumulates, because RmlUi's FileTextureDatabase
+ * has no eviction and nothing here calls Rml::ReleaseTexture — so "is it growing" needs an
+ * answer you can type twice a minute apart.
+ *
+ * IT REPORTS A LOGICAL FOOTPRINT AND SAYS SO IN ITS OWN OUTPUT. The sum is each texture's
+ * extent times its format's block bytes; the RHI may pad row pitch and none of that is visible
+ * from here. A number that quietly claimed to be VRAM would be worse than no number, and this
+ * is the line a buyer would otherwise quote at us.
+ *
+ * FlushRenderingCommands() rather than a fire-and-forget enqueue, because a console command
+ * that printed nothing and filled the numbers in a frame later would be useless: the caller is
+ * a human reading the next line of the log.
+ */
+static void ReportTextureStats()
+{
+	int32 Views = 0;
+	int32 Textures = 0;
+	uint64 Bytes = 0;
+
+	ENQUEUE_RENDER_COMMAND(VaCuusTextureStats)
+	([&Views, &Textures, &Bytes](FRHICommandListImmediate&)
+		{ FVaCuusReplayRenderer::SumLiveTextures(Views, Textures, Bytes); });
+	FlushRenderingCommands();
+
+	UE_LOG(LogVaCuus, Display,
+		TEXT("vacuus.TextureStats: %d texture(s) resident across %d replayer(s), %.2f MiB (%llu bytes). ")
+		TEXT("LOGICAL footprint — extent x format block bytes; the RHI may pad row pitch, which this cannot see. ")
+		TEXT("RmlUi never evicts a file texture on its own (VaCuus-dqs), so a number that only grows is expected, not a leak."),
+		Textures, Views, double(Bytes) / (1024.0 * 1024.0), Bytes);
+}
+
+/**
+ * THE OPTIONAL DELAY IS WHAT MAKES THIS OBSERVABLE HEADLESSLY, and it is the same
+ * `ScheduleAfter` beat vacuus.M5Glass.Shot uses. `-ExecCmds` dispatches at FRAME 0, before any
+ * document has loaded or recorded anything, so a bare `vacuus.TextureStats` in a headless
+ * recipe would faithfully report zero and prove nothing. `vacuus.TextureStats 6` reports after
+ * the UI has actually run.
+ */
+static void DumpTextureStats(const TArray<FString>& Args)
+{
+	const float DelaySeconds = Args.Num() > 0 ? FCString::Atof(*Args[0]) : 0.0f;
+	if (DelaySeconds <= 0.0f)
+	{
+		ReportTextureStats();
+		return;
+	}
+	ScheduleAfter(DelaySeconds, [] { ReportTextureStats(); });
+}
+
+static FAutoConsoleCommand GTextureStatsCommand(
+	TEXT("vacuus.TextureStats"),
+	TEXT("Resident UI texture count and logical bytes, summed over every live view, after [delaySeconds]. ")
+	TEXT("See VaCuus-dqs: RmlUi never evicts a file texture on its own, so this is how you watch a catalogue grow."),
+	FConsoleCommandWithArgsDelegate::CreateStatic(&DumpTextureStats));
 
 static FAutoConsoleCommand GToggleCommand(
 	TEXT("vacuus.M1HUD"),
