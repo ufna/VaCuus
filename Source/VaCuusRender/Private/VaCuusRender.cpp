@@ -68,6 +68,7 @@ static const TCHAR* GCatalogLooseVfsPath = TEXT("catalog_loose.rml");
 static const TCHAR* GCatalogAtlasVfsPath = TEXT("catalog_atlas.rml");
 /** VaCuus-wgq: node-count scaling, no images. Tools/gen_catalog_art.py --cards N. */
 static const TCHAR* GCatalogNodesVfsPath = TEXT("catalog_nodes.rml");
+static const TCHAR* GCatalogNodesRichVfsPath = TEXT("catalog_nodes_rich.rml");
 static const TCHAR* GM5HudVfsPath = TEXT("M5Hud/m5_hud.rml");
 static const TCHAR* GLocDemoVfsPath = TEXT("loc_demo.rml");
 static const TCHAR* GRefHudVfsPath = TEXT("RefHud/refhud.rml");
@@ -2236,6 +2237,12 @@ static FAutoConsoleCommand GCatalogNodesCommand(
 	TEXT("Toggle an image-free grid of N cards (Tools/gen_catalog_art.py --cards N) — VaCuus-wgq's ")
 	TEXT("node-count measurement. Measure with vacuus.M1HUD.PerfLog 1."),
 	FConsoleCommandDelegate::CreateLambda([] { Toggle(GCatalogNodesVfsPath); }));
+
+static FAutoConsoleCommand GCatalogNodesRichCommand(
+	TEXT("vacuus.CatalogNodesRich"),
+	TEXT("The same grid as vacuus.CatalogNodes with a gradient and three text runs per card — ")
+	TEXT("VaCuus-wgq's content-cost arm. Same structure, so the difference is what a node contains."),
+	FConsoleCommandDelegate::CreateLambda([] { Toggle(GCatalogNodesRichVfsPath); }));
 
 static FAutoConsoleCommand GCatalogLooseCommand(
 	TEXT("vacuus.CatalogLoose"),
