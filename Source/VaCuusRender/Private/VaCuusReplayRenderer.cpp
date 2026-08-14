@@ -550,8 +550,9 @@ FVaCuusReplayRenderer::~FVaCuusReplayRenderer()
 	// A view's whole contribution leaves with it. Without this the published total would keep
 	// counting a closed screen's icons forever, which is precisely the wrong answer to give
 	// the question this epic is about.
-	FVaCuusPerfLog::AddResidentTextures(
-		-PublishedTextureCount, -int64(PublishedTextureBytes), -int64(PublishedTextureAllocatedBytes));
+	FVaCuusPerfLog::AddResidentTextures(-PublishedTextureCount,
+		-int64(PublishedTextureBytes.load(std::memory_order_relaxed)),
+		-int64(PublishedTextureAllocatedBytes.load(std::memory_order_relaxed)));
 
 	FScopeLock Lock(&VaCuusReplayRegistry::Mutex);
 	VaCuusReplayRegistry::Live.RemoveSingleSwap(this, EAllowShrinking::No);
@@ -566,12 +567,22 @@ void FVaCuusReplayRenderer::PublishCensus()
 	const uint64 Allocated = GetResidentTextureAllocatedBytes();
 
 	FVaCuusPerfLog::AddResidentTextures(Count - PublishedTextureCount,
-		int64(Bytes) - int64(PublishedTextureBytes),
-		int64(Allocated) - int64(PublishedTextureAllocatedBytes));
+		int64(Bytes) - int64(PublishedTextureBytes.load(std::memory_order_relaxed)),
+		int64(Allocated) - int64(PublishedTextureAllocatedBytes.load(std::memory_order_relaxed)));
 
 	PublishedTextureCount = Count;
-	PublishedTextureBytes = Bytes;
-	PublishedTextureAllocatedBytes = Allocated;
+	PublishedTextureBytes.store(Bytes, std::memory_order_relaxed);
+	PublishedTextureAllocatedBytes.store(Allocated, std::memory_order_relaxed);
+}
+
+void FVaCuusReplayRenderer::GetPublishedTextureCensus(uint64& OutLogicalBytes, uint64& OutAllocatedBytes) const
+{
+	// NO THREAD CHECK, and that is the point of the pair being atomic: the sweep asking this
+	// runs on the UI thread. The two loads are independent, so a reader can catch the instant
+	// between them -- which costs at most a ratio built from one publish's logical and the
+	// next's allocated, i.e. a slightly stale scale factor, not a wrong unit.
+	OutLogicalBytes = PublishedTextureBytes.load(std::memory_order_relaxed);
+	OutAllocatedBytes = PublishedTextureAllocatedBytes.load(std::memory_order_relaxed);
 }
 
 // Thin forwarders, kept so that the test and vacuus.TextureStats read the census through the

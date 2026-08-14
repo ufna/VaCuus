@@ -486,13 +486,23 @@ Rml::Context* FVaCuusRmlDocumentHost::GetContext() const
  * vacuus.TextureStats on your own screen. Zero means the behaviour every version until now
  * had: nothing is ever evicted, which is also RmlUi's own (FileTextureDatabase has no
  * eviction at all).
+ *
+ * WHICH BYTES IT COUNTS IS PART OF WHAT IT MEANS, and the help text says so (VaCuus-cyn). The
+ * number is compared in the bytes the PLATFORM RESERVES wherever the view's replayer could ask
+ * -- the same figure vacuus.TextureStats prints as ALLOCATED -- and falls back to the logical
+ * extent x bpp sum where it could not. The two differ by ~46% on icon-sized art
+ * (VaCuus.Render.Texture.PlatformSize), so a knob that took a census figure and quietly meant
+ * something 46% larger by it would be worse than one that named its unit.
  */
 static TAutoConsoleVariable<int32> CVarVaCuusTextureBudgetMB(
 	TEXT("vacuus.TextureBudgetMB"),
 	0,
 	TEXT("0 (default) = never evict UI textures, which is RmlUi's own behaviour.\n")
-		TEXT("N = evict file textures not drawn recently until this view's tracked total is under N MiB. ")
-		TEXT("Measure with vacuus.TextureStats; see VaCuus-dqs.3."));
+		TEXT("N = evict file textures not drawn recently until this view's total is under N MiB.\n")
+		TEXT("N IS IN THE BYTES THE PLATFORM RESERVES -- the figure vacuus.TextureStats labels ALLOCATED -- ")
+		TEXT("so a number read off that census means here what it meant there. Where no RHI can be asked ")
+		TEXT("(NullRHI) the comparison falls back to the LOGICAL extent x bpp sum, which for icon-sized art ")
+		TEXT("runs ~46% lower. The eviction log line names which of the two it used. See VaCuus-dqs.3, VaCuus-cyn."));
 
 /**
  * How long a texture must go UNDRAWN before it is evictable, in RECORDED frames.
@@ -523,6 +533,16 @@ static TAutoConsoleVariable<int32> CVarVaCuusTextureEvictIdleFrames(
  * texture costs a synchronous probe plus a decode, and EnsureLoaded recovers its source with
  * a linear scan of the whole database, so thrash is super-linear in exactly the database big
  * enough to need this.
+ *
+ * THE BUDGET IS CONVERTED DOWN INTO THE RECORDER'S UNIT, NOT THE TOTAL UP INTO THE CVAR'S
+ * (VaCuus-cyn), even though the cvar is the number a human typed and the log has to speak in
+ * it. Everything under this line -- the comparison, the low-water mark, and every per-texture
+ * figure CollectEvictableSources adds up as it walks -- is the recorder's own logical bytes,
+ * and converting the one threshold keeps all of it in a single unit. Scaling the total instead
+ * would compare in allocated bytes and then evict against a low-water mark in logical ones:
+ * two units in one decision, with a ~46% gap between them, which is the shape of the bug this
+ * is fixing rather than a fix for it. The scale is only ever applied to the two numbers that
+ * cross the seam, and both LOG LINES SAY WHICH UNIT THEY ARE PRINTING.
  */
 void FVaCuusRmlDocumentHost::SweepTextureBudget()
 {
@@ -534,13 +554,28 @@ void FVaCuusRmlDocumentHost::SweepTextureBudget()
 		return;
 	}
 
-	const uint64 BudgetBytes = uint64(BudgetMB) * 1024ull * 1024ull;
+	// Two relaxed atomic loads, no render-thread round trip: the sink's census is published at
+	// the far end whenever the texture set actually changed. A view that has not published yet
+	// leaves this unknown and every conversion below is an identity, i.e. exactly the
+	// pre-VaCuus-cyn behaviour, which is the right answer when there is nothing resident to
+	// have a ratio about.
+	FVaCuusTextureUnitScale Scale;
+	if (Sink.IsValid())
+	{
+		Sink->GetPublishedTextureCensus(Scale.LogicalBytes, Scale.AllocatedBytes);
+	}
+	const TCHAR* const Unit = Scale.IsKnown() ? TEXT("allocated") : TEXT("logical");
+
+	const uint64 BudgetBytes = Scale.AllocatedToLogical(uint64(BudgetMB) * 1024ull * 1024ull);
 	const uint64 LowWater = (BudgetBytes * 4ull) / 5ull;
 	const uint64 Tracked = Recorder->GetTrackedTextureBytes();
 	if (Tracked <= BudgetBytes)
 	{
 		return;
 	}
+
+	// The one number the log prints that the caller can compare against what they typed.
+	const double TrackedMB = double(Scale.LogicalToAllocated(Tracked)) / (1024.0 * 1024.0);
 
 	TArray<FString> Evictable;
 	Recorder->CollectEvictableSources(
@@ -553,8 +588,8 @@ void FVaCuusRmlDocumentHost::SweepTextureBudget()
 		// happens would be a flood, so this rides the same gate as the eviction itself: it can
 		// only be reached while over budget, which is already the exceptional case.
 		UE_LOG(LogVaCuus, Verbose,
-			TEXT("View %u: over the %d MiB texture budget (%.2f MiB) but nothing has been undrawn long enough"),
-			ViewId, BudgetMB, double(Tracked) / (1024.0 * 1024.0));
+			TEXT("View %u: over the %d MiB texture budget (%.2f MiB %s) but nothing has been undrawn long enough"),
+			ViewId, BudgetMB, TrackedMB, Unit);
 		return;
 	}
 
@@ -564,8 +599,8 @@ void FVaCuusRmlDocumentHost::SweepTextureBudget()
 	}
 
 	UE_LOG(LogVaCuus, Display,
-		TEXT("View %u: texture budget %d MiB exceeded at %.2f MiB — evicted %d undrawn texture(s)"),
-		ViewId, BudgetMB, double(Tracked) / (1024.0 * 1024.0), Evictable.Num());
+		TEXT("View %u: texture budget %d MiB exceeded at %.2f MiB %s — evicted %d undrawn texture(s)"),
+		ViewId, BudgetMB, TrackedMB, Unit, Evictable.Num());
 }
 
 void FVaCuusRmlDocumentHost::RecordAndPublishFrame()

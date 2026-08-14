@@ -70,6 +70,12 @@ public:
 	/** Drops the replayer's RHI resources and any queued buffers; Draw becomes a no-op. */
 	virtual void ReleaseResources_RenderThread() override;
 
+	/** This view's published census, any thread; see IVaCuusFrameSink. */
+	virtual void GetPublishedTextureCensus(uint64& OutLogicalBytes, uint64& OutAllocatedBytes) const override
+	{
+		Replayer.GetPublishedTextureCensus(OutLogicalBytes, OutAllocatedBytes);
+	}
+
 	//~ Begin ICustomSlateElement
 	// FVaCuusDrawPassInputs = the engine's FDrawPassInputs behind the version seam
 	// (VaCuusEngineCompat.h hotspot 1); field reads go through VaCuusCompat accessors.

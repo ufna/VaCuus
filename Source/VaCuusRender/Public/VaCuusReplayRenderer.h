@@ -219,6 +219,22 @@ public:
 	static uint64 GetPublishedTextureBytes();
 
 	/**
+	 * THIS VIEW'S half of that census, both figures, from any thread (VaCuus-cyn).
+	 *
+	 * WHY PER-VIEW WHEN THE PROCESS-WIDE PAIR IS ALREADY READABLE. The one caller is the
+	 * eviction sweep, which is per-view: it compares vacuus.TextureBudgetMB against the
+	 * RECORDER's own logical total for one view, and needs this view's allocated:logical
+	 * relationship to convert between the two units. A process-wide ratio would blend a
+	 * second view's atlas into an icon grid's answer, and the two differ by ~46% against
+	 * ~1% (VaCuus.Render.Texture.PlatformSize) -- the exact confusion this is here to end.
+	 *
+	 * SAME SAMPLED-DERIVATION CONTRACT as the static pair above, including "can be one
+	 * publish stale", and OutAllocated == 0 keeps meaning "no answer" (no RHI to ask), not
+	 * "nothing resident". Callers must fall back to the logical figure and say so.
+	 */
+	void GetPublishedTextureCensus(uint64& OutLogicalBytes, uint64& OutAllocatedBytes) const;
+
+	/**
 	 * Uploads the buffer's resource delta, replays its commands into the
 	 * persistent output RT (recreated on ViewSize change), then retires the
 	 * buffer's released handles.
@@ -473,11 +489,18 @@ private:
 	void PublishCensus();
 
 	/** What this replayer last contributed to the published total, so the delta above is exact
-	 *  and the destructor knows how much to take back. Render thread, no synchronisation of
-	 *  their own: only PublishCensus and the destructor touch them. */
+	 *  and the destructor knows how much to take back. WRITTEN only by PublishCensus and the
+	 *  destructor, both on the render thread.
+	 *
+	 *  THE TWO BYTE FIGURES ARE ATOMIC because GetPublishedTextureCensus hands them to the UI
+	 *  thread's sweep (VaCuus-cyn). Relaxed, like the process-wide pair they feed: the sweep
+	 *  wants a recent ratio, not a synchronised one, and it runs once per frame against a set
+	 *  that changes on load. A SECOND, atomic COPY of the same numbers was the alternative and
+	 *  is worse -- two accountings of one fact can drift; this cannot. The count stays plain
+	 *  because nothing off the render thread reads it. */
 	int32 PublishedTextureCount = 0;
-	uint64 PublishedTextureBytes = 0;
-	uint64 PublishedTextureAllocatedBytes = 0;
+	std::atomic<uint64> PublishedTextureBytes{0};
+	std::atomic<uint64> PublishedTextureAllocatedBytes{0};
 
 	/**
 	 * Compiled shaders, beside Geometry/Textures with the same upload/retire lifecycle —
