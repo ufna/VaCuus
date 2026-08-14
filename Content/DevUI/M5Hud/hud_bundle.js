@@ -24,7 +24,7 @@
  * SOFTWARE.
  */
 (() => {
-  // Web/node_modules/preact/dist/preact.module.js
+  // node_modules/preact/dist/preact.module.js
   var n;
   var l;
   var u;
@@ -281,7 +281,7 @@
     return n2.__v.__b - l3.__v.__b;
   }, H.__r = 0, f = Math.random().toString(8), c = "__d" + f, a = "__a" + f, s = /(PointerCapture)$|Capture$/i, h = 0, p = V(false), v = V(true), y = 0;
 
-  // Web/node_modules/preact/hooks/dist/hooks.module.js
+  // node_modules/preact/hooks/dist/hooks.module.js
   var t2;
   var r2;
   var u2;
@@ -413,7 +413,7 @@
     return "function" == typeof t3 ? t3(n2) : t3;
   }
 
-  // Web/packages/preact-vacuus/src/index.js
+  // packages/preact-vacuus/src/index.js
   var innerHTMLInstalled = false;
   function installInnerHTMLAlias() {
     if (innerHTMLInstalled || typeof document === "undefined" || document === null) return;
@@ -459,7 +459,7 @@
   l.debounceRendering = (cb) => Promise.resolve().then(cb);
   l.requestAnimationFrame = (cb) => requestAnimationFrame(cb);
 
-  // Web/apps/demo-hud/src/hud.tsx
+  // apps/demo-hud/src/hud.tsx
   var ROSTER = ["Vex", "Kilo", "Moth", "Rasp", "Unto"];
   function Killfeed({ rows }) {
     return /* @__PURE__ */ k("div", { id: "killfeed" }, rows.map((r3) => /* @__PURE__ */ k("div", { key: r3.id, class: "kill-row" }, vacuus.translate("{killer} downed {victim}", { killer: r3.killer, victim: r3.victim }))));
