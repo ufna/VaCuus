@@ -56,4 +56,22 @@ public:
 
 	/** Drops all RHI resources; the sink draws/copies nothing afterwards. */
 	virtual void ReleaseResources_RenderThread() = 0;
+
+	/**
+	 * This view's published texture census, both figures, read from ANY thread (VaCuus-cyn).
+	 * The only method here that is not a render-thread call, and the only one the UI thread
+	 * may touch: it reads two atomics the replayer stores at publish time.
+	 *
+	 * WHY IT IS ON THIS INTERFACE, which is otherwise exactly the host's two render-side
+	 * calls. The eviction sweep is per-view and lives on the host; the allocated:logical
+	 * relationship it needs to make vacuus.TextureBudgetMB mean allocated bytes is known only
+	 * where the textures are created, and the sink is the ONLY edge the host already has to
+	 * that side. The alternative was the process-wide census, which blends other views in.
+	 *
+	 * PURE, WITH TWO TEST FAKES THAT MUST WRITE `0, 0` BY HAND, deliberately: a default that
+	 * answered "no allocated figure" would let a sink silently put the budget back in logical
+	 * bytes -- the exact bug this closes -- and no test would see it. OutAllocated == 0 means
+	 * "cannot say" (NullRHI, or a sink with no replayer), never "nothing resident".
+	 */
+	virtual void GetPublishedTextureCensus(uint64& OutLogicalBytes, uint64& OutAllocatedBytes) const = 0;
 };

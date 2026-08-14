@@ -131,6 +131,13 @@ public:
 		Buffers.Empty();
 	}
 
+	/** No replayer, so no census: 0 allocated is the interface's "cannot say" (VaCuus-cyn). */
+	virtual void GetPublishedTextureCensus(uint64& OutLogicalBytes, uint64& OutAllocatedBytes) const override
+	{
+		OutLogicalBytes = 0;
+		OutAllocatedBytes = 0;
+	}
+
 	/** Written on the render thread, read on the game thread AFTER FlushRenderingCommands(). */
 	TArray<TUniquePtr<FVaCuusCommandBuffer>> Buffers;
 };

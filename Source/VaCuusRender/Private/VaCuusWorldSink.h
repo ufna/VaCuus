@@ -74,6 +74,10 @@ public:
 	//~ Begin IVaCuusFrameSink
 	virtual void SetPendingBuffer_RenderThread(FRHICommandListImmediate& RHICmdList, TUniquePtr<FVaCuusCommandBuffer> InBuffer) override;
 	virtual void ReleaseResources_RenderThread() override;
+	virtual void GetPublishedTextureCensus(uint64& OutLogicalBytes, uint64& OutAllocatedBytes) const override
+	{
+		Replayer.GetPublishedTextureCensus(OutLogicalBytes, OutAllocatedBytes);
+	}
 	//~ End IVaCuusFrameSink
 
 	/**

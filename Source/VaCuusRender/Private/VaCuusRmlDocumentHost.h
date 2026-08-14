@@ -19,6 +19,60 @@ class ElementDocument;
 }
 
 /**
+ * ONE VIEW'S allocated:logical texture relationship, sampled from its sink (VaCuus-cyn).
+ *
+ * THE TWO UNITS THE BUDGET LIVES BETWEEN. The recorder counts what it decoded -- width x
+ * height x 4, on the UI thread, with no RHI in reach -- while vacuus.TextureBudgetMB is a
+ * number a buyer read off vacuus.TextureStats, which since VaCuus-aam prints what the platform
+ * reserves. On icon-sized art those differ by ~46% (VaCuus.Render.Texture.PlatformSize), so
+ * comparing one against the other made the knob admit ~58 MiB when it was set to 40.
+ *
+ * TWO NAMED CONVERSIONS RATHER THAN A RATIO, because a bare scale factor is applied in the
+ * wrong direction eventually and both directions are plausible-looking numbers. Neither can be
+ * called with the arguments swapped.
+ *
+ * IT IS A WHOLE-VIEW RATIO, NOT A PER-TEXTURE SIZE, and that bound is real: converting the
+ * BUDGET (which this does) is exact whenever the recorder's set and the replayer's set agree,
+ * whatever the art; converting an individual texture's contribution would only be right for
+ * uniform art. So the threshold moves into the right unit while CollectEvictableSources keeps
+ * choosing and measuring in the recorder's own bytes, where its per-texture figures are exact.
+ * Shape (b) on VaCuus-cyn -- per-handle allocated sizes carried back beside Bytes -- is what
+ * would make the depth of a sweep exact for mixed documents too.
+ *
+ * UNKNOWN IS A STATE, not a 1:1 default in disguise: a NullRHI run has no allocator to ask and
+ * a view that has published nothing yet has no textures to ask about. Both leave the figures
+ * at zero, both convert as identity, and the caller says which unit it ended up in.
+ */
+struct FVaCuusTextureUnitScale
+{
+	/** This view's published census; 0/0 until it publishes, allocated 0 when no RHI could say. */
+	uint64 LogicalBytes = 0;
+	uint64 AllocatedBytes = 0;
+
+	bool IsKnown() const { return LogicalBytes > 0 && AllocatedBytes > 0; }
+
+	/** A budget in platform-reserved bytes, in the recorder's logical bytes. Identity when unknown. */
+	uint64 AllocatedToLogical(uint64 Bytes) const { return Scale(Bytes, LogicalBytes, AllocatedBytes); }
+
+	/** A recorder total in the platform-reserved bytes the cvar is written in. Identity when unknown. */
+	uint64 LogicalToAllocated(uint64 Bytes) const { return Scale(Bytes, AllocatedBytes, LogicalBytes); }
+
+private:
+	/**
+	 * DOUBLE, NOT A 64-BIT MulDiv, and the reason is overflow rather than taste: Bytes x
+	 * Allocated is two texture-memory figures multiplied together, and a wrap there reads as a
+	 * budget of a few bytes -- i.e. "evict everything" -- which is the one failure this must
+	 * not have. Byte counts sit far inside double's exactly-representable integer range (2^53
+	 * is 8 PiB), and the result feeds a MiB-granularity comparison, so nothing is lost.
+	 */
+	static uint64 Scale(uint64 Bytes, uint64 Numerator, uint64 Denominator)
+	{
+		return (Numerator > 0 && Denominator > 0) ? uint64(double(Bytes) * double(Numerator) / double(Denominator))
+												  : Bytes;
+	}
+};
+
+/**
  * The RmlUi-backed document host for ONE view: owns that view's recording render
  * interface, its Rml context and its current document (RmlUi headers stay in the
  * cpp).
