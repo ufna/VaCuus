@@ -235,9 +235,17 @@ public:
 	 * can quietly drift from the maps it describes. Lock-free: two atomics, relaxed, because
 	 * the reader wants a recent number and not a synchronised one.
 	 */
-	static void AddResidentTextures(int32 CountDelta, int64 BytesDelta);
+	static void AddResidentTextures(int32 CountDelta, int64 BytesDelta, int64 AllocatedDelta);
 	static int32 GetResidentTextureCount();
 	static uint64 GetResidentTextureBytes();
+
+	/**
+	 * The census in the bytes the platform actually reserves, or 0 when no RHI could say
+	 * (VaCuus-aam). ZERO MEANS "NO ANSWER", so every reader must state which of the two
+	 * figures it printed -- they differ by ~46% on icon-sized art, and an unlabelled number
+	 * that silently changes meaning with the launch flags is worse than either.
+	 */
+	static uint64 GetResidentTextureAllocatedBytes();
 
 	/**
 	 * Record one RECORDED UI frame and whether it was published. No-op while

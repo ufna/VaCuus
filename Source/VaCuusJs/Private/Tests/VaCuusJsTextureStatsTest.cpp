@@ -75,8 +75,24 @@ bool FVaCuusJsTextureStatsTest::RunTest(const FString& Parameters)
 			// second `const s` in a later call is a SyntaxError that reads as a facade failure.
 			"(() => { const s = vacuus.textureStats();"
 			" return [typeof vacuus.textureStats, typeof s, Object.keys(s).sort().join(','),"
-			" typeof s.count, typeof s.bytes].join('|'); })()"),
-		FString(TEXT("function|object|bytes,count|number|number")));
+			" typeof s.count, typeof s.bytes, typeof s.bytesAreAllocated].join('|'); })()"),
+		// VaCuus-aam: the flag is part of the contract, not a debug extra -- `bytes` means two
+		// different things by ~46% depending on it, so a reader that cannot see it is guessing.
+		FString(TEXT("function|object|bytes,bytesAreAllocated,count|number|number|boolean")));
+
+	// THE FLAG MUST FOLLOW THE STORE, and that is drivable from here without an RHI: the
+	// published allocated total is what decides it. Zero means "no platform could say", so the
+	// facade must fall back to the logical figure AND admit it.
+	//
+	// Asserted as a DELTA from whatever this editor already holds, like everything else here:
+	// another view's textures are legitimately part of a process-wide census.
+	const auto FlagNow = [&] { return Rig.Eval(ViewId, "String(vacuus.textureStats().bytesAreAllocated)"); };
+	const FString FlagBefore = FlagNow();
+
+	FVaCuusPerfLog::AddResidentTextures(0, 0, 4096);
+	TestEqual(TEXT("a platform answer makes bytes allocated, and the flag says so"), FlagNow(), FString(TEXT("true")));
+	FVaCuusPerfLog::AddResidentTextures(0, 0, -4096);
+	TestEqual(TEXT("...and withdrawing it puts the flag back"), FlagNow(), FlagBefore);
 
 	// 213x276 again: the icon the whole epic is about, so the number crossing the bridge here
 	// is the same 235,152 the render-side test asserts and the epic's description quotes.
@@ -86,12 +102,12 @@ bool FVaCuusJsTextureStatsTest::RunTest(const FString& Parameters)
 	const FString Before = Rig.Eval(ViewId,
 		"(() => { const s = vacuus.textureStats(); return [s.count, s.bytes].join(','); })()");
 
-	FVaCuusPerfLog::AddResidentTextures(IconCount, IconBytes);
+	FVaCuusPerfLog::AddResidentTextures(IconCount, IconBytes, IconBytes);
 	const FString AfterAdd = Rig.Eval(ViewId,
 		"(() => { const s = vacuus.textureStats(); return [s.count, s.bytes].join(','); })()");
 
 	// And back down, which is the half a growing-only counter would pass anyway.
-	FVaCuusPerfLog::AddResidentTextures(-IconCount, -IconBytes);
+	FVaCuusPerfLog::AddResidentTextures(-IconCount, -IconBytes, -IconBytes);
 	const FString AfterRetract = Rig.Eval(ViewId,
 		"(() => { const s = vacuus.textureStats(); return [s.count, s.bytes].join(','); })()");
 
@@ -124,9 +140,9 @@ bool FVaCuusJsTextureStatsTest::RunTest(const FString& Parameters)
 	// reaches that — and JS_NewInt32 would have wrapped it silently. Pushing a value beyond the
 	// 32-bit range and reading it back is the only way to see that from this side.
 	constexpr int64 HugeBytes = 3ll * 1024ll * 1024ll * 1024ll;	   // 3 GiB
-	FVaCuusPerfLog::AddResidentTextures(0, HugeBytes);
+	FVaCuusPerfLog::AddResidentTextures(0, HugeBytes, HugeBytes);
 	const FString Huge = Rig.Eval(ViewId, "String(vacuus.textureStats().bytes)");
-	FVaCuusPerfLog::AddResidentTextures(0, -HugeBytes);
+	FVaCuusPerfLog::AddResidentTextures(0, -HugeBytes, -HugeBytes);
 
 	int64 HugeSeen = FCString::Atoi64(*Huge);
 	TestEqual(TEXT("a byte count past 2^31 survives the crossing"), HugeSeen - B0, HugeBytes);

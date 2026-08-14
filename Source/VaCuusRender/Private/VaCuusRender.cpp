@@ -8,6 +8,7 @@
 #include "VaCuusMaterialDraw.h"
 #include "VaCuusRecordingRenderInterface.h"
 #include "VaCuusReplayRenderer.h"
+#include "VaCuusStats.h"
 #include "VaCuusRmlDocumentHost.h"
 #include "VaCuusSlateElement.h"
 #include "VaCuusStyleSet.h"
@@ -2093,11 +2094,24 @@ static void ReportTextureStats()
 		{ FVaCuusReplayRenderer::SumLiveTextures(Views, Textures, Bytes); });
 	FlushRenderingCommands();
 
+	// VaCuus-aam: REAL BYTES WHEN THE PLATFORM CAN SAY, LOGICAL WHEN IT CANNOT, AND ALWAYS
+	// WHICH. The two differ by ~46% on icon-sized art (VaCuus.Render.Texture.PlatformSize), so
+	// a figure that changed meaning with the launch flags and kept the same label would be the
+	// worst of the three options. Zero from the allocated accessor means "no answer" -- a
+	// NullRHI run has no allocator to ask -- not "nothing resident".
+	const uint64 Allocated = FVaCuusPerfLog::GetResidentTextureAllocatedBytes();
+	const bool bReal = Allocated > 0;
+	const uint64 Reported = bReal ? Allocated : Bytes;
+
 	UE_LOG(LogVaCuus, Display,
-		TEXT("vacuus.TextureStats: %d texture(s) resident across %d replayer(s), %.2f MiB (%llu bytes). ")
-		TEXT("LOGICAL footprint — extent x format block bytes; the RHI may pad row pitch, which this cannot see. ")
+		TEXT("vacuus.TextureStats: %d texture(s) resident across %d replayer(s), %.2f MiB %s (%llu bytes). ")
+		TEXT("%s")
 		TEXT("RmlUi never evicts a file texture on its own (VaCuus-dqs), so a number that only grows is expected, not a leak."),
-		Textures, Views, double(Bytes) / (1024.0 * 1024.0), Bytes);
+		Textures, Views, double(Reported) / (1024.0 * 1024.0),
+		bReal ? TEXT("ALLOCATED") : TEXT("LOGICAL"), Reported,
+		bReal
+			? TEXT("This is what the platform actually reserves (RHICalcTexturePlatformSize); the logical extent x bpp figure is smaller. ")
+			: TEXT("LOGICAL means extent x format block bytes -- this RHI could not be asked what it really reserves, and on desktop Vulkan the real figure runs ~46% higher for icon-sized art. "));
 }
 
 /**

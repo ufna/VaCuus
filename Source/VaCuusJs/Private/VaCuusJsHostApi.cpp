@@ -601,11 +601,21 @@ JSValue FVaCuusJsViewContext::TextureStatsThunk(JSContext* Ctx, JSValueConst /*T
 	// PROCESS-WIDE, like stats() and for the same reason: the published total sums every live
 	// view, and RmlUi shares a file texture by SOURCE across every document in a view anyway, so
 	// a per-view split would report precision the mechanism does not have.
+	// VaCuus-aam: REAL BYTES WHEN THE PLATFORM CAN SAY, LOGICAL WHEN IT CANNOT, AND ALWAYS
+	// WHICH. `bytes` is the figure to budget against; `bytesAreAllocated` says whether it is
+	// what the platform reserves or the extent x bpp arithmetic. The two differ by ~46% on
+	// icon-sized art, so a script that logs `bytes` without the flag is logging a number whose
+	// meaning depends on how the process was launched.
+	const uint64 Allocated = FVaCuusPerfLog::GetResidentTextureAllocatedBytes();
+	const bool bReal = Allocated > 0;	// zero means "no answer", not "nothing resident"
+
 	JSValue Out = JS_NewObject(Ctx);
 	JS_SetPropertyStr(Ctx, Out, "count", JS_NewInt32(Ctx, FVaCuusPerfLog::GetResidentTextureCount()));
 	// Float64: a byte count passes 2^31 at 2 GiB, which a texture budget reaches, and JS has no
 	// integer type wider than the double this becomes anyway.
-	JS_SetPropertyStr(Ctx, Out, "bytes", JS_NewFloat64(Ctx, double(FVaCuusPerfLog::GetResidentTextureBytes())));
+	JS_SetPropertyStr(Ctx, Out, "bytes",
+		JS_NewFloat64(Ctx, double(bReal ? Allocated : FVaCuusPerfLog::GetResidentTextureBytes())));
+	JS_SetPropertyStr(Ctx, Out, "bytesAreAllocated", bReal ? JS_TRUE : JS_FALSE);
 	return Out;
 }
 

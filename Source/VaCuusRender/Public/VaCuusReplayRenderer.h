@@ -342,6 +342,27 @@ public:
 	uint64 GetResidentTextureBytes() const;
 
 	/**
+	 * The same census in the bytes the PLATFORM actually reserves, or 0 when it cannot say
+	 * (VaCuus-aam). This is the figure a memory budget should be set from.
+	 *
+	 * BECAUSE THE LOGICAL NUMBER IS NOT WHAT ANYONE IS CHARGED. Measured on desktop Vulkan by
+	 * VaCuus.Render.Texture.PlatformSize: a 213x276 RGBA8 icon reserves 344,064 B against
+	 * 235,152 logical -- +46% -- because padding is per ROW and a narrow texture wastes a
+	 * larger fraction of every one. The 4047x3036 atlas pays +1.21%. Two hundred loose icons
+	 * are 44.85 MiB logical and 65.62 MiB real.
+	 *
+	 * ZERO MEANS "NO ANSWER", NOT "NOTHING RESIDENT", and the callers are required to say
+	 * which number they ended up printing. RHICalcTexturePlatformSize goes through
+	 * GDynamicRHI, so a NullRHI run has nothing to ask -- which is exactly the run the
+	 * automation suite uses. A reporter that silently fell back would put a 46%-different
+	 * number under the same label depending on how the process was launched.
+	 *
+	 * THE LOGICAL ACCESSOR ABOVE STAYS, and is what tests assert on: it is derived from the
+	 * map with no platform in the loop, so it is the same on every RHI and under none.
+	 */
+	uint64 GetResidentTextureAllocatedBytes() const;
+
+	/**
 	 * Texture payloads this replayer sent down the async path, and the ones it uploaded inline.
 	 *
 	 * THE OBSERVABLE FOR THE THRESHOLD, which otherwise has none: both paths leave the same
@@ -456,6 +477,7 @@ private:
 	 *  their own: only PublishCensus and the destructor touch them. */
 	int32 PublishedTextureCount = 0;
 	uint64 PublishedTextureBytes = 0;
+	uint64 PublishedTextureAllocatedBytes = 0;
 
 	/**
 	 * Compiled shaders, beside Geometry/Textures with the same upload/retire lifecycle —

@@ -550,7 +550,8 @@ FVaCuusReplayRenderer::~FVaCuusReplayRenderer()
 	// A view's whole contribution leaves with it. Without this the published total would keep
 	// counting a closed screen's icons forever, which is precisely the wrong answer to give
 	// the question this epic is about.
-	FVaCuusPerfLog::AddResidentTextures(-PublishedTextureCount, -int64(PublishedTextureBytes));
+	FVaCuusPerfLog::AddResidentTextures(
+		-PublishedTextureCount, -int64(PublishedTextureBytes), -int64(PublishedTextureAllocatedBytes));
 
 	FScopeLock Lock(&VaCuusReplayRegistry::Mutex);
 	VaCuusReplayRegistry::Live.RemoveSingleSwap(this, EAllowShrinking::No);
@@ -562,11 +563,15 @@ void FVaCuusReplayRenderer::PublishCensus()
 
 	const int32 Count = GetResidentTextureCount();
 	const uint64 Bytes = GetResidentTextureBytes();
+	const uint64 Allocated = GetResidentTextureAllocatedBytes();
 
-	FVaCuusPerfLog::AddResidentTextures(Count - PublishedTextureCount, int64(Bytes) - int64(PublishedTextureBytes));
+	FVaCuusPerfLog::AddResidentTextures(Count - PublishedTextureCount,
+		int64(Bytes) - int64(PublishedTextureBytes),
+		int64(Allocated) - int64(PublishedTextureAllocatedBytes));
 
 	PublishedTextureCount = Count;
 	PublishedTextureBytes = Bytes;
+	PublishedTextureAllocatedBytes = Allocated;
 }
 
 // Thin forwarders, kept so that the test and vacuus.TextureStats read the census through the
@@ -622,6 +627,30 @@ uint64 FVaCuusReplayRenderer::GetResidentTextureBytes() const
 		const FRHITextureDesc& Desc = Pair.Value->GetDesc();
 		const uint64 BytesPerBlock = uint64(GPixelFormats[Desc.Format].BlockBytes);
 		Total += uint64(Desc.Extent.X) * uint64(Desc.Extent.Y) * BytesPerBlock;
+	}
+	return Total;
+}
+
+uint64 FVaCuusReplayRenderer::GetResidentTextureAllocatedBytes() const
+{
+	check(IsInRenderingThread());
+
+	if (GDynamicRHI == nullptr || GUsingNullRHI)
+	{
+		return 0;	// no platform allocator to ask; the caller reports the logical figure and says so
+	}
+
+	uint64 Total = 0;
+	for (const TPair<FVaCuusTextureHandle, FTextureRHIRef>& Pair : Textures)
+	{
+		if (!Pair.Value.IsValid())
+		{
+			continue;
+		}
+		// The engine's own "true measure of a texture resource for the current running platform
+		// RHI" (RHIResources.h:1924). It allocates nothing -- it asks the allocator what this
+		// desc would cost -- so this stays as derived as the logical sum beside it.
+		Total += RHICalcTexturePlatformSize(Pair.Value->GetDesc(), 0).Size;
 	}
 	return Total;
 }

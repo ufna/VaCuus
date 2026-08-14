@@ -191,9 +191,13 @@ interface VaCuusHost {
 	 * that one is per-frame wall clock, this only moves when a document loads or drops an
 	 * image, and a per-frame reader should not mistake one for the other.
 	 *
-	 * `bytes` IS THE LOGICAL FOOTPRINT — each texture's extent times its format's block bytes.
-	 * The RHI may pad row pitch and nothing on this side can see that, so this is what the
-	 * payloads occupy and NOT a VRAM figure.
+	 * `bytes` IS WHAT THE PLATFORM ACTUALLY RESERVES whenever it can be asked, and
+	 * `bytesAreAllocated` is true then. Where no RHI can answer — a NullRHI run — it falls back
+	 * to the logical extent × block-bytes figure and the flag is false. THE TWO DIFFER BY ~46%
+	 * ON ICON-SIZED ART (a 213×276 RGBA8 reserves 344,064 B against 235,152 logical, because
+	 * padding is per row and a narrow texture wastes a larger fraction of every one), so a
+	 * script that reports `bytes` without the flag is reporting a number whose meaning depends
+	 * on how the process was launched.
 	 *
 	 * A PUBLISHED SNAPSHOT, so it can be one frame stale: the truth lives in the render
 	 * thread's texture maps and reading them synchronously would stall the UI thread on the
@@ -201,7 +205,7 @@ interface VaCuusHost {
 	 * once — and RmlUi never evicts a file texture on its own, so a number that only grows is
 	 * the documented behaviour rather than a leak.
 	 */
-	textureStats(): { count: number; bytes: number };
+	textureStats(): { count: number; bytes: number; bytesAreAllocated: boolean };
 	/**
 	 * Drop this view's cached copy of one file texture, keyed by the VFS source an `<img src>`
 	 * was written with (VaCuus-dqs.2). Answers whether anything was actually cached under it —

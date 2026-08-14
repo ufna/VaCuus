@@ -262,20 +262,28 @@ namespace VaCuusTextureCensus
 /** See FVaCuusPerfLog::AddResidentTextures for why these are deltas and why they are here. */
 static std::atomic<int64> Textures{0};
 static std::atomic<int64> Bytes{0};
+static std::atomic<int64> AllocatedBytes{0};
 }	 // namespace VaCuusTextureCensus
 
-void FVaCuusPerfLog::AddResidentTextures(int32 CountDelta, int64 BytesDelta)
+void FVaCuusPerfLog::AddResidentTextures(int32 CountDelta, int64 BytesDelta, int64 AllocatedDelta)
 {
 	// NO IsEnabled() GATE, deliberately -- see the header. This is the one figure here that a
 	// buyer asks for without having turned the perf log on first.
 	VaCuusTextureCensus::Textures.fetch_add(CountDelta, std::memory_order_relaxed);
 	VaCuusTextureCensus::Bytes.fetch_add(BytesDelta, std::memory_order_relaxed);
+	VaCuusTextureCensus::AllocatedBytes.fetch_add(AllocatedDelta, std::memory_order_relaxed);
 }
 
 int32 FVaCuusPerfLog::GetResidentTextureCount()
 {
 	const int64 Value = VaCuusTextureCensus::Textures.load(std::memory_order_relaxed);
 	return Value > 0 ? int32(Value) : 0;
+}
+
+uint64 FVaCuusPerfLog::GetResidentTextureAllocatedBytes()
+{
+	const int64 Value = VaCuusTextureCensus::AllocatedBytes.load(std::memory_order_relaxed);
+	return Value > 0 ? uint64(Value) : 0;
 }
 
 uint64 FVaCuusPerfLog::GetResidentTextureBytes()
