@@ -34,25 +34,35 @@ own run (vacuus.Catalog* + vacuus.TextureStats + vacuus.M1HUD.PerfLog 1):
 BOTH RESULTS GO AGAINST THE REFLEX, and they are why this demo exists instead of a paragraph
 asserting that atlases are better.
 
-  1. THE ATLAS COSTS *MORE* MEMORY HERE, by 2 MiB. Every icon is the same size, so the loose
-     arm packs perfectly by definition and the atlas carries the slack of its last partial row
-     (200 icons into a 19-wide grid is 11 rows of capacity 209). An atlas wins on packing only
-     when the art is RAGGED; identical cells are the one shape where it cannot.
-     NOT MEASURED, and it is the one thing that could still turn this around: RHI row-pitch
-     padding. 213 x 4 = 852 bytes per row, which a 256-byte-aligned RHI rounds to 1024 (+20%)
-     for each of 200 textures, against 4047 x 4 = 16,188 rounded to 16,384 (+1.2%) once. The
-     census reports LOGICAL bytes and cannot see it -- so the real VRAM comparison may well
-     favour the atlas, and nothing here has proved it either way.
+  1. THE ATLAS COSTS MORE *LOGICAL* BYTES AND FAR FEWER REAL ONES -- and the second half was
+     measured later, by VaCuus.Render.Texture.PlatformSize, after this table had already been
+     written and quoted. Read both.
+
+     On the census's own logical arithmetic the atlas is 2 MiB WORSE: every icon is the same
+     size, so the loose arm packs perfectly by definition while the atlas carries the slack of
+     its last partial row (200 icons into a 19-wide grid is 11 rows of capacity 209).
+
+     BUT THE RHI DOES NOT ALLOCATE LOGICAL BYTES. Asked what it would really reserve
+     (RHICalcTexturePlatformSize, the engine's own "true measure"), this desktop Vulkan
+     answers 344,064 B for a 213x276 RGBA8 against 235,152 logical -- +46.32%, on a 1024-byte
+     alignment -- while the 4047x3036 atlas pays +1.21%. So:
+
+         200 loose icons   44.85 MiB logical    65.62 MiB actually allocated
+         one atlas         46.87 MiB logical    47.44 MiB actually allocated
+
+     THE ATLAS IS 18.19 MiB CHEAPER IN REAL MEMORY. The logical comparison above is not
+     wrong, it is just not the number a platform charges for -- and the gap is worst exactly
+     where UI art lives, because a narrow texture wastes a larger fraction of every padded
+     row. The census reports LOGICAL bytes by construction and cannot see any of this.
 
   2. DRAW CALLS ARE IDENTICAL: 201 either way, i.e. one per element plus the background. The
      classic atlas win -- fewer state changes because neighbours share a texture -- DOES NOT
      EXIST in VaCuus today, because nothing merges adjacent draws that share a texture. RmlUi
      emits one geometry per element and the replayer replays the recorded buffer 1:1.
 
-  SO, FOR VaCuus AS IT STANDS, an atlas buys neither bytes nor draws. What it does buy is
-  LIFETIME: one texture to release or evict instead of 200, and one decode at load instead of
-  200. That is a real argument -- it is the whole of VaCuus-dqs -- but it is not the argument
-  anyone expects to be making, and this demo is what makes the difference legible.
+  SO AN ATLAS BUYS REAL MEMORY AND LIFETIME, BUT NOT DRAWS. 18 MiB on this screen, one
+  texture to release or evict instead of 200, one decode at load instead of 200 -- and not one
+  draw call fewer, because nothing here merges draws that share a texture (VaCuus-dqs.5).
 
 THE ICONS ARE DELIBERATELY NOT NOISE. Random pixels would be incompressible and would make the
 PNGs (and any future atlas compression) unrepresentative of real icon art. Each is a flat
