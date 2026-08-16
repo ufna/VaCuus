@@ -5,11 +5,17 @@ import { METRIKA_ID } from './analytics.js'
 // docs/*.md are copies synced from the repo's docs/buyer/ by scripts/sync-docs.mjs
 // (wired to predev/prebuild) — never edit them here.
 
-// The Yandex Metrika tag exactly as metrika.yandex.ru generates it, with the counter id
-// interpolated in its two places and nothing else changed. Session Replay (`webvisor`) and
-// the click map are on, as the generated snippet has them. `ecommerce:"dataLayer"` is
-// part of the generated snippet too — this site pushes no such array, so the tag watches
-// for one that never appears.
+// The Yandex Metrika tag as metrika.yandex.ru generates it, with the counter id
+// interpolated in its two places and one deliberate change: `webvisor` is OFF. Session
+// Replay records the visitor's whole session — pointer, scroll, clicks, form input — and
+// that is a weight of consent a documentation site has no reason to carry; a pageview
+// counter and a click map do not. Written as an explicit `false` rather than a deleted key,
+// though false is the default, so that a regenerated snippet pasted over this one shows the
+// difference in the diff instead of restoring recording silently. The counter's own
+// Settings -> Tag checkbox is the other half of the same switch and has to match.
+//
+// `ecommerce:"dataLayer"` is part of the generated snippet — this site pushes no such
+// array, so the tag watches for one that never appears.
 //
 // VitePress runs an inline <script> body through esbuild's minifier and inserts it
 // unescaped — renderHead() in vitepress/dist/node/chunk-*.js, which escapes attributes but
@@ -22,7 +28,7 @@ const METRIKA_TAG = `
     k=e.createElement(t),a=e.getElementsByTagName(t)[0],k.async=1,k.src=r,a.parentNode.insertBefore(k,a)
 })(window, document,'script','https://mc.yandex.ru/metrika/tag.js?id=${METRIKA_ID}', 'ym');
 
-ym(${METRIKA_ID}, 'init', {ssr:true, webvisor:true, clickmap:true, ecommerce:"dataLayer", referrer: document.referrer, url: location.href, accurateTrackBounce:true, trackLinks:true});
+ym(${METRIKA_ID}, 'init', {ssr:true, webvisor:false, clickmap:true, ecommerce:"dataLayer", referrer: document.referrer, url: location.href, accurateTrackBounce:true, trackLinks:true});
 `
 
 export default defineConfig({
