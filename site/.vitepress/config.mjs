@@ -39,7 +39,10 @@ export default defineConfig({
     ['meta', { property: 'og:image:width', content: '1200' }],
     ['meta', { property: 'og:image:height', content: '630' }],
     ['meta', { name: 'twitter:card', content: 'summary_large_image' }],
-    ['meta', { name: 'twitter:image', content: 'https://vacuus.ufna.dev/og.jpg' }]
+    ['meta', { name: 'twitter:image', content: 'https://vacuus.ufna.dev/og.jpg' }],
+    // Site-ownership verification for Heleket. It must be served on every page of the
+    // origin, so it belongs in the global head, not on one page.
+    ['meta', { name: 'heleket', content: '4aea48a5' }]
   ],
 
   markdown: {
