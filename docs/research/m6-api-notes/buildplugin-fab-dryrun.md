@@ -37,6 +37,11 @@ Deliberate NON-exclusions, each a decision not an oversight:
   §5 on the marker-only bundle asset.
 - **`gen_relays.sh` ×2 ship** — the documented re-vendor procedure (invoked as
   `bash .../gen_relays.sh`); exec bits stripped instead (§2).
+  **OVERTURNED 2026-08-16 by Fab technical review round 1** (bead VaCuus-1hy): the
+  reviewer failed the 1.0 package on exactly these two paths — *"the plugin will not
+  be compiled until executables are removed"* — so a `.sh` counts as an executable
+  there whatever its permission bits say. `Config/FilterPlugin.ini` now excludes both;
+  they stay in the repository, where a re-vendor needs them.
 
 ## 2. Exec-bit hygiene — found and fixed
 
@@ -61,7 +66,9 @@ Full-tree sweep (`find . -type f -perm /111` + `git ls-files -s | awk '$1=="1007
 NODE_MODULES, LFS_POINTER — spec §2(e)'s five, plus the review round's ELF-magic
 class: an ELF with a harmless name, no bit and no shebang evaded all five originals,
 and that renamed-esbuild shape is the scan's whole charter), a three-entry shebang
-whitelist (the two `gen_relays.sh` + `vacuus.mjs`, reasons in the script), and TWO
+whitelist (the two `gen_relays.sh` + `vacuus.mjs`, reasons in the script — **now
+one entry, `vacuus.mjs`**, since the review took the other two out of the package
+and the fixture moved with the list), and TWO
 mandatory self-tests per invocation: `Tools/scan-fixture/` (one plant per class,
 must report exactly the six) and `Tools/scan-fixture-whitelist/` (a shebang at
 exactly a whitelisted path must be forgiven while its near-miss neighbour is

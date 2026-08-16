@@ -54,13 +54,17 @@ WHITELIST_FIXTURE_DIR="${SCRIPT_DIR}/scan-fixture-whitelist"
 
 # The shebang whitelist (package-relative paths). Shebang lines OUTSIDE this list are
 # violations; entries IN it still must not carry exec bits (EXECBIT has no whitelist).
-#  - gen_relays.sh ×2: the documented re-vendor procedure (invoked as `bash .../gen_relays.sh`);
-#    ships as source on purpose, exec bit stripped in M6.
 #  - vacuus.mjs: the npm CLI entry (`bin` in Web/packages/cli/package.json); npm itself
 #    chmods bin targets on install, so the committed file carries a shebang and no bit.
+#
+# THE TWO gen_relays.sh USED TO BE HERE and are deliberately gone (bead VaCuus-1hy). M6
+# whitelisted them because they ship as source with the exec bit stripped; Fab review
+# round 1 rejected the package over exactly those two paths ("the plugin will not be
+# compiled until executables are removed"), so Config/FilterPlugin.ini now excludes them
+# from the package. Dropping them from this list is what makes the scan a SECOND guard on
+# that rule instead of a standing pardon: if a future filter change lets either file back
+# into a package, the scan reports it.
 SHEBANG_WHITELIST=(
-	"Source/VaCuusJs/gen_relays.sh"
-	"Source/VaCuusRml/gen_relays.sh"
 	"Web/packages/cli/bin/vacuus.mjs"
 )
 
@@ -188,7 +192,7 @@ fi
 
 # --- Phase 1b: the whitelist branch, seen to both admit and refuse: the file AT the
 # --- whitelisted path must be forgiven, its near-miss neighbour must be reported.
-EXPECTED_WL="$(printf 'SHEBANG\tSource/VaCuusJs/gen_relays_nearmiss.sh')"
+EXPECTED_WL="$(printf 'SHEBANG\tWeb/packages/cli/bin/vacuus_nearmiss.mjs')"
 ACTUAL_WL="$(scan_tree "$WHITELIST_FIXTURE_DIR" whitelist)"
 abort_on_read_errors "whitelist fixture"
 

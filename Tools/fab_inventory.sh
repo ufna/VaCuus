@@ -59,6 +59,21 @@ absent  "Source/ThirdParty/RmlUi/Backends"
 present "Source/ThirdParty/RmlUi/Source/Core"
 present "Source/ThirdParty/RmlUi/Include/RmlUi/Core"
 
+# THE RE-VENDOR SCRIPTS DO NOT SHIP -- the first thing Fab's technical review failed the
+# 1.0 package on ("the plugin will not be compiled until executables are removed",
+# 2026-08-16, bead VaCuus-1hy). M6 had decided to ship them as source with the exec bit
+# stripped and fab_scan.sh whitelisted their shebangs, so BOTH gates blessed the exact
+# shape a reviewer refused; these rows are that reversal's observable, and the whitelist
+# entries are gone so the scan now reports either file if a filter change lets it back in.
+absent  "Source/VaCuusJs/gen_relays.sh"
+absent  "Source/VaCuusRml/gen_relays.sh"
+
+# ...and the FILTER ITSELF ships, the third failure of that review: the rules that declare
+# docs/ and Web/ deliberate never reached the reviewer, because BuildPlugin's default
+# filter has no /Config/... rule (BuildPluginCommand.Automation.cs:459-472). The copy in
+# the package is inert -- BuildPlugin reads the source tree's -- and exists to be read.
+present "Config/FilterPlugin.ini"
+
 # Licenses — every disclosure entry's in-tree pointer ships
 present "Source/ThirdParty/RmlUi/LICENSE.txt"
 present "Source/ThirdParty/RmlUi/Include/RmlUi/Core/Containers/LICENSE.txt"
@@ -122,6 +137,20 @@ absent  "Intermediate"
 present "VaCuus.uplugin"
 present "Resources"
 present "Shaders"
+
+# EVERY MODULE DECLARES ITS PLATFORMS -- the second Fab failure (bead VaCuus-1hy: "all
+# listed modules need their own PlatformAllowList or PlatformDenyList key with values").
+# Asserted on the PACKAGED descriptor and not the repository's, because BuildPlugin
+# rewrites it (BuildPluginCommand.Automation.cs:433-445) and the key survives only if
+# ModuleDescriptor.Write emits it (ModuleDescriptor.cs:432-440) -- which is the half a
+# repo-side check could not see. One LoadingPhase per module is the module count.
+MODULES="$(grep -c '"LoadingPhase"' "$PKG/VaCuus.uplugin" 2>/dev/null || echo 0)"
+ALLOWED="$(grep -c '"PlatformAllowList"' "$PKG/VaCuus.uplugin" 2>/dev/null || echo 0)"
+if [ "$MODULES" -gt 0 ] && [ "$ALLOWED" = "$MODULES" ]; then
+	ok "every module in the packaged descriptor has PlatformAllowList ($ALLOWED/$MODULES)"
+else
+	bad "PlatformAllowList on $ALLOWED of $MODULES modules in the packaged descriptor"
+fi
 
 # ---------------------------------------------------------------- the buyer's front door
 # Bead VaCuus-avu. Tools/fab_package.sh writes AGENTS.md into the package root from
