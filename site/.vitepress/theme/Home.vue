@@ -1,6 +1,7 @@
 <script setup>
 import { onMounted, onUnmounted, ref } from 'vue'
 import ICONS from './platformIcons.js'
+import { PRICE, LICENSE_URL } from './commerce.js'
 
 // The one-liner a buyer pastes into their own CLAUDE.md / AGENTS.md. Verbatim from
 // README.md:35-37 — the site must not paraphrase an instruction the buyer will paste.
@@ -55,10 +56,19 @@ onUnmounted(() => {
     <!-- ======================================================== hero == -->
     <section class="vc-hero">
       <div class="vc-wrap">
+        <!-- The second eyebrow is the licence, and it is here rather than only in section 08
+             because it is the whole offer in nine words: a visitor who never scrolls still
+             leaves knowing they may take this today. "Pre-release" used to lead this row and
+             was wrong on both counts — VaCuus.uplugin has IsBetaVersion false and
+             VersionName 1.0.1, and the status block below already says released. -->
         <div class="vc-hero-top vc-anim vc-anim-1">
-          <span class="vc-eyebrow">Pre-release &middot; Unreal Engine 5.6 &ndash; 5.8</span>
+          <span class="vc-eyebrow"
+            >Unreal Engine 5.6 &ndash; 5.8 &middot; full source included</span
+          >
           <span class="vc-dash" />
-          <span class="vc-eyebrow">Full source included &middot; verified on Linux</span>
+          <span class="vc-eyebrow"
+            >Free to build &middot; {{ PRICE }} per project to ship commercially</span
+          >
         </div>
 
         <h1 class="vc-wordmark vc-anim vc-anim-1">Va<span class="vc-w-a">C</span>uus</h1>
@@ -203,7 +213,7 @@ onUnmounted(() => {
         <div class="vc-status-hazard" aria-hidden="true" />
         <div class="vc-status-body">
           <div class="vc-status-head">
-            <strong>Status &mdash; released (1.0)</strong>
+            <strong>Status &mdash; released (1.0.1)</strong>
             <a class="vc-cite" href="https://github.com/ufna/VaCuus#readme">README.md</a>
           </div>
           <p>
@@ -804,6 +814,48 @@ onUnmounted(() => {
       </div>
     </section>
 
+    <!-- ====================================================== licence == -->
+    <!-- The page's close, and the first place on it that names a price. It goes AFTER 07 on
+         purpose: 01-06 build the argument, 07 answers the objections, and a price shown
+         before either has landed is a price with nothing behind it. The readout itself is a
+         component because /license opens with the same one — theme/LicenseBox.vue. -->
+    <section id="license" class="vc-sec">
+      <div class="vc-wrap">
+        <header class="vc-sec-head vc-rise">
+          <span class="vc-idx">08</span>
+          <h2>License</h2>
+          <span class="vc-rule" />
+          <a class="vc-cite" :href="LICENSE_URL" target="_blank" rel="noreferrer">LICENSE.md</a>
+        </header>
+
+        <p class="vc-lede vc-why-lede vc-rise">
+          VaCuus is source-available under the <strong>Business Source License 1.1</strong>. In
+          one sentence: everything is free until you ship something commercial, and a
+          commercial release is <strong>{{ PRICE }} per project</strong>. No signup, no licence
+          key, nothing in the plugin phones home.
+        </p>
+
+        <div class="vc-rise">
+          <LicenseBox />
+        </div>
+
+        <aside class="vc-why-honest vc-rise">
+          <strong>Build now, buy before you release</strong>
+          <p>
+            Developing against the free copy and buying when the game goes commercial is the
+            expected path, not a loophole &mdash; the licence you buy covers that release. And
+            it expires in your favour: <em>each version of VaCuus becomes MIT four years after
+            it ships</em>, so the price buys the current four years of a version, not a
+            permanent dependency on someone else's goodwill.
+          </p>
+        </aside>
+
+        <div class="vc-actions vc-rise">
+          <a class="vc-btn vc-btn-accent" href="/license">The licence in full &rarr;</a>
+        </div>
+      </div>
+    </section>
+
     <!-- ======================================================= footer == -->
     <footer class="vc-foot">
       <div class="vc-wrap">
@@ -837,13 +889,15 @@ onUnmounted(() => {
             <span class="vc-foot-head">License</span>
             <p>
               Source under <strong>BUSL&nbsp;1.1</strong> &mdash; free outside production and
-              for noncommercial releases; commercial production use is a purchased license
-              (Fab or direct). Each version converts to MIT four years after release.
+              for noncommercial releases; a commercial release is
+              <strong>{{ PRICE }} per project</strong>, perpetual. Each version converts to
+              MIT four years after release.
             </p>
             <p>
               MIT-licensed <strong>RmlUi 6.x</strong> and <strong>QuickJS-ng</strong> are
               vendored in-tree, each with its license beside it.
             </p>
+            <a href="/license">License &amp; pricing &rarr;</a>
           </div>
         </div>
 

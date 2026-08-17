@@ -12,6 +12,7 @@
 import { nextTick } from 'vue'
 import DefaultTheme from 'vitepress/theme-without-fonts'
 import Home from './Home.vue'
+import LicenseBox from './LicenseBox.vue'
 import { METRIKA_ID } from '../analytics.js'
 import './style.css'
 
@@ -21,6 +22,11 @@ export default {
     // index.md is `layout: home` with no `hero`/`features` frontmatter, so VPHome renders
     // nothing of its own and this component IS the page.
     app.component('Home', Home)
+
+    // The Free | Commercial readout, used by license.md — a markdown page, so the component
+    // has to be global for it. Home.vue's section 08 renders the same one, which is why the
+    // price lives in commerce.js and not in either caller.
+    app.component('LicenseBox', LicenseBox)
 
     // VitePress is an SPA: after the first document load nothing navigates again, so the
     // tag's init-time hit would be the only pageview ever recorded and every step through

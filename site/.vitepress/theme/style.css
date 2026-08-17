@@ -1323,6 +1323,228 @@ a.vc-cite:hover {
   color: var(--vc-ink-2);
 }
 
+/* ---------------------------------------------------- landing: licence -- */
+/* Section 08, and the top of /license. Built on the .vc-vs grammar of section 06 — two
+   columns, corner ticks, mono headings — deliberately and not for want of an idea: a price
+   stated in the same instrument-panel language as the measured figures above it reads as
+   another readout, which is the voice of the whole page. A pricing card lifted from a SaaS
+   template would be the one element on the page that looks bought rather than built, and it
+   would cost the numbers in section 01 the credibility they are carrying.
+
+   Every selector below is TWO CLASSES DEEP on purpose. The component renders on the landing
+   (markdownStyles: false, no prose wrapper) and inside .vp-doc on /license, where VitePress
+   styles `ul`, `li`, `a` and `h3` itself at (0,1,1) — a single-class rule here would lose. */
+
+.vc-lic {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: clamp(16px, 2.2vw, 26px);
+  align-items: stretch;
+}
+@media (max-width: 900px) {
+  .vc-lic {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+/* On /license the box lands in the prose flow, which sets margins on the children it knows
+   about and nothing on this one. */
+.vp-doc .vc-lic {
+  margin: 26px 0 34px;
+}
+
+.vc-lic .vc-lic-col {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  padding: clamp(20px, 2.6vw, 28px) clamp(16px, 2.2vw, 24px);
+  border: 1px solid var(--vc-line);
+  border-radius: 3px;
+  background: var(--vc-panel);
+}
+.vc-lic .vc-lic-h {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  font-family: var(--vc-font-mono);
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--vc-ink-2);
+}
+/* The paid column is the one being sold, so it takes the accent the way .vc-vs-us does.
+   Amber rather than the cool token: every other ask on this page is amber, and a licence
+   is an ask. */
+.vc-lic .vc-lic-buy {
+  border-color: var(--vc-accent);
+  box-shadow: var(--vc-shadow);
+}
+.vc-lic .vc-lic-buy .vc-lic-h {
+  color: var(--vc-accent);
+}
+
+.vc-lic .vc-lic-fig {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin: 10px 0 0;
+  padding-bottom: clamp(14px, 1.8vw, 18px);
+  border-bottom: 1px solid var(--vc-line-soft);
+}
+.vc-lic .vc-lic-fig b {
+  font-family: var(--vc-font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: clamp(28px, 3.4vw, 38px);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1;
+  color: var(--vc-ink);
+}
+.vc-lic .vc-lic-buy .vc-lic-fig b {
+  color: var(--vc-accent);
+}
+.vc-lic .vc-lic-fig span {
+  font-family: var(--vc-font-mono);
+  font-size: 11.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--vc-ink-3);
+}
+
+.vc-lic .vc-lic-when {
+  margin: clamp(14px, 1.8vw, 18px) 0 0;
+  font-size: 14.5px;
+  line-height: 1.6;
+  font-weight: 500;
+  color: var(--vc-ink);
+  max-width: 46ch;
+}
+
+.vc-lic .vc-lic-list {
+  list-style: none;
+  margin: 16px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 9px;
+}
+.vc-lic .vc-lic-list li {
+  display: grid;
+  grid-template-columns: 11px minmax(0, 1fr);
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--vc-ink-2);
+}
+/* A check drawn out of two borders on a rotated box, the same construction .vc-ticks uses.
+   Not a glyph: U+2713 is not in the self-hosted Plex Mono subset and would fall back to
+   whatever the OS has, which is a different weight on every platform. */
+.vc-lic .vc-lic-list li::before {
+  content: '';
+  width: 10px;
+  height: 5px;
+  margin-top: 6px;
+  border-left: 1.5px solid var(--vc-accent);
+  border-bottom: 1.5px solid var(--vc-accent);
+  transform: rotate(-45deg);
+}
+
+/* Pushed to the bottom of both columns so the two CTAs land on one line across the gap —
+   the same "read across" rule the .vc-vs tables level their rows for. */
+.vc-lic .vc-lic-cta {
+  margin-top: auto;
+  padding-top: clamp(18px, 2.4vw, 26px);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+/* ...except in the prose column, where the box is ~690px wide however wide the window is
+   (--vp-layout-max-width caps it), the paid column's two buttons wrap to a second row, and
+   so nothing lines up across the gap anyway. There the push buys only a hole above the free
+   column's single button. This is a container-width condition, which is why it is keyed to
+   the context and not to a viewport breakpoint. */
+.vp-doc .vc-lic .vc-lic-cta {
+  margin-top: 0;
+}
+/* The CTAs are anchors, and on /license they are anchors inside .vp-doc — whose own
+   `.vp-doc a` rule (0,1,1) sets `color: var(--vp-c-brand-1)`, `font-weight: 500` and a colour
+   transition, and beats .vc-btn-primary's (0,1,0). Measured before the fix: the buy button
+   rendered rgb(138,83,0) text on rgb(138,83,0) — a contrast ratio of 1:1, invisible — and the
+   download button drifted to the brand amber. Hence the three-class selectors and the
+   restated palette. */
+.vc-lic .vc-lic-cta .vc-btn {
+  text-decoration: none;
+  font-weight: 400;
+  color: var(--vc-ink);
+  transition: background-color 0.16s ease, border-color 0.16s ease, color 0.16s ease,
+    transform 0.16s ease;
+}
+.vc-lic .vc-lic-cta .vc-btn-primary {
+  font-weight: 600;
+  color: #fff8ec;
+}
+.dark .vc-lic .vc-lic-cta .vc-btn-primary {
+  color: #16110a;
+}
+.vc-lic .vc-lic-cta .vc-btn-primary:hover {
+  color: #16110a;
+}
+/* Marked, not hidden — see the comment on the <button> in LicenseBox.vue. Dashed border and
+   the muted ink read as "not yet" without going so quiet that the route looks cancelled. */
+/* Three classes deep like the rule above it, and for the same reason in reverse: the generic
+   .vc-lic .vc-lic-cta .vc-btn now sets a colour at (0,3,0), so a (0,2,0) selector here would
+   lose and this button would come out full-strength ink. */
+.vc-lic .vc-lic-cta .vc-btn-soon {
+  border-style: dashed;
+  border-color: var(--vc-line-strong);
+  background: transparent;
+  color: var(--vc-ink-3);
+  cursor: not-allowed;
+}
+.vc-lic .vc-lic-cta .vc-btn-soon:hover {
+  transform: none;
+  border-color: var(--vc-line-strong);
+}
+.vc-lic .vc-lic-soon {
+  color: var(--vc-accent);
+  font-weight: 600;
+}
+
+.vc-lic .vc-lic-foot {
+  margin: 14px 0 0;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--vc-ink-3);
+  max-width: 48ch;
+}
+.vc-lic .vc-lic-foot + .vc-lic-foot {
+  margin-top: 8px;
+}
+.vc-lic .vc-lic-foot strong {
+  color: var(--vc-ink-2);
+  font-weight: 600;
+}
+.vc-lic .vc-lic-foot code {
+  font-family: var(--vc-font-mono);
+  font-size: 0.92em;
+  color: var(--vc-ink-2);
+  background: transparent;
+  padding: 0;
+  overflow-wrap: anywhere;
+}
+.vc-lic .vc-lic-foot a {
+  color: var(--vc-ink-2);
+  font-weight: 400;
+  text-decoration: none;
+  border-bottom: 1px solid var(--vc-line-strong);
+}
+.vc-lic .vc-lic-foot a:hover {
+  color: var(--vc-accent);
+  border-bottom-color: var(--vc-accent);
+}
+
 /* ----------------------------------------------------- landing: footer -- */
 
 /* ------------------------------------------------------ platform strip -- */

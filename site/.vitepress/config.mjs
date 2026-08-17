@@ -1,7 +1,8 @@
 import { defineConfig } from 'vitepress'
 import { METRIKA_ID } from './analytics.js'
 
-// Site root is site/, so index.md -> /, ai.md -> /ai, docs/*.md -> /docs/*.
+// Site root is site/, so index.md -> /, ai.md -> /ai, license.md -> /license,
+// docs/*.md -> /docs/*.
 // docs/*.md are copies synced from the repo's docs/buyer/ by scripts/sync-docs.mjs
 // (wired to predev/prebuild) — never edit them here.
 
@@ -115,10 +116,14 @@ export default defineConfig({
   base: '/',
 
   themeConfig: {
+    // License is last, next to search and the GitHub icon: it is the commercial entry the
+    // landing page's section 08 closes on, and the one thing a visitor may want to reach
+    // without scrolling a long page to find it.
     nav: [
       { text: 'Get Started', link: '/docs/setup' },
       { text: 'Docs', link: '/docs/setup', activeMatch: '^/docs/' },
-      { text: 'Built for AI', link: '/ai' }
+      { text: 'Built for AI', link: '/ai' },
+      { text: 'License', link: '/license' }
     ],
 
     sidebar: {
