@@ -49,6 +49,7 @@ same pass, or the next session will re-derive the old answer.
 | Where | Change | Why there |
 | --- | --- | --- |
 | Hero eyebrow (`Home.vue:58-62`) | second line becomes `Free to build · $69.99 per project to ship commercially` | The only licence message a non-scrolling visitor will ever see |
+| Hero primary button | `Get started` → **`Free to use ↓`**, anchored to `#license` (owner's call, added after the section shipped) | The hero's loudest control pointed at the setup page. "You may take this today" is the argument that earns a first visit; the docs are the step *after* that decision. `Get started` leaves the hero rather than sitting beside it — a fourth button wraps at every width the ~600px column has — and the nav carries it on every page |
 | Nav (`config.mjs:118-122`) | `+ { text: 'License', link: '/license' }`, last | A price entry in the nav is a baseline conversion element; there is none today |
 | **New landing section `08 License`** | the Free \| Commercial readout + honest note | Sections 01–06 build the argument, 07 answers objections, **08 closes** |
 | `/license` (new page) | the FAQ | Catches the long tail — "what actually counts as commercial" |

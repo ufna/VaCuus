@@ -1335,6 +1335,12 @@ a.vc-cite:hover {
    (markdownStyles: false, no prose wrapper) and inside .vp-doc on /license, where VitePress
    styles `ul`, `li`, `a` and `h3` itself at (0,1,1) — a single-class rule here would lose. */
 
+/* The hero's primary button is an in-page anchor to this section, and VPNav is fixed, so
+   without this the section head lands underneath it and the reader arrives mid-lede. */
+#license {
+  scroll-margin-top: calc(var(--vp-nav-height) + 20px);
+}
+
 .vc-lic {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);

@@ -96,8 +96,16 @@ onUnmounted(() => {
               game thread, which only enqueues input and reads back a snapshot. Full-screen
               HUD, menu, or a panel on a quad in the world.
             </p>
+            <!-- The primary ask is the licence, not the setup page: what a first-time
+                 visitor needs to hear is that they may take this today, and the docs are
+                 the step after that decision rather than before it. The arrow points DOWN
+                 because this one scrolls; every other button here leaves the page.
+                 "Get started" used to be this button and is deliberately not kept beside
+                 it — a fourth button wraps to a second row at every width the hero has
+                 (the right-hand column is ~600px), which reads as an accident and dilutes
+                 the primary. The nav carries Get Started and Docs on every page anyway. -->
             <div class="vc-actions vc-anim vc-anim-4">
-              <a class="vc-btn vc-btn-primary" href="/docs/setup">Get started</a>
+              <a class="vc-btn vc-btn-primary" href="#license">Free to use &darr;</a>
               <a class="vc-btn vc-btn-accent" href="/ai">Built for AI</a>
               <a
                 class="vc-btn"
