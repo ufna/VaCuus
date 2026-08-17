@@ -119,8 +119,13 @@ export default defineConfig({
     // License is last, next to search and the GitHub icon: it is the commercial entry the
     // landing page's section 08 closes on, and the one thing a visitor may want to reach
     // without scrolling a long page to find it.
+    //
+    // There is no "Get Started" entry here any more. It pointed at /docs/setup — the exact
+    // URL "Docs" already points at — so it named a word rather than a destination, and the
+    // landing hero's primary button now carries those words for the licence section. Two
+    // identical labels leading to two different places on one screen is the one outcome
+    // worth avoiding; "Docs" keeps the documentation path it was always doing.
     nav: [
-      { text: 'Get Started', link: '/docs/setup' },
       { text: 'Docs', link: '/docs/setup', activeMatch: '^/docs/' },
       { text: 'Built for AI', link: '/ai' },
       { text: 'License', link: '/license' }

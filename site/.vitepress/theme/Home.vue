@@ -98,14 +98,17 @@ onUnmounted(() => {
             </p>
             <!-- The primary ask is the licence, not the setup page: what a first-time
                  visitor needs to hear is that they may take this today, and the docs are
-                 the step after that decision rather than before it. The arrow points DOWN
-                 because this one scrolls; every other button here leaves the page.
-                 "Get started" used to be this button and is deliberately not kept beside
-                 it — a fourth button wraps to a second row at every width the hero has
-                 (the right-hand column is ~600px), which reads as an accident and dilutes
-                 the primary. The nav carries Get Started and Docs on every page anyway. -->
+                 the step after that decision rather than before it. So "Get started" keeps
+                 the words — it is the call to action, and the section it lands on is where
+                 getting started actually begins, with the download button in it — but it
+                 no longer points at /docs/setup. The arrow points DOWN because this one
+                 scrolls; every other button here leaves the page.
+                 The nav's duplicate "Get Started" entry was dropped when this label
+                 arrived: it pointed at the same URL as "Docs", so it never named a
+                 destination of its own, and two identical words leading to two different
+                 places on one screen is worse than one word leading to one. -->
             <div class="vc-actions vc-anim vc-anim-4">
-              <a class="vc-btn vc-btn-primary" href="#license">Free to use &darr;</a>
+              <a class="vc-btn vc-btn-primary" href="#license">Get started &darr;</a>
               <a class="vc-btn vc-btn-accent" href="/ai">Built for AI</a>
               <a
                 class="vc-btn"
