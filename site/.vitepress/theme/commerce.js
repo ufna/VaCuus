@@ -6,10 +6,13 @@
 export const PRICE = '$69.99'
 export const PRICE_UNIT = 'per project · perpetual'
 
-// The direct channel. Null until the Heleket payment page exists, and buyHref() below then
-// answers with a prefilled mailto — so the button is a WORKING path from the first deploy
-// rather than a disabled "coming soon", which converts nothing and looks abandoned.
-export const BUY_URL = null
+// The direct channel: the checkout, which lives with the payment backend rather than on
+// this site (ufna/vacuus-pay, private). Keeping the form there means no CORS, no JS in the
+// static build, and no need to redeploy the site to change how a purchase is taken.
+//
+// buyHref() below still falls back to a prefilled mailto if this is ever set back to null,
+// so the button stays a WORKING path rather than a disabled "coming soon".
+export const BUY_URL = 'https://pay.vacuus.ufna.dev/buy'
 
 // Null is what renders the Fab button disabled: the listing is in technical review (bead
 // VaCuus-bs3). Filling this in turns the same markup into a live link, with no other edit.
@@ -19,6 +22,11 @@ export const FAB_URL = null
 // per release. No version number goes in the button label: the page names the version, and
 // a hardcoded one rots (the status block said "1.0" for a week after 1.0.1 shipped).
 export const DOWNLOAD_URL = 'https://github.com/ufna/VaCuus/releases'
+
+// The transaction, as opposed to the licence: who sells, what arrives, what happens when a
+// payment goes wrong. Its version date is stored on every order as the text the buyer
+// accepted, so /terms and the checkout's TERMS_VERSION are edited together or not at all.
+export const TERMS_URL = '/terms'
 
 export const CONTACT_EMAIL = 'ufna@ufna.dev'
 export const LICENSE_URL = 'https://github.com/ufna/VaCuus/blob/master/LICENSE.md'

@@ -1,7 +1,7 @@
 <script setup>
 import { onMounted, onUnmounted, ref } from 'vue'
 import ICONS from './platformIcons.js'
-import { PRICE, LICENSE_URL } from './commerce.js'
+import { PRICE, LICENSE_URL, TERMS_URL } from './commerce.js'
 
 // The one-liner a buyer pastes into their own CLAUDE.md / AGENTS.md. Verbatim from
 // README.md:35-37 — the site must not paraphrase an instruction the buyer will paste.
@@ -909,6 +909,9 @@ onUnmounted(() => {
               vendored in-tree, each with its license beside it.
             </p>
             <a href="/license">License &amp; pricing &rarr;</a>
+            <!-- The transaction, not the grant: what arrives, when, and what happens if a
+                 payment goes wrong. A checkout that takes money has to link it somewhere. -->
+            <a :href="TERMS_URL">Terms of sale &rarr;</a>
           </div>
         </div>
 
