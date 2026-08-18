@@ -63,6 +63,12 @@ accountant.
 Confirmation usually takes minutes; a congested network can make it longer. You do
 not need to keep the page open — the email arrives either way.
 
+**The title may be a working name.** Most projects are bought for long before they
+have a public one, so an internal or codename is fine at checkout. If the project is
+renamed before release, write to <ufna@ufna.dev> and the certificate is reissued
+under the new title at no charge. It stays the same licence, with the same number —
+only the name printed on it changes.
+
 ## If something goes wrong
 
 **You paid and no certificate arrived.** Write to <ufna@ufna.dev> with the address
