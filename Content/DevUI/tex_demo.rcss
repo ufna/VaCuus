@@ -1,0 +1,138 @@
+/* Copyright 2026 Vladimir Alyamkin. All Rights Reserved. */
+
+/* The engine-texture demo (spec 2026-08-22 §6). Deliberately plain apart from the two
+   effects on the portrait: the interesting claim is that <img src="unreal://..."> composes
+   with ordinary RCSS, so anything decorative here would only get in the way of reading it. */
+
+body
+{
+	font-family: LatoLatin;
+	font-size: 15px;
+	color: #d8dee9;
+	background-color: #11151c;
+}
+
+#title
+{
+	font-size: 22px;
+	font-weight: bold;
+	color: #88c0d0;
+	margin: 28px 0 20px 32px;
+}
+
+#tiles
+{
+	display: flex;
+	flex-direction: row;
+	margin-left: 32px;
+}
+
+.tile
+{
+	width: 300px;
+	margin-right: 24px;
+	padding: 16px;
+	background-color: #1b212b;
+	border: 1px #2b3441;
+	border-radius: 10px;
+}
+
+.tile-title
+{
+	display: block;
+	font-size: 13px;
+	font-weight: bold;
+	color: #7c8798;
+	margin-bottom: 12px;
+}
+
+.tile img
+{
+	display: block;
+	width: 268px;
+	height: 150px;
+}
+
+/* THE POINT OF THE PORTRAIT TILE: a live SceneCapture render target that RCSS transforms
+   like any other image, without RmlUi knowing where its pixels came from. */
+#portrait
+{
+	transform: rotate(-4deg) scale(1.03);
+}
+
+/* And the minimap tinted through image-color, the other property that composes with an
+   engine texture: ElementImage folds image_color and opacity into the quad's vertex colour
+   (ElementImage.cpp:178), so the tint costs no extra draw.
+
+   NO border-radius HERE, AND NOT AS AN OVERSIGHT. RmlUi cannot round an image by any route:
+   ElementImage::GenerateGeometry builds a plain quad (MeshUtilities::GenerateQuad,
+   ElementImage.cpp:180) and so does the image decorator (DecoratorTiled.cpp:202) --
+   border-radius shapes only an element's background and border geometry. A round portrait
+   needs a change in RmlUi or a mask pass of our own; bead VaCuus-3wl.8 carries it. */
+#minimap
+{
+	width: 150px;
+	height: 150px;
+	margin-left: 59px;
+	image-color: #a8d8c0;
+}
+
+/* display: block spelled out on every caption: without a default stylesheet a div is
+   INLINE here, and the mode and the note ran together on one line until this was added. */
+.mode
+{
+	display: block;
+	font-size: 12px;
+	font-weight: bold;
+	margin-top: 14px;
+}
+
+.mode.live    { color: #bf616a; }
+.mode.dirty   { color: #ebcb8b; }
+.mode.static  { color: #a3be8c; }
+
+.note
+{
+	display: block;
+	font-size: 12px;
+	color: #6b7585;
+	margin-top: 4px;
+}
+
+#counters
+{
+	display: flex;
+	flex-direction: row;
+	margin: 26px 0 0 32px;
+	padding: 14px 18px;
+	width: 916px;
+	background-color: #161b23;
+	border-radius: 8px;
+}
+
+.counter
+{
+	display: block;
+	width: 190px;
+}
+
+.counter .k
+{
+	font-size: 12px;
+	color: #6b7585;
+}
+
+.counter .v
+{
+	font-size: 16px;
+	font-weight: bold;
+	color: #eceff4;
+	margin-left: 10px;
+}
+
+#verdict
+{
+	display: block;
+	font-size: 13px;
+	color: #a3be8c;
+}

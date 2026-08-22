@@ -5,6 +5,8 @@
 #include "VaCuusDefines.h"
 #include "VaCuusDemoModel.h"
 #include "VaCuusRefHudModel.h"
+#include "VaCuusTexDemoModel.h"
+#include "VaCuusTextureRegistry.h"
 #include "VaCuusMaterialDraw.h"
 #include "VaCuusRecordingRenderInterface.h"
 #include "VaCuusReplayRenderer.h"
@@ -21,8 +23,15 @@
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
 #include "Engine/GameViewportClient.h"
+#include "Engine/SceneCapture2D.h"
+#include "Engine/StaticMeshActor.h"
+#include "Engine/Texture2D.h"
+#include "Engine/TextureRenderTarget2D.h"
 #include "Engine/World.h"
 #include "Framework/Application/SlateApplication.h"
+#include "Components/SceneCaptureComponent2D.h"
+#include "Components/StaticMeshComponent.h"
+#include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerController.h"
 #include "HAL/IConsoleManager.h"
 #include "Input/Events.h"
@@ -74,6 +83,7 @@ static const TCHAR* GM5HudVfsPath = TEXT("M5Hud/m5_hud.rml");
 static const TCHAR* GLocDemoVfsPath = TEXT("loc_demo.rml");
 static const TCHAR* GRefHudVfsPath = TEXT("RefHud/refhud.rml");
 static const TCHAR* GDragDemoVfsPath = TEXT("drag_demo.rml");
+static const TCHAR* GTexDemoVfsPath = TEXT("tex_demo.rml");
 
 /**
  * The name m3_demo.rml's `data-model` attribute writes, and the name `vacuus.DumpModel hud`
@@ -242,6 +252,37 @@ struct FState
 	/** OnBeginFrame subscription that pumps DemoModel; only bound while the M3 demo is up. */
 	FDelegateHandle ModelDriverHandle;
 
+	//~ ------------------------------------------------- Engine textures (spec 2026-08-22 §6)
+
+	/** True while `vacuus.TexDemo` owns this state; scopes the pump and the teardown. */
+	bool bTexDemo = false;
+
+	/**
+	 * The demo's three engine textures, ROOTED HERE as well as by the registry. Belt and
+	 * braces on purpose: the registry's root is dropped behind a render fence at
+	 * unregistration, and this demo re-registers the portrait key whenever its liveness is
+	 * toggled — a window where the registry momentarily holds nothing.
+	 */
+	TStrongObjectPtr<UTextureRenderTarget2D> TexDemoPortraitRT;
+	TStrongObjectPtr<UTextureRenderTarget2D> TexDemoMinimapRT;
+	TStrongObjectPtr<UTexture2D> TexDemoIcon;
+
+	/** Spawned into the world and destroyed with the demo. */
+	TWeakObjectPtr<ASceneCapture2D> TexDemoPortraitCapture;
+	TWeakObjectPtr<ASceneCapture2D> TexDemoMinimapCapture;
+	TWeakObjectPtr<AStaticMeshActor> TexDemoSubject;
+
+	FVaCuusTexDemoModel TexDemoModel;
+
+	/** Wall clock of the last minimap capture; the 1 Hz beat MarkTextureDirty rides. */
+	double TexDemoLastCaptureSeconds = 0.0;
+
+	/** Wall clock of the last counter push; see PumpTexDemoModel for why it is not every frame. */
+	double TexDemoLastCountersSeconds = 0.0;
+
+	/** `vacuus.TexDemo.Live 0|1`: whether the portrait key is registered live. */
+	bool bTexDemoPortraitLive = true;
+
 	/** Seconds the driver has been running, so the animation is wall-clock and not frame-rate. */
 	double ModelDriverStartSeconds = 0.0;
 
@@ -386,6 +427,28 @@ static void TearDown()
 	if (State->bM5Demo)
 	{
 		VaCuusWorldDemo::TearDownM5HudQuad();
+	}
+
+	// The engine-texture demo's keys and its spawned actors leave with the view that drew
+	// them. UNREGISTER FIRST, then destroy: a draw naming a key whose UTexture has already
+	// been GC'd would resolve through the mirror to a dead reference, and while that is
+	// survivable by construction (FRHITextureReference falls back to a global black texture,
+	// RHITextureReference.h:60-65) there is no reason to lean on it.
+	if (State->bTexDemo)
+	{
+		FVaCuusTextureRegistry::UnregisterTexture(TEXT("vacuus-demo-portrait"));
+		FVaCuusTextureRegistry::UnregisterTexture(TEXT("vacuus-demo-minimap"));
+		FVaCuusTextureRegistry::UnregisterTexture(TEXT("vacuus-demo-icon"));
+
+		for (AActor* Actor : {static_cast<AActor*>(State->TexDemoPortraitCapture.Get()),
+				 static_cast<AActor*>(State->TexDemoMinimapCapture.Get()),
+				 static_cast<AActor*>(State->TexDemoSubject.Get())})
+		{
+			if (Actor)
+			{
+				Actor->Destroy();
+			}
+		}
 	}
 
 	// The M4 write ear goes with the driver it fed: unbind before the view is retired so a
@@ -953,6 +1016,9 @@ static void StartRefHudDriver(UVaCuusView* View)
  * (.Mouse, .Nav, .Rects, ...) unambiguous -- they all reach GState, which holds exactly
  * one view.
  */
+/** Defined with the engine-texture demo below; called from Toggle's pre-load slot. */
+static void StartTexDemo(UVaCuusView* View, UWorld* World);
+
 static void Toggle(const TCHAR* DocumentVfsPath)
 {
 	if (GState)
@@ -1072,6 +1138,16 @@ static void Toggle(const TCHAR* DocumentVfsPath)
 	{
 		GState->bM4Demo = FCString::Strcmp(GDocumentVfsPath, GM4DemoVfsPath) == 0;
 		StartModelDriver(View);
+	}
+
+	// SAME PRE-LOAD SLOT, AND FOR BOTH OF THE SAME REASONS. The counter model has RmlUi's
+	// bind-before-load requirement like any other; and while the engine-texture keys do NOT
+	// need to be registered first (LoadTexture mints handles for unregistered keys on
+	// purpose), a document that parsed before they existed would lay its <img> elements out
+	// at the 1x1 placeholder and only correct itself on the next relayout.
+	if (FCString::Strcmp(GDocumentVfsPath, GTexDemoVfsPath) == 0)
+	{
+		StartTexDemo(View, World);
 	}
 
 	// The M5 glass demo pans the camera instead of driving a model: the DOCUMENT stays
@@ -2504,6 +2580,342 @@ static FAutoConsoleCommand GDragDemoCommand(
 	TEXT("names every accepted, refused and cancelled drag. Drive it headless with vacuus.M2Demo.Drag; proven ")
 	TEXT("end-to-end by VaCuus.Js.DragDrop."),
 	FConsoleCommandDelegate::CreateLambda([] { Toggle(GDragDemoVfsPath); }));
+
+
+//~ =========================================================================================
+//~ ENGINE TEXTURES (spec 2026-08-22 §6): `vacuus.TexDemo`
+//~ =========================================================================================
+
+/** The demo's three keys, spelled once. They are also what tex_demo.rml writes in its src. */
+static const TCHAR* GTexDemoPortraitKey = TEXT("vacuus-demo-portrait");
+static const TCHAR* GTexDemoMinimapKey = TEXT("vacuus-demo-minimap");
+static const TCHAR* GTexDemoIconKey = TEXT("vacuus-demo-icon");
+static const TCHAR* GTexDemoModelName = TEXT("texdemo");
+
+/** A render target sized for the demo tiles; CSS scales it, so this is quality, not layout. */
+static UTextureRenderTarget2D* MakeTexDemoRenderTarget(int32 SizeX, int32 SizeY)
+{
+	UTextureRenderTarget2D* RenderTarget = NewObject<UTextureRenderTarget2D>(GetTransientPackage());
+
+	// RTF_RGBA8 with a FinalColorLDR capture below: the capture writes DISPLAY-ENCODED
+	// values and IsSRGB() is false for this format (TextureRenderTarget2D.cpp:79-82), so the
+	// registry's Auto derivation lands on Raw — which is exactly the pipeline's own contract
+	// (VaCuusUIShaders.h:52-65) and therefore costs the shader nothing.
+	RenderTarget->RenderTargetFormat = RTF_RGBA8;
+	RenderTarget->ClearColor = FLinearColor(0.02f, 0.03f, 0.05f, 1.0f);
+	RenderTarget->InitAutoFormat(SizeX, SizeY);
+	RenderTarget->UpdateResourceImmediate(true);
+	return RenderTarget;
+}
+
+/**
+ * The third tile: an ORDINARY UTexture2D, not a render target, because "any UTexture" is half
+ * the claim and a demo made only of render targets would not show it.
+ *
+ * Transient rather than a committed .uasset on purpose: no binaries enter the repository, no
+ * cook-config entry is needed to keep it alive, and nothing about the seam it exercises is
+ * different. Swapping it for an authored asset is a one-line change.
+ */
+static UTexture2D* MakeTexDemoIcon()
+{
+	static const int32 Size = 64;
+	UTexture2D* Texture = UTexture2D::CreateTransient(Size, Size, PF_B8G8R8A8);
+	if (!Texture)
+	{
+		return nullptr;
+	}
+
+	// SRGB, so the Auto derivation lands on EncodeFromLinear: the sampler will decode this
+	// texture, and the pipeline wants encoded values back. The tile is the visible check that
+	// the round trip is identity.
+	Texture->SRGB = true;
+
+	FTexture2DMipMap& Mip = Texture->GetPlatformData()->Mips[0];
+	uint8* Pixels = static_cast<uint8*>(Mip.BulkData.Lock(LOCK_READ_WRITE));
+	for (int32 Y = 0; Y < Size; ++Y)
+	{
+		for (int32 X = 0; X < Size; ++X)
+		{
+			// A ring, so the tile is obviously not a flat fill and its edges show any
+			// filtering or colour-space mistake at a glance.
+			const float Dx = float(X - Size / 2) + 0.5f;
+			const float Dy = float(Y - Size / 2) + 0.5f;
+			const float R = FMath::Sqrt(Dx * Dx + Dy * Dy);
+			const bool bRing = R > 18.0f && R < 27.0f;
+
+			uint8* Texel = Pixels + (int64(Y) * Size + X) * 4;
+			Texel[0] = bRing ? 208 : 40; // B — BGRA memory order
+			Texel[1] = bRing ? 192 : 33;
+			Texel[2] = bRing ? 136 : 27;
+			Texel[3] = 255;
+		}
+	}
+	Mip.BulkData.Unlock();
+	Texture->UpdateResource();
+	return Texture;
+}
+
+/**
+ * Spawns the subject the portrait looks at, and the two captures.
+ *
+ * PLACED FAR FROM THE PLAY AREA (a fixed offset well above the origin) rather than in front of
+ * the player: the portrait must show the same thing every run for a screenshot to mean
+ * anything, and a capture pointed at whatever the level happens to contain does not.
+ */
+static bool SpawnTexDemoScene(UWorld* World)
+{
+	if (!GState || !World)
+	{
+		return false;
+	}
+
+	const FVector Stage(0.0f, 0.0f, 100000.0f);
+
+	FActorSpawnParameters Params;
+	Params.ObjectFlags |= RF_Transient;
+
+	AStaticMeshActor* Subject = World->SpawnActor<AStaticMeshActor>(Stage, FRotator::ZeroRotator, Params);
+	if (!Subject)
+	{
+		UE_LOG(LogVaCuus, Error, TEXT("vacuus.TexDemo: could not spawn the portrait subject"));
+		return false;
+	}
+	Subject->SetMobility(EComponentMobility::Movable);
+	if (UStaticMesh* Mesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube")))
+	{
+		Subject->GetStaticMeshComponent()->SetStaticMesh(Mesh);
+		Subject->SetActorScale3D(FVector(0.8f));
+	}
+	else
+	{
+		// A WARNING, NOT A REFUSAL: the tiles and the counters are the demo, and an empty
+		// portrait still proves the seam. Engine content can be absent in a trimmed project.
+		UE_LOG(LogVaCuus, Warning, TEXT("vacuus.TexDemo: /Engine/BasicShapes/Cube is unavailable; the portrait will be empty"));
+	}
+
+	ASceneCapture2D* Portrait = World->SpawnActor<ASceneCapture2D>(Stage + FVector(-260.0f, 0.0f, 60.0f),
+		FRotator(-12.0f, 0.0f, 0.0f), Params);
+	ASceneCapture2D* Minimap = World->SpawnActor<ASceneCapture2D>(Stage + FVector(0.0f, 0.0f, 900.0f),
+		FRotator(-90.0f, 0.0f, 0.0f), Params);
+	if (!Portrait || !Minimap)
+	{
+		UE_LOG(LogVaCuus, Error, TEXT("vacuus.TexDemo: could not spawn the scene captures"));
+		return false;
+	}
+
+	USceneCaptureComponent2D* PortraitComponent = Portrait->GetCaptureComponent2D();
+	PortraitComponent->TextureTarget = GState->TexDemoPortraitRT.Get();
+	PortraitComponent->CaptureSource = SCS_FinalColorLDR;
+	PortraitComponent->bCaptureEveryFrame = true;
+	PortraitComponent->bCaptureOnMovement = false;
+
+	USceneCaptureComponent2D* MinimapComponent = Minimap->GetCaptureComponent2D();
+	MinimapComponent->TextureTarget = GState->TexDemoMinimapRT.Get();
+	MinimapComponent->CaptureSource = SCS_FinalColorLDR;
+
+	// THE OTHER HALF OF THE ON-DEMAND MODE, and it is the game's cost, not the UI's: this
+	// capture is driven by CaptureScene() from the pump, once a second. Leaving
+	// bCaptureEveryFrame on here would make the tile cheap for VaCuus and expensive for the
+	// renderer, which is not the trade the tile is claiming.
+	MinimapComponent->bCaptureEveryFrame = false;
+	MinimapComponent->bCaptureOnMovement = false;
+
+	GState->TexDemoSubject = Subject;
+	GState->TexDemoPortraitCapture = Portrait;
+	GState->TexDemoMinimapCapture = Minimap;
+	return true;
+}
+
+/**
+ * Per frame: turn the subject, beat the minimap at 1 Hz, and push the counters.
+ *
+ * THE COUNTERS ARE PUSHED AT 1 Hz, NOT EVERY FRAME, AND THAT IS LOAD-BEARING. Recorded climbs
+ * on every recorded frame, so a per-frame UpdateModel would change the document's content
+ * every frame and publish it — the readout would become the reason the numbers it displays
+ * look the way they do, and the demo would prove the opposite of its claim. Once a second the
+ * document costs one published frame for the readout, which is visible in the ratio and small
+ * enough to read past.
+ */
+static void PumpTexDemoModel()
+{
+	if (!GState || !GState->bTexDemo)
+	{
+		return;
+	}
+
+	UVaCuusView* View = GState->View.Get();
+	UVaCuusSubsystem* Subsystem = GState->Subsystem.Get();
+	if (!View || !Subsystem)
+	{
+		return;
+	}
+
+	if (AStaticMeshActor* Subject = GState->TexDemoSubject.Get())
+	{
+		Subject->AddActorLocalRotation(FRotator(0.0f, 45.0f * FApp::GetDeltaTime(), 0.0f));
+	}
+
+	const double Now = FPlatformTime::Seconds();
+
+	// THE ON-DEMAND BEAT: capture, then say so. In that order — MarkTextureDirty means "the
+	// pixels behind this key have changed", and saying it before the capture would refresh
+	// the document with the previous second's image.
+	if (Now - GState->TexDemoLastCaptureSeconds >= 1.0)
+	{
+		GState->TexDemoLastCaptureSeconds = Now;
+		if (ASceneCapture2D* Minimap = GState->TexDemoMinimapCapture.Get())
+		{
+			Minimap->GetCaptureComponent2D()->CaptureScene();
+		}
+		Subsystem->MarkTextureDirty(GTexDemoMinimapKey);
+		++GState->TexDemoModel.Refreshes;
+	}
+
+	if (Now - GState->TexDemoLastCountersSeconds < 1.0)
+	{
+		return;
+	}
+	GState->TexDemoLastCountersSeconds = Now;
+
+	const uint64 Recorded = View->GetFramesRecorded();
+	const uint64 Published = View->GetFramesPublished();
+	GState->TexDemoModel.Recorded = int32(Recorded);
+	GState->TexDemoModel.Published = int32(Published);
+	GState->TexDemoModel.Withheld = int32(Recorded > Published ? Recorded - Published : 0);
+	GState->TexDemoModel.PortraitLive = GState->bTexDemoPortraitLive;
+	GState->TexDemoModel.PortraitMode = GState->bTexDemoPortraitLive
+		? TEXT("LIVE \u00b7 SceneCapture, every frame")
+		: TEXT("STATIC \u00b7 re-registered, frozen");
+	GState->TexDemoModel.Verdict = GState->bTexDemoPortraitLive
+		? TEXT("portrait is LIVE — the view republishes at engine rate; vacuus.TexDemo.Live 0 to see it stop")
+		: TEXT("portrait is STATIC — only the 1 Hz minimap and this readout publish at all");
+
+	View->UpdateModel(FName(GTexDemoModelName), FVaCuusTexDemoModel::StaticStruct(), &GState->TexDemoModel);
+}
+
+/**
+ * Everything `vacuus.TexDemo` needs, run from INSIDE Toggle's pre-load slot (see the call
+ * site): the three textures, the scene, the registrations, the counter model and its pump.
+ *
+ * IT CANNOT RUN AFTER Toggle RETURNS, and the first version of this did. RmlUi resolves
+ * `data-model` exactly once, when a document is parented into the context, so a BindModel
+ * issued after Toggle queued the load attaches to the NEXT document and the counter row stays
+ * empty — with a warning that says so, which is how this was caught rather than shipped.
+ */
+static void StartTexDemo(UVaCuusView* View, UWorld* World)
+{
+	if (!GState || !View)
+	{
+		return;
+	}
+
+	GState->bTexDemo = true;
+	GState->bTexDemoPortraitLive = true;
+	GState->TexDemoPortraitRT = TStrongObjectPtr<UTextureRenderTarget2D>(MakeTexDemoRenderTarget(536, 300));
+	GState->TexDemoMinimapRT = TStrongObjectPtr<UTextureRenderTarget2D>(MakeTexDemoRenderTarget(300, 300));
+	GState->TexDemoIcon = TStrongObjectPtr<UTexture2D>(MakeTexDemoIcon());
+
+	if (!SpawnTexDemoScene(World))
+	{
+		// The tiles that do not depend on the scene still work; say what is missing rather
+		// than tear the whole demo down.
+		UE_LOG(LogVaCuus, Warning,
+			TEXT("vacuus.TexDemo: the captures could not be set up; the portrait and minimap will be blank"));
+	}
+
+	if (UVaCuusSubsystem* Subsystem = GState->Subsystem.Get())
+	{
+		// THE THREE MODES, and the whole feature is these three lines.
+		Subsystem->RegisterTexture(GTexDemoPortraitKey, GState->TexDemoPortraitRT.Get(), /*bLive=*/true);
+		Subsystem->RegisterTexture(GTexDemoMinimapKey, GState->TexDemoMinimapRT.Get());
+		Subsystem->RegisterTexture(GTexDemoIconKey, GState->TexDemoIcon.Get());
+	}
+
+	// The bare string, never FName(...): the cooked-build casing trap StartModelDriver
+	// documents applies to every BindModel call, not only to that one.
+	if (View->BindModel(GTexDemoModelName, FVaCuusTexDemoModel::StaticStruct()))
+	{
+		GState->TexDemoModel = FVaCuusTexDemoModel();
+		GState->TexDemoModel.PortraitMode = TEXT("LIVE \u00b7 SceneCapture, every frame");
+		GState->TexDemoModel.Verdict = TEXT("settling...");
+		GState->TexDemoLastCaptureSeconds = 0.0;
+		GState->TexDemoLastCountersSeconds = 0.0;
+		GState->ModelDriverHandle = FCoreDelegates::OnBeginFrame.AddStatic(&PumpTexDemoModel);
+	}
+	else
+	{
+		UE_LOG(LogVaCuus, Error,
+			TEXT("vacuus.TexDemo: the counter model could not be bound; the tiles still work, the readout will be empty"));
+	}
+}
+
+static FAutoConsoleCommand GTexDemoCommand(
+	TEXT("vacuus.TexDemo"),
+	TEXT("Toggle the engine-texture demo (DevUI/tex_demo.rml): three <img src=\"unreal://...\"> tiles proving the three ")
+	TEXT("refresh modes at once — a LIVE SceneCapture portrait (border-radius + transform over a render target), an ")
+	TEXT("ON-DEMAND minimap refreshed by MarkTextureDirty at 1 Hz, and a STATIC plain UTexture2D that costs the idle ")
+	TEXT("gate nothing. The counter row underneath is what makes the cost claim readable. Pair with vacuus.TexDemo.Live."),
+	FConsoleCommandDelegate::CreateLambda([] { Toggle(GTexDemoVfsPath); }));
+
+/**
+ * `vacuus.TexDemo.Live 0|1` — re-registers the portrait key with the other liveness.
+ *
+ * THE COST DIAL, MADE VISIBLE. With it off, the counter row's `published` stops climbing at
+ * engine rate while the picture stays exactly where it was — which is both the idle gate
+ * working and, read the other way, precisely the freeze the live mode exists to prevent.
+ * Re-registration keeps the key's id, so the <img> already on screen follows the change with
+ * no reload.
+ */
+static void SetTexDemoLive(const TArray<FString>& Args)
+{
+	if (!GState || !GState->bTexDemo)
+	{
+		UE_LOG(LogVaCuus, Error, TEXT("vacuus.TexDemo.Live needs the demo to be on"));
+		return;
+	}
+
+	const bool bLive = Args.Num() > 0 ? (FCString::Atoi(*Args[0]) != 0) : !GState->bTexDemoPortraitLive;
+	if (UVaCuusSubsystem* Subsystem = GState->Subsystem.Get())
+	{
+		Subsystem->RegisterTexture(GTexDemoPortraitKey, GState->TexDemoPortraitRT.Get(), bLive);
+		GState->bTexDemoPortraitLive = bLive;
+
+		// One nudge so the document repaints with the new verdict even when the portrait
+		// just went static and nothing else is asking for a frame.
+		Subsystem->MarkTextureDirty(GTexDemoPortraitKey);
+		GState->TexDemoLastCountersSeconds = 0.0;
+	}
+}
+
+static FAutoConsoleCommand GTexDemoLiveCommand(
+	TEXT("vacuus.TexDemo.Live"),
+	TEXT("<0|1> — re-register the demo portrait as static or live. Off, the counter row's `published` stops climbing at ")
+	TEXT("engine rate and the portrait freezes on its last capture: the idle gate working, and the freeze the live mode ")
+	TEXT("exists to prevent, in one switch."),
+	FConsoleCommandWithArgsDelegate::CreateStatic(&SetTexDemoLive));
+
+/** `vacuus.TextureRegistry` — every live engine-texture key with its id, size and mode. */
+static void ReportTextureRegistry()
+{
+	TArray<FString> Lines;
+	FVaCuusTextureRegistry::DescribeEntries_GameThread(Lines);
+
+	UE_LOG(LogVaCuus, Log, TEXT("Engine-texture registry: %d entr%s, snapshot v%llu, %d pending release, %d collision(s) refused"),
+		FVaCuusTextureRegistry::GetNumEntries_GameThread(),
+		FVaCuusTextureRegistry::GetNumEntries_GameThread() == 1 ? TEXT("y") : TEXT("ies"),
+		FVaCuusTextureRegistry::GetVersion_GameThread(), FVaCuusTextureRegistry::GetNumPendingReleases_GameThread(),
+		FVaCuusTextureRegistry::GetNumCollisionsRefused_GameThread());
+	for (const FString& Line : Lines)
+	{
+		UE_LOG(LogVaCuus, Log, TEXT("%s"), *Line);
+	}
+}
+
+static FAutoConsoleCommand GTextureRegistryCommand(
+	TEXT("vacuus.TextureRegistry"),
+	TEXT("Dump the engine-texture registry: every key registered for `unreal://` with its stable id, size, refresh mode ")
+	TEXT("and derived colour/alpha handling."),
+	FConsoleCommandDelegate::CreateStatic(&ReportTextureRegistry));
 
 static FAutoConsoleCommand GRefHudCommand(
 	TEXT("vacuus.RefHud"),

@@ -1,0 +1,62 @@
+<rml>
+<head>
+	<title>VaCuus // Engine textures</title>
+	<link type="text/rcss" href="tex_demo.rcss"/>
+</head>
+
+<!-- THE THREE REFRESH MODES ON ONE SCREEN (spec 2026-08-22 §6), which is the point of the
+     layout: the counter row at the bottom is what turns "the static tile costs nothing"
+     from a claim into something you can read off the same screenshot as the live one.
+
+     Every image here is an ORDINARY <img>, and that is the whole argument for putting the
+     seam in LoadTexture rather than behind a custom element: transform, opacity, image-color
+     and layout all apply to a live SceneCapture render target exactly as they would to a
+     PNG, because RmlUi never learns there is anything special about it.
+
+     ONE THING THAT DOES NOT COMPOSE, checked in the source rather than assumed: border-radius
+     does not round an image. ElementImage builds a plain quad (ElementImage.cpp:180) and so
+     does the image decorator (DecoratorTiled.cpp:202); the radius shapes only background and
+     border geometry. See tex_demo.rcss and bead VaCuus-3wl.8. -->
+<body data-model="texdemo">
+	<div id="title">VaCuus // ENGINE TEXTURES IN THE DOCUMENT</div>
+
+	<div id="tiles">
+		<div class="tile">
+			<div class="tile-title">PORTRAIT</div>
+			<!-- bLive: a SceneCapture2D with bCaptureEveryFrame, so this republishes once
+			     per engine frame while it is on screen. The tilt is plain RCSS over a
+			     render target -- nothing here knows the pixels come from the engine. -->
+			<img id="portrait" src="unreal://vacuus-demo-portrait"/>
+			<!-- The class is BOUND, not written: see FVaCuusTexDemoModel::PortraitLive for the
+			     self-contradicting screenshot that made it so. -->
+			<div class="mode" data-class-live="PortraitLive" data-class-static="!PortraitLive">{{ PortraitMode }}</div>
+			<div class="note">transform + scale over an RT</div>
+		</div>
+
+		<div class="tile">
+			<div class="tile-title">MINIMAP</div>
+			<!-- Static registration + MarkTextureDirty after each capture: one published
+			     frame per capture, not sixty per second. -->
+			<img id="minimap" src="unreal://vacuus-demo-minimap"/>
+			<div class="mode dirty">ON DEMAND &#183; MarkTextureDirty, 1 Hz</div>
+			<div class="note">refreshes: {{ Refreshes }}</div>
+		</div>
+
+		<div class="tile">
+			<div class="tile-title">ICON</div>
+			<!-- Not a render target at all: an ordinary UTexture2D. Static, so it costs
+			     the idle gate nothing after the first frame. -->
+			<img id="icon" src="unreal://vacuus-demo-icon"/>
+			<div class="mode static">STATIC &#183; plain UTexture2D</div>
+			<div class="note">zero publishes once settled</div>
+		</div>
+	</div>
+
+	<div id="counters">
+		<div class="counter"><span class="k">recorded</span><span class="v">{{ Recorded }}</span></div>
+		<div class="counter"><span class="k">published</span><span class="v">{{ Published }}</span></div>
+		<div class="counter"><span class="k">withheld</span><span class="v">{{ Withheld }}</span></div>
+		<div id="verdict">{{ Verdict }}</div>
+	</div>
+</body>
+</rml>
