@@ -249,6 +249,29 @@ struct FVaCuusFilterData
 };
 
 /**
+ * One engine texture referenced by this frame: a `<img src="unreal://<key>">` the
+ * recorder minted a handle for (spec 2026-08-22).
+ *
+ * THE PAYLOAD IS AN ID, NOT PIXELS, and that is the whole difference from
+ * FVaCuusTextureData. Nothing is uploaded and nothing is copied: the render thread
+ * resolves StableId through FVaCuusTextureRegistry's mirror to the registered UTexture's
+ * stable RHI reference and binds that. So a 4K render target costs this buffer 8 bytes.
+ *
+ * ENCODING AND ALPHA ARE DELIBERATELY NOT HERE. They are properties of the REGISTRATION,
+ * they live in the render-thread mirror beside the reference, and keeping them there means
+ * re-registering a key with a different mode takes effect without any recorder having to
+ * notice — the recorder has nothing to re-record.
+ *
+ * MINTED FOR AN UNREGISTERED KEY TOO. See FVaCuusRecordingRenderInterface::LoadTexture:
+ * RmlUi latches a failed texture entry forever, so refusing here would be permanent.
+ */
+struct FVaCuusExternalTextureDesc
+{
+	/** FVaCuusTextureRegistry::IdForKey(key). Never 0. */
+	uint64 StableId = 0;
+};
+
+/**
  * Which of the four CompileShader names a desc records (M5 spec §2(e)). RmlUi 6 sends
  * exactly four: "linear-gradient" (DecoratorGradient.cpp:252-259), "radial-gradient"
  * (:422-428), "conic-gradient" (:619-625) and "shader" (DecoratorShader.cpp:35). The
@@ -426,6 +449,20 @@ struct FVaCuusCommandBuffer
 	 */
 	TMap<FVaCuusShaderHandle, FVaCuusShaderDesc> NewShaders;
 
+	/**
+	 * Engine textures first named this frame, keyed by the same handle space as
+	 * NewTextures — the recorder mints both from NextTextureHandle, because RmlUi cannot
+	 * tell them apart and must not have to.
+	 *
+	 * RELEASES RIDE ReleasedTextures, NOT A LIST OF THEIR OWN, for that same reason:
+	 * RmlUi calls ReleaseTexture(handle) with no idea which kind it is, so one release
+	 * list is the honest shape. The replayer removes the handle from both of its maps.
+	 *
+	 * Resource traffic like every map above it — an entry here means a handle the replayer
+	 * has never seen, so the buffer carrying it must publish.
+	 */
+	TMap<FVaCuusTextureHandle, FVaCuusExternalTextureDesc> NewExternalTextures;
+
 	/** Handles to release AFTER this buffer retires (commands above may still use them). */
 	TArray<FVaCuusGeometryHandle> ReleasedGeometry;
 	TArray<FVaCuusTextureHandle> ReleasedTextures;
@@ -480,9 +517,9 @@ struct FVaCuusCommandBuffer
 
 namespace VaCuusLayout
 {
-constexpr bool bBufferHasExactlyTwelveMembers =
-	bTakesInitialisers<FVaCuusCommandBuffer, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny> &&
-	!bTakesInitialisers<FVaCuusCommandBuffer, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny>;
+constexpr bool bBufferHasExactlyThirteenMembers =
+	bTakesInitialisers<FVaCuusCommandBuffer, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny> &&
+	!bTakesInitialisers<FVaCuusCommandBuffer, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny, FAny>;
 } // namespace VaCuusLayout
 
 inline bool FVaCuusCommandBuffer::HasResourceTraffic() const
@@ -500,16 +537,17 @@ inline bool FVaCuusCommandBuffer::HasResourceTraffic() const
 	// struct without naming it below fails this assert at compile time, with this message —
 	// re-verified when the M5 filter pair landed (7 -> 10) and again when the M5 shader
 	// pair landed (10 -> 12), the count bumped in the same change that extended the return
-	// each time — exactly the ceremony this assert exists to force.
-	static_assert(VaCuusLayout::bBufferHasExactlyTwelveMembers,
+	// each time, and again when NewExternalTextures landed (12 -> 13) — exactly the ceremony
+	// this assert exists to force.
+	static_assert(VaCuusLayout::bBufferHasExactlyThirteenMembers,
 		"FVaCuusCommandBuffer gained or lost a member. If it is a resource array (a new handle map or "
 		"release list), add it to HasResourceTraffic() or the idle gate will withhold frames that carry "
 		"it. If it is frame content the replayer draws from, add it to VaCuusHashFrameContent() too. "
 		"Then update this count");
 
 	return NewGeometry.Num() > 0 || NewTextures.Num() > 0 || NewFilters.Num() > 0 || NewShaders.Num() > 0 ||
-		ReleasedGeometry.Num() > 0 || ReleasedTextures.Num() > 0 || ReleasedFilters.Num() > 0 ||
-		ReleasedShaders.Num() > 0;
+		NewExternalTextures.Num() > 0 || ReleasedGeometry.Num() > 0 || ReleasedTextures.Num() > 0 ||
+		ReleasedFilters.Num() > 0 || ReleasedShaders.Num() > 0;
 }
 
 /**

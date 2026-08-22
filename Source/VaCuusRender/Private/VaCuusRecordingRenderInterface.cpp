@@ -4,6 +4,7 @@
 
 #include "VaCuusDefines.h"
 #include "VaCuusMaterialDraw.h" // IsEnabled/IsForcedRepublishEnabled: the M5 material tier's switches at CompileShader and the idle gate
+#include "VaCuusTextureRegistry.h" // the unreal:// scheme resolves against this, and its dirty counters drive the gate
 #include "VaCuusStyleSet.h"		// FVaCuusStyleRegistry::GetInstalledSnapshot: the shader(<stylekey>) resolution table
 #include "VaCuusUIShaders.h"	// VaCuusBuiltinShaders: the shader(<key>) registry CompileShader validates against
 
@@ -68,6 +69,20 @@ static TAutoConsoleVariable<int32> CVarVaCuusIdleGate(
 	1,
 	TEXT("1 (default) = withhold the publish of a recorded UI frame that draws what the render thread already has.\n")
 		TEXT("0 = publish every recorded frame. Use this to rule the idle short-circuit out when a UI looks frozen."));
+
+/**
+ * The engine-texture freeze remedy's kill-switch (spec 2026-08-22 §3), and it exists to make
+ * the remedy TESTABLE, not to be turned off in production: with this at 0 a document showing
+ * a live render target visibly freezes on its last publish, which is the bug the term above
+ * it removes. VaCuusMaterialDraw's vacuus.MaterialForcedRepublish is the same switch for the
+ * same class of invisible state.
+ */
+static TAutoConsoleVariable<int32> CVarVaCuusExternalTextureRepublish(
+	TEXT("vacuus.ExternalTextureForcedRepublish"),
+	1,
+	TEXT("1 (default) = a drawn unreal:// texture that is live or was marked dirty reopens the idle gate,\n")
+		TEXT("clamped to one publish per engine frame.\n")
+		TEXT("0 = it does not, and such a document freezes on its last publish. For proving the remedy works."));
 
 namespace
 {
@@ -255,6 +270,15 @@ void FVaCuusRecordingRenderInterface::RenderGeometry(Rml::CompiledGeometryHandle
 	{
 		Tracked->LastDrawnFrame = RecordedFrames;
 	}
+
+	// THE LIVENESS SIGNAL, and it is deliberately DRAWN rather than loaded: see
+	// ExternalTexturesDrawnThisFrame. Same one-lookup-per-draw cost as the eviction signal
+	// above, and the same completeness argument -- Context::Render runs on every recorded
+	// frame, so the set is exact whether or not this frame publishes.
+	if (Command.Texture != 0 && ExternalTextures.Contains(Command.Texture))
+	{
+		ExternalTexturesDrawnThisFrame.Add(Command.Texture);
+	}
 }
 
 void FVaCuusRecordingRenderInterface::ReleaseGeometry(Rml::CompiledGeometryHandle Handle)
@@ -270,6 +294,69 @@ void FVaCuusRecordingRenderInterface::ReleaseGeometry(Rml::CompiledGeometryHandl
 Rml::TextureHandle FVaCuusRecordingRenderInterface::LoadTexture(Rml::Vector2i& OutDimensions, const Rml::String& Source)
 {
 	CheckOwnerThread();
+
+	// ------------------------------------------------------------------------------
+	// THE ENGINE-TEXTURE SEAM (spec 2026-08-22). Checked FIRST, before the file
+	// interface is consulted at all: `unreal://<key>` names a registered UTexture, not
+	// anything the VFS could open.
+	//
+	// THE SCHEME REACHES US INTACT WITHOUT A JoinPath OVERRIDE, and that is RmlUi's own
+	// doing rather than luck. ElementImage hands `src` to
+	// RenderManager::LoadTexture(source, document_path) (Elements/ElementImage.cpp:251),
+	// which joins it against the document directory (RenderManager.cpp:74-82) through
+	// SystemInterface::JoinPath -- and JoinPath returns the path VERBATIM when a colon
+	// occurs before the first slash (SystemInterface.cpp:62-68), its rule for Windows
+	// drive paths like C:/x. In "unreal://key" the colon is at 6 and the first slash at
+	// 7, so the string arrives here untouched.
+	//
+	// A HANDLE IS MINTED EVEN FOR A KEY NOBODY HAS REGISTERED, and this is the load-
+	// bearing decision in the whole seam. FileTextureDatabase::LoadTextureEntry latches
+	// load_texture_failed on a zero handle (TextureDatabase.cpp:106-113) and EnsureLoaded
+	// never retries a latched entry (:118-130) -- so returning 0 for "not registered yet"
+	// would kill the image PERMANENTLY for any document that loaded before its game code
+	// ran. Deferring resolution to the draw is what removes that ordering rule; an
+	// unresolved id binds black and counts itself at the replayer.
+	// ------------------------------------------------------------------------------
+	static const Rml::String ExternalScheme = "unreal://";
+	if (Source.rfind(ExternalScheme, 0) == 0)
+	{
+		const FString Key = UTF8_TO_TCHAR(Source.substr(ExternalScheme.size()).c_str());
+		if (Key.IsEmpty())
+		{
+			UE_LOG(LogVaCuus, Warning, TEXT("LoadTexture: '%s' names no key"), UTF8_TO_TCHAR(Source.c_str()));
+			return Rml::TextureHandle(0);
+		}
+
+		const FVaCuusTextureHandle Handle = NextTextureHandle++;
+		ensureMsgf(Handle != 0, TEXT("Texture handle counter wrapped to the invalid sentinel"));
+
+		FVaCuusExternalTextureUse& Use = ExternalTextures.Add(Handle);
+		Use.StableId = FVaCuusTextureRegistry::IdForKey(Key);
+		Use.Key = Key;
+
+		// Seeded rather than zeroed: a key marked dirty long before this document existed
+		// must not read as "dirty since my last publish" on this recorder's first frame.
+		Use.LastPublishedDirtyCounter = FVaCuusTextureRegistry::GetDirtyCounter_UIThread(Use.StableId);
+
+		GetPending().NewExternalTextures.Add(Handle).StableId = Use.StableId;
+
+		// SIZE IS A FIRST-LAYOUT HINT AND NOTHING MORE: RmlUi caches these dimensions in
+		// the texture entry and refreshes them nowhere (TextureDatabase.cpp:118-130), so a
+		// render target that resizes later will not relayout. 1x1 for an unregistered key
+		// -- the async-decode placeholder's shape (FVaCuusTextureData) -- keeps the
+		// element laid out at something rather than collapsing it to nothing.
+		FIntPoint Size(1, 1);
+		if (TSharedPtr<const FVaCuusTextureSnapshot> Snapshot = FVaCuusTextureRegistry::GetInstalledSnapshot())
+		{
+			if (const FVaCuusTextureBinding* Binding = Snapshot->KeyToBinding.Find(Key))
+			{
+				Size = Binding->Size;
+			}
+		}
+		OutDimensions = Rml::Vector2i(Size.X, Size.Y);
+
+		return Rml::TextureHandle(Handle);
+	}
 
 	// RmlUi needs the real dimensions to lay the element out on THIS frame, so the
 	// size is probed synchronously and only the decode goes to a worker. The handle
@@ -821,6 +908,12 @@ void FVaCuusRecordingRenderInterface::ReleaseTexture(Rml::TextureHandle Handle)
 	// a leak that lives until the whole replayer is torn down.
 	InFlightTextures.Remove(Local);
 	FileTextures.Remove(Local);
+
+	// An engine texture owns none of its pixels, so there is nothing to free here beyond
+	// this recorder's own bookkeeping -- and dropping it is what stops a released <img>
+	// from forcing publishes forever.
+	ExternalTextures.Remove(Local);
+	ExternalTexturesDrawnThisFrame.Remove(Local);
 
 	GetPending().ReleasedTextures.Add(Local);
 }
@@ -1421,6 +1514,10 @@ void FVaCuusRecordingRenderInterface::BeginFrame(FIntPoint ViewSize)
 	// a static glass document idle-gated.
 	NextLayerHandle = 1;
 
+	// The liveness set is per FRAME, so it is emptied here and refilled by whatever this
+	// frame actually draws. See ExternalTexturesDrawnThisFrame.
+	ExternalTexturesDrawnThisFrame.Reset();
+
 	// Top of the frame, before any RmlUi call: a payload installed here is part of
 	// this frame's resource delta, so it publishes with this frame. KEPT even though the
 	// UI thread now drains every live host once per frame (see DrainCompletedDecodes): this
@@ -1641,8 +1738,49 @@ TUniquePtr<FVaCuusCommandBuffer> FVaCuusRecordingRenderInterface::EndFrameAndPub
 	const bool bMaterialLive = LiveMaterialShaders.Num() > 0;
 	const bool bMaterialForcedRepublish = bMaterialLive && VaCuusMaterialDraw::IsForcedRepublishEnabled() &&
 		EngineFrame != LastMaterialRepublishFrame;
+
+	// THE SAME REMEDY FOR THE SAME CLASS OF INVISIBLE STATE (spec 2026-08-22 §3): an
+	// engine texture's PIXELS change without changing one byte of the command stream, so
+	// neither the content hash nor the traffic predicate can see it, and a document showing
+	// a render target would freeze on whatever publish last ran. The differences from the
+	// material term above are both deliberate:
+	//
+	//  - THE SET IS WHAT THIS FRAME DREW, not what is loaded. A live render target is the
+	//    expensive case and an offscreen <img> must not buy it. See
+	//    ExternalTexturesDrawnThisFrame.
+	//  - LIVENESS IS PER TEXTURE, not per recorder: a static icon and a live portrait in
+	//    one document must cost what the portrait costs, and a MarkTextureDirty'd minimap
+	//    must cost exactly one frame. bLive is read as "dirty every frame" so both modes
+	//    run through one predicate -- there is one mechanism here, not two.
+	//
+	// Clamped to engine rate for the material term's reason: the composite samples the view
+	// RT once per engine frame, so a second replay inside one engine frame is pure cost.
+	bool bExternalDirty = false;
+	if (ExternalTexturesDrawnThisFrame.Num() > 0)
+	{
+		const TSharedPtr<const FVaCuusTextureSnapshot> Snapshot = FVaCuusTextureRegistry::GetInstalledSnapshot();
+		for (const FVaCuusTextureHandle Drawn : ExternalTexturesDrawnThisFrame)
+		{
+			const FVaCuusExternalTextureUse* Use = ExternalTextures.Find(Drawn);
+			if (!Use)
+			{
+				continue;
+			}
+
+			const FVaCuusTextureBinding* Binding = Snapshot ? Snapshot->KeyToBinding.Find(Use->Key) : nullptr;
+			const bool bLive = Binding && Binding->bLive;
+			if (bLive || FVaCuusTextureRegistry::GetDirtyCounter_UIThread(Use->StableId) != Use->LastPublishedDirtyCounter)
+			{
+				bExternalDirty = true;
+				break;
+			}
+		}
+	}
+	const bool bExternalForcedRepublish = bExternalDirty && CVarVaCuusExternalTextureRepublish.GetValueOnAnyThread() != 0 &&
+		EngineFrame != LastExternalRepublishFrame;
+
 	if (bGateEnabled && Generation > 0 && ContentHash == LastPublishedContentHash && !bHasResourceTraffic &&
-		!bMaterialForcedRepublish)
+		!bMaterialForcedRepublish && !bExternalForcedRepublish)
 	{
 		// A skipped frame consumes NO generation: Generation is documented as a
 		// strictly increasing PUBLISH counter and ShouldConsume treats a repeat as
@@ -1652,6 +1790,24 @@ TUniquePtr<FVaCuusCommandBuffer> FVaCuusRecordingRenderInterface::EndFrameAndPub
 		// on every frame, published or not.
 		++NumFramesSkipped;
 		return nullptr;
+	}
+
+	if (ExternalTexturesDrawnThisFrame.Num() > 0)
+	{
+		// ANY publish re-samples every external texture (the replay pass re-binds each
+		// reference), so the clamp and the per-texture counters latch on every publish
+		// while one is drawn -- not only on forced ones. Otherwise a content-change publish
+		// and a forced publish could land in the same engine frame, which is the double
+		// replay the clamp exists to prevent, and a MarkTextureDirty that coincided with a
+		// content change would cost a second frame nobody asked for.
+		LastExternalRepublishFrame = EngineFrame;
+		for (const FVaCuusTextureHandle Drawn : ExternalTexturesDrawnThisFrame)
+		{
+			if (FVaCuusExternalTextureUse* Use = ExternalTextures.Find(Drawn))
+			{
+				Use->LastPublishedDirtyCounter = FVaCuusTextureRegistry::GetDirtyCounter_UIThread(Use->StableId);
+			}
+		}
 	}
 
 	if (bMaterialLive)

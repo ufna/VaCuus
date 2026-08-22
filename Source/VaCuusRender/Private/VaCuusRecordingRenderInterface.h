@@ -471,6 +471,55 @@ private:
 	/** Frames this recorder has BEGUN. See FFileTexture::LastDrawnFrame for why it counts these. */
 	uint64 RecordedFrames = 0;
 
+	/**
+	 * ONE ENGINE TEXTURE THIS RECORDER HAS MINTED A HANDLE FOR (spec 2026-08-22): an
+	 * `<img src="unreal://<key>">` in this view's document.
+	 *
+	 * Deliberately NOT in FileTextures: eviction works off that map, and evicting one of
+	 * these would be meaningless — there is nothing of ours to free (the pixels belong to
+	 * the registered UTexture) and Rml::ReleaseTexture would only force a re-mint.
+	 */
+	struct FVaCuusExternalTextureUse
+	{
+		/** FVaCuusTextureRegistry::IdForKey(Key), cached so the per-frame walk is not a hash of a string. */
+		uint64 StableId = 0;
+
+		/** The key as written in the document, for the liveness lookup and for logs. */
+		FString Key;
+
+		/**
+		 * The registry's dirty counter value at this recorder's last publish. A COUNTER,
+		 * NOT A FLAG, and per recorder: that is what makes "MarkTextureDirty costs exactly
+		 * one published frame" true for each view independently, with nothing to clear and
+		 * no way for two views to steal each other's refresh. See
+		 * FVaCuusTextureRegistry::GetDirtyCounter_UIThread.
+		 */
+		uint64 LastPublishedDirtyCounter = 0;
+	};
+	TMap<FVaCuusTextureHandle, FVaCuusExternalTextureUse> ExternalTextures;
+
+	/**
+	 * Which of the above were actually DRAWN in the frame being recorded; cleared by
+	 * BeginFrame().
+	 *
+	 * WHY DRAWN AND NOT MERELY LOADED, i.e. why this diverges from LiveMaterialShaders
+	 * (which is "compiled and not released"): a live render target is the expensive case,
+	 * and an <img> scrolled out of view or in a hidden panel would otherwise keep the whole
+	 * view republishing at engine rate for pixels nobody composites. RmlUi hands us every
+	 * draw of every frame anyway (RenderGeometry), so restricting the cost to what is on
+	 * screen is one set insert per external draw. The material tier can afford its looser
+	 * rule because a decorator that is not drawn is usually not compiled either.
+	 */
+	TSet<FVaCuusTextureHandle> ExternalTexturesDrawnThisFrame;
+
+	/**
+	 * GFrameCounter value at the last publish an external texture was re-sampled by — the
+	 * forced-republish CLAMP's memory, and LastMaterialRepublishFrame's twin for the same
+	 * reason: the composite samples the view RT once per engine frame, so a second replay
+	 * inside one engine frame buys pixels nothing will ever read.
+	 */
+	uint64 LastExternalRepublishFrame = 0;
+
 public:
 	/**
 	 * Sources worth evicting right now: not drawn for at least IdleFrames, oldest first, only
