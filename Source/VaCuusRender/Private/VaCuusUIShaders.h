@@ -24,6 +24,22 @@ BEGIN_SHADER_PARAMETER_STRUCT(FVaCuusUIShaderParameters, )
 	SHADER_PARAMETER_TEXTURE(Texture2D, UITexture)
 	SHADER_PARAMETER_SAMPLER(SamplerState, UISampler)
 	SHADER_PARAMETER(uint32, bUseTexture)
+
+	/**
+	 * ENGINE-TEXTURE READ MODES (spec 2026-08-22 §4). Both are 0 for every draw of a
+	 * VaCuus-owned texture, which is what makes the ordinary path free.
+	 *
+	 * TextureEncoding: 0 = Raw (the sampler already yields display-encoded values, which is
+	 * true of our own PF_R8G8B8A8-without-sRGB uploads), 1 = EncodeFromLinear (the sampler
+	 * decoded an _SRGB format, or the format is float and the content is linear -- either
+	 * way the pipeline's sRGB-encoded RT contract needs the curve re-applied).
+	 *
+	 * TextureAlphaMode: 0 = Premultiplied (the RmlUi contract), 1 = Opaque (force A to 1 --
+	 * a SceneCapture render target usually carries A = 0, which the premultiplied blend
+	 * would render fully invisible), 2 = Straight (an imported texture asset's alpha).
+	 */
+	SHADER_PARAMETER(uint32, TextureEncoding)
+	SHADER_PARAMETER(uint32, TextureAlphaMode)
 END_SHADER_PARAMETER_STRUCT()
 
 class FVaCuusUIVS : public FGlobalShader

@@ -395,6 +395,15 @@ public:
 
 #if WITH_DEV_AUTOMATION_TESTS
 	/** The RHI texture a handle resolves to, or null. Tests only: the map is render-thread-private state. */
+	/**
+	 * Draws that named an engine texture no registration resolved, since this replayer was
+	 * created. Any thread. See the member for why this is a counter and not an ensure.
+	 */
+	uint64 GetNumUnresolvedExternalDraws() const { return NumUnresolvedExternalDraws.load(std::memory_order_acquire); }
+
+	/** Engine-texture handles this replayer currently knows. Render thread, like every read of the maps. */
+	int32 GetNumExternalTextures() const { return ExternalTextures.Num(); }
+
 	FRHITexture* GetTextureForTest(FVaCuusTextureHandle Handle) const
 	{
 		const FTextureRHIRef* Found = Textures.Find(Handle);
@@ -480,6 +489,30 @@ private:
 
 	TMap<FVaCuusGeometryHandle, FGeometry> Geometry;
 	TMap<FVaCuusTextureHandle, FTextureRHIRef> Textures;
+
+	/**
+	 * Engine textures: handle -> the registry's stable id (spec 2026-08-22). SAME HANDLE
+	 * SPACE as Textures above and never overlapping it — the recorder mints both from one
+	 * counter because RmlUi cannot tell them apart — so the draw path checks Textures
+	 * first and this second, and a release removes from both.
+	 *
+	 * NO RHI REFERENCE IS HELD HERE, deliberately. The reference lives in the registry's
+	 * render-thread mirror, whose lifetime is the REGISTRATION's, and copying it into this
+	 * map would keep a texture alive past its unregistration fence for as long as any
+	 * replayer happened to hold a buffer that once drew it.
+	 */
+	TMap<FVaCuusTextureHandle, uint64> ExternalTextures;
+
+	/**
+	 * Draws whose stable id resolved to no registration — the observable without which
+	 * "an unregistered key draws nothing rather than crashing" cannot be asserted at all
+	 * (CLAUDE.md: an invariant with no observable will rot). Atomic so a test and a
+	 * console command can read it off the game thread.
+	 */
+	std::atomic<uint64> NumUnresolvedExternalDraws{0};
+
+	/** Latched with the counter above: the WHY is logged once per replayer, the count is exact. */
+	bool bLoggedUnresolvedExternal = false;
 
 	/**
 	 * Recompute this view's census and move the published process-wide total by the

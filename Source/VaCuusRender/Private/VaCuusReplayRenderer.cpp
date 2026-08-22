@@ -2,6 +2,8 @@
 
 #include "VaCuusReplayRenderer.h"
 
+#include "VaCuusTextureRegistry.h" // stable id -> the registered UTexture's RHI reference
+
 #include "VaCuusDefines.h"
 #include "VaCuusMaterialDraw.h"
 #include "VaCuusStats.h"
@@ -329,7 +331,12 @@ void FVaCuusReplayRenderer::RetireBufferResources(const FVaCuusCommandBuffer& Bu
 	}
 	for (const FVaCuusTextureHandle Handle : Buffer.ReleasedTextures)
 	{
+		// BOTH MAPS, because RmlUi releases with a bare handle and cannot know which kind
+		// it minted -- see FVaCuusCommandBuffer::NewExternalTextures for why the two share
+		// one release list. A handle is only ever in one of them, so the second Remove is
+		// a miss and costs a hash.
 		Textures.Remove(Handle);
+		ExternalTextures.Remove(Handle);
 	}
 	for (const FVaCuusShaderHandle Handle : Buffer.ReleasedShaders)
 	{
@@ -352,6 +359,7 @@ void FVaCuusReplayRenderer::ReleaseResources()
 	Geometry.Empty();
 	Textures.Empty();
 	Shaders.Empty();
+	ExternalTextures.Empty();
 	// Teardown is a census change like any other, and the loudest one: without this a view
 	// that dropped every texture would keep its last published figure until it was destroyed.
 	PublishCensus();
@@ -823,6 +831,15 @@ void FVaCuusReplayRenderer::UploadNewResources(FRHICommandList& RHICmdList, cons
 	{
 		Shaders.Add(Pair.Key, Pair.Value);
 	}
+
+	// Engine textures: the "upload" is an id, and there is deliberately nothing to create.
+	// The pixels belong to a registered UTexture and are bound through the registry's
+	// mirror at draw time, so a 4K render target costs this map 16 bytes and no GPU work
+	// at all -- see FVaCuusExternalTextureDesc.
+	for (const TPair<FVaCuusTextureHandle, FVaCuusExternalTextureDesc>& Pair : Buffer.NewExternalTextures)
+	{
+		ExternalTextures.Add(Pair.Key, Pair.Value.StableId);
+	}
 }
 
 namespace VaCuusReplayPrivate
@@ -1123,12 +1140,64 @@ void FVaCuusReplayRenderer::ReplayCommands(FRHICommandList& RHICmdList, const FV
 					// dummy; bUseTexture=0 skips the sample's contribution.
 					FRHITexture* TextureRHI = GWhiteTexture->TextureRHI;
 					uint32 bUseTexture = 0;
+
+					// Defaults describe VaCuus's OWN textures, which uphold the pipeline's
+					// contract by construction: raw sRGB-encoded bytes (created
+					// PF_R8G8B8A8 with no sRGB flag, MakeUITextureDesc) and premultiplied
+					// alpha (the RmlUi contract, FVaCuusTextureData). So every ordinary
+					// draw pays nothing for the engine-texture path -- two uniforms at 0.
+					uint32 TextureEncoding = 0; // 0 = Raw
+					uint32 TextureAlphaMode = 0; // 0 = Premultiplied
+
 					if (Command.Texture != 0)
 					{
 						if (const FTextureRHIRef* Found = Textures.Find(Command.Texture))
 						{
 							TextureRHI = *Found;
 							bUseTexture = 1;
+						}
+						else if (const uint64* StableId = ExternalTextures.Find(Command.Texture))
+						{
+							// THE ENGINE-TEXTURE RESOLUTION (spec 2026-08-22 §2). What the
+							// mirror hands back is an FRHITextureReference, which IS an
+							// FRHITexture (RHITextureReference.h:7) and so binds as an
+							// ordinary SRV -- and which the RHI re-points at the new
+							// resource on every recreation, so a render target that
+							// resized between record and replay still draws its current
+							// pixels rather than a dangling one.
+							FVaCuusExternalTextureBinding Binding;
+							if (FVaCuusTextureRegistry::ResolveBinding_RenderThread(*StableId, Binding) &&
+								Binding.Texture.IsValid())
+							{
+								TextureRHI = Binding.Texture;
+								bUseTexture = 1;
+								TextureEncoding = Binding.Encoding == EVaCuusTextureEncoding::EncodeFromLinear ? 1u : 0u;
+								TextureAlphaMode = Binding.Alpha == EVaCuusTextureAlpha::Opaque
+									? 1u
+									: (Binding.Alpha == EVaCuusTextureAlpha::Straight ? 2u : 0u);
+							}
+							else
+							{
+								// UNREGISTERED, OR REGISTERED LATER THAN THIS DRAW -- both
+								// are ordinary and neither is an error: LoadTexture mints
+								// handles for keys nobody has registered, because RmlUi
+								// would otherwise latch the failure forever
+								// (TextureDatabase.cpp:106-130). So this is a COUNTER and
+								// a latched log, not an ensure. Binding nothing leaves
+								// bUseTexture at 0, which draws the element's own colour
+								// rather than a stale texture.
+								NumUnresolvedExternalDraws.fetch_add(1, std::memory_order_release);
+								if (!bLoggedUnresolvedExternal)
+								{
+									bLoggedUnresolvedExternal = true;
+									UE_LOG(LogVaCuus, Warning,
+										TEXT("Draw references engine texture id %llu, which no registration resolves. ")
+										TEXT("Register it with UVaCuusSubsystem::RegisterTexture, or check the key's ")
+										TEXT("spelling in the document. Further occurrences are counted, not logged ")
+										TEXT("(vacuus.TextureRegistry)."),
+										*StableId);
+								}
+							}
 						}
 						else
 						{
@@ -1138,6 +1207,8 @@ void FVaCuusReplayRenderer::ReplayCommands(FRHICommandList& RHICmdList, const FV
 					Parameters.UITexture = TextureRHI;
 					Parameters.UISampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 					Parameters.bUseTexture = bUseTexture;
+					Parameters.TextureEncoding = TextureEncoding;
+					Parameters.TextureAlphaMode = TextureAlphaMode;
 
 					// One shared parameter struct, bound per stage: each stage
 					// only picks up what survives in its parameter map (VS:

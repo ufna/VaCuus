@@ -1,7 +1,7 @@
 // Copyright 2026 Vladimir Alyamkin. All Rights Reserved.
 
 #include "/Engine/Public/Platform.ush"
-#include "/Engine/Private/GammaCorrectionCommon.ush" // sRGBToLinear for the LinearOutput composite permutation
+#include "/Engine/Private/GammaCorrectionCommon.ush" // sRGBToLinear for the LinearOutput composite permutation; LinearToSrgb for engine textures
 #include "/Plugin/VaCuus/Private/VaCuusUIInterpolants.ush"
 
 /** Pixel-space -> clip-space, UE row-vector convention (v' = v * M). */
@@ -23,11 +23,45 @@ Texture2D UITexture;
 SamplerState UISampler;
 uint bUseTexture;
 
+/**
+ * ENGINE-TEXTURE READ MODES (spec 2026-08-22 §4). Both are 0 for every VaCuus-owned
+ * texture, so the branches below are uniform and fold away on the ordinary path.
+ *
+ * WHY THE ORDER IS UN-PREMULTIPLY -> ENCODE -> RE-PREMULTIPLY, and not encode in place:
+ * the sRGB transfer curve applies to the STRAIGHT colour, and LinearToSrgb(a*c) is not
+ * a*LinearToSrgb(c) for a < 1. This is the same argument, in the same direction, that
+ * MainCompositePS below makes for its decode -- and it is why the two modes cannot be
+ * collapsed into one multiply.
+ */
+uint TextureEncoding;  // 0 = Raw, 1 = EncodeFromLinear
+uint TextureAlphaMode; // 0 = Premultiplied, 1 = Opaque, 2 = Straight
+
 void MainPS(
 	FVaCuusUIInterpolants In,
 	out float4 OutColor : SV_Target0)
 {
 	float4 Tex = bUseTexture ? UITexture.Sample(UISampler, In.UV) : float4(1.0f, 1.0f, 1.0f, 1.0f);
+
+	if (bUseTexture && (TextureEncoding != 0 || TextureAlphaMode != 0))
+	{
+		// Straight colour and coverage, whatever the source convention was.
+		float Alpha = (TextureAlphaMode == 1) ? 1.0f : Tex.a;
+		// max() guards the a=0 un-premultiply; premultiplied content has rgb <= a, so the
+		// result stays in [0,1] (MainCompositePS makes the same guard for the same reason).
+		float3 Straight = (TextureAlphaMode == 0) ? (Tex.rgb / max(Tex.a, 1e-6f)) : Tex.rgb;
+
+		if (TextureEncoding != 0)
+		{
+			// The pipeline stores sRGB-ENCODED premultiplied pixels in the view RT and
+			// decodes at composite time; a sampler that already decoded (an _SRGB format)
+			// or a float format carrying linear content would otherwise read ~2.2-gamma
+			// too dark once the composite decodes a second time.
+			Straight = LinearToSrgb(Straight);
+		}
+
+		Tex = float4(Straight * Alpha, Alpha);
+	}
+
 	OutColor = In.Color * Tex; // premultiplied * premultiplied
 }
 
