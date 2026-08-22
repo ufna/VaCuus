@@ -37,13 +37,27 @@ pixels *into* a `UTextureRenderTarget2D` for world panels. This spec is the othe
   stable name anyway. Registration by key instead.
 - **Composite-time draws.** The material spike priced this and chose the forced-republish
   clamp (`VaCuusMaterialDraw.h:34-40`). Same answer here, same reasons.
-- **Rounding an image.** **CORRECTED** — this was assumed available and is not. RmlUi cannot
-  round an image by any route: `ElementImage::GenerateGeometry` builds a plain quad
-  (`MeshUtilities::GenerateQuad`, `ElementImage.cpp:180`) and so does the image decorator
-  (`DecoratorTiled.cpp:202`); `border-radius` shapes only background and border geometry, and
-  RmlUi's `overflow` clipping is an axis-aligned scissor. So a circular portrait — the single
-  most likely first request — is not expressible. Filed as `VaCuus-3wl.8` with three options.
-  `transform`, `opacity` and `image-color` **do** compose, and the demo shows them.
+- **`border-radius` on an image.** **CORRECTED, TWICE.** It does not round an image:
+  `ElementImage::GenerateGeometry` builds a plain quad (`ElementImage.cpp:180`) and so does
+  the image decorator (`DecoratorTiled.cpp:202`); the radius shapes only background and border
+  geometry.
+
+  The first correction stopped there and concluded "a circular portrait is not expressible",
+  **which is wrong** — it treated shape as a geometry problem. It is a **coverage** problem,
+  and coverage is the alpha channel. Write the mask into the texture's alpha, register with an
+  alpha mode that means it (`Straight` or `Premultiplied` — the overrides already exist), and
+  the premultiplied composite does the rest with **no plugin support of any kind**. A
+  `SceneCapture2D` that writes coverage into its render target's alpha gets a round portrait
+  the same way. Proven on screen: the demo's icon tile is a smooth-edged disc produced by
+  nothing but alpha.
+
+  RmlUi's own general mechanism for this is `mask-image` — a real RCSS property
+  (`StyleSheetSpecification.cpp:404`) applied through `SaveLayerAsMaskImage`
+  (`ElementEffects.cpp:296-311`) — and VaCuus refuses it loudly because the replayer has no
+  layer render targets and compiles no filter but `blur`. That is already tracked as
+  `VaCuus-iuv` and blocked on the same layer capture as `VaCuus-u0q`; it is a different
+  feature from anything in this spec. `transform`, `opacity` and `image-color` compose today,
+  and the demo shows them.
 - **Writing back into an engine texture from the document.** One direction only.
 - **Mip generation / streaming policy for registered textures.** The registered object owns
   its own resource; VaCuus binds it and nothing more.
@@ -231,7 +245,7 @@ document `Content/DevUI/tex_demo.rml` with three tiles:
 |---|---|---|---|
 | portrait | `SceneCapture2D` on a rotating mesh, `CaptureEveryFrame` | `bLive` | a live RT under a `transform` (**CORRECTED**: not `border-radius` — see the non-goals) |
 | minimap | `SceneCapture2D` overhead, captured at 1 Hz | `MarkTextureDirty` | refresh on demand, not at 60 Hz; tinted through `image-color` |
-| icon | a plain `UTexture2D` | static | "any UTexture", and **zero** publishes |
+| icon | a plain `UTexture2D` with a disc in its alpha | static | "any UTexture"; **zero** publishes; and that shape comes from coverage, not geometry |
 
 The icon is a `UTexture2D::CreateTransient` pattern rather than a new `.uasset`: no binaries
 added to the repository, no cook-config change, and it proves the claim that matters — an
