@@ -6,11 +6,18 @@
 #include "Tickable.h"
 #include "Templates/UniquePtr.h"
 
+// Complete EVaCuusTextureEncoding / EVaCuusTextureAlpha, not a forward declaration: they
+// are UENUM parameters WITH DEFAULT VALUES on RegisterTexture below, and UHT needs the
+// definition to emit the default. This is what moved RHI to a public dependency -- see
+// VaCuus.Build.cs.
+#include "VaCuusTextureRegistry.h"
+
 #include "VaCuusSubsystem.generated.h"
 
 class FVaCuusUIThread;
 class IVaCuusDocumentHost;
 class UScriptStruct;
+class UTexture;
 class UStringTable;
 class UVaCuusBundle;
 class UVaCuusStyleSet;
@@ -221,6 +228,56 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "VaCuus")
 	void UnregisterStyleSet(UVaCuusStyleSet* StyleSet);
+
+	/**
+	 * Makes an engine texture drawable from markup as `<img src="unreal://<Key>">` (and
+	 * from RCSS as `decorator: image(unreal://<Key>)`). Any UTexture: a
+	 * UTextureRenderTarget2D fed by a SceneCapture2D, a cooked texture asset, a media
+	 * texture. Game thread. Returns false on a named refusal — see
+	 * FVaCuusTextureRegistry::RegisterTexture, which logs every one of them.
+	 *
+	 * A THIN DOOR TO PROCESS-WIDE STATE, exactly like RegisterStyleSet: one registry per
+	 * process, so a key registered here is visible to every view of every game instance.
+	 *
+	 * UNLIKE RegisterStyleSet, REGISTRATION ORDER DOES NOT MATTER. A document that loads
+	 * first still resolves once the key arrives: the recorder mints a handle for an
+	 * unregistered key and resolution is deferred to the draw. That is not politeness —
+	 * RmlUi latches a failed texture load forever (TextureDatabase.cpp:106-130), so
+	 * "register first or it never works" would have been a silent trap.
+	 *
+	 * bLive IS THE COST DIAL AND IT DEFAULTS OFF. A static texture costs nothing: the
+	 * idle gate keeps withholding frames exactly as it would with no texture at all.
+	 * bLive = true republishes the views that DRAW it once per engine frame. For anything
+	 * in between — a minimap captured twice a second — leave it off and call
+	 * MarkTextureDirty when the pixels change.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "VaCuus",
+		meta = (AdvancedDisplay = "Encoding,Alpha"))
+	bool RegisterTexture(const FString& Key, UTexture* Texture, bool bLive = false,
+		EVaCuusTextureEncoding Encoding = EVaCuusTextureEncoding::Auto,
+		EVaCuusTextureAlpha Alpha = EVaCuusTextureAlpha::Auto);
+
+	/**
+	 * Unregisters an engine texture key. Live draws naming it bind the RHI's global black
+	 * texture and count themselves; the UTexture stays rooted until the render thread
+	 * provably stopped resolving it (the deferred-release fence, drained by Tick). Game
+	 * thread.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "VaCuus")
+	void UnregisterTexture(const FString& Key);
+
+	/**
+	 * "The pixels behind this key changed once" — costs the views that actually draw it
+	 * exactly one published frame. Game thread.
+	 *
+	 * THE POINT OF THE WHOLE THREE-MODE DESIGN. A texture's contents change without
+	 * changing one byte of the recorded command stream, so the idle gate cannot see it and
+	 * a document showing a render target would freeze on its last publish. Call this after
+	 * a capture instead of registering the texture live, and an occasionally-updated view
+	 * costs occasional frames rather than 60 a second.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "VaCuus")
+	void MarkTextureDirty(const FString& Key);
 
 	/**
 	 * Publishes a localization table (M5 Task 8, spec §2(l)): its entries answer

@@ -12,6 +12,7 @@
 #include "VaCuusNodeCount.h"
 #include "VaCuusStats.h"
 #include "VaCuusStyleSet.h"
+#include "VaCuusTextureRegistry.h"
 #include "VaCuusTextInput.h"
 #include "VaCuusTranslation.h"
 #include "VaCuusTranslationVariable.h"
@@ -832,6 +833,41 @@ void FVaCuusUIThread::EnqueueSetTranslationSnapshot(const TSharedPtr<const FVaCu
 	Enqueue(MoveTemp(Command));
 }
 
+void FVaCuusUIThread::EnqueueSetTextureSnapshot(const TSharedPtr<const FVaCuusTextureSnapshot>& Snapshot)
+{
+	if (!Snapshot.IsValid())
+	{
+		// Same refusal as the two snapshots above: the registry never publishes a null,
+		// and the drain's InstallSnapshot checkf should stay about versions.
+		UE_LOG(LogVaCuus, Error, TEXT("EnqueueSetTextureSnapshot(null) dropped"));
+		return;
+	}
+
+	// No ViewId: the texture registry is process-wide, applied before per-view routing.
+	FVaCuusUICommand Command;
+	Command.Kind = EVaCuusCommandKind::SetTextureSnapshot;
+	Command.TextureSnapshot = Snapshot;
+	Enqueue(MoveTemp(Command));
+}
+
+void FVaCuusUIThread::EnqueueMarkTextureDirty(uint64 StableId)
+{
+	if (StableId == 0)
+	{
+		// 0 is the "no texture" sentinel and IdForKey never returns it, so this can only
+		// be a caller slip. Dropping it keeps the counter map free of a key that would
+		// match every untextured draw's handle.
+		UE_LOG(LogVaCuus, Error, TEXT("EnqueueMarkTextureDirty(0) dropped"));
+		return;
+	}
+
+	// No ViewId: the counter is per texture, not per view. See the command's declaration.
+	FVaCuusUICommand Command;
+	Command.Kind = EVaCuusCommandKind::MarkTextureDirty;
+	Command.TextureId = StableId;
+	Enqueue(MoveTemp(Command));
+}
+
 void FVaCuusUIThread::EnqueueLoadFontFace(const FString& VfsPath, bool bFallbackFace)
 {
 	// No ViewId: RmlUi's font provider is one per process, like the style and translation state.
@@ -1411,6 +1447,22 @@ void FVaCuusUIThread::DrainCommands()
 		if (Command->Kind == EVaCuusCommandKind::ClearAssetCaches)
 		{
 			ClearAssetCaches();
+			continue;
+		}
+
+		if (Command->Kind == EVaCuusCommandKind::SetTextureSnapshot)
+		{
+			// THREAD-level like SetStyleSnapshot below, and for the same reason: the
+			// texture registry is process-wide and a snapshot riding a per-view command
+			// would be lost exactly when no view is live to carry it. Installed before any
+			// load queued behind it drains (FIFO), so that document's LoadTexture sees it.
+			FVaCuusTextureRegistry::InstallSnapshot(Command->TextureSnapshot);
+			continue;
+		}
+
+		if (Command->Kind == EVaCuusCommandKind::MarkTextureDirty)
+		{
+			FVaCuusTextureRegistry::MarkDirty_UIThread(Command->TextureId);
 			continue;
 		}
 

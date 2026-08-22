@@ -8,6 +8,7 @@
 #include "VaCuusEngine.h"
 #include "VaCuusFontRegistry.h"
 #include "VaCuusStyleSet.h"
+#include "VaCuusTextureRegistry.h"
 #include "VaCuusTranslation.h"
 #include "VaCuusUIThread.h"
 
@@ -54,6 +55,7 @@ void FVaCuusModule::ShutdownModule()
 	// registry's roots and its render-thread proxy mirror while the render thread is
 	// still around to flush against.
 	FVaCuusStyleRegistry::Shutdown_GameThread();
+	FVaCuusTextureRegistry::Shutdown_GameThread();
 
 	// The bundle regions die HERE and nowhere earlier (spec M6 section 4's release
 	// rule): StopUIThread() above joined the thread whose file interface held the
@@ -114,6 +116,7 @@ FVaCuusUIThread* FVaCuusModule::GetOrStartUIThread()
 		// after this returns — the queue is FIFO from this one producer. The translation
 		// table (M5 Task 8) rides the identical argument one line down.
 		FVaCuusStyleRegistry::PublishToUIThread(*UIThread);
+		FVaCuusTextureRegistry::PublishToUIThread(*UIThread);
 		FVaCuusTranslationRegistry::PublishToUIThread(*UIThread);
 
 		// And the font faces (spec 2026-08-09 §3), by the same argument plus one of its own: a
@@ -132,6 +135,7 @@ FVaCuusUIThread* FVaCuusModule::GetOrStartUIThread()
 	{
 		UIThread = MoveTemp(NewThread);
 		FVaCuusStyleRegistry::PublishToUIThread(*UIThread);
+		FVaCuusTextureRegistry::PublishToUIThread(*UIThread);
 		FVaCuusTranslationRegistry::PublishToUIThread(*UIThread);
 
 		// And the font faces (spec 2026-08-09 §3), by the same argument plus one of its own: a

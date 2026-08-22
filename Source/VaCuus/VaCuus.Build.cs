@@ -21,7 +21,16 @@ public class VaCuus : ModuleRules
 			// FKey is part of the published input-event payload
 			// (VaCuusInputEvent.h). Engine happens to re-export InputCore, but the
 			// dependency is ours, so it is declared rather than inherited.
-			"InputCore"
+			"InputCore",
+
+			// PUBLIC, not private, and the reason is a header: VaCuusTextureRegistry.h
+			// lives in Public/ and exposes FTextureRHIRef (the stable RHI reference the
+			// render-thread mirror binds), and VaCuusSubsystem.h includes it for the two
+			// UENUMs that carry default values on RegisterTexture. A PRIVATE dependency
+			// does not propagate the include path to consumers, so a game module including
+			// VaCuusSubsystem.h would fail to find RHIResources.h. Same rule, and the same
+			// wording, as VaCuusRender.Build.cs already states for its own replayer header.
+			"RHI"
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[] {
@@ -32,11 +41,11 @@ public class VaCuus : ModuleRules
 			// The M5 style registry (VaCuusStyleSet.cpp) pushes its render-thread proxy
 			// mirror via ENQUEUE_RENDER_COMMAND and fences unregistration on
 			// FRenderCommandFence -- RenderCore -- with FRHICommandListImmediate in the
-			// command signatures -- RHI. Engine happens to re-export both, but the
-			// dependency is ours, so it is declared rather than inherited (the InputCore
-			// rule above).
+			// command signatures -- RHI, which is PUBLIC above since
+			// VaCuusTextureRegistry.h exposes FTextureRHIRef. Engine happens to re-export
+			// both, but the dependency is ours, so it is declared rather than inherited
+			// (the InputCore rule above).
 			"RenderCore",
-			"RHI",
 
 			"VaCuusRml"
 		});

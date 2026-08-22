@@ -17,6 +17,7 @@ class IVaCuusDocumentHost;
 class UScriptStruct;
 struct FVaCuusStyleSnapshot;
 struct FVaCuusTranslationSnapshot;
+struct FVaCuusTextureSnapshot;
 
 /** What a queued command asks the UI thread to do. */
 enum class EVaCuusCommandKind : uint8
@@ -162,6 +163,24 @@ enum class EVaCuusCommandKind : uint8
 	SetTranslationSnapshot,
 
 	/**
+	 * Installs the engine-texture snapshot (spec 2026-08-22). SetStyleSnapshot's shape
+	 * verbatim, and process-wide for the same reason: FVaCuusTextureRegistry is one table
+	 * per process, read by every recorder's LoadTexture, so this is a THREAD-level
+	 * command handled before the per-view routing. FIFO from the single producer is what
+	 * makes register-before-load work: a snapshot enqueued before a LoadDocument* is
+	 * installed before that document's <img src="unreal://..."> resolves.
+	 */
+	SetTextureSnapshot,
+
+	/**
+	 * Bumps one engine texture's dirty counter (spec 2026-08-22 §3). THREAD-level like the
+	 * snapshots -- the counter is keyed by stable id and read by every recorder, because
+	 * "this texture changed" is a fact about the texture and not about any one view.
+	 * Carries TextureId; every other field is unused.
+	 */
+	MarkTextureDirty,
+
+	/**
 	 * Loads one font face through Rml::LoadFontFace (spec 2026-08-09 §3). THREAD-level like the
 	 * two snapshots above and for the same reason: RmlUi's font provider is process-global state
 	 * inside Rml::Initialise/Shutdown, with no view identity anywhere in it. Carries Payload (the
@@ -293,6 +312,12 @@ struct FVaCuusUICommand
 
 	/** SetTranslationSnapshot only: the immutable translation table, same replacement rule as StyleSnapshot above. */
 	TSharedPtr<const FVaCuusTranslationSnapshot> TranslationSnapshot;
+
+	/** SetTextureSnapshot only: the immutable engine-texture table, same replacement rule as StyleSnapshot above. */
+	TSharedPtr<const FVaCuusTextureSnapshot> TextureSnapshot;
+
+	/** MarkTextureDirty only: the stable id whose counter to bump. */
+	uint64 TextureId = 0;
 };
 
 /**

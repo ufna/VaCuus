@@ -272,6 +272,21 @@ public:
 	void EnqueueSetTranslationSnapshot(const TSharedPtr<const struct FVaCuusTranslationSnapshot>& Snapshot);
 
 	/**
+	 * Installs the engine-texture snapshot on the UI thread (spec 2026-08-22) — how a
+	 * FVaCuusTextureRegistry change reaches the recorder's LoadTexture.
+	 * EnqueueSetStyleSnapshot's contract verbatim: THREAD-level, FIFO before any load
+	 * queued behind it, which is what makes register-before-load work.
+	 */
+	void EnqueueSetTextureSnapshot(const TSharedPtr<const struct FVaCuusTextureSnapshot>& Snapshot);
+
+	/**
+	 * Bumps one engine texture's dirty counter on the UI thread (spec 2026-08-22 §3) —
+	 * "the pixels behind this id changed once". THREAD-level: the counter is a fact about
+	 * the texture, and every recorder drawing it must see the same one.
+	 */
+	void EnqueueMarkTextureDirty(uint64 StableId);
+
+	/**
 	 * Queues one Rml::LoadFontFace (spec 2026-08-09 §3). Thread-level like the two snapshots
 	 * above — the font provider is process-global — and FIFO order IS the fallback order RmlUi
 	 * consults faces in, so this must never be reordered or deduplicated in the queue.

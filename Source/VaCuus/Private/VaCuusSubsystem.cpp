@@ -11,6 +11,7 @@
 #include "VaCuusFontRegistry.h"
 #include "VaCuusStats.h"
 #include "VaCuusStyleSet.h"
+#include "VaCuusTextureRegistry.h"
 #include "VaCuusTranslation.h"
 #include "VaCuusUIThread.h"
 #include "VaCuusView.h"
@@ -174,6 +175,7 @@ void UVaCuusSubsystem::Tick(float DeltaTime)
 	// Process-wide like the write router's drain: whichever subsystem ticks first pays
 	// the (empty-check) branch for everyone.
 	FVaCuusStyleRegistry::TickDeferredReleases_GameThread();
+	FVaCuusTextureRegistry::TickDeferredReleases_GameThread();
 
 	FVaCuusUIThread* UIThread = GetUIThread();
 	if (!UIThread)
@@ -290,6 +292,25 @@ void UVaCuusSubsystem::UnregisterStyleSet(UVaCuusStyleSet* StyleSet)
 {
 	check(IsInGameThread());
 	FVaCuusStyleRegistry::UnregisterStyleSet(StyleSet);
+}
+
+bool UVaCuusSubsystem::RegisterTexture(
+	const FString& Key, UTexture* Texture, bool bLive, EVaCuusTextureEncoding Encoding, EVaCuusTextureAlpha Alpha)
+{
+	check(IsInGameThread());
+	return FVaCuusTextureRegistry::RegisterTexture(Key, Texture, bLive, Encoding, Alpha);
+}
+
+void UVaCuusSubsystem::UnregisterTexture(const FString& Key)
+{
+	check(IsInGameThread());
+	FVaCuusTextureRegistry::UnregisterTexture(Key);
+}
+
+void UVaCuusSubsystem::MarkTextureDirty(const FString& Key)
+{
+	check(IsInGameThread());
+	FVaCuusTextureRegistry::MarkTextureDirty(Key);
 }
 
 void UVaCuusSubsystem::SetTranslationTable(const TMap<FString, FString>& Table, const FString& Tag)
