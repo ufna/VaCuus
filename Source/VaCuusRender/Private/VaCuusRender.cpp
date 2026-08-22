@@ -2641,13 +2641,25 @@ static UTexture2D* MakeTexDemoIcon()
 			const float Dx = float(X - Size / 2) + 0.5f;
 			const float Dy = float(Y - Size / 2) + 0.5f;
 			const float R = FMath::Sqrt(Dx * Dx + Dy * Dy);
-			const bool bRing = R > 18.0f && R < 27.0f;
+			// SHAPE COMES FROM ALPHA, NOT FROM GEOMETRY, and that is the tile's whole
+			// point. RmlUi cannot round an image -- ElementImage builds a plain quad
+			// (ElementImage.cpp:180) -- and `mask-image`, which is RmlUi's own answer,
+			// needs layer capture this replayer does not have (VaCuus-iuv, VaCuus-u0q).
+			// None of that matters here: a rounded portrait is a COVERAGE question, and
+			// coverage is the alpha channel. Write it into the texture, register with an
+			// alpha mode that means it, and the premultiplied composite does the rest --
+			// with no plugin change at all. A render target works the same way; a
+			// SceneCapture that writes coverage into its alpha gets a round portrait.
+			//
+			// The fractional edge is deliberate: a binary cutout would prove blending
+			// nothing, and a hard 1-bit edge is what makes hand-rolled masks look cheap.
+			const float Coverage = FMath::Clamp(27.0f - R, 0.0f, 1.0f);
 
 			uint8* Texel = Pixels + (int64(Y) * Size + X) * 4;
-			Texel[0] = bRing ? 208 : 40; // B — BGRA memory order
-			Texel[1] = bRing ? 192 : 33;
-			Texel[2] = bRing ? 136 : 27;
-			Texel[3] = 255;
+			Texel[0] = 208; // B — BGRA memory order
+			Texel[1] = 192;
+			Texel[2] = 136;
+			Texel[3] = uint8(Coverage * 255.0f + 0.5f);
 		}
 	}
 	Mip.BulkData.Unlock();

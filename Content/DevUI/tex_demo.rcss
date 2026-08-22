@@ -77,6 +77,16 @@ body
 	image-color: #a8d8c0;
 }
 
+/* SQUARE, unlike the other two tiles: the icon's shape is carried by its ALPHA, and the
+   default 268x150 img size would stretch a disc into an ellipse. Nothing about the
+   mechanism cares -- this is only so the screenshot reads as a circle. */
+#icon
+{
+	width: 150px;
+	height: 150px;
+	margin-left: 59px;
+}
+
 /* display: block spelled out on every caption: without a default stylesheet a div is
    INLINE here, and the mode and the note ran together on one line until this was added. */
 .mode

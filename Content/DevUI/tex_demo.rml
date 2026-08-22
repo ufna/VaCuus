@@ -13,10 +13,13 @@
      and layout all apply to a live SceneCapture render target exactly as they would to a
      PNG, because RmlUi never learns there is anything special about it.
 
-     ONE THING THAT DOES NOT COMPOSE, checked in the source rather than assumed: border-radius
-     does not round an image. ElementImage builds a plain quad (ElementImage.cpp:180) and so
-     does the image decorator (DecoratorTiled.cpp:202); the radius shapes only background and
-     border geometry. See tex_demo.rcss and bead VaCuus-3wl.8. -->
+     border-radius IS NOT ONE OF THEM, checked in the source rather than assumed: it shapes
+     only background and border geometry, and an image is a plain quad (ElementImage.cpp:180,
+     DecoratorTiled.cpp:202). That is not the gap it looks like. SHAPE IS A COVERAGE QUESTION,
+     and coverage is alpha -- the icon tile below is a circle for exactly that reason, with no
+     plugin support of any kind behind it. RmlUi's own `mask-image` needs layer capture this
+     replayer does not have, which is VaCuus-iuv and VaCuus-u0q, and is a different feature
+     from anything here. -->
 <body data-model="texdemo">
 	<div id="title">VaCuus // ENGINE TEXTURES IN THE DOCUMENT</div>
 
@@ -48,7 +51,7 @@
 			     the idle gate nothing after the first frame. -->
 			<img id="icon" src="unreal://vacuus-demo-icon"/>
 			<div class="mode static">STATIC &#183; plain UTexture2D</div>
-			<div class="note">zero publishes once settled</div>
+			<div class="note">shape is alpha, not geometry &#183; zero publishes</div>
 		</div>
 	</div>
 
