@@ -111,8 +111,10 @@ own C# script modules; `NuGetAudit=false` in the environment is the fix.
 
 ## 7. The Fab upload
 
-The package already IS the upload shape (976 files, 13 MB — dry-run §7, run 3, after
-the `-/Binaries/...` `-/Intermediate/...` filter fix). Steps:
+The listing is live at <https://fab.com/s/6571fd1716eb> — these steps are what produces
+each new version's upload, not a first-time-only sequence. The package already IS the
+upload shape (976 files, 13 MB — dry-run §7, run 3, after the `-/Binaries/...`
+`-/Intermediate/...` filter fix). Steps:
 
 1. Clean clone (no `.git`, no `.beads`, no `node_modules` — verify the esbuild ELF
    is absent; `.uasset` files real packages, not LFS pointers).

@@ -29,9 +29,10 @@ Two ways to get one:
 
 1. **Directly from the author** — <ufna@ufna.dev>, or the buy button on
    <https://vacuus.ufna.dev/license>. Invoice, purchase order, source escrow, custom
-   terms and consoles go through the same address. Today this is the only live channel.
-2. **Fab** — buy the plugin on the store listing (link appears here when the listing is
-   live); the Fab EULA's license covers commercial use of the purchased copy.
+   terms and consoles go through the same address.
+2. **Fab** — <https://fab.com/s/6571fd1716eb>; the Fab EULA's license covers commercial
+   use of the purchased copy, and the launcher installs the plugin into the engine rather
+   than into your project.
 
 ## The Change Date
 

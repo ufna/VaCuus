@@ -9,13 +9,13 @@ cook-inclusion rule before your first packaged build.
 
 There are two ways this plugin arrives, and they install into **different places**:
 
-**From Fab — the normal way.** Epic builds the binaries for a code plugin itself, and the
-launcher installs the result **into the engine, not into your project**. Nothing compiles
-on your machine, so a **Blueprint-only project works**: enable the plugin (step 2 below)
-and that is the whole install. The full source is in the package regardless — Fab's rule
-for UE-facing code is that sellers upload source, and what we upload carries no
-`Binaries/` directory at all; the binaries a Fab install lands with are Epic's build of
-that source for your engine version.
+**From [Fab](https://fab.com/s/6571fd1716eb) — the normal way.** Epic builds the binaries
+for a code plugin itself, and the launcher installs the result **into the engine, not into
+your project**. Nothing compiles on your machine, so a **Blueprint-only project works**:
+enable the plugin (step 2 below) and that is the whole install. The full source is in the
+package regardless — Fab's rule for UE-facing code is that sellers upload source, and what
+we upload carries no `Binaries/` directory at all; the binaries a Fab install lands with
+are Epic's build of that source for your engine version.
 
 **From source** — this repository, or the package dropped in by hand. This route goes
 into `<Project>/Plugins/VaCuus` and **does** compile on your machine, so it needs a C++

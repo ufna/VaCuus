@@ -1,5 +1,21 @@
 # Fab listing — copy, technical fields, and the decisions behind them
 
+**The listing is live** (2026-08-31), and it has two addresses:
+
+- <https://fab.com/s/6571fd1716eb> — Fab's short form, and **the one every file here
+  links to**: it is what fits a sentence and what the owner hands out.
+- <https://www.fab.com/listings/570382ba-6641-43b1-ada9-8fb0259f9a57> — the canonical
+  listing URL the short form resolves to. Written down here and nowhere else, because a
+  redirect service is the part that can die; if `/s/` ever stops answering, this is what
+  every link becomes. (Both were supplied by the owner. Neither can be re-checked from a
+  script: fab.com answers anything without a browser session with a Cloudflare challenge,
+  HTTP 403, so the redirect target is recorded, not verified.)
+
+The short URL also appears in `VaCuus.uplugin` → `MarketplaceURL`,
+`site/.vitepress/theme/commerce.js` → `FAB_URL`, `site/license.md`, `COMMERCIAL.md`,
+`README.md`, `docs/buyer/setup.md` and `docs/buyer/owner-handoff.md`; change it in one and
+it is wrong in the others.
+
 Drafted 2026-08-12 for bead VaCuus-jne; updated 2026-08-13 for the 1.0 release. Voice
 matches the shipped docs: every number below traces to `docs/buyer/perf-guide.md`, the
 README, or the descriptor — nothing is promised that a buyer cannot re-run. Assets live
@@ -140,6 +156,8 @@ MIT licenses beside them: RmlUi 6.x and QuickJS-ng. Full source included.
    direct sales use `COMMERCIAL.md`. Contributions gated by `CLA.md`. **Price** remains
    the owner's open call. Listing copy may say: "Full source available — free for
    noncommercial use; commercial use via this listing or a direct license."
-4. **The MarketplaceURL loop.** After the listing exists: set the Fab product URL in
-   `VaCuus.uplugin` → `MarketplaceURL`, re-run `Tools/fab_package.sh` so the shipped
-   descriptor carries it (the script WARNs on the empty field today, deliberately).
+4. **The MarketplaceURL loop — closed 2026-08-31.** `VaCuus.uplugin` → `MarketplaceURL`
+   now carries the listing URL, so `Tools/fab_package.sh` no longer WARNs on the empty
+   field and the shipped descriptor points the editor's "Marketplace" button at the
+   product page. The next package build is what puts it in a buyer's hands: the field
+   travels with the descriptor, not with the site.

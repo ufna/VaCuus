@@ -92,15 +92,16 @@ is the full list.
 
 ## How to buy
 
-**Direct** — the *Buy a licence* button at the top of this page. It is the fastest route, and
-today it is the only one that exists. Payment is in cryptocurrency; the moment it confirms,
-a certificate naming you and your title is emailed to you and put at a permanent link, as a
-page and as a PDF. The transaction itself — what arrives, when, and what happens if a
-payment goes wrong — is set out in the [terms of sale](/terms).
+**Direct** — the *Buy a licence* button at the top of this page, and the fastest route. Payment
+is in cryptocurrency; the moment it confirms, a certificate naming you and your title is
+emailed to you and put at a permanent link, as a page and as a PDF. The transaction itself —
+what arrives, when, and what happens if a payment goes wrong — is set out in the
+[terms of sale](/terms).
 
-**Fab** — the store listing is in technical review. When it is live, buying there works too,
-and the Fab EULA's licence covers commercial use of the purchased copy. The button above says
-`soon` because that review has not finished; it does not name a date.
+**Fab** — [the store listing](https://fab.com/s/6571fd1716eb) is live, and buying there works
+too: the Fab EULA's licence covers commercial use of the purchased copy. That route installs
+the plugin **into the engine** rather than into your project, with binaries Epic built from
+this same source — [Setup](/docs/setup) has the difference in a paragraph.
 
 **Invoice, purchase order, source escrow, custom terms, consoles** — <ufna@ufna.dev>. A studio
 that needs paperwork rather than a payment page is expected, not an exception.

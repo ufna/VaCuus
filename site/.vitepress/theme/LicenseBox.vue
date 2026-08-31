@@ -72,11 +72,11 @@ const buy = buyHref()
 
       <div class="vc-lic-cta">
         <a class="vc-btn vc-btn-primary" :href="buy">Buy a licence &rarr;</a>
-        <!-- Disabled, not hidden: the Fab route is real and its listing is in technical
-             review, so it is stated and marked. `disabled` on a real <button> is what keeps
-             it out of the tab order and unclickable — a styled <a> with no href would still
-             be announced as a link to a screen reader. A non-null FAB_URL swaps in the
-             live link below with no other change. -->
+        <!-- FAB_URL is live today, so the <a> below is the branch that renders. The
+             disabled <button> stays as the null branch — a route that exists but cannot be
+             linked yet is stated and marked, never hidden — and `disabled` on a real
+             <button> is what keeps it out of the tab order and unclickable; a styled <a>
+             with no href would still be announced as a link to a screen reader. -->
         <button v-if="!FAB_URL" class="vc-btn vc-btn-soon" type="button" disabled>
           Fab &middot; <span class="vc-lic-soon">soon</span>
         </button>

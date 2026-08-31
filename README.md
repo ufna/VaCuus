@@ -40,15 +40,15 @@ Plugins/VaCuus/docs/buyer/rcss-matrix.md.
 
 ## Install, in one paragraph
 
-**From Fab**: the launcher installs the plugin **into the engine, not into your project**
-— Epic builds the binaries for code plugins, so nothing compiles on your machine and a
-**Blueprint-only project works**. Enabling it is the whole install. **From source** (this
-repository): your project must be a C++ project — a Blueprint-only project has no
-toolchain to compile it with (converting takes two minutes: Tools → New C++ Class →
-None). Drop the folder into `<YourProject>/Plugins/VaCuus`, so that `VaCuus.uplugin`
-lands at `<YourProject>/Plugins/VaCuus/VaCuus.uplugin`, and the first editor launch
-compiles the modules once. Either way, enable it in `Edit → Plugins` or in your
-`.uproject`:
+**From [Fab](https://fab.com/s/6571fd1716eb)**: the launcher installs the plugin **into
+the engine, not into your project** — Epic builds the binaries for code plugins, so
+nothing compiles on your machine and a **Blueprint-only project works**. Enabling it is
+the whole install. **From source** (this repository): your project must be a C++ project —
+a Blueprint-only project has no toolchain to compile it with (converting takes two
+minutes: Tools → New C++ Class → None). Drop the folder into
+`<YourProject>/Plugins/VaCuus`, so that `VaCuus.uplugin` lands at
+`<YourProject>/Plugins/VaCuus/VaCuus.uplugin`, and the first editor launch compiles the
+modules once. Either way, enable it in `Edit → Plugins` or in your `.uproject`:
 
 ```json
 "Plugins": [
@@ -113,10 +113,10 @@ Both are vendored in-tree with their licenses beside them, and both are MIT:
 The plugin's own source is licensed under the **Business Source License 1.1**
 ([`LICENSE.md`](LICENSE.md)): free to read, modify and use outside production, free in
 production for noncommercial purposes, and each version converts to MIT four years after
-release. **Commercial production use needs a purchased license** — on Fab (under the Fab
-EULA) or directly from the author; [`COMMERCIAL.md`](COMMERCIAL.md) is the plain-language
-version. A copy bought on a store is governed by that store's terms. Contributions
-require the CLA ([`CLA.md`](CLA.md)).
+release. **Commercial production use needs a purchased license** — on
+[Fab](https://fab.com/s/6571fd1716eb) (under the Fab EULA) or directly from the author;
+[`COMMERCIAL.md`](COMMERCIAL.md) is the plain-language version. A copy bought on a store
+is governed by that store's terms. Contributions require the CLA ([`CLA.md`](CLA.md)).
 
 ## Support
 

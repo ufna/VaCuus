@@ -14,9 +14,13 @@ export const PRICE_UNIT = 'per project · perpetual'
 // so the button stays a WORKING path rather than a disabled "coming soon".
 export const BUY_URL = 'https://pay.vacuus.ufna.dev/buy'
 
-// Null is what renders the Fab button disabled: the listing is in technical review (bead
-// VaCuus-bs3). Filling this in turns the same markup into a live link, with no other edit.
-export const FAB_URL = null
+// The store channel. Live as of 2026-08-31 (owner; bead VaCuus-bs3) — until then this was
+// null, and that null is what rendered the Fab button disabled. This is Fab's short form;
+// the canonical listing URL it resolves to is recorded in docs/fab/description.md, which is
+// the one place that has to survive the short link. VaCuus.uplugin's MarketplaceURL carries
+// the same URL and is set in the same pass: a descriptor pointing anywhere else sends the
+// editor's own "Marketplace" button somewhere wrong.
+export const FAB_URL = 'https://fab.com/s/6571fd1716eb'
 
 // GitHub Releases is the download channel — all three engine archives plus SHA256SUMS.txt
 // per release. No version number goes in the button label: the page names the version, and
