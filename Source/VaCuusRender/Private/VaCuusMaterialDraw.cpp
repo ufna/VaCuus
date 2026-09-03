@@ -174,7 +174,7 @@ static const FMaterial* WalkForShaders(FRHICommandListBase& RHICmdList, const FM
 }
 
 bool DrawMaterial_RenderThread(FRHICommandList& RHICmdList, FPassState& PassState, FIntPoint RTSize,
-	const FMatrix44f& DrawMatrix, uint64 StableId, const FString& Key,
+	const FMatrix44f& DrawMatrix, uint64 StableId, const FString& Key, const FVector2f& ElementSize,
 	FRHIBuffer* VertexBuffer, FRHIBuffer* IndexBuffer, int32 NumVertices, int32 NumIndices,
 	FRHIDepthStencilState* DepthStencilState, uint32 StencilRef)
 {
@@ -271,7 +271,7 @@ bool DrawMaterial_RenderThread(FRHICommandList& RHICmdList, FPassState& PassStat
 	}
 	{
 		FRHIBatchedShaderParameters& BatchedParameters = RHICmdList.GetScratchShaderParameters();
-		PixelShader->SetParameters(BatchedParameters, PassState.ViewUB, Proxy, *Material);
+		PixelShader->SetParameters(BatchedParameters, PassState.ViewUB, Proxy, *Material, ElementSize);
 		RHICmdList.SetBatchedShaderParameters(PixelShader.GetPixelShader(), BatchedParameters);
 	}
 

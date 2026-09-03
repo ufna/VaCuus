@@ -93,6 +93,7 @@ public:
 	FVaCuusMaterialPS(const ShaderMetaType::CompiledShaderInitializerType& Initializer)
 		: FMaterialShader(Initializer)
 	{
+		ElementSizeParameter.Bind(Initializer.ParameterMap, TEXT("VaCuusElementSize"));
 	}
 
 	static bool ShouldCompilePermutation(const FMaterialShaderPermutationParameters& Parameters)
@@ -105,11 +106,21 @@ public:
 		FMaterialShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
 	}
 
+	/**
+	 * ElementSize is the paint box in PIXELS, and it is what makes a Slate-authored UI
+	 * material work here. The engine's GetUserInterfaceUV function reads the material's
+	 * texture-coordinate slots by index -- slot 3 is its "Pixel Size" output, "the screen
+	 * space size of the element being drawn" -- and a material that snaps to the pixel
+	 * grid divides by it, so that slot cannot hold a UV. See the slot table in
+	 * VaCuusMaterial.usf.
+	 */
 	void SetParameters(FRHIBatchedShaderParameters& BatchedParameters,
 		const TUniformBufferRef<FViewUniformShaderParameters>& ViewUniformBuffer,
-		const FMaterialRenderProxy* MaterialRenderProxy, const FMaterial& Material)
+		const FMaterialRenderProxy* MaterialRenderProxy, const FMaterial& Material,
+		const FVector2f& ElementSize)
 	{
 		SetUniformBufferParameter(BatchedParameters, GetUniformBufferParameter<FViewUniformShaderParameters>(), ViewUniformBuffer);
+		SetShaderValue(BatchedParameters, ElementSizeParameter, ElementSize);
 		// The FSceneView-free, batched-parameters overload with null Scene — an
 		// explicitly handled input (ShaderBaseClasses.cpp:264: feature level falls back
 		// to GMaxRHIFeatureLevel, parameter collections to the process defaults).
@@ -117,6 +128,9 @@ public:
 		// unconfirmed (VaCuusEngineCompat.h hotspot 3, M6 spec §2(f)).
 		VaCuusCompat::SetMaterialShaderParameters_NullScene(*this, BatchedParameters, MaterialRenderProxy, Material);
 	}
+
+private:
+	LAYOUT_FIELD(FShaderParameter, ElementSizeParameter);
 };
 
 namespace VaCuusMaterialDraw
@@ -177,7 +191,7 @@ bool IsForcedRepublishEnabled();
  * Passing them in rather than reading them here keeps the whole protocol in ReplayCommands.
  */
 bool DrawMaterial_RenderThread(FRHICommandList& RHICmdList, FPassState& PassState, FIntPoint RTSize,
-	const FMatrix44f& DrawMatrix, uint64 StableId, const FString& Key,
+	const FMatrix44f& DrawMatrix, uint64 StableId, const FString& Key, const FVector2f& ElementSize,
 	FRHIBuffer* VertexBuffer, FRHIBuffer* IndexBuffer, int32 NumVertices, int32 NumIndices,
 	FRHIDepthStencilState* DepthStencilState, uint32 StencilRef);
 

@@ -30,6 +30,9 @@
 /** Same pixel->clip matrix the recorded draws use (VaCuusReplay::MakePixelToClipMatrix). */
 float4x4 VaCuusProjection;
 
+/** The paint box in PIXELS. Slot 3 of the material's texture coordinates -- see MainPS. */
+float2 VaCuusElementSize;
+
 /**
  * Vertex layout is GVaCuusVertexDeclaration exactly (position px, RGBA premultiplied
  * colour, UV). The spike feeds a generated quad with UV 0..1 over the paint rect, which
@@ -58,12 +61,34 @@ void MainPS(
 	ResolvedView = ResolveView();
 
 	FMaterialPixelParameters MaterialParameters = MakeInitializedMaterialPixelParameters();
+
+	// THE SLOTS ARE A CONTRACT, not scratch space: a Slate-authored UI material reads them
+	// by index and will not draw correctly if they all carry the same UV. The engine's
+	// GetUserInterfaceUV function is nothing but five TextureCoordinate reads by index,
+	// and its output names say what each index is expected to hold:
+	//
+	//   [0] 9-Slice UV             -- "a tiled 0-1 uv set" when the element has no 9-slice
+	//   [1] 9-Slice UV (No Tiling) -- "a 0-1 uv set" when it has none
+	//   [2] Tiling                 -- "horizontal and vertical tiling for this element"
+	//   [3] Pixel Size             -- "the screen space size of the element being drawn"
+	//   [4] Normalized UV          -- "a 0-1 UV set that spans the entire element"
+	//
+	// A decorator has no brush and no nine-slice, so the three UV sets are all the paint
+	// box's own 0..1 and tiling is 1. Slot 3 has to carry real pixels: a material that
+	// snaps to the pixel grid divides by it, and dividing by a UV sends every sample
+	// somewhere else.
 #if NUM_MATERIAL_TEXCOORDS
 	UNROLL
 	for (int CoordinateIndex = 0; CoordinateIndex < NUM_MATERIAL_TEXCOORDS; CoordinateIndex++)
 	{
 		MaterialParameters.TexCoords[CoordinateIndex] = InUV;
 	}
+#endif
+#if NUM_MATERIAL_TEXCOORDS > 2
+	MaterialParameters.TexCoords[2] = float2(1.0f, 1.0f);
+#endif
+#if NUM_MATERIAL_TEXCOORDS > 3
+	MaterialParameters.TexCoords[3] = VaCuusElementSize;
 #endif
 	MaterialParameters.VertexColor = InColor;
 

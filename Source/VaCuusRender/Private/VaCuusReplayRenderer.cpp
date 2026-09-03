@@ -1273,6 +1273,7 @@ void FVaCuusReplayRenderer::ReplayCommands(FRHICommandList& RHICmdList, const FV
 
 						const bool bDrawn = VaCuusMaterialDraw::DrawMaterial_RenderThread(RHICmdList, MaterialPassState,
 							RTSize, Translate * CurrentTransform * Projection, Desc->MaterialId, Desc->BuiltinKey,
+							FVector2f(FMath::Max(Desc->Dimensions.X, 1.0f), FMath::Max(Desc->Dimensions.Y, 1.0f)),
 							Geo->VB, Geo->IB, Geo->NumVertices, Geo->NumIndices, ContentDSState(), ContentRef());
 						if (bDrawn)
 						{
