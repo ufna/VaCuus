@@ -1836,3 +1836,18 @@ a.vc-cite:hover {
     transform: none;
   }
 }
+
+/* PrivacyLine.vue — the one line under every non-landing page (theme/index.js, layout-bottom). */
+.vc-privacy-line {
+  border-top: 1px solid var(--vp-c-divider);
+  color: var(--vp-c-text-3);
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: center;
+  padding: 18px 24px 22px;
+}
+.vc-privacy-line a {
+  color: var(--vp-c-text-2);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}

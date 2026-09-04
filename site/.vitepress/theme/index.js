@@ -9,15 +9,35 @@
 // self-hosts Archivo and IBM Plex Mono from public/fonts instead, so no font, style or
 // image on the page is fetched from anyone else. The Yandex Metrika tag wired up in
 // .vitepress/config.mjs is the page's one third-party request.
-import { nextTick } from 'vue'
+import { h, nextTick } from 'vue'
+import { useData } from 'vitepress'
 import DefaultTheme from 'vitepress/theme-without-fonts'
 import Home from './Home.vue'
 import LicenseBox from './LicenseBox.vue'
+import PrivacyLine from './PrivacyLine.vue'
 import { METRIKA_ID } from '../analytics.js'
 import './style.css'
 
+// The privacy line rides the default Layout's `layout-bottom` slot rather than
+// themeConfig.footer: the stock footer hides itself on any page with a sidebar
+// (vitepress/dist/client/theme-default/components/VPFooter.vue sets `has-sidebar` from
+// useSidebar() and its own stylesheet makes `.VPFooter.has-sidebar { display: none }`),
+// which is every /docs/* page, i.e. the pages a visitor spends the most time on. The slot
+// renders on every page; the landing page is left out because Home.vue's own footer
+// carries the same link, and two privacy lines on one screen reads as a mistake.
+const Layout = {
+  setup() {
+    const { frontmatter } = useData()
+    return () =>
+      h(DefaultTheme.Layout, null, {
+        'layout-bottom': () => (frontmatter.value.layout === 'home' ? null : h(PrivacyLine))
+      })
+  }
+}
+
 export default {
   extends: DefaultTheme,
+  Layout,
   enhanceApp({ app, router }) {
     // index.md is `layout: home` with no `hero`/`features` frontmatter, so VPHome renders
     // nothing of its own and this component IS the page.

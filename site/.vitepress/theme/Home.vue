@@ -915,6 +915,9 @@ onUnmounted(() => {
             <!-- The transaction, not the grant: what arrives, when, and what happens if a
                  payment goes wrong. A checkout that takes money has to link it somewhere. -->
             <a :href="TERMS_URL">Terms of sale &rarr;</a>
+            <!-- The site runs a visit counter; the page that says what it collects has to be
+                 reachable from here. Every other page gets the same link from PrivacyLine.vue. -->
+            <a href="/privacy">Privacy &rarr;</a>
           </div>
         </div>
 
