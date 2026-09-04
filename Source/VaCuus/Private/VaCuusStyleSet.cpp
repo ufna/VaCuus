@@ -171,8 +171,10 @@ UMaterialInterface* ValidateEntry(const FString& Key, UMaterialInterface* Materi
 
 	// The domain refusal (the spike's, verbatim in reason): only MD_UI materials compile
 	// the FVaCuusMaterial* permutations (ShouldCompilePermutation gates on it — Slate's
-	// own runtime-proven gate, SlateMaterialShader.cpp:29-32); anything else would
-	// silently fall back to the default UI material.
+	// own runtime-proven gate, SlateMaterialShader.cpp:29-32). Anything else has no pair to
+	// draw with and would draw NOTHING — not a default: the engine's fallback material for
+	// MD_UI is WorldGridMaterial, an MD_Surface material (Material.cpp:581-594,
+	// BaseEngine.ini:155), which never carries the pair either.
 	const UMaterial* BaseMaterial = Material->GetMaterial();
 	if (!BaseMaterial || BaseMaterial->MaterialDomain != EMaterialDomain::MD_UI)
 	{
@@ -180,6 +182,26 @@ UMaterialInterface* ValidateEntry(const FString& Key, UMaterialInterface* Materi
 			TEXT("StyleSet: '%s' (key '%s') is not a User Interface (MD_UI) domain material — refused. The material ")
 			TEXT("tier compiles its shaders for MD_UI only (the Slate permutation gate, SlateMaterialShader.cpp:29-32)."),
 			*Material->GetPathName(), *Key);
+		return nullptr;
+	}
+
+	// The customized-UV refusal (PR #1's boundary; the vertex stage is bead VaCuus-x3k):
+	// Slate runs a material's customized-UV expressions in its vertex shader
+	// (SlateVertexShader.usf:74-108) and then hands the pixel stage the RAW channels,
+	// uncustomized (SlateElementPixelShader.usf:149-161). The replay pass has no material
+	// vertex stage (VaCuusMaterial.usf, MainVS), so such a material would be drawn against
+	// a slot table it never authored against — a scrolling UV fed back through slot 2 fills
+	// flat, silently. Refused where it can be named instead. NumCustomizedUVs is a plain
+	// UPROPERTY (Material.h:608-610), readable in cooked builds; it counts DECLARED inputs,
+	// connected or not — an unconnected one passes the vertex UV through under Slate, and
+	// here it would pass a constant through, so the declaration alone is the boundary.
+	if (BaseMaterial->NumCustomizedUVs > 0)
+	{
+		UE_LOG(LogVaCuus, Error,
+			TEXT("StyleSet: '%s' (key '%s') declares %d customized UV(s) — refused. The material path evaluates the ")
+			TEXT("pixel stage only, so customized UVs would never run (Slate runs them in its vertex shader, ")
+			TEXT("SlateVertexShader.usf:74-108). Set Num Customized UVs to 0, or wait for bead VaCuus-x3k."),
+			*Material->GetPathName(), *Key, BaseMaterial->NumCustomizedUVs);
 		return nullptr;
 	}
 
