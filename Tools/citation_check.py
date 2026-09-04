@@ -235,6 +235,19 @@ def check(root, external_roots):
                 detail += " (and no %s file of that name reaches line %d)" % (
                     "/".join(sorted(ext_idx)), hi)
             violations.append(("STALE_RANGE", c, detail))
+            continue
+
+        # AN EXTERNAL FILE THAT EXISTS BUT IS TOO SHORT IS A STALE RANGE, NOT A MISSING
+        # FILE. Reported as UNRESOLVED ("no file of that name"), this class sent two
+        # readers hunting for a header that had moved when RHITextureReference.h was
+        # exactly where it always was and 64 lines long, cited as :60-65 (bead
+        # VaCuus-p7i). Say which file and how long it is, so the fix is one number.
+        ext_short = [(n, x, nlines(x, external_roots[n]))
+                     for n, ei in ext_idx.items() for x in resolve(ei, c.target)]
+        if ext_short:
+            detail = ", ".join("%s: %s has %d lines" % (n, x, k) for n, x, k in ext_short[:4])
+            detail += " (cited up to line %d)" % hi
+            violations.append(("STALE_RANGE", c, detail))
         elif ext_idx:
             violations.append(("UNRESOLVED", c, "no file of that name in this repo or "
                                + ", ".join(sorted(ext_idx))))

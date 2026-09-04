@@ -174,7 +174,7 @@ public:
 	 * resource" (TextureResource.h:169-171), written only from
 	 * FDynamicRHI::RHIUpdateTextureReference (RHITextureReference.h:47-51). So a render
 	 * target that resizes, or a streamed texture that swaps mips, keeps this binding.
-	 * UVaCuusWorldComponent.h:40 already leans on the same property for its material.
+	 * VaCuusWorldComponent.h:40 already leans on the same property for its material.
 	 *
 	 * THE REFERENCE IS TAKEN ON THE RENDER THREAD, not here, and that ordering is why a
 	 * caller may register a texture in the same function that created it.
@@ -197,7 +197,7 @@ public:
 	 * game-side root is parked behind a render fence begun AFTER the mirror replacement
 	 * and dropped only once the render thread has provably stopped resolving it. A draw
 	 * whose id no longer resolves binds the RHI's global black texture
-	 * (RHITextureReference.h:60-65) and counts itself — the named refusal, not a crash.
+	 * (RHITextureReference.h:59-63) and counts itself — the named refusal, not a crash.
 	 */
 	static void UnregisterTexture(const FString& Key);
 

@@ -210,7 +210,7 @@ void RepublishAll()
 				// not filtered out: the entry stays in the mirror so the draw path can tell
 				// "unregistered" from "registered but not yet renderable", and an
 				// FRHITextureReference with nothing behind it draws the RHI's global black
-				// texture rather than crashing (RHITextureReference.h:60-65).
+				// texture rather than crashing (RHITextureReference.h:59-63).
 				if (Request.ReferenceOwner)
 				{
 					Binding.Texture = Request.ReferenceOwner->TextureReferenceRHI.GetReference();

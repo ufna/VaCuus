@@ -433,7 +433,7 @@ static void TearDown()
 	// them. UNREGISTER FIRST, then destroy: a draw naming a key whose UTexture has already
 	// been GC'd would resolve through the mirror to a dead reference, and while that is
 	// survivable by construction (FRHITextureReference falls back to a global black texture,
-	// RHITextureReference.h:60-65) there is no reason to lean on it.
+	// RHITextureReference.h:59-63) there is no reason to lean on it.
 	if (State->bTexDemo)
 	{
 		FVaCuusTextureRegistry::UnregisterTexture(TEXT("vacuus-demo-portrait"));
