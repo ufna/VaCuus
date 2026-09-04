@@ -14,8 +14,11 @@ document can be a full-screen HUD or a panel on a quad in the world.
 > tested from this one source tree — editor and packaged-game targets, plus the
 > 227-test automation suite that ships with the plugin and that you can run yourself
 > (below). Every shipping platform is supported: Windows, macOS, Linux, Android and
-> iOS; consoles on request. A package is stamped with the engine that built it, so take
-> the download that matches yours (see [`docs/buyer/setup.md`](docs/buyer/setup.md)).
+> iOS; consoles on request. Packages are published on
+> [GitHub Releases](https://github.com/ufna/VaCuus/releases), one archive per engine
+> (`VaCuus-<version>-UE5.8.zip` and its 5.6 and 5.7 siblings), each stamped with the engine
+> that built it — take the one that matches yours
+> ([`docs/buyer/setup.md`](docs/buyer/setup.md) says how to check).
 > The API is stable — breaking changes are reserved for major versions and carry
 > release notes.
 
@@ -43,7 +46,8 @@ Plugins/VaCuus/docs/buyer/rcss-matrix.md.
 **From [Fab](https://fab.com/s/6571fd1716eb)**: the launcher installs the plugin **into
 the engine, not into your project** — Epic builds the binaries for code plugins, so
 nothing compiles on your machine and a **Blueprint-only project works**. Enabling it is
-the whole install. **From source** (this repository): your project must be a C++ project —
+the whole install. **From source** (a [release archive](https://github.com/ufna/VaCuus/releases)
+or this repository): your project must be a C++ project —
 a Blueprint-only project has no toolchain to compile it with (converting takes two
 minutes: Tools → New C++ Class → None). Drop the folder into
 `<YourProject>/Plugins/VaCuus`, so that `VaCuus.uplugin` lands at

@@ -17,9 +17,17 @@ package regardless — Fab's rule for UE-facing code is that sellers upload sour
 we upload carries no `Binaries/` directory at all; the binaries a Fab install lands with
 are Epic's build of that source for your engine version.
 
-**From source** — this repository, or the package dropped in by hand. This route goes
-into `<Project>/Plugins/VaCuus` and **does** compile on your machine, so it needs a C++
-project:
+**From source** — a release archive from
+[GitHub Releases](https://github.com/ufna/VaCuus/releases) dropped in by hand, or this
+repository. This route goes into `<Project>/Plugins/VaCuus` and **does** compile on your
+machine, so it needs a C++ project:
+
+> If you are reading this inside such an archive, check that you took the right one before
+> you install: the archive is named for the engine it was built on
+> (`VaCuus-<version>-UE5.6.zip`, `-UE5.7.zip`, `-UE5.8.zip`), and the stamp is per
+> package, not per plugin — a 5.6 package on a 5.8 engine loads with a warning even though
+> the source is identical (the engine note further down this section). Releases is the only
+> place these archives are published; the same page carries `SHA256SUMS.txt`.
 
 > A Blueprint-only project has no build target and no toolchain, so nothing compiles the
 > four runtime modules and the plugin cannot load. Converting is a two-minute job and

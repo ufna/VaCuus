@@ -232,7 +232,10 @@ onUnmounted(() => {
             source tree &mdash; editor and packaged-game targets, plus the
             <strong>227-test automation suite</strong> that ships with the plugin and that
             you can run yourself. A package is stamped with the engine that built it, so
-            take the download that matches yours.
+            take the download that matches yours from
+            <a href="https://github.com/ufna/VaCuus/releases" target="_blank" rel="noreferrer"
+              >GitHub Releases</a
+            >.
           </p>
           <p>
             <strong>Windows, macOS, Linux, Android and iOS</strong> are supported;
