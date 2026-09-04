@@ -1,4 +1,4 @@
-# VaCuus manual platform matrix — Linux Vulkan and Win64 D3D12 executed, macOS handoff
+# VaCuus manual platform matrix — Linux Vulkan, Win64 D3D12 and macOS Metal executed
 
 **What this is** (M6 spec §3.2, acceptance line 6): the enumerated interactive checklist,
 executed once by hand per platform. The **Linux Vulkan** column was executed 2026-08-02 on
@@ -13,13 +13,13 @@ column** (2026-08-06, `-vacuusproof` plus a scripted edit, with a pixel pair and
 for its shadow leg — see the row's note); the same run is available on Win64 and needs
 nothing that platform has to supply.
 
-**The macOS Metal column below is STALE, and the cells lie by omission.** They still read
-`owner hw`, but the macOS pass ran on 2026-08-03 and answered 12 of the 15 rows — the record is
-`2026-08-vacuus-macos-results.md` §"the matrix", which was written as a separate document and
-never merged back into this table. Read that document, not this column, until the merge lands
-(bead `VaCuus-cob`). Two things to carry when you do: every macOS visual row is an **SM5** row
-(M1 Pro is `GPUFamilyApple7`, so the SM6 clause in `MetalRHI.cpp:255-268` never binds), and rows
-5, 13 and 15 are NOT RUN there for reasons that are named.
+**The macOS Metal column** was executed 2026-08-03 over SSH on the owner's MacBook (M1 Pro, UE
+5.8.1 Installed build, windowed, real Metal RHI at **SM5** — note G) at commit `f5eba06` plus two
+fixes made during the pass: **12 of 15 rows pass**; rows 5, 13 and 15 are NOT RUN, with the
+reason in each cell. The full record — every screenshot read by eye, the window-origin correction
+rows 3 and 4 needed, the disk guardrail that stopped packaging — is
+`2026-08-vacuus-macos-results.md`. Its cells were merged into this table on 2026-09-05 (bead
+`VaCuus-cob`); until then the column read `owner hw` and lied by omission.
 
 A row that could not be executed is marked with its reason — it is owed on every platform, not
 silently dropped.
@@ -39,24 +39,24 @@ UnrealEditor <proj>.uproject -game -RenderOffscreen -ForceRes -resx=1920 -resy=1
 # seen on a real desktop (IME especially).
 ```
 
-| # | Row | Command / action | Assertion | Linux Vulkan 2026-08-02 | Win64 D3D12 2026-08-03 | macOS Metal |
+| # | Row | Command / action | Assertion | Linux Vulkan 2026-08-02 | Win64 D3D12 2026-08-03 | macOS Metal (SM5) 2026-08-03 |
 |---|-----|------------------|-----------|--------------------------|-------------|-------------|
-| 1 | Screen-space HUD composite | `vacuus.RefHud, vacuus.M1HUD.AutoShot 1200` | Full 1,732-node HUD renders: two 24-row boards, minimap blips, killfeed, plate, glow on ammo/objective | PASS (soak shot read; see below) | **PASS** (soak shot read; see below) | owner hw |
-| 2 | Steady-state node count | `vacuus.RefHud.Count 12` | Logged count ∈ [1650, 1850] | PASS — 1732 | **PASS — 1732** | owner hw |
-| 3 | Mouse hit-test + hover | `vacuus.M2Demo, vacuus.M2Demo.Rects 5, vacuus.M2Demo.Hit 120 115 6, vacuus.M1HUD.HoverShot 120 115` | Hit answers Handled inside the button, rect list non-empty, hover state visible in the shot | PASS (Handled + :hover seen) | **PASS** (6 rects, Handled, `:hover` seen) | owner hw |
-| 4 | Keyboard text entry | `vacuus.M2Demo, vacuus.M1HUD.TypeShot 710 113 vacuus` | Typed text appears in the `<input>`; caret visible | PASS ("vacuus" in field) | **PASS** ("vacuus" in field) — and the IME line is the **`present`** branch, note C | owner hw |
-| 5 | IME composition | interactive: focus the input, compose via platform IME (ibus/fcitx; Win64 bead akj.6.19) | Composition string + candidate window over the field | PARTIAL — note A | **NOT EXECUTED — needs a human at the keyboard.** Precondition now established, note C; bead akj.6.19 | owner hw |
-| 6 | Gamepad spatial nav | `vacuus.M2Demo, vacuus.M1HUD.NavShot Gamepad_DPad_Down Gamepad_DPad_Right` | Focus ring lands on the expected control after the traversal | PASS (focus on BRAVO) | **PASS** (focus on BRAVO) | owner hw |
-| 7 | World-space panel + raycast input | `vacuus.M5World 1, vacuus.M5World.InputSmoke` (then `vacuus.WorldDemo.Shot`) | InputSmoke "all N assertion(s) passed"; quad visible in shot | PASS — 16/16 assertions | **PASS — 16/16 assertions** | owner hw |
-| 8 | Glass (backdrop blur) over scene | `vacuus.M5Glass, vacuus.M1HUD.PerfLog 1, vacuus.M1HUD.HoverShot` | Blurred scene through the panel; idle windows publish≈0 while Glass samples every frame | PASS (blur live, idle 100%) | **PASS** (blur live, idle 100%) — **and it takes the COPY path, not the direct SRV; note D** | owner hw |
-| 9 | Gradient + builtin decorators | `vacuus.M5Deco, vacuus.M1HUD.AutoShot 10` | Linear/radial/conic fills + glass-panel builtin render as in the M5 gallery | PASS (all six cells) | **PASS** (all six cells) | owner hw |
-| 10 | Material decorators (UMaterial in UI pass) | `vacuus.M5MatSpike, vacuus.M1HUD.AutoShot 10` | Spike cells draw their materials; refused cells named in log | PASS (five materials drawn) | **PASS** (five materials drawn) | owner hw |
-| 11 | M5 acceptance demo (TSX + translation + glass + world quad) | `vacuus.M5Demo, vacuus.M1HUD.AutoShot 10, vacuus.M5Glass.Shot 8` | Both beats read as the M5 T9 proofs; zero `LogVaCuusJS: Error` | PASS (0 JS errors, beats match proofs) | **PASS** (0 JS errors, beats match proofs) | owner hw |
-| 12 | **PF_FloatRGBA composite permutation** (spec §3.2) | set `r.DefaultBackBufferPixelFormat=3` in DefaultEngine.ini `[/Script/Engine.RendererSettings]`, run row 1; then revert and run row 1 again | Log line `VaCuus composite: elements texture is FloatRGBA -> LinearOutput` (GPixelFormats names carry no `PF_` prefix — engine Misc/PixelFormat.cpp:44); HUD colors match the default-format run by eye (no washed-out ~2.2× brightening) | PASS (LinearOutput line + A/B by eye) | **PASS** (LinearOutput line + A/B by eye) — the `-game` leg; the editor-PIE leg is still owed, note E | owner hw |
-| 13 | Live reload (editor watcher) | interactive editor PIE: edit a loaded .rml/.rcss on disk, watch the view reload; runtime half: `vacuus.ReloadUI` | Document reloads without restart; watcher Warning if a bundle shadows the edit | **PASS** 2026-08-06 — PIE + scripted mid-run edit, pixel pair; shadow leg now a test — note B | **NOT EXECUTED** — the same run is available here (`-vacuusproof`); nothing about it needs this platform | owner hw |
-| 14 | Demo-suite toggles + clean teardown | each row's session end (SIGTERM) | Teardown tail: UI thread stopped in-band, RmlUi shut down, zero unpublished NEW resources | PASS (all sessions) | **PASS (all 10 gracefully-closed sessions)** | owner hw |
-| 15 | Shipping ignition flags | packaged Shipping: `-VaCuusRefHud` / `-VaCuusM5Demo` (+`-VaCuusPerfLog`, `-VaCuusMemProbe`) | Demo boots with no console; gate screenshot at t+8 s | PASS (bundle-mounted Shipping) | **PASS** (cooked + staged Shipping, gate shot at t+8 s) — note F | owner hw |
-| 16 | Drag'n'drop (clone ghost, typed slots) | `vacuus.M1HUD.AutoShot 400, vacuus.DragDemo, vacuus.M2Demo.Drag 83 129 463 129 12 1.0` | Rifle leaves the stash and sits in the WEAPON slot; status line reads `MOVED IT-RIFLE -> EQ-WEAPON`; log line says the press was taken by THE UI with 12 of 12 moves handled (capture held across the inter-panel gap). Automation shadow: `VaCuus.Js.DragDrop` drives the same document through the input path, mouse and touch | PASS 2026-08-13 (shot read: rifle in WEAPON, status MOVED; "press was taken by THE UI ... 12 of 12 move(s) handled") | not executed — the command needs nothing this platform lacks | not executed |
+| 1 | Screen-space HUD composite | `vacuus.RefHud, vacuus.M1HUD.AutoShot 1200` | Full 1,732-node HUD renders: two 24-row boards, minimap blips, killfeed, plate, glow on ammo/objective | PASS (soak shot read; see below) | **PASS** (soak shot read; see below) | **PASS** (screenshot read; results doc, row 1) |
+| 2 | Steady-state node count | `vacuus.RefHud.Count 12` | Logged count ∈ [1650, 1850] | PASS — 1732 | **PASS — 1732** | **PASS — 1732** |
+| 3 | Mouse hit-test + hover | `vacuus.M2Demo, vacuus.M2Demo.Rects 5, vacuus.M2Demo.Hit 120 115 6, vacuus.M1HUD.HoverShot 120 115` | Hit answers Handled inside the button, rect list non-empty, hover state visible in the shot | PASS (Handled + :hover seen) | **PASS** (6 rects, Handled, `:hover` seen) | **PASS** (6 rects; `Hit (120,115): covered=yes focusable=yes`; ALPHA in `:hover`) — after the window-origin correction the results doc measures |
+| 4 | Keyboard text entry | `vacuus.M2Demo, vacuus.M1HUD.TypeShot 710 113 vacuus` | Typed text appears in the `<input>`; caret visible | PASS ("vacuus" in field) | **PASS** ("vacuus" in field) — and the IME line is the **`present`** branch, note C | **PASS** ("vacuus" in field) — and the IME line reads `absent=no, registered=yes`, the opposite of Linux's |
+| 5 | IME composition | interactive: focus the input, compose via platform IME (ibus/fcitx; Win64 bead akj.6.19) | Composition string + candidate window over the field | PARTIAL — note A | **NOT EXECUTED — needs a human at the keyboard.** Precondition now established, note C; bead akj.6.19 | **NOT RUN — needs a human at the keyboard.** Registration is proven (`platform ITextInputMethodSystem present; composition is available`); bead akj.6.19 |
+| 6 | Gamepad spatial nav | `vacuus.M2Demo, vacuus.M1HUD.NavShot Gamepad_DPad_Down Gamepad_DPad_Right` | Focus ring lands on the expected control after the traversal | PASS (focus on BRAVO) | **PASS** (focus on BRAVO) | **PASS** (focus on BRAVO) |
+| 7 | World-space panel + raycast input | `vacuus.M5World 1, vacuus.M5World.InputSmoke` (then `vacuus.WorldDemo.Shot`) | InputSmoke "all N assertion(s) passed"; quad visible in shot | PASS — 16/16 assertions | **PASS — 16/16 assertions** | **PASS — 16/16 assertions** |
+| 8 | Glass (backdrop blur) over scene | `vacuus.M5Glass, vacuus.M1HUD.PerfLog 1, vacuus.M1HUD.HoverShot` | Blurred scene through the panel; idle windows publish≈0 while Glass samples every frame | PASS (blur live, idle 100%) | **PASS** (blur live, idle 100%) — **and it takes the COPY path, not the direct SRV; note D** | **PASS**, via the bounded-copy route — note H |
+| 9 | Gradient + builtin decorators | `vacuus.M5Deco, vacuus.M1HUD.AutoShot 10` | Linear/radial/conic fills + glass-panel builtin render as in the M5 gallery | PASS (all six cells) | **PASS** (all six cells) | **PASS** (all six cells) |
+| 10 | Material decorators (UMaterial in UI pass) | `vacuus.M5MatSpike, vacuus.M1HUD.AutoShot 10` | Spike cells draw their materials; refused cells named in log | PASS (five materials drawn) | **PASS** (five materials drawn) | **PASS** (five materials drawn, on a re-run with a later beat) |
+| 11 | M5 acceptance demo (TSX + translation + glass + world quad) | `vacuus.M5Demo, vacuus.M1HUD.AutoShot 10, vacuus.M5Glass.Shot 8` | Both beats read as the M5 T9 proofs; zero `LogVaCuusJS: Error` | PASS (0 JS errors, beats match proofs) | **PASS** (0 JS errors, beats match proofs) | **PASS** (0 JS errors, both beats read) |
+| 12 | **PF_FloatRGBA composite permutation** (spec §3.2) | set `r.DefaultBackBufferPixelFormat=3` in DefaultEngine.ini `[/Script/Engine.RendererSettings]`, run row 1; then revert and run row 1 again | Log line `VaCuus composite: elements texture is FloatRGBA -> LinearOutput` (GPixelFormats names carry no `PF_` prefix — engine Misc/PixelFormat.cpp:44); HUD colors match the default-format run by eye (no washed-out ~2.2× brightening) | PASS (LinearOutput line + A/B by eye) | **PASS** (LinearOutput line + A/B by eye) — the `-game` leg; the editor-PIE leg is still owed, note E | **PASS** (both permutation lines, A/B by eye) — the `-game` leg, as on Win64 |
+| 13 | Live reload (editor watcher) | interactive editor PIE: edit a loaded .rml/.rcss on disk, watch the view reload; runtime half: `vacuus.ReloadUI` | Document reloads without restart; watcher Warning if a bundle shadows the edit | **PASS** 2026-08-06 — PIE + scripted mid-run edit, pixel pair; shadow leg now a test — note B | **NOT EXECUTED** — the same run is available here (`-vacuusproof`); nothing about it needs this platform | **NOT RUN** — needs an interactive editor PIE plus a mid-run edit; FSEvents timing has never been characterised against inotify's |
+| 14 | Demo-suite toggles + clean teardown | each row's session end (SIGTERM) | Teardown tail: UI thread stopped in-band, RmlUi shut down, zero unpublished NEW resources | PASS (all sessions) | **PASS (all 10 gracefully-closed sessions)** | **PASS** — via the console `quit`, not SIGTERM; note I |
+| 15 | Shipping ignition flags | packaged Shipping: `-VaCuusRefHud` / `-VaCuusM5Demo` (+`-VaCuusPerfLog`, `-VaCuusMemProbe`) | Demo boots with no console; gate screenshot at t+8 s | PASS (bundle-mounted Shipping) | **PASS** (cooked + staged Shipping, gate shot at t+8 s) — note F | **NOT RUN** — packaging not attempted (disk guardrail; results doc §7) |
+| 16 | Drag'n'drop (clone ghost, typed slots) | `vacuus.M1HUD.AutoShot 400, vacuus.DragDemo, vacuus.M2Demo.Drag 83 129 463 129 12 1.0` | Rifle leaves the stash and sits in the WEAPON slot; status line reads `MOVED IT-RIFLE -> EQ-WEAPON`; log line says the press was taken by THE UI with 12 of 12 moves handled (capture held across the inter-panel gap). Automation shadow: `VaCuus.Js.DragDrop` drives the same document through the input path, mouse and touch | PASS 2026-08-13 (shot read: rifle in WEAPON, status MOVED; "press was taken by THE UI ... 12 of 12 move(s) handled") | not executed — the command needs nothing this platform lacks | not executed — the command needs nothing this platform lacks |
 
 **Note A (IME, Linux headless):** offscreen Linux has no `ITextInputMethodSystem`.
 
@@ -115,6 +115,30 @@ template package, not a UI result, and the row asserts the UI.
    a target with `bUseLoggingInShipping = true`, which the Linux passport's host project evidently
    had. That is why the cooked-Shipping-Win64 perf column and the memory-mapped bundle observation
    are handled separately rather than harvested from this run.
+
+**Note G (macOS — every visual row is an SM5 row).** The pass bound `SP_METAL_SM5`, and that is
+the hardware, not a setting: `MetalRHI.cpp:255-268` grants SM6 on Mac only to
+`MTL::GPUFamilyApple8` and above, and the M1 Pro is Apple7. The engine's own warning is misleading
+and must not be quoted as the reason — `MetalRHI.cpp:421-431` picks the "please ensure you are
+running Mac OS 15" wording from `GRHIAdapterName.Contains("M1")`, and printed it on macOS 26.5.2.
+What the column proves: the plugin's `.usf` files compile and draw at `SF_METAL_SM5` (rows 8, 9
+and 10 are pixels, and `LogShaderCompilers: Error` is absent from every session of the pass).
+What it does not: anything at Metal SM6, neither the compile nor the rendering — that needs an
+M2-or-later Mac, or a cook targeting `SF_METAL_SM6`.
+
+**Note H (row 8, macOS — the bounded-copy route, structurally).** Glass passes on Metal through
+the same bounded copy pass Win64 windowed takes (note D), for a different reason: Metal's Slate
+output texture carries no `TexCreate_ShaderResource`, so the direct-SRV route is unreachable there
+by construction — no cvar value selects it. Log lines: `Exp-GLASS-BACKBUFFER-SRV: … through a
+bounded copy pass (texture ShaderResource=no …)` and `published=0 skipped=227 (100.0% idle)`.
+
+**Note I (row 14, macOS — SIGTERM produces no teardown tail).** A SIGTERM-ended session on macOS
+ends its log with `Engine exit requested (reason: Mac GracefulTerminationHandler)` and ZERO VaCuus
+teardown lines (`grep -c "RmlUi shut down"` is 0 in every such session), which is exactly how the
+Linux column collected this row. The macOS cell was collected through the console `quit`, which
+produces the full tail — UI thread stopped in-band, VFS teardown, RmlUi shut down, module shut
+down — and no `Recorder destroyed with unpublished resource traffic` line. Same family as
+CLAUDE.md's "`ShutdownModule` never runs in an `Automation RunTests …; Quit` run".
 
 ## What was seen, row by row (Linux Vulkan)
 
