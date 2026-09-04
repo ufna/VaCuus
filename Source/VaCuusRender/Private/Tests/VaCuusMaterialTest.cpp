@@ -14,8 +14,6 @@
 
 #include "HAL/IConsoleManager.h"
 #include "HAL/PlatformProcess.h"
-#include "MaterialDomain.h"
-#include "Materials/Material.h"
 #include "Materials/MaterialInterface.h"
 #include "Misc/ScopeExit.h"
 #include "RenderingThread.h"
@@ -414,21 +412,6 @@ bool FVaCuusStyleSetTest::RunTest(const FString& Parameters)
 	// CompileShader, so accepting it would register a key that can never draw.
 	AddExpectedError(TEXT("shadows a builtin shader key"), EAutomationExpectedErrorFlags::Contains, 1);
 	TestEqual(TEXT("a builtin-shadowing key registers nothing"), FVaCuusStyleRegistry::RegisterStyleSet(SetShadow), 0);
-
-	// A material with customized UVs is refused too (PR #1's boundary, bead VaCuus-x3k):
-	// the replay pass has no material vertex stage to run them in. A transient UMaterial
-	// is enough — the check reads the DECLARED count (Material.h:608-610), so nothing has
-	// to compile, and this leg runs under -nullrhi like the two refusals above.
-	UMaterial* Customized = NewObject<UMaterial>(GetTransientPackage(), NAME_None, RF_Transient);
-	Customized->MaterialDomain = EMaterialDomain::MD_UI;
-	Customized->NumCustomizedUVs = 1;
-	UVaCuusStyleSet* SetCustomized = NewObject<UVaCuusStyleSet>(GetTransientPackage());
-	SetCustomized->Materials.Add(TEXT("styleset-test-customized"), Customized);
-	TStrongObjectPtr<UVaCuusStyleSet> RootCustomized(SetCustomized);
-	AddExpectedError(TEXT("customized UV"), EAutomationExpectedErrorFlags::Contains, 1);
-	TestEqual(TEXT("a customized-UV material registers nothing"), FVaCuusStyleRegistry::RegisterStyleSet(SetCustomized), 0);
-	TestFalse(TEXT("...and its key is nowhere"),
-		FVaCuusStyleRegistry::GetSnapshot_GameThread()->KeyToId.Contains(TEXT("styleset-test-customized")));
 
 	// ---- The two-view unregistration run (the M3b pattern): snapshot over the queue,
 	// ---- deferred release under live views, no crash. ----------------------------------

@@ -276,12 +276,7 @@ bool DrawMaterial_RenderThread(FRHICommandList& RHICmdList, FPassState& PassStat
 	}
 
 	{
-		FRHIBatchedShaderParameters& BatchedParameters = RHICmdList.GetScratchShaderParameters();
-		VertexShader->SetParameters(BatchedParameters, PassState.ViewUB, DrawMatrix);
-		RHICmdList.SetBatchedShaderParameters(VertexShader.GetVertexShader(), BatchedParameters);
-	}
-	{
-		// Slot 3 of the material's texture coordinates: the paint box in WHOLE pixels, >= 1.
+		// Channel 3 of the material's vertex table: the paint box in WHOLE pixels, >= 1.
 		// Rounded because Slate's PixelSize is an integer (RenderingCommon.h:298-299) and a
 		// content-box decorator under a fractional padding records a fractional fill size;
 		// clamped because a box not yet laid out is 0 x 0 and a material may divide by it.
@@ -289,7 +284,12 @@ bool DrawMaterial_RenderThread(FRHICommandList& RHICmdList, FPassState& PassStat
 			FVector2f(FMath::RoundToFloat(Desc.Dimensions.X), FMath::RoundToFloat(Desc.Dimensions.Y)),
 			FVector2f::UnitVector);
 		FRHIBatchedShaderParameters& BatchedParameters = RHICmdList.GetScratchShaderParameters();
-		PixelShader->SetParameters(BatchedParameters, PassState.ViewUB, Proxy, *Material, PaintBoxPx);
+		VertexShader->SetParameters(BatchedParameters, PassState.ViewUB, DrawMatrix, PaintBoxPx);
+		RHICmdList.SetBatchedShaderParameters(VertexShader.GetVertexShader(), BatchedParameters);
+	}
+	{
+		FRHIBatchedShaderParameters& BatchedParameters = RHICmdList.GetScratchShaderParameters();
+		PixelShader->SetParameters(BatchedParameters, PassState.ViewUB, Proxy, *Material);
 		RHICmdList.SetBatchedShaderParameters(PixelShader.GetPixelShader(), BatchedParameters);
 	}
 

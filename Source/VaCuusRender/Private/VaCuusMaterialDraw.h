@@ -52,6 +52,7 @@ public:
 		: FMaterialShader(Initializer)
 	{
 		ProjectionParameter.Bind(Initializer.ParameterMap, TEXT("VaCuusProjection"));
+		DimensionsParameter.Bind(Initializer.ParameterMap, TEXT("VaCuusDimensions"));
 	}
 
 	/**
@@ -71,17 +72,34 @@ public:
 		FMaterialShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
 	}
 
+	/**
+	 * PaintBoxPx is FVaCuusShaderDesc::Dimensions rounded to whole pixels and clamped to >= 1
+	 * by DrawMaterial_RenderThread — channel 3 of the vertex table in VaCuusMaterial.usf, the
+	 * Slate "Pixel Size" a pixel-snapping material divides by. It is a VERTEX-stage input
+	 * since bead VaCuus-x3k: the material's customized-UV pass runs here, and the pixel
+	 * stage reads whatever that pass interpolated.
+	 *
+	 * The bind is SPF_Optional (ShaderParameters.h:65) BY NECESSITY, not by choice: a material
+	 * that reads no texture coordinate compiles the uniform away, the bind then finds nothing,
+	 * and SetShaderValue on an unbound parameter writes zero bytes (ShaderParameterUtils.h
+	 * :38-40). So a mistyped name here fails nothing on this side — the contract's only
+	 * observables are the two probes, VaCuus.Render.Decorator.MaterialPixelSizeSlot and
+	 * .MaterialCustomizedUVs.
+	 */
 	void SetParameters(FRHIBatchedShaderParameters& BatchedParameters,
-		const TUniformBufferRef<FViewUniformShaderParameters>& ViewUniformBuffer, const FMatrix44f& Projection)
+		const TUniformBufferRef<FViewUniformShaderParameters>& ViewUniformBuffer, const FMatrix44f& Projection,
+		const FVector2f& PaintBoxPx)
 	{
 		// The synthetic view UB (the Slate recipe, SlateRHIRenderingPolicy.cpp:706-756):
 		// bound if the compiled VS half references View at all; harmless no-op otherwise.
 		SetUniformBufferParameter(BatchedParameters, GetUniformBufferParameter<FViewUniformShaderParameters>(), ViewUniformBuffer);
 		SetShaderValue(BatchedParameters, ProjectionParameter, Projection);
+		SetShaderValue(BatchedParameters, DimensionsParameter, PaintBoxPx);
 	}
 
 private:
 	LAYOUT_FIELD(FShaderParameter, ProjectionParameter);
+	LAYOUT_FIELD(FShaderParameter, DimensionsParameter);
 };
 
 /** The production PS: evaluates the material and premultiplies per blend mode (see the .usf). */
@@ -94,7 +112,6 @@ public:
 	FVaCuusMaterialPS(const ShaderMetaType::CompiledShaderInitializerType& Initializer)
 		: FMaterialShader(Initializer)
 	{
-		DimensionsParameter.Bind(Initializer.ParameterMap, TEXT("VaCuusDimensions"));
 	}
 
 	static bool ShouldCompilePermutation(const FMaterialShaderPermutationParameters& Parameters)
@@ -108,23 +125,15 @@ public:
 	}
 
 	/**
-	 * PaintBoxPx is FVaCuusShaderDesc::Dimensions rounded to whole pixels and clamped to >= 1
-	 * by DrawMaterial_RenderThread — slot 3 of the texture-coordinate table in
-	 * VaCuusMaterial.usf, the Slate "Pixel Size" a pixel-snapping material divides by.
-	 *
-	 * The bind is SPF_Optional (ShaderParameters.h:65) BY NECESSITY, not by choice: a material
-	 * that reads three slots or fewer compiles the uniform away, the bind then finds nothing,
-	 * and SetShaderValue on an unbound parameter writes zero bytes (ShaderParameterUtils.h
-	 * :38-40). So a mistyped name here fails nothing on this side — the slot-3 contract's only
-	 * observable is the probe, VaCuus.Render.Decorator.MaterialPixelSizeSlot.
+	 * The pixel stage binds nothing of its own beyond the material: the texture-coordinate
+	 * slots arrive as interpolants from the vertex stage (VaCuusMaterial.usf, FVaCuusInterpolants),
+	 * which is where the paint-box size and the customized-UV pass live.
 	 */
 	void SetParameters(FRHIBatchedShaderParameters& BatchedParameters,
 		const TUniformBufferRef<FViewUniformShaderParameters>& ViewUniformBuffer,
-		const FMaterialRenderProxy* MaterialRenderProxy, const FMaterial& Material,
-		const FVector2f& PaintBoxPx)
+		const FMaterialRenderProxy* MaterialRenderProxy, const FMaterial& Material)
 	{
 		SetUniformBufferParameter(BatchedParameters, GetUniformBufferParameter<FViewUniformShaderParameters>(), ViewUniformBuffer);
-		SetShaderValue(BatchedParameters, DimensionsParameter, PaintBoxPx);
 		// The FSceneView-free, batched-parameters overload with null Scene — an
 		// explicitly handled input (ShaderBaseClasses.cpp:264: feature level falls back
 		// to GMaxRHIFeatureLevel, parameter collections to the process defaults).
@@ -132,9 +141,6 @@ public:
 		// unconfirmed (VaCuusEngineCompat.h hotspot 3, M6 spec §2(f)).
 		VaCuusCompat::SetMaterialShaderParameters_NullScene(*this, BatchedParameters, MaterialRenderProxy, Material);
 	}
-
-private:
-	LAYOUT_FIELD(FShaderParameter, DimensionsParameter);
 };
 
 namespace VaCuusMaterialDraw
@@ -183,8 +189,8 @@ bool IsForcedRepublishEnabled();
  * the PS), and issues the indexed draw. Recorded scissor state applies — this is a recorded
  * command's draw, not an injection.
  *
- * Desc.Dimensions is what fills slot 3 of the material's texture coordinates (the table in
- * VaCuusMaterial.usf): the fill size of the decorator's paint area (DecoratorShader.cpp:33-34,
+ * Desc.Dimensions is what fills channel 3 of the material's vertex table (VaCuusMaterial.usf,
+ * MainVS): the fill size of the decorator's paint area (DecoratorShader.cpp:33-34,
  * GetRenderBox(paint_area).GetFillSize()), in RT pixels, untouched by the element's
  * transform — which is the same layout-only size Slate reports (LocalSize * DrawScale, no
  * render transform in it, RenderingCommon.h:298-299). It is passed as recorded and rounded

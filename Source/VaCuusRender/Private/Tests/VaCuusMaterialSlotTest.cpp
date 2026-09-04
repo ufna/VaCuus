@@ -45,9 +45,9 @@
  * (255, 188, 0) after the shader's own sRGB encode; a UV in the slot makes it a ramp that is
  * (0..1, 0..0.5)/256 — near black everywhere and different at every sample point.
  *
- * VENUE. Draws and reads back, so it reports itself skipped under -nullrhi and passes
- * vacuously — the GradientAA contract (VaCuusGradientAATest.cpp). The real-RHI run is where
- * it carries evidence.
+ * VENUE. Both probes in this file draw and read back, so they report themselves skipped
+ * under -nullrhi and pass vacuously — the GradientAA contract (VaCuusGradientAATest.cpp).
+ * The real-RHI run is where they carry evidence.
  *
  * Restore-the-bug, twice (2026-09-04, Linux, Vulkan SM6, -RenderOffscreen):
  *  - Slots[3] in VaCuusMaterial.usf reverted to InUV (the pre-PR value): centre pixel
@@ -99,13 +99,55 @@ static UMaterial* MakeProbeMaterial()
 }
 
 /**
+ * The second probe's fixture: NumCustomizedUVs = 3 with CustomizedUV2 = TexCoord[0] * 2 and
+ * Emissive = TexCoord[2]. Under Slate's contract a material that declares customized UVs
+ * reads the RAW channels at the pixel stage (SlateElementPixelShader.usf:149-161), so channel
+ * 2 is whatever the vertex-stage expression put there — a 2x ramp of the paint box's UV,
+ * (0..2, 0..2), rather than the (0,0) the vertex table carries in that channel. A material
+ * whose customized UVs never run (the state before bead VaCuus-x3k) fills black.
+ */
+static UMaterial* MakeCustomizedUVMaterial()
+{
+	UMaterial* Material = NewObject<UMaterial>(GetTransientPackage(), NAME_None, RF_Transient);
+	Material->MaterialDomain = EMaterialDomain::MD_UI;
+	Material->BlendMode = BLEND_Opaque;
+	Material->NumCustomizedUVs = 3;
+
+	UMaterialExpressionTextureCoordinate* Channel0 = NewObject<UMaterialExpressionTextureCoordinate>(Material);
+	Channel0->Material = Material;
+	Channel0->CoordinateIndex = 0;
+
+	UMaterialExpressionMultiply* Doubled = NewObject<UMaterialExpressionMultiply>(Material);
+	Doubled->Material = Material;
+	Doubled->A.Connect(0, Channel0);
+	Doubled->ConstB = 2.0f;
+
+	UMaterialExpressionTextureCoordinate* Channel2 = NewObject<UMaterialExpressionTextureCoordinate>(Material);
+	Channel2->Material = Material;
+	Channel2->CoordinateIndex = 2;
+
+	Material->GetExpressionCollection().AddExpression(Channel0);
+	Material->GetExpressionCollection().AddExpression(Doubled);
+	Material->GetExpressionCollection().AddExpression(Channel2);
+	Material->GetEditorOnlyData()->CustomizedUVs[2].Connect(0, Doubled);
+	Material->GetEditorOnlyData()->EmissiveColor.Connect(0, Channel2);
+
+	Material->PreEditChange(nullptr);
+	Material->PostEditChange();
+	Material->ForceRecompileForRendering(EMaterialShaderPrecompileMode::Synchronous);
+	GShaderCompilingManager->FinishAllCompilation();
+	FlushRenderingCommands();
+	return Material;
+}
+
+/**
  * One material draw into a GBox-sized PF_B8G8R8A8 target through the production entry
  * point, read back. The geometry is the decorator's own: one quad over the paint box with
  * UV 0..1 (DecoratorShader.cpp:45-47). The desc is what the recorder mints for
  * `decorator: shader(slot-probe)` — Kind Material, the snapshot's stable id, Dimensions the
  * paint box (VaCuusRecordingRenderInterface.cpp, CompileShader's Material branch).
  */
-static bool RenderProbe(uint64 StableId, TArray<FColor>& OutPixels, bool& bOutDrawn, bool& bOutRead)
+static bool RenderProbe(uint64 StableId, const TCHAR* Key, TArray<FColor>& OutPixels, bool& bOutDrawn, bool& bOutRead)
 {
 	bool bDrawn = false;
 	bool bRead = false;
@@ -114,7 +156,7 @@ static bool RenderProbe(uint64 StableId, TArray<FColor>& OutPixels, bool& bOutDr
 	FVaCuusShaderDesc Desc;
 	Desc.Kind = EVaCuusShaderKind::Material;
 	Desc.MaterialId = StableId;
-	Desc.BuiltinKey = GKey;
+	Desc.BuiltinKey = Key;
 	Desc.Dimensions = FVector2f(float(GBox.X), float(GBox.Y));
 
 	ENQUEUE_RENDER_COMMAND(VaCuusMaterialSlotProbe)
@@ -239,7 +281,7 @@ bool FVaCuusMaterialPixelSizeSlotTest::RunTest(const FString& Parameters)
 
 	TArray<FColor> Pixels;
 	bool bDrawn = false, bRead = false;
-	const bool bProbed = RenderProbe(*StableId, Pixels, bDrawn, bRead);
+	const bool bProbed = RenderProbe(*StableId, GKey, Pixels, bDrawn, bRead);
 	AddInfo(FString::Printf(TEXT("probe draw: drawn %d, read back %d; draws +%lld, shader misses +%lld, unresolved +%lld"),
 		int32(bDrawn), int32(bRead), VaCuusMaterialDraw::GetDrawCount() - Draws0,
 		VaCuusMaterialDraw::GetShaderMissCount() - Misses0, VaCuusMaterialDraw::GetUnresolvedCount() - Unresolved0));
@@ -275,6 +317,90 @@ bool FVaCuusMaterialPixelSizeSlotTest::RunTest(const FString& Parameters)
 
 	// The shape: a size is constant over the box; a UV is not.
 	TestTrue(TEXT("the fill is flat"), (MaxR - MinR) <= 2 && (MaxG - MinG) <= 2 && (MaxB - MinB) <= 2);
+
+	return true;
+}
+
+/**
+ * THE CUSTOMIZED-UV PROBE (bead VaCuus-x3k). Same draw, the second fixture: a material that
+ * customizes channel 2 to twice its UV and reads it back. Three samples along one row must
+ * be the 2x ramp — dark, mid, saturated — and must differ from each other; a vertex stage
+ * that never ran the material's expressions leaves channel 2 at the vertex table's (0,0)
+ * and the fill black, and the pre-x3k pixel-only table would have filled it a flat (1,1).
+ *
+ * Restore-the-bug (2026-09-05, Linux, Vulkan SM6, -RenderOffscreen): with MainVS copying the
+ * vertex table into CustomizedUVs instead of calling GetMaterialCustomizedUVs, all three
+ * samples came back (0, 0, 0, 255) — the six ramp assertions and "the ramp rises" failed, the
+ * slot-3 probe beside it unaffected; restored, (138, 189, 0), (188, 189, 0), (255, 189, 0),
+ * each within 0 of the CPU twin, 8/8 in VaCuus.Render.Decorator.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusMaterialCustomizedUVsTest, "VaCuus.Render.Decorator.MaterialCustomizedUVs",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusMaterialCustomizedUVsTest::RunTest(const FString& Parameters)
+{
+	using namespace VaCuusMaterialSlotTest;
+
+	if (GUsingNullRHI)
+	{
+		UE_LOG(LogVaCuus, Display, TEXT("VaCuus.Render.Decorator.MaterialCustomizedUVs: SKIPPED under NullRHI (no draw, no readback)"));
+		return true;
+	}
+
+	static const TCHAR* Key = TEXT("customized-probe");
+	UMaterial* Probe = MakeCustomizedUVMaterial();
+	TStrongObjectPtr<UMaterial> ProbeRoot(Probe);
+
+	UVaCuusStyleSet* StyleSet = NewObject<UVaCuusStyleSet>(GetTransientPackage());
+	StyleSet->Materials.Add(Key, Probe);
+	TStrongObjectPtr<UVaCuusStyleSet> StyleSetRoot(StyleSet);
+	ON_SCOPE_EXIT
+	{
+		FVaCuusStyleRegistry::UnregisterStyleSet(StyleSetRoot.Get());
+		FlushRenderingCommands();
+		FVaCuusStyleRegistry::TickDeferredReleases_GameThread();
+	};
+	if (!TestEqual(TEXT("the customized-UV material registers"), FVaCuusStyleRegistry::RegisterStyleSet(StyleSet), 1))
+	{
+		return false;
+	}
+	const uint64* StableId = FVaCuusStyleRegistry::GetSnapshot_GameThread()->KeyToId.Find(Key);
+	if (!TestNotNull(TEXT("the snapshot carries the probe's id"), StableId))
+	{
+		return false;
+	}
+	FlushRenderingCommands();
+
+	TArray<FColor> Pixels;
+	bool bDrawn = false, bRead = false;
+	const bool bProbed = RenderProbe(*StableId, Key, Pixels, bDrawn, bRead);
+	AddInfo(FString::Printf(TEXT("probe draw: drawn %d, read back %d"), int32(bDrawn), int32(bRead)));
+	if (!TestTrue(TEXT("the material drew through DrawMaterial_RenderThread and read back"), bProbed))
+	{
+		return false;
+	}
+
+	// Channel 2 = 2 * UV, sampled at pixel centres along row y = 32: the paint box is 256 x 128,
+	// so the expected linear value is (2 * (x + 0.5) / 256, 2 * (32.5) / 128, 0), clamped by
+	// the encode; the CPU twin of the shader's sRGB curve is ToFColorSRGB again.
+	const int32 Row = 32;
+	const int32 Columns[] = {32, 64, 128};
+	FColor Seen[3];
+	for (int32 i = 0; i < 3; ++i)
+	{
+		const int32 X = Columns[i];
+		const FLinearColor Linear(FMath::Min(2.0f * (X + 0.5f) / GBox.X, 1.0f), FMath::Min(2.0f * (Row + 0.5f) / GBox.Y, 1.0f), 0.0f);
+		const FColor Expected = Linear.ToFColorSRGB();
+		Seen[i] = Pixels[Row * GBox.X + X];
+		AddInfo(FString::Printf(TEXT("(%d,%d): seen (%d, %d, %d, %d), expected (%d, %d, %d) +/- 3"),
+			X, Row, Seen[i].R, Seen[i].G, Seen[i].B, Seen[i].A, Expected.R, Expected.G, Expected.B));
+		TestTrue(*FString::Printf(TEXT("channel 2 is the customized 2x ramp at x=%d (R)"), X), FMath::Abs(int32(Seen[i].R) - int32(Expected.R)) <= 3);
+		TestTrue(*FString::Printf(TEXT("channel 2 is the customized 2x ramp at x=%d (G)"), X), FMath::Abs(int32(Seen[i].G) - int32(Expected.G)) <= 3);
+		TestEqual(*FString::Printf(TEXT("opaque alpha at x=%d"), X), int32(Seen[i].A), 255);
+	}
+
+	// The shape: a ramp rises; a constant (flat (1,1) or flat black) does not.
+	TestTrue(TEXT("the ramp rises across the row"), int32(Seen[2].R) - int32(Seen[0].R) >= 60 && int32(Seen[1].R) > int32(Seen[0].R));
 
 	return true;
 }

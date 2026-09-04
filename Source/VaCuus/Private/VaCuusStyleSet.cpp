@@ -185,26 +185,6 @@ UMaterialInterface* ValidateEntry(const FString& Key, UMaterialInterface* Materi
 		return nullptr;
 	}
 
-	// The customized-UV refusal (PR #1's boundary; the vertex stage is bead VaCuus-x3k):
-	// Slate runs a material's customized-UV expressions in its vertex shader
-	// (SlateVertexShader.usf:74-108) and then hands the pixel stage the RAW channels,
-	// uncustomized (SlateElementPixelShader.usf:149-161). The replay pass has no material
-	// vertex stage (VaCuusMaterial.usf, MainVS), so such a material would be drawn against
-	// a slot table it never authored against — a scrolling UV fed back through slot 2 fills
-	// flat, silently. Refused where it can be named instead. NumCustomizedUVs is a plain
-	// UPROPERTY (Material.h:608-610), readable in cooked builds; it counts DECLARED inputs,
-	// connected or not — an unconnected one passes the vertex UV through under Slate, and
-	// here it would pass a constant through, so the declaration alone is the boundary.
-	if (BaseMaterial->NumCustomizedUVs > 0)
-	{
-		UE_LOG(LogVaCuus, Error,
-			TEXT("StyleSet: '%s' (key '%s') declares %d customized UV(s) — refused. The material path evaluates the ")
-			TEXT("pixel stage only, so customized UVs would never run (Slate runs them in its vertex shader, ")
-			TEXT("SlateVertexShader.usf:74-108). Set Num Customized UVs to 0, or wait for bead VaCuus-x3k."),
-			*Material->GetPathName(), *Key, BaseMaterial->NumCustomizedUVs);
-		return nullptr;
-	}
-
 	// The scene-texture/VT refusal (material-decorators.md §3), on the honest game-side
 	// queryable: the compiled shader map's own bits. FMaterialShaderMap::
 	// NeedsSceneTextures()/NeedsGBuffer() read FMaterialCompilationOutput

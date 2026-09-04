@@ -15,6 +15,10 @@
  *    (SlateRHIRenderingPolicy.cpp:1202); we PREMULTIPLY IN THE SHADER instead and map
  *    every blend mode onto the RT's single One/InvSrcAlpha state (the Task 7 contract,
  *    VaCuusReplayRenderer.cpp) so a material draw needs no blend-state switch at all.
+ *  - SlateVertexShader.usf:36-108 is the material's VERTEX stage — the customized-UV pass —
+ *    and MainVS below is that stage for a decorator (bead VaCuus-x3k). What it still leaves
+ *    out is world position offset (SlateVertexShader.usf:110-121, HAS_SCREEN_POSITION): a
+ *    UI material that displaces its own vertices has no meaning over recorded geometry.
  */
 
 // No scene behind this pass, ever — same hard-off as TextureGraphMaterialShader.usf:2-3.
@@ -32,33 +36,165 @@ float4x4 VaCuusProjection;
 
 /**
  * FVaCuusShaderDesc::Dimensions — the paint box in PIXELS, rounded to whole pixels and
- * clamped to >= 1 by DrawMaterial_RenderThread. It fills slot 3 of the texture-coordinate
- * table in MainPS, the one slot a pixel-snapping material divides by.
+ * clamped to >= 1 by DrawMaterial_RenderThread. Channel 3 of the vertex table below (Slate's
+ * "Pixel Size"), the one channel a pixel-snapping material divides by. Bound by
+ * FVaCuusMaterialVS only: the vertex stage feeds it to the material's customized-UV pass and
+ * interpolates the result; the pixel stage never references it, so its parameter map never
+ * carries it.
  */
 float2 VaCuusDimensions;
+
+/**
+ * THE TEXTURE-COORDINATE INTERPOLANTS, packed two per float4 exactly as Slate packs its own
+ * (SlateShaderCommon.ush:41-52, TEXCOORD1..4). How many exist is the translator's decision,
+ * not ours: NUM_TEX_COORD_INTERPOLATORS is the highest texture-coordinate index the material
+ * reads or customizes, plus one (HLSLMaterialTranslator.cpp:15711, num_tex_coord_interpolators),
+ * so a material that reads no UV carries none and this pair compiles to a bare colour draw.
+ */
+struct FVaCuusInterpolants
+{
+	float4 Color : COLOR0;
+	float2 UV : TEXCOORD0;
+#if NUM_TEX_COORD_INTERPOLATORS > 0
+	float4 TexCoords0 : TEXCOORD1;
+#endif
+#if NUM_TEX_COORD_INTERPOLATORS > 2
+	float4 TexCoords1 : TEXCOORD2;
+#endif
+#if NUM_TEX_COORD_INTERPOLATORS > 4
+	float4 TexCoords2 : TEXCOORD3;
+#endif
+#if NUM_TEX_COORD_INTERPOLATORS > 6
+	float4 TexCoords3 : TEXCOORD4;
+#endif
+};
+
+#define VACUUS_UV0(I) I.TexCoords0.xy
+#define VACUUS_UV1(I) I.TexCoords0.zw
+#define VACUUS_UV2(I) I.TexCoords1.xy
+#define VACUUS_UV3(I) I.TexCoords1.zw
+#define VACUUS_UV4(I) I.TexCoords2.xy
+#define VACUUS_UV5(I) I.TexCoords2.zw
+#define VACUUS_UV6(I) I.TexCoords3.xy
+#define VACUUS_UV7(I) I.TexCoords3.zw
 
 /**
  * Vertex layout is GVaCuusVertexDeclaration exactly (position px, RGBA premultiplied
  * colour, UV). The UV is 0..1 over the paint box: that is what the shader decorator
  * writes into tex_coord, `(position - offset) / dimensions` (DecoratorShader.cpp:45-47),
- * and the slot table in MainPS is built on that fact.
+ * and the vertex table below is built on that fact.
+ *
+ * THE VERTEX TABLE IS SLATE'S, channel for channel (SlateVertexShader.usf:51-63, UVArrays):
+ *   [0] brush UV            -> InUV: a decorator has no brush and no nine-slice
+ *   [1] tiling              -> (1,1), what an untiled brush carries (ElementBatcher.cpp:788-791)
+ *   [2] (0,0)               -> the non-instanced InstanceParam.xy (:51)
+ *   [3] element size in px  -> VaCuusDimensions (:51 <- RenderingCommon.h:298-301)
+ *   [4] 0..1 over the element -> InUV (:60 <- RenderingCommon.h:294)
+ *   [5..7] zero             (:61-63)
+ * Eight entries is the translator's own cap on a TextureCoordinate index
+ * (HLSLMaterialTranslator.cpp:6686-6690), so neither unrolled loop reads past the end.
  */
 void MainVS(
 	in float2 InPosition : ATTRIBUTE0,
 	in float4 InColor : ATTRIBUTE1,
 	in float2 InUV : ATTRIBUTE2,
-	out float4 OutColor : COLOR0,
-	out float2 OutUV : TEXCOORD0,
+	out FVaCuusInterpolants Out,
 	out float4 OutPosition : SV_POSITION)
 {
-	OutPosition = mul(float4(InPosition, 0.0f, 1.0f), VaCuusProjection);
-	OutColor = InColor;
-	OutUV = InUV;
+	ResolvedView = ResolveView();
+
+	const float4 WorldPosition = float4(InPosition, 0.0f, 1.0f);
+	OutPosition = mul(WorldPosition, VaCuusProjection);
+	Out = (FVaCuusInterpolants)0;
+	Out.Color = InColor;
+	Out.UV = InUV;
+
+	const float2 VertexSlots[8] =
+	{
+		InUV,                // [0]
+		float2(1.0f, 1.0f),  // [1]
+		float2(0.0f, 0.0f),  // [2]
+		VaCuusDimensions,    // [3]
+		InUV,                // [4]
+		float2(0.0f, 0.0f),  // [5]
+		float2(0.0f, 0.0f),  // [6]
+		float2(0.0f, 0.0f)   // [7]
+	};
+
+	// THE MATERIAL'S VERTEX STAGE — Slate's, verbatim in shape (SlateVertexShader.usf:36-108).
+	// A material's customized UVs are expressions the translator emits into the VERTEX
+	// shader's GetMaterialCustomizedUVs (HLSLMaterialTranslator.cpp:15828-15841); a channel
+	// the material does not customize passes its vertex coordinate through unchanged
+	// (:1691-1692). Skipping this stage is what made a scrolling-UV material fill flat before
+	// bead VaCuus-x3k — the pixel stage saw a table no expression had ever run over.
+	//
+	// The interpolants are pre-filled with the vertex table for every channel they carry
+	// (Slate does the same at :35, whole TextureCoordinates0 = the raw attribute) and the
+	// customized pass then overwrites the first NUM_TEX_COORD_INTERPOLATORS of them — so
+	// channel 1 (tiling) reaches the pixel stage for a material that reads only channel 0,
+	// which the default table below multiplies by.
+#if NUM_TEX_COORD_INTERPOLATORS > 0
+	VACUUS_UV0(Out) = VertexSlots[0];
+	VACUUS_UV1(Out) = VertexSlots[1];
+#endif
+#if NUM_TEX_COORD_INTERPOLATORS > 2
+	VACUUS_UV2(Out) = VertexSlots[2];
+	VACUUS_UV3(Out) = VertexSlots[3];
+#endif
+#if NUM_TEX_COORD_INTERPOLATORS > 4
+	VACUUS_UV4(Out) = VertexSlots[4];
+	VACUUS_UV5(Out) = VertexSlots[5];
+#endif
+#if NUM_TEX_COORD_INTERPOLATORS > 6
+	VACUUS_UV6(Out) = VertexSlots[6];
+	VACUUS_UV7(Out) = VertexSlots[7];
+#endif
+
+#if NUM_TEX_COORD_INTERPOLATORS > 0
+	FMaterialVertexParameters VertexParameters = MakeInitializedMaterialVertexParameters();
+	VertexParameters.WorldPosition = WorldPosition.xyz;
+	VertexParameters.VertexColor = InColor;
+	VertexParameters.LWCData = MakeMaterialLWCData(VertexParameters);
+#if NUM_MATERIAL_TEXCOORDS_VERTEX
+	UNROLL
+	for (int VertexIndex = 0; VertexIndex < NUM_MATERIAL_TEXCOORDS_VERTEX; VertexIndex++)
+	{
+		VertexParameters.TexCoords[VertexIndex] = VertexSlots[VertexIndex];
+	}
+#endif
+#if ENABLE_NEW_HLSL_GENERATOR
+	// After MakeMaterialLWCData, as Slate orders it (SlateVertexShader.usf:76-79).
+	EvaluateVertexMaterialAttributes(VertexParameters);
+#endif
+	float2 CustomizedUVs[NUM_TEX_COORD_INTERPOLATORS];
+	GetMaterialCustomizedUVs(VertexParameters, CustomizedUVs);
+	VACUUS_UV0(Out) = CustomizedUVs[0];
+#if NUM_TEX_COORD_INTERPOLATORS > 1
+	VACUUS_UV1(Out) = CustomizedUVs[1];
+#endif
+#if NUM_TEX_COORD_INTERPOLATORS > 2
+	VACUUS_UV2(Out) = CustomizedUVs[2];
+#endif
+#if NUM_TEX_COORD_INTERPOLATORS > 3
+	VACUUS_UV3(Out) = CustomizedUVs[3];
+#endif
+#if NUM_TEX_COORD_INTERPOLATORS > 4
+	VACUUS_UV4(Out) = CustomizedUVs[4];
+#endif
+#if NUM_TEX_COORD_INTERPOLATORS > 5
+	VACUUS_UV5(Out) = CustomizedUVs[5];
+#endif
+#if NUM_TEX_COORD_INTERPOLATORS > 6
+	VACUUS_UV6(Out) = CustomizedUVs[6];
+#endif
+#if NUM_TEX_COORD_INTERPOLATORS > 7
+	VACUUS_UV7(Out) = CustomizedUVs[7];
+#endif
+#endif // NUM_TEX_COORD_INTERPOLATORS > 0
 }
 
 void MainPS(
-	in float4 InColor : COLOR0,
-	in float2 InUV : TEXCOORD0,
+	in FVaCuusInterpolants In,
 	in float4 SvPosition : SV_Position,
 	out float4 OutColor : SV_Target0)
 {
@@ -69,49 +205,61 @@ void MainPS(
 	// THE TEXTURE-COORDINATE SLOTS ARE SLATE'S CONTRACT, not scratch space: a UI material
 	// authored against GetUserInterfaceUV reads them by index (its five outputs are nothing
 	// but TextureCoordinate reads at index 0..4), and what each index holds is decided by
-	// the engine's UI pixel shader for the default element shader with no customized UVs —
-	// FillTexCoords' NUM_MATERIAL_TEXCOORDS >= 4 branch (SlateElementPixelShader.usf:172-180;
-	// the shorter branches at :164-171 are its prefixes). The table below is that branch
-	// for a decorator, which has no brush and no nine-slice:
+	// the engine's UI pixel shader, FillTexCoords (SlateElementPixelShader.usf:130-181),
+	// which has TWO tables and picks by NUM_CUSTOMIZED_UVS:
 	//
-	//   [0] brush UV x tiling       (:538)  -> InUV: the paint box's own 0..1, tiling 1
-	//   [1] brush UV                (:174)  -> InUV
-	//   [2] tiling                  (:175)  -> (1,1), what an untiled brush carries
-	//                                          (ElementBatcher.cpp:788-791)
-	//   [3] element size in PIXELS  (:179 <- SlateVertexShader.usf:51-59 <- RenderingCommon.h
-	//                                :298-301, RoundToInt(LocalSize * Scale)) -> VaCuusDimensions
-	//   [4] 0..1 over the element   (:179 <- SlateVertexShader.usf:60 <- RenderingCommon.h:294)
-	//                                       -> InUV
-	//   [5..7] zero                 (SlateVertexShader.usf:61-63)
+	//  - a material that customizes no UV gets the default table (:172-180; the shorter
+	//    branches at :164-171 are its prefixes): [0] = UV x tiling (:538), [1] = UV, [2] =
+	//    tiling, [3..] the interpolants as they are — so for a decorator [3] is the paint
+	//    box in pixels and [4] its own 0..1;
+	//  - a material that customizes any UV gets the interpolants RAW (:149-161), because its
+	//    own vertex-stage expressions already decided what each channel holds.
 	//
-	// Slot 3 is the one that cannot hold a UV: a material that snaps to the pixel grid
-	// divides by it, and dividing by 0..1 instead of by tens of pixels sends every sample
-	// somewhere else — the defect PR #1 fixed. The probe that sees it is
-	// VaCuus.Render.Decorator.MaterialPixelSizeSlot.
-	//
-	// THE BOUNDARY, named because it is real: a material WITH customized UVs gets a different
-	// table under Slate — its own vertex-stage expressions run first (SlateVertexShader.usf
-	// :74-108) and the pixel stage then receives the raw channels, uncustomized
-	// (SlateElementPixelShader.usf:149-161). MainVS above evaluates no material at all, so
-	// such a material is refused at registration (VaCuusStyleSet.cpp, ValidateEntry; the
-	// vertex stage is bead VaCuus-x3k) rather than drawn against a table it never authored
-	// against.
-	//
-	// One array, Slate's own shape (SlateVertexShader.usf:54-64): every slot's value is
-	// written in exactly one place. Eight entries is the translator's own cap on a
-	// TextureCoordinate index (HLSLMaterialTranslator.cpp:6686-6690), so the unrolled loop
-	// never reads past the end.
+	// Slot 3 of the default table is the one that cannot hold a UV: a material that snaps
+	// to the pixel grid divides by it, and dividing by 0..1 instead of by tens of pixels
+	// sends every sample somewhere else — the defect PR #1 fixed. The probes that see both
+	// tables are VaCuus.Render.Decorator.MaterialPixelSizeSlot and .MaterialCustomizedUVs.
 #if NUM_MATERIAL_TEXCOORDS
+	float2 UVs[8];
+	UNROLL
+	for (int ZeroIndex = 0; ZeroIndex < 8; ZeroIndex++)
+	{
+		UVs[ZeroIndex] = float2(0.0f, 0.0f);
+	}
+#if NUM_TEX_COORD_INTERPOLATORS > 0
+	UVs[0] = VACUUS_UV0(In);
+	UVs[1] = VACUUS_UV1(In);
+#endif
+#if NUM_TEX_COORD_INTERPOLATORS > 2
+	UVs[2] = VACUUS_UV2(In);
+	UVs[3] = VACUUS_UV3(In);
+#endif
+#if NUM_TEX_COORD_INTERPOLATORS > 4
+	UVs[4] = VACUUS_UV4(In);
+	UVs[5] = VACUUS_UV5(In);
+#endif
+#if NUM_TEX_COORD_INTERPOLATORS > 6
+	UVs[6] = VACUUS_UV6(In);
+	UVs[7] = VACUUS_UV7(In);
+#endif
+
+#if NUM_CUSTOMIZED_UVS
+	UNROLL
+	for (int CoordinateIndex = 0; CoordinateIndex < NUM_MATERIAL_TEXCOORDS; CoordinateIndex++)
+	{
+		MaterialParameters.TexCoords[CoordinateIndex] = UVs[CoordinateIndex];
+	}
+#else
 	const float2 Slots[8] =
 	{
-		InUV,                // [0]
-		InUV,                // [1]
-		float2(1.0f, 1.0f),  // [2]
-		VaCuusDimensions,    // [3]
-		InUV,                // [4]
-		float2(0.0f, 0.0f),  // [5]
-		float2(0.0f, 0.0f),  // [6]
-		float2(0.0f, 0.0f)   // [7]
+		UVs[0] * UVs[1],  // [0] UV x tiling
+		UVs[0],           // [1] UV
+		UVs[1],           // [2] tiling
+		UVs[3],           // [3] element size in px
+		UVs[4],           // [4] 0..1 over the element
+		UVs[5],           // [5]
+		UVs[6],           // [6]
+		UVs[7]            // [7]
 	};
 	UNROLL
 	for (int CoordinateIndex = 0; CoordinateIndex < NUM_MATERIAL_TEXCOORDS; CoordinateIndex++)
@@ -119,7 +267,8 @@ void MainPS(
 		MaterialParameters.TexCoords[CoordinateIndex] = Slots[CoordinateIndex];
 	}
 #endif
-	MaterialParameters.VertexColor = InColor;
+#endif // NUM_MATERIAL_TEXCOORDS
+	MaterialParameters.VertexColor = In.Color;
 
 	// The 4-arg CalcMaterialParameters, not the Post variant: our SvPosition IS the view
 	// SvPosition (the synthetic view rect is the whole RT), which is Slate's own situation
