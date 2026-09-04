@@ -153,6 +153,15 @@ names first (`glass-panel` ships), then UMaterial style keys registered by the
 game (`UVaCuusStyleSet` -- the M5 material-decorator tier; unknown keys are
 refused once with a Warning naming both halves of what would have worked).
 
+A style-key material sees Slate's texture-coordinate slots, so a material
+authored for UMG ports unchanged: `GetUserInterfaceUV`'s Tiling (slot 2) and
+Pixel Size (slot 3) carry the values Slate would hand it -- (1, 1) and the
+decorator's paint box in whole pixels -- and its three UV outputs are the paint
+box's own 0..1 (VaCuusMaterial.usf). A material that declares customized UVs is
+refused at registration with an Error naming the count: the replay pass
+evaluates the pixel stage only, and Slate runs customized UVs in its vertex
+shader.
+
 The six gradient decorators are **antialiased in screen space**, which is a
 deliberate deviation from RmlUi's reference backend. A hard colour break --
 two stops at the same position, which is how a segmented dial ring or a

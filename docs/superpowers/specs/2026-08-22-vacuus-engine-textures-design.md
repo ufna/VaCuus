@@ -36,7 +36,7 @@ pixels *into* a `UTextureRenderTarget2D` for world panels. This spec is the othe
   once (`LoadModuleChecked` from `LoadTexture`), and gives runtime-created render targets no
   stable name anyway. Registration by key instead.
 - **Composite-time draws.** The material spike priced this and chose the forced-republish
-  clamp (`VaCuusMaterialDraw.h:34-40`). Same answer here, same reasons.
+  clamp (`VaCuusMaterialDraw.h:34-41`). Same answer here, same reasons.
 - **`border-radius` on an image.** **CORRECTED, TWICE.** It does not round an image:
   `ElementImage::GenerateGeometry` builds a plain quad (`ElementImage.cpp:180`) and so does
   the image decorator (`DecoratorTiled.cpp:202`); the radius shapes only background and border

@@ -192,7 +192,7 @@ compiled the vendored quickjs unmodified" is a real new data point.
 
 **2 — Metal shader compile.** Four global-shader files (`VaCuusUI/Blur/Gradient/Material.usf`),
 none platform-gated: the only `ShouldCompilePermutation` in the tree gates on
-`MaterialDomain == MD_UI` (`VaCuusMaterialDraw.h:63-65, :98-100`) with no shader-platform filter.
+`MaterialDomain == MD_UI` (`VaCuusMaterialDraw.h:64-66, :100-102`) with no shader-platform filter.
 The Mac profile targets **two** platforms (`SF_METAL_SM5` + `SF_METAL_SM6`) at
 `MetalLanguageVersion=7`, so every permutation compiles twice through a front-end that has never
 seen this HLSL. An error here is a **real finding**, not a venue artifact, and it blocks every

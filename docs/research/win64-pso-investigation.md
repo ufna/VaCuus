@@ -130,7 +130,7 @@ run makes it a fact.
 So: **INFERRED, with the inference now much stronger than "offsets coincide"** — the failing PSO
 uses `GVaCuusVertexDeclaration`. That narrows it to exactly three of ours: the replay UI/Gradient
 pipelines (`VaCuusReplayRenderer.cpp:424`), the glass draw (`VaCuusSlateElement.cpp:589`) and the
-material draw (`VaCuusMaterialDraw.cpp:248`).
+material draw (`VaCuusMaterialDraw.cpp:259`).
 
 ### 1.2 The run that settles it: a `-game` session that never creates a view
 
@@ -294,8 +294,8 @@ in the appendix. Registers, as DXC assigns them:
 | | `VaCuusGradient.usf:97-99` `MainGradientPS` **in** | `TEXCOORD1@`**`0`**, `TEXCOORD0@`**`1`** | **NO** |
 | **Glass draw** | same VS | `SV_Position@0`, `TEXCOORD1@1`, `TEXCOORD0@2` | |
 | | `VaCuusBlur.usf:94-97` `MainGlassPS` **in** | `SV_Position@0`, `TEXCOORD1@1`, `TEXCOORD0@2` | yes |
-| **Material draw** | `VaCuusMaterial.usf:39-45` `MainVS` **out** | `COLOR0@0`, `TEXCOORD0@1`, `SV_Position@2` | |
-| | `VaCuusMaterial.usf:52-56` `MainPS` **in** | `COLOR0@0`, `TEXCOORD0@1`, `SV_Position@2` | yes |
+| **Material draw** | `VaCuusMaterial.usf:46-52` `MainVS` **out** | `COLOR0@0`, `TEXCOORD0@1`, `SV_Position@2` | |
+| | `VaCuusMaterial.usf:59-63` `MainPS` **in** | `COLOR0@0`, `TEXCOORD0@1`, `SV_Position@2` | yes |
 | **Composite / blur** | `ScreenPass.usf:12-19` `ScreenPassVS` **out** | `TEXCOORD0@0`, …, `SV_Position` last | |
 | | `VaCuusUI.usf:56-58` / `VaCuusBlur.usf:52-53` | `TEXCOORD0@0` | yes |
 
@@ -370,7 +370,7 @@ layout, root signature, RTV format), or printing nothing at all.
 > - **(a)** add `in float4 SvPosition : SV_POSITION` as the **first** input of `MainPS` and
 >   `MainGradientPS` — matches what `MainGlassPS` already does and leaves `MainVS` alone; or
 > - **(b)** move `out float4 OutPosition : SV_POSITION` to **last** in `MainVS` (the
->   `ScreenPass.usf:12-19` idiom, which `VaCuusMaterial.usf:39-45` already follows) and drop
+>   `ScreenPass.usf:12-19` idiom, which `VaCuusMaterial.usf:46-52` already follows) and drop
 >   `SV_POSITION` from `MainGlassPS`.
 >
 > Not applied here: this page is read-only, and the fix wants the restore-the-bug proof on the
@@ -469,7 +469,7 @@ Ordered so each rung eliminates the most. **Every rung is a separate `-game` ses
 | **3** | `vacuus.M5Glass` | UI + **Glass** + blur + composite | glass clean (H1 predicts this) → rung 4 | the glass pair, or the blur/composite; the name line says which |
 | **3b** | `vacuus.M5Glass` + `vacuus.GlassBackbufferSRV 0` | as 3, but the bounded-copy route | if 3 fails and 3b passes, it is the **direct-SRV route** — the D3D12-only path (passport §7), never exercised on Linux or macOS | |
 | **4** | `vacuus.M5MatSpike` | UI + **Material** | the material pair clean (H1 predicts this) → rung 5 | the material pair; `VaCuusMaterial.usf` in the name line |
-| **4b** | `vacuus.M5MatSpike` + `vacuus.MaterialDecorators 0` | UI only (style keys refuse at compile, `VaCuusMaterialDraw.cpp:43-48`) | control for rung 4 | |
+| **4b** | `vacuus.M5MatSpike` + `vacuus.MaterialDecorators 0` | UI only (style keys refuse at compile, `VaCuusMaterialDraw.cpp:44-49`) | control for rung 4 | |
 | **5** | `vacuus.M5Demo` | everything at once | the acceptance demo lives → the matrix reopens | tells you nothing rungs 1–4 did not |
 
 **`vacuus.IdleGate 0` is not a rung — it is a modifier.**

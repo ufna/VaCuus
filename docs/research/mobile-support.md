@@ -310,7 +310,7 @@ resident branch measured on desktop.
 
 We create pipelines at draw time — `BindPipeline`'s `SetGraphicsPipelineState`
 (`VaCuusReplayRenderer.cpp:464`), the glass draw (`VaCuusSlateElement.cpp:593`), one full pipeline
-per material (`VaCuusMaterialDraw.h:150-151`), plus `AddDrawScreenPass`'s internal binds. Nothing
+per material (`VaCuusMaterialDraw.cpp:269`), plus `AddDrawScreenPass`'s internal binds. Nothing
 forbids it (`PipelineStateCache.cpp:1685-1696`; `PLATFORM_USE_FALLBACK_PSO` is 0 with no mobile
 override in the readable tree) and the count is small and fixed by construction — the replay pass
 shares one VS, blend, rasterizer, depth-stencil and vertex declaration across both pixel shaders
