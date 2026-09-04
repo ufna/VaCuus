@@ -294,8 +294,8 @@ in the appendix. Registers, as DXC assigns them:
 | | `VaCuusGradient.usf:97-99` `MainGradientPS` **in** | `TEXCOORD1@`**`0`**, `TEXCOORD0@`**`1`** | **NO** |
 | **Glass draw** | same VS | `SV_Position@0`, `TEXCOORD1@1`, `TEXCOORD0@2` | |
 | | `VaCuusBlur.usf:94-97` `MainGlassPS` **in** | `SV_Position@0`, `TEXCOORD1@1`, `TEXCOORD0@2` | yes |
-| **Material draw** | `VaCuusMaterial.usf:46-52` `MainVS` **out** | `COLOR0@0`, `TEXCOORD0@1`, `SV_Position@2` | |
-| | `VaCuusMaterial.usf:59-63` `MainPS` **in** | `COLOR0@0`, `TEXCOORD0@1`, `SV_Position@2` | yes |
+| **Material draw** | `VaCuusMaterial.usf:97-102` `MainVS` **out** | `COLOR0@0`, `TEXCOORD0@1`, `SV_Position@2` | |
+| | `VaCuusMaterial.usf:196-199` `MainPS` **in** | `COLOR0@0`, `TEXCOORD0@1`, `SV_Position@2` | yes |
 | **Composite / blur** | `ScreenPass.usf:12-19` `ScreenPassVS` **out** | `TEXCOORD0@0`, …, `SV_Position` last | |
 | | `VaCuusUI.usf:56-58` / `VaCuusBlur.usf:52-53` | `TEXCOORD0@0` | yes |
 
@@ -370,7 +370,7 @@ layout, root signature, RTV format), or printing nothing at all.
 > - **(a)** add `in float4 SvPosition : SV_POSITION` as the **first** input of `MainPS` and
 >   `MainGradientPS` — matches what `MainGlassPS` already does and leaves `MainVS` alone; or
 > - **(b)** move `out float4 OutPosition : SV_POSITION` to **last** in `MainVS` (the
->   `ScreenPass.usf:12-19` idiom, which `VaCuusMaterial.usf:46-52` already follows) and drop
+>   `ScreenPass.usf:12-19` idiom, which `VaCuusMaterial.usf:97-102` already follows) and drop
 >   `SV_POSITION` from `MainGlassPS`.
 >
 > Not applied here: this page is read-only, and the fix wants the restore-the-bug proof on the

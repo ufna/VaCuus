@@ -157,10 +157,9 @@ A style-key material sees Slate's texture-coordinate slots, so a material
 authored for UMG ports unchanged: `GetUserInterfaceUV`'s Tiling (slot 2) and
 Pixel Size (slot 3) carry the values Slate would hand it -- (1, 1) and the
 decorator's paint box in whole pixels -- and its three UV outputs are the paint
-box's own 0..1 (VaCuusMaterial.usf). A material that declares customized UVs is
-refused at registration with an Error naming the count: the replay pass
-evaluates the pixel stage only, and Slate runs customized UVs in its vertex
-shader.
+box's own 0..1 (VaCuusMaterial.usf). Customized UVs run in the material's vertex
+stage here as they do under Slate, and a material that declares any reads the
+raw channels at the pixel stage, exactly as Slate's own UI shader hands them.
 
 The six gradient decorators are **antialiased in screen space**, which is a
 deliberate deviation from RmlUi's reference backend. A hard colour break --
