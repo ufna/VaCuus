@@ -2,6 +2,7 @@
 
 #include "VaCuusMaterialDraw.h"
 
+#include "VaCuusCommandBuffer.h"
 #include "VaCuusDefines.h"
 #include "VaCuusReplayRenderer.h" // VaCuusReplay::MakePixelToClipMatrix — the pass projection the view UB mirrors
 #include "VaCuusStyleSet.h"
@@ -141,9 +142,16 @@ static TUniformBufferRef<FViewUniformShaderParameters> CreateViewUniformBuffer(F
 /**
  * THE MATERIAL-SHADER WALK — Slate's, verbatim in shape (SlateRHIRenderingPolicy.cpp
  * :1157-1170): refresh the proxy's uniform expression cache, ask the material for OUR
- * shader types, and fall back down the proxy chain (an MD_UI material still compiling
- * lands on the default UI material rather than drawing nothing). Returns the resolved
- * material, or null when the whole chain is pair-less.
+ * shader types, and fall back down the proxy chain. Returns the resolved material, or
+ * null when the whole chain is pair-less.
+ *
+ * WHAT THE FALLBACK IS NOT: a default UI material. The engine has none — GDefaultMaterialNames
+ * maps MD_UI to Engine.DefaultMaterialName (Material.cpp:581-594), which is WorldGridMaterial
+ * (BaseEngine.ini:155), an MD_Surface material; both shader types above gate on MD_UI, so the
+ * fallback proxy can never carry the pair. An MD_UI material that is still compiling therefore
+ * walks to null and its draw is SKIPPED (GShaderMissCount); the registration-time pre-warm,
+ * not this walk, is what closes that window. An earlier version of this comment claimed the
+ * draw "lands on the default UI material" — it was wrong, and nothing in the code did that.
  */
 static const FMaterial* WalkForShaders(FRHICommandListBase& RHICmdList, const FMaterialRenderProxy*& InOutProxy,
 	TShaderRef<FVaCuusMaterialVS>& OutVS, TShaderRef<FVaCuusMaterialPS>& OutPS)
@@ -174,11 +182,14 @@ static const FMaterial* WalkForShaders(FRHICommandListBase& RHICmdList, const FM
 }
 
 bool DrawMaterial_RenderThread(FRHICommandList& RHICmdList, FPassState& PassState, FIntPoint RTSize,
-	const FMatrix44f& DrawMatrix, uint64 StableId, const FString& Key, const FVector2f& ElementSize,
+	const FMatrix44f& DrawMatrix, const FVaCuusShaderDesc& Desc,
 	FRHIBuffer* VertexBuffer, FRHIBuffer* IndexBuffer, int32 NumVertices, int32 NumIndices,
 	FRHIDepthStencilState* DepthStencilState, uint32 StencilRef)
 {
 	check(IsInRenderingThread());
+
+	const uint64 StableId = Desc.MaterialId;
+	const FString& Key = Desc.BuiltinKey;
 
 	const FMaterialRenderProxy* Proxy = FVaCuusStyleRegistry::ResolveProxy_RenderThread(StableId);
 	if (!Proxy)
@@ -270,8 +281,15 @@ bool DrawMaterial_RenderThread(FRHICommandList& RHICmdList, FPassState& PassStat
 		RHICmdList.SetBatchedShaderParameters(VertexShader.GetVertexShader(), BatchedParameters);
 	}
 	{
+		// Slot 3 of the material's texture coordinates: the paint box in WHOLE pixels, >= 1.
+		// Rounded because Slate's PixelSize is an integer (RenderingCommon.h:298-299) and a
+		// content-box decorator under a fractional padding records a fractional fill size;
+		// clamped because a box not yet laid out is 0 x 0 and a material may divide by it.
+		const FVector2f PaintBoxPx = FVector2f::Max(
+			FVector2f(FMath::RoundToFloat(Desc.Dimensions.X), FMath::RoundToFloat(Desc.Dimensions.Y)),
+			FVector2f::UnitVector);
 		FRHIBatchedShaderParameters& BatchedParameters = RHICmdList.GetScratchShaderParameters();
-		PixelShader->SetParameters(BatchedParameters, PassState.ViewUB, Proxy, *Material, ElementSize);
+		PixelShader->SetParameters(BatchedParameters, PassState.ViewUB, Proxy, *Material, PaintBoxPx);
 		RHICmdList.SetBatchedShaderParameters(PixelShader.GetPixelShader(), BatchedParameters);
 	}
 

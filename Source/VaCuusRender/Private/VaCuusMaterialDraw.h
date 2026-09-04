@@ -16,6 +16,7 @@
 #include "SceneView.h"
 
 class FMaterialRenderProxy;
+struct FVaCuusShaderDesc;
 
 /**
  * MATERIALS AS DECORATORS — THE PRODUCTION TIER (M5 Task 5b, the spike's GO follow-up,
@@ -93,7 +94,7 @@ public:
 	FVaCuusMaterialPS(const ShaderMetaType::CompiledShaderInitializerType& Initializer)
 		: FMaterialShader(Initializer)
 	{
-		ElementSizeParameter.Bind(Initializer.ParameterMap, TEXT("VaCuusElementSize"));
+		DimensionsParameter.Bind(Initializer.ParameterMap, TEXT("VaCuusDimensions"));
 	}
 
 	static bool ShouldCompilePermutation(const FMaterialShaderPermutationParameters& Parameters)
@@ -107,20 +108,23 @@ public:
 	}
 
 	/**
-	 * ElementSize is the paint box in PIXELS, and it is what makes a Slate-authored UI
-	 * material work here. The engine's GetUserInterfaceUV function reads the material's
-	 * texture-coordinate slots by index -- slot 3 is its "Pixel Size" output, "the screen
-	 * space size of the element being drawn" -- and a material that snaps to the pixel
-	 * grid divides by it, so that slot cannot hold a UV. See the slot table in
-	 * VaCuusMaterial.usf.
+	 * PaintBoxPx is FVaCuusShaderDesc::Dimensions rounded to whole pixels and clamped to >= 1
+	 * by DrawMaterial_RenderThread — slot 3 of the texture-coordinate table in
+	 * VaCuusMaterial.usf, the Slate "Pixel Size" a pixel-snapping material divides by.
+	 *
+	 * The bind is SPF_Optional (ShaderParameters.h:65) BY NECESSITY, not by choice: a material
+	 * that reads three slots or fewer compiles the uniform away, the bind then finds nothing,
+	 * and SetShaderValue on an unbound parameter writes zero bytes (ShaderParameterUtils.h
+	 * :38-40). So a mistyped name here fails nothing on this side — the slot-3 contract's only
+	 * observable is the probe, VaCuus.Render.Decorator.MaterialPixelSizeSlot.
 	 */
 	void SetParameters(FRHIBatchedShaderParameters& BatchedParameters,
 		const TUniformBufferRef<FViewUniformShaderParameters>& ViewUniformBuffer,
 		const FMaterialRenderProxy* MaterialRenderProxy, const FMaterial& Material,
-		const FVector2f& ElementSize)
+		const FVector2f& PaintBoxPx)
 	{
 		SetUniformBufferParameter(BatchedParameters, GetUniformBufferParameter<FViewUniformShaderParameters>(), ViewUniformBuffer);
-		SetShaderValue(BatchedParameters, ElementSizeParameter, ElementSize);
+		SetShaderValue(BatchedParameters, DimensionsParameter, PaintBoxPx);
 		// The FSceneView-free, batched-parameters overload with null Scene — an
 		// explicitly handled input (ShaderBaseClasses.cpp:264: feature level falls back
 		// to GMaxRHIFeatureLevel, parameter collections to the process defaults).
@@ -130,7 +134,7 @@ public:
 	}
 
 private:
-	LAYOUT_FIELD(FShaderParameter, ElementSizeParameter);
+	LAYOUT_FIELD(FShaderParameter, DimensionsParameter);
 };
 
 namespace VaCuusMaterialDraw
@@ -171,19 +175,31 @@ bool IsEnabled();
 bool IsForcedRepublishEnabled();
 
 /**
- * RENDER THREAD, inside the replay render pass: draw the recorded geometry filled by
- * the material behind StableId. Resolves the proxy from the style registry's mirror,
- * walks the proxy chain for the FVaCuusMaterial* pair, binds the full pipeline (a
- * material draw is a new PSO — the VS differs too, not just the PS), and issues the
- * indexed draw. Recorded scissor state applies — this is a recorded command's draw, not
- * an injection.
+ * RENDER THREAD, inside the replay render pass: draw the recorded geometry filled by the
+ * material behind Desc — a Kind == Material desc, whose MaterialId is the registry's stable
+ * id, BuiltinKey the style key (diagnostics only) and Dimensions the paint box. Resolves the
+ * proxy from the style registry's mirror, walks the proxy chain for the FVaCuusMaterial*
+ * pair, binds the full pipeline (a material draw is a new PSO — the VS differs too, not just
+ * the PS), and issues the indexed draw. Recorded scissor state applies — this is a recorded
+ * command's draw, not an injection.
+ *
+ * Desc.Dimensions is what fills slot 3 of the material's texture coordinates (the table in
+ * VaCuusMaterial.usf): the fill size of the decorator's paint area (DecoratorShader.cpp:33-34,
+ * GetRenderBox(paint_area).GetFillSize()), in RT pixels, untouched by the element's
+ * transform — which is the same layout-only size Slate reports (LocalSize * DrawScale, no
+ * render transform in it, RenderingCommon.h:298-299). It is passed as recorded and rounded
+ * and clamped where it is set (the SetParameters call in the .cpp says why), never in the
+ * recorder: the desc is the CompileShader dictionary verbatim (VaCuusCommandBuffer.h:331-334).
+ * Taking the desc rather than three of its fields is what keeps a second caller from
+ * passing RTSize, or a transform-scaled extent, where the paint box belongs.
  *
  * Returns true when a draw was issued. False = skipped, in one of two named ways:
  *  - the id no longer resolves (key unregistered under a live draw): latched Warning;
  *  - the whole proxy chain is pair-less (shader map still async-compiling — the spike's
  *    frame-2 transient): one Verbose line per pass until the walk yields, which it does
- *    by itself once the map lands (the fallback walk is the honest mitigation; the
- *    registration-time pre-warm makes the window ~unobservable).
+ *    by itself once the map lands. Nothing is drawn in that window — there is no default
+ *    UI material to fall back to (WalkForShaders) — which is why the registration-time
+ *    pre-warm exists: it makes the window end before the first draw.
  *
  * DepthStencilState/StencilRef come from the caller's clip-mask state (bead VaCuus-4ik): the
  * material tier binds a FULL pipeline of its own, so it is the one draw path that would not
@@ -191,7 +207,7 @@ bool IsForcedRepublishEnabled();
  * Passing them in rather than reading them here keeps the whole protocol in ReplayCommands.
  */
 bool DrawMaterial_RenderThread(FRHICommandList& RHICmdList, FPassState& PassState, FIntPoint RTSize,
-	const FMatrix44f& DrawMatrix, uint64 StableId, const FString& Key, const FVector2f& ElementSize,
+	const FMatrix44f& DrawMatrix, const FVaCuusShaderDesc& Desc,
 	FRHIBuffer* VertexBuffer, FRHIBuffer* IndexBuffer, int32 NumVertices, int32 NumIndices,
 	FRHIDepthStencilState* DepthStencilState, uint32 StencilRef);
 

@@ -30,14 +30,18 @@
 /** Same pixel->clip matrix the recorded draws use (VaCuusReplay::MakePixelToClipMatrix). */
 float4x4 VaCuusProjection;
 
-/** The paint box in PIXELS. Slot 3 of the material's texture coordinates -- see MainPS. */
-float2 VaCuusElementSize;
+/**
+ * FVaCuusShaderDesc::Dimensions — the paint box in PIXELS, rounded to whole pixels and
+ * clamped to >= 1 by DrawMaterial_RenderThread. It fills slot 3 of the texture-coordinate
+ * table in MainPS, the one slot a pixel-snapping material divides by.
+ */
+float2 VaCuusDimensions;
 
 /**
  * Vertex layout is GVaCuusVertexDeclaration exactly (position px, RGBA premultiplied
- * colour, UV). The spike feeds a generated quad with UV 0..1 over the paint rect, which
- * is also what DecoratorShader.cpp:44-46 normalizes tex_coord to — so the recorded-path
- * geometry and the injected spike quad mean the same thing to the material.
+ * colour, UV). The UV is 0..1 over the paint box: that is what the shader decorator
+ * writes into tex_coord, `(position - offset) / dimensions` (DecoratorShader.cpp:45-47),
+ * and the slot table in MainPS is built on that fact.
  */
 void MainVS(
 	in float2 InPosition : ATTRIBUTE0,
@@ -62,33 +66,58 @@ void MainPS(
 
 	FMaterialPixelParameters MaterialParameters = MakeInitializedMaterialPixelParameters();
 
-	// THE SLOTS ARE A CONTRACT, not scratch space: a Slate-authored UI material reads them
-	// by index and will not draw correctly if they all carry the same UV. The engine's
-	// GetUserInterfaceUV function is nothing but five TextureCoordinate reads by index,
-	// and its output names say what each index is expected to hold:
+	// THE TEXTURE-COORDINATE SLOTS ARE SLATE'S CONTRACT, not scratch space: a UI material
+	// authored against GetUserInterfaceUV reads them by index (its five outputs are nothing
+	// but TextureCoordinate reads at index 0..4), and what each index holds is decided by
+	// the engine's UI pixel shader for the default element shader with no customized UVs —
+	// FillTexCoords' NUM_MATERIAL_TEXCOORDS >= 4 branch (SlateElementPixelShader.usf:172-180;
+	// the shorter branches at :164-171 are its prefixes). The table below is that branch
+	// for a decorator, which has no brush and no nine-slice:
 	//
-	//   [0] 9-Slice UV             -- "a tiled 0-1 uv set" when the element has no 9-slice
-	//   [1] 9-Slice UV (No Tiling) -- "a 0-1 uv set" when it has none
-	//   [2] Tiling                 -- "horizontal and vertical tiling for this element"
-	//   [3] Pixel Size             -- "the screen space size of the element being drawn"
-	//   [4] Normalized UV          -- "a 0-1 UV set that spans the entire element"
+	//   [0] brush UV x tiling       (:538)  -> InUV: the paint box's own 0..1, tiling 1
+	//   [1] brush UV                (:174)  -> InUV
+	//   [2] tiling                  (:175)  -> (1,1), what an untiled brush carries
+	//                                          (ElementBatcher.cpp:788-791)
+	//   [3] element size in PIXELS  (:179 <- SlateVertexShader.usf:51-59 <- RenderingCommon.h
+	//                                :298-301, RoundToInt(LocalSize * Scale)) -> VaCuusDimensions
+	//   [4] 0..1 over the element   (:179 <- SlateVertexShader.usf:60 <- RenderingCommon.h:294)
+	//                                       -> InUV
+	//   [5..7] zero                 (SlateVertexShader.usf:61-63)
 	//
-	// A decorator has no brush and no nine-slice, so the three UV sets are all the paint
-	// box's own 0..1 and tiling is 1. Slot 3 has to carry real pixels: a material that
-	// snaps to the pixel grid divides by it, and dividing by a UV sends every sample
-	// somewhere else.
+	// Slot 3 is the one that cannot hold a UV: a material that snaps to the pixel grid
+	// divides by it, and dividing by 0..1 instead of by tens of pixels sends every sample
+	// somewhere else — the defect PR #1 fixed. The probe that sees it is
+	// VaCuus.Render.Decorator.MaterialPixelSizeSlot.
+	//
+	// THE BOUNDARY, named because it is real: a material WITH customized UVs gets a different
+	// table under Slate — its own vertex-stage expressions run first (SlateVertexShader.usf
+	// :74-108) and the pixel stage then receives the raw channels, uncustomized
+	// (SlateElementPixelShader.usf:149-161). MainVS above evaluates no material at all, so
+	// such a material is refused at registration (VaCuusStyleSet.cpp, ValidateEntry; the
+	// vertex stage is bead VaCuus-x3k) rather than drawn against a table it never authored
+	// against.
+	//
+	// One array, Slate's own shape (SlateVertexShader.usf:54-64): every slot's value is
+	// written in exactly one place. Eight entries is the translator's own cap on a
+	// TextureCoordinate index (HLSLMaterialTranslator.cpp:6686-6690), so the unrolled loop
+	// never reads past the end.
 #if NUM_MATERIAL_TEXCOORDS
+	const float2 Slots[8] =
+	{
+		InUV,                // [0]
+		InUV,                // [1]
+		float2(1.0f, 1.0f),  // [2]
+		VaCuusDimensions,    // [3]
+		InUV,                // [4]
+		float2(0.0f, 0.0f),  // [5]
+		float2(0.0f, 0.0f),  // [6]
+		float2(0.0f, 0.0f)   // [7]
+	};
 	UNROLL
 	for (int CoordinateIndex = 0; CoordinateIndex < NUM_MATERIAL_TEXCOORDS; CoordinateIndex++)
 	{
-		MaterialParameters.TexCoords[CoordinateIndex] = InUV;
+		MaterialParameters.TexCoords[CoordinateIndex] = Slots[CoordinateIndex];
 	}
-#endif
-#if NUM_MATERIAL_TEXCOORDS > 2
-	MaterialParameters.TexCoords[2] = float2(1.0f, 1.0f);
-#endif
-#if NUM_MATERIAL_TEXCOORDS > 3
-	MaterialParameters.TexCoords[3] = VaCuusElementSize;
 #endif
 	MaterialParameters.VertexColor = InColor;
 
@@ -106,8 +135,9 @@ void MainPS(
 
 	// The RT holds DISPLAY-REFERRED bytes (RmlUi colours pass through unconverted, M1
 	// contract), while material Emissive is linear — encode before blending so a material
-	// colour matches the same colour authored in RCSS. LinearToSrgb is the branchless
-	// engine encode (GammaCorrectionCommon.ush); Slate's own UI-material path applies the
+	// colour matches the same colour authored in RCSS. LinearToSrgb is the engine encode
+	// (GammaCorrectionCommon.ush:45-54: the exact branching curve above ES3_1, the
+	// branchless approximation on mobile); Slate's own UI-material path applies the
 	// equivalent display-gamma encode via GammaCorrect (SlateElementPixelShader.usf:653).
 	half3 Encoded = LinearToSrgb(Emissive);
 
