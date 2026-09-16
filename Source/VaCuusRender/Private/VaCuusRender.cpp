@@ -24,6 +24,7 @@
 #include "Engine/GameInstance.h"
 #include "Engine/GameViewportClient.h"
 #include "Engine/SceneCapture2D.h"
+#include "Engine/StaticMesh.h" // complete UStaticMesh for the TexDemo subject's LoadObject — this file otherwise sees only forward declarations (NaniteAssemblyData.h:12)
 #include "Engine/StaticMeshActor.h"
 #include "Engine/Texture2D.h"
 #include "Engine/TextureRenderTarget2D.h"
@@ -47,6 +48,7 @@
 #include "UObject/UObjectGlobals.h"
 #include "RenderingThread.h"
 #include "ShaderCore.h"
+#include "TextureResource.h" // complete FTexture2DMipMap for the TexDemo tile's Mip.BulkData — Texture.h:895 only forward-declares it
 #include "UnrealClient.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 
