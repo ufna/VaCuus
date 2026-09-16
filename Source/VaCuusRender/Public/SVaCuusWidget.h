@@ -504,9 +504,9 @@ private:
 	/**
 	 * The reply half of a press -- capture, D11 focus and D14a IME -- shared by the mouse's
 	 * OnMouseButtonDown and the finger's OnTouchStarted. See the .cpp for why it is shared
-	 * rather than copied.
+	 * rather than copied. UserIndex is the pressing event's user, whose focus the press may move.
 	 */
-	FReply AnswerPointerDown(FIntPoint Position);
+	FReply AnswerPointerDown(FIntPoint Position, uint32 UserIndex);
 
 	/**
 	 * Services the AutoShot debug screenshot for WHATEVER view this widget hosts, on the
@@ -594,6 +594,14 @@ private:
 	 * bWantsKeyboardFocus going true -> false, and only for focus this widget requested.
 	 */
 	void TickKeyboardFocusRelease();
+
+	/**
+	 * Where a press on a rect that is NOT focusable sends the user's focus, so it never lands on this widget
+	 * by default. The current holder if it is this widget or an ancestor; else the nearest ancestor that
+	 * supports keyboard focus, which is what Slate would pick if this widget did not; else null, and Slate's
+	 * default stands.
+	 */
+	TSharedPtr<SWidget> FindPressFocusRecipient(uint32 UserIndex) const;
 
 	/** The FKey a synthesized stick direction is queued as; the UI thread maps it to KI_*. */
 	static FKey AnalogNavDirectionToKey(EAnalogNavDirection Direction);

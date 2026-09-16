@@ -22,6 +22,10 @@
 #include "Framework/Application/SlateUser.h"
 #include "Layout/WidgetPath.h"
 #include "Widgets/SWindow.h"
+#include "Widgets/Input/SButton.h"
+#include "Widgets/Layout/SBox.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SViewport.h"
 #include "HAL/IConsoleManager.h"
 #include "HAL/PlatformProcess.h"
 #include "InputCoreTypes.h"
@@ -1632,6 +1636,214 @@ bool FVaCuusCaptureReconcileTest::RunTest(const FString& Parameters)
 		AddInfo(TEXT("Skipped the flag-says-yes half: this venue's ReleaseAllCapture notifies the "
 					 "widget, so the flag cannot be left standing"));
 	}
+
+	return true;
+}
+
+/**
+ * WHERE A PRESS LEAVES SLATE FOCUS once FSlateApplication has finished with it.
+ *
+ * VaCuus.Input.SlateRouting calls OnMouseButtonDown directly, so it only sees the reply. The step after
+ * the handler is invisible to it: a Handled press whose reply names no focus recipient makes Slate focus
+ * the leaf-most widget under the pointer that supports keyboard focus (SlateApplication.cpp:5485-5505).
+ * SVaCuusWidget always supports it, so a press on a rect that is interactive but not focusable used to
+ * take the keyboard away from the game anyway. This test routes presses through the real
+ * RoutePointerDownEvent, which runs that step.
+ *
+ * The SViewport stands in for the game viewport, and the SButton beside it for any other focus holder.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusPressFocusTest, "VaCuus.Input.PressFocus",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusPressFocusTest::RunTest(const FString& Parameters)
+{
+	using namespace VaCuusSlateRoutingTest;
+
+	if (!FSlateApplication::IsInitialized() || !FPlatformProcess::SupportsMultithreading())
+	{
+		AddInfo(TEXT("Skipped: needs an FSlateApplication to route through and a worker thread to drive"));
+		return true;
+	}
+
+	if (!TestFalse(TEXT("RmlUi is down before the test"), FVaCuusEngine::Get().IsInitialized()))
+	{
+		return false;
+	}
+
+	FVaCuusModule& Module = FVaCuusModule::Get();
+	FVaCuusUIThread* UIThread = Module.GetOrStartUIThread();
+	if (!TestNotNull(TEXT("UI thread"), UIThread))
+	{
+		return false;
+	}
+
+	ON_SCOPE_EXIT
+	{
+		Module.StopUIThread();
+	};
+
+	const FIntPoint ViewSize(400, 300);
+	const TSharedRef<FVaCuusViewStatus> Status = MakeShared<FVaCuusViewStatus>();
+
+	const uint32 ViewId = UIThread->AllocateViewId();
+	UIThread->EnqueueAddView(ViewId, MakeUnique<FProbeHost>(), ViewSize, Status);
+	UIThread->EnqueueLoadDocumentFromMemory(ViewId, GDocument, /*LoadSerial=*/1);
+
+	// Wired by hand, as in VaCuus.Input.SlateRouting.
+	TStrongObjectPtr<UGameInstance> GameInstance(NewObject<UGameInstance>());
+	TStrongObjectPtr<UVaCuusSubsystem> Subsystem(NewObject<UVaCuusSubsystem>(GameInstance.Get()));
+	TStrongObjectPtr<UVaCuusView> View(NewObject<UVaCuusView>(Subsystem.Get()));
+	View->InitializeView(Subsystem.Get(), ViewId, Status, ViewSize);
+
+	const TSharedRef<FVaCuusSlateElement> Element = MakeShared<FVaCuusSlateElement>();
+	TSharedRef<SVaCuusWidget> Widget = SNew(SVaCuusWidget, View.Get(), Element);
+
+	if (!TestTrue(TEXT("UI frames ran"), RunFrames(*UIThread, 2)))
+	{
+		return false;
+	}
+	if (!TestTrue(TEXT("Document loaded"),
+			Status->LoadCompletedSerial.load(std::memory_order_acquire) == 1 &&
+				Status->LoadResult.load(std::memory_order_relaxed) == uint8(EVaCuusLoadResult::Succeeded)))
+	{
+		return false;
+	}
+
+	View->PollStatus();
+	{
+		const FVaCuusInteractiveSnapshot& Snapshot = View->GetSnapshot();
+		if (!TestTrue(TEXT("The panel is interactive and not focusable"),
+				Snapshot.Contains(FIntPoint(80, 220)) && !Snapshot.IsFocusableAt(FIntPoint(80, 220))))
+		{
+			return false;
+		}
+		if (!TestTrue(TEXT("The button is focusable"), Snapshot.IsFocusableAt(FIntPoint(70, 40))))
+		{
+			return false;
+		}
+	}
+
+	TSharedPtr<SViewport> GameViewport;
+	TSharedPtr<SButton> OtherHolder;
+	TSharedRef<SWindow> Window = SNew(SWindow).ClientSize(FVector2D(ViewSize.X, ViewSize.Y + 40)).Content()
+	[
+		SNew(SVerticalBox)
+		+ SVerticalBox::Slot().AutoHeight()
+		[
+			SAssignNew(GameViewport, SViewport)
+			.ViewportSize(FVector2D(ViewSize.X, ViewSize.Y))
+			[
+				SNew(SBox).WidthOverride(static_cast<float>(ViewSize.X)).HeightOverride(static_cast<float>(ViewSize.Y))
+				[
+					Widget
+				]
+			]
+		]
+		+ SVerticalBox::Slot().AutoHeight()
+		[
+			SAssignNew(OtherHolder, SButton)
+		]
+	];
+
+	FSlateApplication& Slate = FSlateApplication::Get();
+	Slate.AddWindow(Window, /*bShowImmediately=*/false);
+
+	const TSet<FKey> LeftOnly = {EKeys::LeftMouseButton};
+	const TSet<FKey> NoButtons;
+
+	// The user the presses below belong to. Its focus is the editor's, and goes back before the window does.
+	const uint32 UserIndex = MakePointerEvent(FVector2D::ZeroVector, NoButtons, FKey()).GetUserIndex();
+	const TSharedPtr<SWidget> EditorFocus = Slate.GetUserFocusedWidget(UserIndex);
+	ON_SCOPE_EXIT
+	{
+		if (EditorFocus.IsValid())
+		{
+			Slate.SetUserFocus(UserIndex, EditorFocus, EFocusCause::SetDirectly);
+		}
+		else
+		{
+			Slate.ClearUserFocus(UserIndex, EFocusCause::SetDirectly);
+		}
+
+		if (const TSharedPtr<FSlateUser> CursorUser = Slate.GetCursorUser())
+		{
+			CursorUser->ReleaseAllCapture();
+		}
+		Slate.RequestDestroyWindow(Window);
+	};
+
+	// A layout pass, or there is no path to find: FindPathToWidget walks arranged children.
+	Window->SlatePrepass();
+
+	FWidgetPath FoundPath;
+	if (!TestTrue(TEXT("The widget is reachable from its window"), Slate.FindPathToWidget(Widget, FoundPath)))
+	{
+		return false;
+	}
+
+	// Rebuilt the way the hit-test grid builds one: FindPathToWidget leaves the per-widget pointer positions
+	// empty (WidgetPath.cpp:17-22), and routing reads one for every widget it visits (WidgetPath.h:67-70).
+	TArray<FWidgetAndPointer> WidgetsAndPointers;
+	for (int32 Index = 0; Index < FoundPath.Widgets.Num(); ++Index)
+	{
+		WidgetsAndPointers.Emplace(FoundPath.Widgets[Index]);
+	}
+	const FWidgetPath WidgetPath(WidgetsAndPointers);
+
+	// The widget's arranged geometry, so a view pixel can be turned back into the screen position
+	// ToViewPixels reads it from.
+	const FGeometry WidgetGeometry = WidgetPath.Widgets.Last().Geometry;
+
+	// A full click: the release is routed too, so the capture the press takes is given back.
+	const auto Click = [&Slate, &WidgetPath, &WidgetGeometry, &LeftOnly, &NoButtons](const FVector2D& ViewPixel)
+	{
+		const FVector2D ScreenPosition(WidgetGeometry.LocalToAbsolute(ViewPixel / WidgetGeometry.Scale));
+		const FReply Reply =
+			Slate.RoutePointerDownEvent(WidgetPath, MakePointerEvent(ScreenPosition, LeftOnly, EKeys::LeftMouseButton));
+		Slate.RoutePointerUpEvent(WidgetPath, MakePointerEvent(ScreenPosition, NoButtons, EKeys::LeftMouseButton));
+		return Reply;
+	};
+
+	const auto FocusedWidget = [&Slate, UserIndex]() -> const SWidget*
+	{
+		return Slate.GetUserFocusedWidget(UserIndex).Get();
+	};
+
+	const SWidget* const ViewportWidget = GameViewport.Get();
+	const SWidget* const OtherWidget = OtherHolder.Get();
+	const SWidget* const ThisWidget = &Widget.Get();
+
+	// 1. THE BUG. The game holds the keyboard, and a press on a rect that takes no RmlUi focus must not
+	// move it: the viewport would get OnFocusLost and flush the keys the player is holding.
+	Slate.SetUserFocus(UserIndex, GameViewport, EFocusCause::SetDirectly);
+	if (!TestSamePtr(TEXT("The viewport holds focus before the press"), FocusedWidget(), ViewportWidget))
+	{
+		return false;
+	}
+	TestTrue(TEXT("A press on the panel is Handled"), Click(GPanelPoint).IsEventHandled());
+	TestSamePtr(TEXT("...and focus stays on the viewport"), FocusedWidget(), ViewportWidget);
+
+	// 2. A holder off the widget's path loses focus, but to the viewport -- the widget Slate picks for a
+	// press on anything that does not support focus -- and not to the widget.
+	Slate.SetUserFocus(UserIndex, OtherHolder, EFocusCause::SetDirectly);
+	if (!TestSamePtr(TEXT("The button beside the viewport holds focus before the press"), FocusedWidget(), OtherWidget))
+	{
+		return false;
+	}
+	Click(GPanelPoint);
+	TestSamePtr(TEXT("A press on the panel hands focus to the viewport"), FocusedWidget(), ViewportWidget);
+
+	// 3. Controller decision D11 through the real routing: a focusable rect still takes focus.
+	Click(GButtonPoint);
+	TestSamePtr(TEXT("A press on the focusable button focuses the widget"), FocusedWidget(), ThisWidget);
+
+	// 4. The widget holding focus keeps it; whether the button keeps RmlUi focus is RmlUi's call.
+	Click(GPanelPoint);
+	TestSamePtr(TEXT("A press on the panel leaves focus on the widget"), FocusedWidget(), ThisWidget);
+
+	Widget->DetachView();
+	UIThread->EnqueueRemoveView(ViewId);
+	TestTrue(TEXT("UI frames survive the removal"), RunFrames(*UIThread, 2));
 
 	return true;
 }

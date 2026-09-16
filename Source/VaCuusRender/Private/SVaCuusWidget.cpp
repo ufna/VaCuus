@@ -789,7 +789,7 @@ FReply SVaCuusWidget::OnMouseButtonDown(const FGeometry& MyGeometry, const FPoin
 		FVaCuusInputEvent::MouseButton(
 			/*bDown=*/true, Position, MouseEvent.GetEffectingButton(), ToModifierState(MouseEvent)));
 
-	return AnswerPointerDown(Position);
+	return AnswerPointerDown(Position, MouseEvent.GetUserIndex());
 }
 
 /**
@@ -803,10 +803,11 @@ FReply SVaCuusWidget::OnMouseButtonDown(const FGeometry& MyGeometry, const FPoin
  * people looking. The touch caller is the *reason* the split exists -- there is no third
  * caller and none is expected.
  *
- * DEVICE-BLIND ON PURPOSE: it takes a position and nothing else. A press is a press, and every
- * answer here is a property of the published geometry at that point.
+ * DEVICE-BLIND ON PURPOSE: it takes a position and the user the press belongs to, nothing else. A
+ * press is a press, and every answer here is a property of the published geometry at that point;
+ * the user only picks whose Slate focus FindPressFocusRecipient reads.
  */
-FReply SVaCuusWidget::AnswerPointerDown(FIntPoint Position)
+FReply SVaCuusWidget::AnswerPointerDown(FIntPoint Position, uint32 UserIndex)
 {
 	const FVaCuusInteractiveSnapshot& Snapshot = GetSnapshot();
 	if (!Snapshot.Contains(Position))
@@ -855,6 +856,15 @@ FReply SVaCuusWidget::AnswerPointerDown(FIntPoint Position)
 		// focus a game handed us deliberately -- because it opened a menu -- is that
 		// game's to take away again.
 		bSelfRequestedUserFocus = true;
+	}
+	else
+	{
+		// A reply that names no recipient is not enough: Slate then focuses the leaf-most widget under the
+		// pointer that supports keyboard focus (SlateApplication.cpp:5485-5505), and that is always this one.
+		if (const TSharedPtr<SWidget> FocusRecipient = FindPressFocusRecipient(UserIndex))
+		{
+			Reply.SetUserFocus(FocusRecipient.ToSharedRef(), EFocusCause::Mouse);
+		}
 	}
 
 	// CONTROLLER DECISION D14a: the platform IME context is activated on THIS click, from the
@@ -1026,7 +1036,7 @@ FReply SVaCuusWidget::OnTouchStarted(const FGeometry& MyGeometry, const FPointer
 	SendInput(FVaCuusInputEvent::Touch(
 		EVaCuusInputEventKind::TouchStart, ToTouchId(InTouchEvent), Position, ToModifierState(InTouchEvent)));
 
-	return AnswerPointerDown(Position);
+	return AnswerPointerDown(Position, InTouchEvent.GetUserIndex());
 }
 
 FReply SVaCuusWidget::OnTouchMoved(const FGeometry& MyGeometry, const FPointerEvent& InTouchEvent)
@@ -1619,6 +1629,40 @@ void SVaCuusWidget::TickAnalogNavigation(double InCurrentTime)
 		// a burst of catch-up steps.
 		NextAnalogNavTime = InCurrentTime + AnalogNavRepeatIntervalSeconds;
 	}
+}
+
+TSharedPtr<SWidget> SVaCuusWidget::FindPressFocusRecipient(uint32 UserIndex) const
+{
+	if (!FSlateApplication::IsInitialized())
+	{
+		return nullptr;
+	}
+
+	// A holder on this widget's own path keeps focus. Naming it is a no-op -- SetUserFocus returns before any
+	// focus event (SlateApplication.cpp:3029-3033) -- so the game viewport gets no OnFocusLost and does not
+	// flush its pressed keys (GameViewportClient.cpp:2632-2649).
+	const TSharedPtr<SWidget> Focused = FSlateApplication::Get().GetUserFocusedWidget(UserIndex);
+	if (Focused.Get() == this)
+	{
+		return Focused;
+	}
+
+	// Any other holder loses focus to the widget Slate would pick if this one did not support focus.
+	TSharedPtr<SWidget> NearestFocusable;
+	for (TSharedPtr<SWidget> Ancestor = GetParentWidget(); Ancestor.IsValid(); Ancestor = Ancestor->GetParentWidget())
+	{
+		if (Ancestor == Focused)
+		{
+			return Focused;
+		}
+
+		if (!NearestFocusable.IsValid() && Ancestor->SupportsKeyboardFocus())
+		{
+			NearestFocusable = Ancestor;
+		}
+	}
+
+	return NearestFocusable;
 }
 
 void SVaCuusWidget::TickKeyboardFocusRelease()
