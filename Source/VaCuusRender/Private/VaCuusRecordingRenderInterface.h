@@ -524,15 +524,34 @@ private:
 	 * Which of the above were actually DRAWN in the frame being recorded; cleared by
 	 * BeginFrame().
 	 *
-	 * WHY DRAWN AND NOT MERELY LOADED, i.e. why this diverges from LiveMaterialShaders
-	 * (which is "compiled and not released"): a live render target is the expensive case,
-	 * and an <img> scrolled out of view or in a hidden panel would otherwise keep the whole
-	 * view republishing at engine rate for pixels nobody composites. RmlUi hands us every
-	 * draw of every frame anyway (RenderGeometry), so restricting the cost to what is on
-	 * screen is one set insert per external draw. The material tier can afford its looser
-	 * rule because a decorator that is not drawn is usually not compiled either.
+	 * WHY DRAWN AND NOT MERELY LOADED: a live render target is the expensive case, and an
+	 * <img> scrolled out of view or in a hidden panel would otherwise keep the whole view
+	 * republishing at engine rate for pixels nobody composites. RmlUi hands us every draw
+	 * of every frame anyway (RenderGeometry), so restricting the cost to what is on screen
+	 * is one set insert per external draw.
+	 *
+	 * THIS USED TO SAY the material tier could afford a looser, compile-scoped rule
+	 * "because a decorator that is not drawn is usually not compiled either". That premise
+	 * stopped holding when the refused mask-image capture began DISCARDING its draws
+	 * (DiscardDrawsInTopLayer): a `mask-image: shader(<key>)` is compiled at
+	 * GenerateElementData (DecoratorShader.cpp:27-35) and then never drawn, which is the
+	 * exact case the premise excluded. So the two tiers now share one rule -- see
+	 * MaterialShadersDrawnThisFrame below (bead VaCuus-kxa).
 	 */
 	TSet<FVaCuusTextureHandle> ExternalTexturesDrawnThisFrame;
+
+	/**
+	 * Which LiveMaterialShaders entries this frame actually DREW; cleared by BeginFrame().
+	 *
+	 * The material tier's half of the rule above, and the reason bMaterialLive reads this
+	 * rather than LiveMaterialShaders itself. Compiled-and-not-released is the wrong
+	 * question: a material decorator that is compiled but never drawn -- scrolled out of
+	 * view, in a hidden panel, or drawn into a layer whose capture was refused and whose
+	 * draws were taken back -- costs a forced replay every engine frame for pixels nothing
+	 * composites. LiveMaterialShaders still exists, and is still what says WHICH shaders
+	 * are materials; this says which of them reached the screen.
+	 */
+	TSet<FVaCuusShaderHandle> MaterialShadersDrawnThisFrame;
 
 	/**
 	 * GFrameCounter value at the last publish an external texture was re-sampled by — the

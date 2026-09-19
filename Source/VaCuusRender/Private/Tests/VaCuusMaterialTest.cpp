@@ -258,6 +258,8 @@ bool FVaCuusMaterialDecoratorTest::RunTest(const FString& Parameters)
  * asserted as DELTAS from whatever the process counter already reads — the registry is
  * process-wide and deliberately never resets (regression is the checkf'd bug).
  */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusMaterialMaskIdleTest, "VaCuus.Render.Decorator.MaterialMaskNeverDraws",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusStyleSetTest, "VaCuus.Render.Decorator.StyleSet",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
@@ -505,6 +507,171 @@ bool FVaCuusStyleSetTest::RunTest(const FString& Parameters)
 	FVaCuusStyleRegistry::UnregisterStyleSet(SetB);
 	TestEqual(TEXT("entry count is back where it started"),
 		FVaCuusStyleRegistry::GetNumEntries_GameThread(), E0);
+
+	return true;
+}
+
+/**
+ * A MATERIAL THAT IS COMPILED AND NEVER DRAWN MUST NOT HOLD THE VIEW OPEN (bead VaCuus-kxa).
+ *
+ * The freeze remedy above forces a publish per engine frame while a material is live, because a
+ * material's pixels change with nothing in the command stream to show for it. "Live" used to mean
+ * COMPILED AND NOT RELEASED, and the header said that was affordable "because a decorator that is
+ * not drawn is usually not compiled either".
+ *
+ * `mask-image: shader(<key>)` is the case that broke the premise. The mask decorator's data is
+ * built -- and its material compiled -- at GenerateElementData (DecoratorShader.cpp:27-35), and
+ * then RmlUi draws it into a layer it wants back as a filter. This renderer refuses that capture
+ * and TAKES THE DRAWS BACK (DiscardDrawsInTopLayer). So the shader is compiled, never reaches the
+ * screen, and under the old rule kept the view replaying at engine rate forever for pixels nothing
+ * composites. bMaterialLive now reads MaterialShadersDrawnThisFrame.
+ *
+ * The controls are what stop this passing for the wrong reason: the refusal has to have run, the
+ * material has to have been COMPILED (or the old predicate would not have fired either), and the
+ * same material drawn normally has to still force the republish -- otherwise this would be
+ * indistinguishable from having broken the remedy.
+ */
+bool FVaCuusMaterialMaskIdleTest::RunTest(const FString& Parameters)
+{
+	using namespace VaCuusMaterialTest;
+
+	IConsoleVariable* Master = IConsoleManager::Get().FindConsoleVariable(TEXT("vacuus.MaterialDecorators"));
+	IConsoleVariable* Remedy = IConsoleManager::Get().FindConsoleVariable(TEXT("vacuus.MaterialForcedRepublish"));
+	if (!TestNotNull(TEXT("vacuus.MaterialDecorators exists"), Master) ||
+		!TestNotNull(TEXT("vacuus.MaterialForcedRepublish exists"), Remedy))
+	{
+		return false;
+	}
+	const int32 SavedMaster = Master->GetInt();
+	const int32 SavedRemedy = Remedy->GetInt();
+	Master->Set(1, ECVF_SetByCode);
+	Remedy->Set(1, ECVF_SetByCode);
+
+	UVaCuusStyleSet* StyleSet = MakeStyleSet(TEXT("test-mat"), GTranslucentPath);
+	if (!TestNotNull(TEXT("committed MD_UI spike material loads"), StyleSet))
+	{
+		Master->Set(SavedMaster, ECVF_SetByCode);
+		Remedy->Set(SavedRemedy, ECVF_SetByCode);
+		return false;
+	}
+	TStrongObjectPtr<UVaCuusStyleSet> StyleSetRoot(StyleSet);
+	FVaCuusStyleRegistry::RegisterStyleSet(StyleSet);
+	FVaCuusStyleRegistry::InstallSnapshot(FVaCuusStyleRegistry::GetSnapshot_GameThread());
+
+	ON_SCOPE_EXIT
+	{
+		FVaCuusStyleRegistry::UnregisterStyleSet(StyleSetRoot.Get());
+		FlushRenderingCommands();
+		FVaCuusStyleRegistry::TickDeferredReleases_GameThread();
+		Master->Set(SavedMaster, ECVF_SetByCode);
+		Remedy->Set(SavedRemedy, ECVF_SetByCode);
+	};
+
+	FVaCuusEngine& Engine = FVaCuusEngine::Get();
+	if (!TestTrue(TEXT("Initialized"), Engine.Initialize()))
+	{
+		return false;
+	}
+	ON_SCOPE_EXIT
+	{
+		Engine.Shutdown();
+	};
+
+	FVaCuusRecordingRenderInterface Recorder;
+	const Rml::String ContextName("vacuus_material_mask_test");
+	Rml::Context* Context = Rml::CreateContext(ContextName, Rml::Vector2i(GViewSize.X, GViewSize.Y), &Recorder);
+	if (!TestNotNull(TEXT("Context"), Context))
+	{
+		return false;
+	}
+	ON_SCOPE_EXIT
+	{
+		Rml::RemoveContext(ContextName);
+	};
+
+	// The refusal logs once per recorder, and it is the point of the fixture.
+	AddExpectedMessagePlain(TEXT("SaveLayerAsMaskImage"), ELogVerbosity::Warning,
+		EAutomationExpectedMessageFlags::Contains, 1);
+
+	static const TCHAR* Masked =
+		TEXT("<rml><head><style>")
+		TEXT("body{display:block;width:100%;height:100%;}")
+		TEXT("div{display:block;position:absolute;width:200px;height:100px;background-color:#204080;}")
+		TEXT("#masked{left:40px;top:40px;mask-image:shader(test-mat);}")
+		TEXT("</style></head><body><div id=\"masked\"/></body></rml>");
+
+	Rml::ElementDocument* Document =
+		Context->LoadDocumentFromMemory(Rml::String(TCHAR_TO_UTF8(Masked)), "vacuus://material_mask.rml");
+	if (!TestNotNull(TEXT("Document"), Document))
+	{
+		return false;
+	}
+	Document->Show();
+
+	const TUniquePtr<FVaCuusCommandBuffer> First = RecordContextFrame(Recorder, Context);
+	if (!TestNotNull(TEXT("The first frame publishes (resource traffic)"), First.Get()))
+	{
+		return false;
+	}
+
+	// CONTROL 1: the material really was compiled. Without this the idle assertion below would
+	// also hold for a fixture where the style key never resolved.
+	FVaCuusShaderHandle MaterialHandle = 0;
+	for (const TPair<FVaCuusShaderHandle, FVaCuusShaderDesc>& Pair : First->NewShaders)
+	{
+		if (Pair.Value.Kind == EVaCuusShaderKind::Material)
+		{
+			MaterialHandle = Pair.Key;
+		}
+	}
+	if (!TestTrue(TEXT("the mask's material compiled -- the old predicate would have fired"), MaterialHandle != 0))
+	{
+		return false;
+	}
+
+	// CONTROL 2: the refusal ran, and took the draw with it.
+	TestTrue(TEXT("the mask capture was refused"), Recorder.GetUnsupportedTally().SaveLayerAsMaskImageCalls > 0);
+	int32 MaterialDraws = 0;
+	for (const FVaCuusCommand& Command : First->Commands)
+	{
+		MaterialDraws += (Command.Type == EVaCuusCommandType::DrawShader && Command.Shader == MaterialHandle) ? 1 : 0;
+	}
+	TestEqual(TEXT("and no DrawShader for it survived into the buffer"), MaterialDraws, 0);
+
+	// THE ASSERTION. Four engine frames of identical content: a material that never reaches the
+	// screen must not reopen the idle gate. Before this bead every one of these published.
+	const uint64 SkippedBefore = Recorder.GetNumFramesSkipped();
+	for (int32 Frame = 0; Frame < 4; ++Frame)
+	{
+		++GFrameCounter;
+		TestNull(TEXT("a compiled-but-never-drawn material leaves the idle gate in charge"),
+			RecordContextFrame(Recorder, Context).Get());
+	}
+	TestEqual(TEXT("all four were withheld"), int32(Recorder.GetNumFramesSkipped() - SkippedBefore), 4);
+
+	// CONTROL 3, and the one that stops this from passing by having broken the remedy: the SAME
+	// material, drawn the ordinary way, still forces a publish on the next engine frame.
+	Document->Close();
+	RecordContextFrame(Recorder, Context);
+
+	static const TCHAR* Drawn =
+		TEXT("<rml><head><style>")
+		TEXT("body{display:block;width:100%;height:100%;}")
+		TEXT("div{display:block;position:absolute;width:200px;height:100px;}")
+		TEXT("#mat{left:40px;top:40px;decorator:shader(test-mat);}")
+		TEXT("</style></head><body><div id=\"mat\"/></body></rml>");
+
+	Rml::ElementDocument* DrawnDoc =
+		Context->LoadDocumentFromMemory(Rml::String(TCHAR_TO_UTF8(Drawn)), "vacuus://material_drawn.rml");
+	if (!TestNotNull(TEXT("the drawn-material document loads"), DrawnDoc))
+	{
+		return false;
+	}
+	DrawnDoc->Show();
+	RecordContextFrame(Recorder, Context);
+	++GFrameCounter;
+	TestNotNull(TEXT("a material that IS drawn still forces the republish"),
+		RecordContextFrame(Recorder, Context).Get());
 
 	return true;
 }

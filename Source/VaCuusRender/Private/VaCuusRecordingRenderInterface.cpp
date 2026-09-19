@@ -1287,6 +1287,15 @@ void FVaCuusRecordingRenderInterface::RenderShader(Rml::CompiledShaderHandle Sha
 	Command.Shader = FVaCuusShaderHandle(Shader);
 	Command.Texture = FVaCuusTextureHandle(Texture);
 	Command.Translation = FVector2f(Translation.x, Translation.y);
+
+	// THE LIVENESS SIGNAL, the material tier's copy of RenderGeometry's (:275-281) and for
+	// the same reason: the forced republish is owed to what this frame DREW, not to what is
+	// merely compiled. One set lookup per shader draw, and a miss is the normal case --
+	// gradients are not materials and are not in this table.
+	if (LiveMaterialShaders.Contains(Command.Shader))
+	{
+		MaterialShadersDrawnThisFrame.Add(Command.Shader);
+	}
 }
 
 void FVaCuusRecordingRenderInterface::ReleaseShader(Rml::CompiledShaderHandle Shader)
@@ -1397,6 +1406,7 @@ void FVaCuusRecordingRenderInterface::DiscardDrawsInTopLayer()
 	// arrays, not in Commands, so no creation or release is lost either.
 	TArray<FVaCuusCommand>& Commands = GetPending().Commands;
 	bool bDiscardedExternalDraw = false;
+	bool bDiscardedMaterialDraw = false;
 	int32 Kept = OpenLayerCommandStarts.Last();
 	for (int32 Index = Kept; Index < Commands.Num(); ++Index)
 	{
@@ -1405,6 +1415,7 @@ void FVaCuusRecordingRenderInterface::DiscardDrawsInTopLayer()
 		{
 			bDiscardedExternalDraw |= (Command.Type == EVaCuusCommandType::DrawGeometry && Command.Texture != 0 &&
 									   ExternalTextures.Contains(Command.Texture));
+			bDiscardedMaterialDraw |= (Command.Type == EVaCuusCommandType::DrawShader && LiveMaterialShaders.Contains(Command.Shader));
 			continue;
 		}
 
@@ -1425,14 +1436,10 @@ void FVaCuusRecordingRenderInterface::DiscardDrawsInTopLayer()
 	// asks for its texture every frame, and RmlUi reloads an evicted one on the next ask
 	// (TextureDatabase.cpp:117-129), so evicting it would only buy a reload.
 	//
-	// THE MATERIAL TERM IS NOT CLOSED HERE, and deliberately. LiveMaterialShaders is COMPILE-
-	// scoped, not draw-scoped — added at CompileShader (:1241), removed only at ReleaseShader
-	// (:1306), read as bMaterialLive (:1827) — which is the divergence the header already names
-	// at ExternalTexturesDrawnThisFrame. A `mask-image: shader(<key>)` compiles its material at
-	// GenerateElementData (DecoratorShader.cpp:27-35), so discarding its draw leaves the view
-	// forced-republishing every engine frame for pixels that no longer exist — a republish this
-	// discard turned from justified into pointless. Bead VaCuus-kxa owns it: draw-scoping that
-	// table moves the M5 material tier's idle gate for EVERY decorator, not just a masked one.
+	// THE MATERIAL TERM IS CLOSED THE SAME WAY, below. It was not, once: bMaterialLive read
+	// LiveMaterialShaders, which is COMPILE-scoped, so a `mask-image: shader(<key>)` -- compiled
+	// at GenerateElementData (DecoratorShader.cpp:27-35) and then discarded here -- kept the view
+	// forced-republishing every engine frame for pixels that no longer existed. Bead VaCuus-kxa.
 	if (bDiscardedExternalDraw)
 	{
 		ExternalTexturesDrawnThisFrame.Reset();
@@ -1441,6 +1448,20 @@ void FVaCuusRecordingRenderInterface::DiscardDrawsInTopLayer()
 			if (Command.Type == EVaCuusCommandType::DrawGeometry && Command.Texture != 0 && ExternalTextures.Contains(Command.Texture))
 			{
 				ExternalTexturesDrawnThisFrame.Add(Command.Texture);
+			}
+		}
+	}
+
+	// And the same for the material tier. This is the half that makes `mask-image: shader(<key>)`
+	// stop forcing a replay per engine frame for a draw that no longer exists.
+	if (bDiscardedMaterialDraw)
+	{
+		MaterialShadersDrawnThisFrame.Reset();
+		for (const FVaCuusCommand& Command : Commands)
+		{
+			if (Command.Type == EVaCuusCommandType::DrawShader && LiveMaterialShaders.Contains(Command.Shader))
+			{
+				MaterialShadersDrawnThisFrame.Add(Command.Shader);
 			}
 		}
 	}
@@ -1605,7 +1626,8 @@ void FVaCuusRecordingRenderInterface::BeginFrame(FIntPoint ViewSize)
 
 	// The liveness set is per FRAME, so it is emptied here and refilled by whatever this
 	// frame actually draws. See ExternalTexturesDrawnThisFrame.
-	ExternalTexturesDrawnThisFrame.Reset();
+ExternalTexturesDrawnThisFrame.Reset();
+	MaterialShadersDrawnThisFrame.Reset();
 
 	// Top of the frame, before any RmlUi call: a payload installed here is part of
 	// this frame's resource delta, so it publishes with this frame. KEPT even though the
@@ -1813,9 +1835,13 @@ TUniquePtr<FVaCuusCommandBuffer> FVaCuusRecordingRenderInterface::EndFrameAndPub
 	// cannot see — the composite only samples the RT (VaCuusSlateElement.cpp:174-231)
 	// and the RT is written only in this publish-gated replay branch, so a time-animated
 	// or MID-driven material would freeze on whatever publish last ran. PER VIEW: the
-	// term is this recorder's own live-shader table (LiveMaterialShaders — compiled
-	// Material descs not yet released), so a material HUD in one view cannot reopen the
-	// idle row for every other view the way the spike's process-global did. CLAMPED TO
+	// term is this recorder's own DRAWN-material set (MaterialShadersDrawnThisFrame), so a
+	// material HUD in one view cannot reopen the idle row for every other view the way the
+	// spike's process-global did. DRAWN, NOT MERELY COMPILED, and that is a correction: it
+	// read LiveMaterialShaders (compiled Material descs not yet released) until bead
+	// VaCuus-kxa, which costs a forced replay per engine frame for a decorator that is
+	// compiled and never reaches the screen -- a scrolled-away panel, or a mask whose
+	// capture was refused and whose draws were taken back. CLAMPED TO
 	// ENGINE RATE: at most one forced publish per GFrameCounter tick — the composite
 	// samples the RT once per engine frame, so a second replay inside one engine frame
 	// is pure cost (the spike's own record prices exactly this and says clamp, spec
@@ -1824,7 +1850,7 @@ TUniquePtr<FVaCuusCommandBuffer> FVaCuusRecordingRenderInterface::EndFrameAndPub
 	// staleness by one tick costs one deferred publish, never a wrong one.
 	// vacuus.MaterialForcedRepublish is the kill-switch — off, the freeze is observable.
 	const uint64 EngineFrame = GFrameCounter;
-	const bool bMaterialLive = LiveMaterialShaders.Num() > 0;
+	const bool bMaterialLive = MaterialShadersDrawnThisFrame.Num() > 0;
 	const bool bMaterialForcedRepublish = bMaterialLive && VaCuusMaterialDraw::IsForcedRepublishEnabled() &&
 		EngineFrame != LastMaterialRepublishFrame;
 
