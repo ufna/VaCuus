@@ -384,7 +384,26 @@ private:
 	 */
 	FVaCuusJsElementHandle* GetHandle(JSValueConst Value) const;
 
-	/** GetHandle + the dead-check: the live element, or null. EVERY method opens with this. */
+	/**
+	 * GetHandle + the dead-check: the live element, or null. EVERY method opens with this.
+	 *
+	 * AND ITS RESULT MUST NOT SURVIVE AN ARGUMENT CONVERSION. This is a raw pointer; the
+	 * handle's ObserverPtr is what notices a destroyed element, and the raw copy does not.
+	 * Converting any argument can run script -- ToRmlString is a bare JS_ToCStringLen, so it
+	 * runs a toString; JS_GetProperty on an options object runs a getter; JS_ToFloat64 on an
+	 * object runs valueOf -- and script reached that way can destroy the receiver, because the
+	 * facade's remove() DESTROYS rather than detaches (RemoveThunk: Handle->Owned.reset(), or
+	 * RemoveChild's returned ElementPtr discarded, which RmlUi documents as destroying at
+	 * Element.h:522-523). The memory goes back to RmlUi's element pool
+	 * (ElementInstancer.cpp:25-28), so the symptom is a write into a recycled element rather
+	 * than a reliable crash.
+	 *
+	 * So: convert first, then call this AGAIN and re-check for null, before touching the
+	 * element. Every thunk that converts an argument does this, and each one is pinned by a
+	 * test that destroys the receiver from inside the conversion
+	 * (VaCuus.Js.Dom.ReceiverDestroyedMidCall, VaCuus.Js.Event.Dispatch sections G and H).
+	 * Bead VaCuus-9o6 has the audit that found all ten sites.
+	 */
 	Rml::Element* GetLiveElement(JSValueConst Value) const;
 
 	//~ Document prototype (createElement / createElementNS / createTextNode /

@@ -718,6 +718,16 @@ JSValue FVaCuusJsViewContext::AddEventListenerThunk(JSContext* Ctx, JSValueConst
 		return JS_EXCEPTION;
 	}
 
+	// RE-ACQUIRED for the reason at GetLiveElement: both conversions above run script (a toString
+	// on the type, a getter on the options object). Here the stale pointer would not only be
+	// written through at AddEventListener below -- it would be STORED as the registry key and
+	// outlive the call.
+	Element = Self->GetLiveElement(This);
+	if (Element == nullptr)
+	{
+		return JS_UNDEFINED;
+	}
+
 	FVaCuusJsListenerKey Key;
 	Key.Element = Element;
 	Key.Type = UTF8_TO_TCHAR(Type.c_str());
@@ -771,6 +781,14 @@ JSValue FVaCuusJsViewContext::RemoveEventListenerThunk(JSContext* Ctx, JSValueCo
 	if (!ReadCaptureFlag(Ctx, Argc, Argv, bCapture))
 	{
 		return JS_EXCEPTION;
+	}
+
+	// RE-ACQUIRED, same reason: the type's toString and the options getter both ran above. The
+	// stale pointer would be looked up as a registry key and then written through below.
+	Element = Self->GetLiveElement(This);
+	if (Element == nullptr)
+	{
+		return JS_UNDEFINED;
 	}
 
 	FVaCuusJsListenerKey Key;
@@ -861,6 +879,15 @@ JSValue FVaCuusJsViewContext::DispatchEventThunk(JSContext* Ctx, JSValueConst Th
 	// slots forever (the addEventListener comment has the arithmetic). The
 	// return is RmlUi's "still propagating"; with preventDefault mapped onto
 	// stopPropagation this is exactly DOM's "false if canceled".
+	// RE-ACQUIRED for the reason at GetLiveElement: ToRmlString on the type ran a toString and
+	// the loop above ran a getter per key, either of which can destroy this element. Dispatch
+	// WRITES through it -- it runs the element's own dispatcher and its listeners.
+	Element = Self->GetLiveElement(This);
+	if (Element == nullptr)
+	{
+		return JS_FALSE;	// destroyed mid-call: the same bool-shaped no-op as a dead handle
+	}
+
 	const bool bPropagating = Element->DispatchEvent(Type, Parameters);
 	return JS_NewBool(Ctx, bPropagating);
 }

@@ -201,6 +201,44 @@ bool FVaCuusJsEventDispatchTest::RunTest(const FString& Parameters)
 			"[stash.type, stash.target === lone].join('|')"),
 		FString(TEXT("vacuus_stash|true")));
 
+	// G and H: THE RECEIVER CAN BE DESTROYED BY THE CALL'S OWN ARGUMENTS, and dispatch runs
+	// script at TWO points before it would use the element -- ToRmlString on the type argument
+	// (JS_ToCStringLen runs a toString) and the parameter object's getters. The facade's remove()
+	// DESTROYS rather than detaches (RemoveThunk: Handle->Owned.reset(), or RemoveChild's returned
+	// ElementPtr discarded), so a pointer taken before either point is freed memory afterwards --
+	// and dispatch WRITES through it, unlike a scroll. The handle's ObserverPtr is what notices,
+	// which is why the answer is to resolve again rather than to cache.
+	//
+	// Each control proves its own script ran: without `ranA`/`ranB` a thunk that never reached the
+	// getter at all would pass these by accident.
+	TestEqual(TEXT("a params getter that destroys the receiver leaves dispatch the dead-handle no-op"),
+		Rig.Eval(ViewId,
+			"globalThis.ranA = false;"
+			"globalThis.victimA = document.createElement('div');"
+			"wrap.appendChild(victimA);"
+			"const rA = victimA.dispatchEvent('vacuus_uaf_a', {get boom(){ ranA = true; victimA.remove(); return 1; }});"
+			"[String(rA), String(ranA)].join('|')"),
+		FString(TEXT("false|true")));
+
+	TestEqual(TEXT("a toString on the type that destroys the receiver does the same"),
+		Rig.Eval(ViewId,
+			"globalThis.ranB = false;"
+			"globalThis.victimB = document.createElement('div');"
+			"wrap.appendChild(victimB);"
+			"const rB = victimB.dispatchEvent({toString(){ ranB = true; victimB.remove(); return 'vacuus_uaf_b'; }});"
+			"[String(rB), String(ranB)].join('|')"),
+		FString(TEXT("false|true")));
+
+	// The control for the pair: an ordinary dispatch with an ordinary getter still reaches its
+	// listener and still returns true, so the re-resolve above cannot be a blanket refusal.
+	TestEqual(TEXT("a params getter that does NOT destroy anything still dispatches"),
+		Rig.Eval(ViewId,
+			"globalThis.sawC = null;"
+			"lone.addEventListener('vacuus_uaf_c', function(ev){ sawC = ev.params.n; });"
+			"const rC = lone.dispatchEvent('vacuus_uaf_c', {get n(){ return 7; }});"
+			"[String(rC), String(sawC)].join('|')"),
+		FString(TEXT("true|7")));
+
 	TestEqual(TEXT("exactly the one deliberate error"), FWrappedDomHost::Inner->GetRuntime()->GetNumErrors(), uint64(1));
 	return true;
 }

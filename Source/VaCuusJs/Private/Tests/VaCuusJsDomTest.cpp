@@ -27,6 +27,8 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusJsDomScrollIntoViewTest, "VaCuus.Js.Dom.
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusJsDomTwoViewIsolationTest, "VaCuus.Js.Dom.TwoViewIsolation",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusJsDomReceiverDestroyedTest, "VaCuus.Js.Dom.ReceiverDestroyedMidCall",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusJsDomCacheHygieneTest, "VaCuus.Js.Dom.CacheHygiene",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
@@ -687,6 +689,165 @@ bool FVaCuusJsDomCacheHygieneTest::RunTest(const FString& Parameters)
 	// gate is parked at the ceiling, by this test's own design.
 	Rig.RunOnUI([]() { JS_RunGC(FWrappedDomHost::Inner->GetRuntime()->GetRuntime()); });
 	TestEqual(TEXT("finalizer path: the collection returned the cache to baseline"), CacheSize(), 2);
+
+	TestEqual(TEXT("no JS error anywhere in the run"), FWrappedDomHost::Inner->GetRuntime()->GetNumErrors(), uint64(0));
+	return true;
+}
+
+
+/**
+ * EVERY THUNK THAT CONVERTS AN ARGUMENT CAN HAVE ITS RECEIVER DESTROYED BEFORE IT USES IT.
+ *
+ * ToRmlString is a bare JS_ToCStringLen, so it runs the value's toString; the facade's remove()
+ * DESTROYS rather than detaches. A raw Rml::Element* taken before the conversion is therefore
+ * freed memory afterwards, while the handle's ObserverPtr would have noticed. See GetLiveElement.
+ *
+ * THE OBSERVABLE, because a setter returns undefined either way and freed memory does not
+ * announce itself: RmlUi hands destroyed elements back to a pool
+ * (ElementInstancer.cpp:25-28, pool_element.DestroyAndDeallocate). So the toString destroys the
+ * receiver AND THEN ALLOCATES A REPLACEMENT, which takes the slot just freed. A write through the
+ * stale pointer lands in the REPLACEMENT, where script can read it back. Post-fix the replacement
+ * is untouched; pre-fix it carries the write meant for a dead element.
+ *
+ * The canary is asserted to exist and to be reachable before each case, so a case cannot pass by
+ * the replacement having failed to allocate.
+ */
+bool FVaCuusJsDomReceiverDestroyedTest::RunTest(const FString& Parameters)
+{
+	using namespace VaCuusJsDomTest;
+
+	FDomTestRig Rig;
+	const FDomTestRig::EBoot Boot = Rig.Boot(*this);
+	if (Boot != FDomTestRig::EBoot::Ok)
+	{
+		return Boot == FDomTestRig::EBoot::Skip;
+	}
+
+	static const TCHAR* GDocument = TEXT(R"(<rml>
+<head><style>body { display: block; } div { display: block; }</style></head>
+<body><div id="wrap"/></body>
+</rml>)");
+
+	FDomProbeHost* Probe = nullptr;
+	const uint32 ViewId = Rig.AddViewWithDocument(Probe, TEXT("vacuus_jsdom_uaf"), GDocument);
+
+	bool bBound = false;
+	Rig.RunOnUI([&bBound, Probe, ViewId]()
+		{
+			Rml::ElementDocument* Document = Probe->GetDocument();
+			bBound = Document != nullptr;
+			FWrappedDomHost::Inner->BindDocumentForTest(ViewId, Document);
+		});
+	if (!TestTrue(TEXT("the document loaded and bound"), bBound))
+	{
+		return false;
+	}
+
+	// One helper per case: make a victim, and a toString that kills it and mints the replacement
+	// that inherits its pooled slot. `probe` reads whatever the stale write would have landed on.
+	Rig.Eval(ViewId,
+		"globalThis.wrap = document.getElementById('wrap');"
+		"globalThis.mk = function(body, withSpan) {"
+		"  globalThis.victim = document.createElement('div');"
+		"  wrap.appendChild(victim);"
+		"  globalThis.canary = null;"
+		"  const killer = { toString() {"
+		"      victim.remove();"
+		"      canary = document.createElement('div');"
+		"      wrap.appendChild(canary);"
+		"      if (withSpan) { canary.appendChild(document.createElement('span')); }"
+		"      return body; } };"
+		"  return killer;"
+		"};"
+		"'ok'");
+
+	const auto Case = [&Rig, ViewId, this](const TCHAR* What, const char* Script, const TCHAR* Expected)
+	{
+		const FString Got = Rig.Eval(ViewId, Script);
+		TestEqual(What, Got, FString(Expected));
+	};
+
+	// setAttribute: the name's toString kills the receiver, the value is written afterwards.
+	Case(TEXT("setAttribute's name toString cannot write into the recycled slot"),
+		"(() => { const k = mk('id');"
+		"victim.setAttribute(k, 'boom');"
+		"return [canary !== null, canary.getAttribute('id')].join('|'); })()",
+		TEXT("true|"));
+
+	// The id setter.
+	Case(TEXT("the id setter's toString cannot write into the recycled slot"),
+		"(() => { const k = mk('boom');"
+		"victim.id = k;"
+		"return [canary !== null, canary.id].join('|'); })()",
+		TEXT("true|"));
+
+	// innerRML: the worst of the writes -- it parses RML into whatever it is pointed at.
+	Case(TEXT("the innerRML setter's toString cannot build a subtree in the recycled slot"),
+		"(() => { const k = mk('<div id=\"planted\"/>');"
+		"victim.innerRML = k;"
+		"return [canary !== null, canary.innerRML.length].join('|'); })()",
+		TEXT("true|0"));
+
+	// classList.
+	Case(TEXT("classList.add's toString cannot class the recycled slot"),
+		"(() => { const k = mk('hot');"
+		"victim.classList.add(k);"
+		"return [canary !== null, canary.classList.contains('hot')].join('|'); })()",
+		TEXT("true|false"));
+
+	// style, both conversion points: the property name and the value.
+	Case(TEXT("style.setProperty's name toString cannot style the recycled slot"),
+		"(() => { const k = mk('width');"
+		"victim.style.setProperty(k, '42px');"
+		"return [canary !== null, String(canary.style.width)].join('|'); })()",
+		TEXT("true|auto"));
+
+	Case(TEXT("style.setProperty's value toString cannot style the recycled slot"),
+		"(() => { const k = mk('42px');"
+		"victim.style.setProperty('width', k);"
+		"return [canary !== null, String(canary.style.width)].join('|'); })()",
+		TEXT("true|auto"));
+
+	// querySelector only READS, so the canary cannot show it; its observable is the answer
+	// shape. A destroyed receiver must read as a dead handle, which is null.
+	Case(TEXT("querySelector's toString cannot search the recycled slot's subtree"),
+		"(() => { const k = mk('span', true);"
+		"return String(victim.querySelector(k)); })()",
+		TEXT("null"));
+
+	// The text-node setter, whose recycled slot is another text node.
+	Case(TEXT("the text data setter's toString cannot write into the recycled slot"),
+		"(() => { globalThis.tv = document.createTextNode('old');"
+		"wrap.appendChild(tv);"
+		"globalThis.tc = null;"
+		"const k = { toString() { tv.remove();"
+		"                         tc = document.createTextNode('untouched');"
+		"                         wrap.appendChild(tc);"
+		"                         return 'boom'; } };"
+		"tv.data = k;"
+		"return [tc !== null, tc.data].join('|'); })()",
+		TEXT("true|untouched"));
+
+	// The attributes getter is the ODD ONE OUT: what would dangle is the range-for's iterator
+	// into the element's attribute map, not just the pointer, so the fix is a snapshot taken
+	// before any JS runs rather than a re-acquire. Script gets in through JS_SetPropertyStr
+	// walking the prototype chain to a setter planted on Object.prototype.
+	Case(TEXT("the attributes getter reports the victim's own attributes, not the recycled slot's"),
+		"(() => { globalThis.av = document.createElement('div');"
+		"av.setAttribute('mine', 'yes');"
+		"wrap.appendChild(av);"
+		"let fired = false;"
+		"Object.defineProperty(Object.prototype, 'name', { configurable: true,"
+		"  set(v) { if (fired) return; fired = true;"
+		"           av.remove();"
+		"           const c = document.createElement('div');"
+		"           c.setAttribute('theirs', 'no');"
+		"           wrap.appendChild(c); } });"
+		"let out;"
+		"try { out = av.attributes.map(a => a.value).join(','); }"
+		"finally { delete Object.prototype.name; }"
+		"return [fired, out].join('|'); })()",
+		TEXT("true|yes"));
 
 	TestEqual(TEXT("no JS error anywhere in the run"), FWrappedDomHost::Inner->GetRuntime()->GetNumErrors(), uint64(0));
 	return true;

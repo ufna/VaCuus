@@ -728,6 +728,16 @@ JSValue FVaCuusJsViewContext::DocGetElementByIdThunk(JSContext* Ctx, JSValueCons
 		return JS_EXCEPTION;
 	}
 
+	// RE-ACQUIRED: the conversion above runs the value's toString, and script reached that
+	// way can destroy this element -- see GetLiveElement. The pointer taken before it would
+	// be freed memory, and RmlUi pools elements, so the use would land on whatever it
+	// handed out next.
+	Doc = Self->GetLiveElement(This);
+	if (Doc == nullptr)
+	{
+		return JS_NULL;
+	}
+
 	// Element::GetElementById searches from the OWNER DOCUMENT's root
 	// (Element.cpp:1512-1528) -- called on the document wrapper that root is the
 	// document itself, giving the DOM's whole-tree semantics for free.
@@ -1024,6 +1034,16 @@ JSValue FVaCuusJsViewContext::QueryThunk(JSContext* Ctx, JSValueConst This, int 
 		return JS_EXCEPTION;
 	}
 
+	// RE-ACQUIRED: the conversion above runs the value's toString, and script reached that
+	// way can destroy this element -- see GetLiveElement. The pointer taken before it would
+	// be freed memory, and RmlUi pools elements, so the use would land on whatever it
+	// handed out next.
+	Element = Self->GetLiveElement(This);
+	if (Element == nullptr)
+	{
+		return Magic == QuerySelectorAll ? JS_NewArray(Ctx) : JS_NULL;
+	}
+
 	switch (Magic)
 	{
 		case QuerySelector:
@@ -1087,6 +1107,16 @@ JSValue FVaCuusJsViewContext::AttributeThunk(JSContext* Ctx, JSValueConst This, 
 		return JS_EXCEPTION;
 	}
 
+	// RE-ACQUIRED: the conversion above runs the value's toString, and script reached that
+	// way can destroy this element -- see GetLiveElement. The pointer taken before it would
+	// be freed memory, and RmlUi pools elements, so the use would land on whatever it
+	// handed out next.
+	Element = Self->GetLiveElement(This);
+	if (Element == nullptr)
+	{
+		return Magic == AttrGet ? JS_NULL : JS_UNDEFINED;
+	}
+
 	switch (Magic)
 	{
 		case AttrGet:
@@ -1109,6 +1139,15 @@ JSValue FVaCuusJsViewContext::AttributeThunk(JSContext* Ctx, JSValueConst This, 
 			{
 				return JS_EXCEPTION;
 			}
+
+			// RE-ACQUIRED AGAIN: the VALUE's toString is a second window, and it runs after the
+			// re-acquire above.
+			Element = Self->GetLiveElement(This);
+			if (Element == nullptr)
+			{
+				return JS_UNDEFINED;
+			}
+
 			// Writes the map, then notifies OnAttributeChange synchronously with
 			// the one changed entry (Element.inl:15-23) -- so id, class and style
 			// attribute writes take their built-in effects immediately.
@@ -1184,6 +1223,16 @@ JSValue FVaCuusJsViewContext::StringSetterThunk(JSContext* Ctx, JSValueConst Thi
 	if (!ToRmlString(Ctx, Value, Text))
 	{
 		return JS_EXCEPTION;
+	}
+
+	// RE-ACQUIRED: the conversion above runs the value's toString, and script reached that
+	// way can destroy this element -- see GetLiveElement. The pointer taken before it would
+	// be freed memory, and RmlUi pools elements, so the use would land on whatever it
+	// handed out next.
+	Element = Self->GetLiveElement(This);
+	if (Element == nullptr)
+	{
+		return JS_UNDEFINED;
 	}
 
 	switch (Magic)
@@ -1383,8 +1432,23 @@ JSValue FVaCuusJsViewContext::AttributesGetterThunk(JSContext* Ctx, JSValueConst
 		return Array;
 	}
 
+	// SNAPSHOTTED BEFORE ANY JS RUNS, and a re-acquire would NOT be enough here. JS_SetPropertyStr
+	// below walks the prototype chain, so a setter installed on Object.prototype is script running
+	// mid-loop -- and script can destroy this element (see GetLiveElement). Unlike the other
+	// thunks, what would dangle is not just the pointer but the range-for's ITERATOR into the
+	// element's own attribute map, which the destruction invalidates. Copying the pairs out first
+	// costs one small allocation and removes the window entirely: the loop that touches JS walks
+	// the copy and never dereferences Element again.
+	TArray<TPair<Rml::String, Rml::String>> Attributes;
+	const Rml::ElementAttributes& Live = Element->GetAttributes();
+	Attributes.Reserve(static_cast<int32>(Live.size()));
+	for (const auto& Attribute : Live)
+	{
+		Attributes.Emplace(Attribute.first, Attribute.second.Get<Rml::String>());
+	}
+
 	uint32 Index = 0;
-	for (const auto& Attribute : Element->GetAttributes())
+	for (const TPair<Rml::String, Rml::String>& Attribute : Attributes)
 	{
 		JSValue Pair = JS_NewObject(Ctx);
 		if (JS_IsException(Pair))
@@ -1392,8 +1456,8 @@ JSValue FVaCuusJsViewContext::AttributesGetterThunk(JSContext* Ctx, JSValueConst
 			JS_FreeValue(Ctx, Array);
 			return Pair;
 		}
-		JS_SetPropertyStr(Ctx, Pair, "name", NewRmlString(Ctx, Attribute.first));
-		JS_SetPropertyStr(Ctx, Pair, "value", NewRmlString(Ctx, Attribute.second.Get<Rml::String>()));
+		JS_SetPropertyStr(Ctx, Pair, "name", NewRmlString(Ctx, Attribute.Key));
+		JS_SetPropertyStr(Ctx, Pair, "value", NewRmlString(Ctx, Attribute.Value));
 		JS_DefinePropertyValueUint32(Ctx, Array, Index++, Pair, JS_PROP_C_W_E);	   // takes Pair
 	}
 	return Array;
@@ -1441,6 +1505,17 @@ JSValue FVaCuusJsViewContext::TextDataSetterThunk(JSContext* Ctx, JSValueConst T
 	if (!ToRmlString(Ctx, Value, Text))
 	{
 		return JS_EXCEPTION;
+	}
+
+	// RE-ACQUIRED: the conversion above runs the value's toString, and script reached that
+	// way can destroy this element -- see GetLiveElement. The pointer taken before it would
+	// be freed memory, and RmlUi pools elements, so the use would land on whatever it
+	// handed out next. IsTextElement is re-checked with it:
+	// the slot could now hold a element of another kind entirely.
+	Element = Self->GetLiveElement(This);
+	if (Element == nullptr || !IsTextElement(Element))
+	{
+		return JS_UNDEFINED;
 	}
 
 	// THE SAME BYPASS AS createTextNode (DocCreateTextNodeThunk's comment):
@@ -1513,6 +1588,16 @@ JSValue FVaCuusJsViewContext::ClassListOpThunk(
 	if (!ToRmlString(Ctx, Argv[0], Name))
 	{
 		return JS_EXCEPTION;
+	}
+
+	// RE-ACQUIRED: the conversion above runs the value's toString, and script reached that
+	// way can destroy this element -- see GetLiveElement. The pointer taken before it would
+	// be freed memory, and RmlUi pools elements, so the use would land on whatever it
+	// handed out next.
+	Element = Self->GetLiveElement(FuncData[0]);
+	if (Element == nullptr)
+	{
+		return (Magic == ClassToggle || Magic == ClassContains) ? JS_FALSE : JS_UNDEFINED;
 	}
 
 	// NEVER THROUGH THE CLASS ATTRIBUTE, in either direction. SetClass mutates
@@ -1618,6 +1703,16 @@ JSValue FVaCuusJsViewContext::StyleOpThunk(
 	// camelCase name -- MapStyleName's comment has the E-P4 contract.
 	Name = MapStyleName(Name);
 
+	// RE-ACQUIRED: the conversion above runs the value's toString, and script reached that
+	// way can destroy this element -- see GetLiveElement. The pointer taken before it would
+	// be freed memory, and RmlUi pools elements, so the use would land on whatever it
+	// handed out next.
+	Element = Self->GetLiveElement(FuncData[0]);
+	if (Element == nullptr)
+	{
+		return Magic == StyleGet ? JS_NULL : (Magic == StyleSet ? JS_FALSE : JS_UNDEFINED);
+	}
+
 	switch (Magic)
 	{
 		case StyleGet:
@@ -1648,6 +1743,14 @@ JSValue FVaCuusJsViewContext::StyleOpThunk(
 			{
 				return JS_EXCEPTION;
 			}
+
+			// RE-ACQUIRED AGAIN: the VALUE's toString is a second window.
+			Element = Self->GetLiveElement(FuncData[0]);
+			if (Element == nullptr)
+			{
+				return JS_FALSE;
+			}
+
 			// The bool is PARSE SUCCESS (Element.h:176-177); a failure also logs
 			// RmlUi's own "Syntax error parsing inline property declaration"
 			// warning (Element.cpp:591-598). Plain assignment through the proxy
