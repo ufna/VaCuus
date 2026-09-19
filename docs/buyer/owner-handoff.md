@@ -116,6 +116,12 @@ each new version's upload, not a first-time-only sequence. The package already I
 upload shape (976 files, 13 MB — dry-run §7, run 3, after the `-/Binaries/...`
 `-/Intermediate/...` filter fix). Steps:
 
+0. `bash Tools/strict_includes_check.sh <engine-root> <host>.uproject` — the cheap
+   strict leg, and the one worth running **inside** the milestone rather than here. Step 2
+   below carries `-StrictIncludes` too, but it costs ~45 min and only runs at package
+   time, which is how two non-unity breaks reached an outside contributor before they
+   reached us (bead `VaCuus-y1z`). This one is minutes, compiles the three modules that
+   are not already `NoPCHs`, on both targets, and touches no tracked file.
 1. Clean clone (no `.git`, no `.beads`, no `node_modules` — verify the esbuild ELF
    is absent; `.uasset` files real packages, not LFS pointers).
 2. `RunUAT BuildPlugin -Plugin=<clone>/VaCuus.uplugin -Package=<out> -StrictIncludes`
