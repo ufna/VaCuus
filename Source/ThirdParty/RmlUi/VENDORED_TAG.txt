@@ -6,7 +6,7 @@ commit:   0ae381e00d7426762bb5ed897973366358b16642
 vendored: 2026-07-29
 
 VENDORED_SHA.txt NEXT TO THIS FILE HOLDS THAT SHA AND NOTHING ELSE, and must keep
-holding nothing else: Tools/gen_rcss_matrix.py:34,134 reads the whole file and
+holding nothing else: Tools/gen_rcss_matrix.py:43,180 reads the whole file and
 .strip()s it into the generated docs/buyer/rcss-matrix.md header. This file is the
 human half -- what is here, and the local patches. Read both before re-vendoring.
 
@@ -41,9 +41,9 @@ Variant (Include/RmlUi/Core/Property.h:41-45), which does not carry the unit -- 
 is a separate member (Property.h:50-51). So the property parsed out of "100px" reads
 back as "100" and never compares equal to the string that produced it. Every dirty of
 the bound variable therefore called Element::SetProperty with an unchanged value, and
-SetProperty does not compare either (ElementStyle.cpp:606-618 -> PropertyDictionary
+SetProperty does not compare either (ElementStyle.cpp:642-654 -> PropertyDictionary
 ::SetProperty + DirtyProperty, unconditional), nor does ComputeValues, which returns
-the DIRTY set rather than a changed-value set (ElementStyle.cpp:1022-1026). So the
+the DIRTY set rather than a changed-value set (ElementStyle.cpp:1058-1062). So the
 element restyles, and a layout property relayouts the whole document, every time.
 
 Whether that also costs a PUBLISHED frame depends on which property is bound, and the
@@ -52,7 +52,7 @@ the patch reverted. Two RmlUi shortcuts absorb the layout-only path: an unchange
 never reaches OnResize, and ElementText reuses its compiled geometry when the
 regenerated mesh compares equal (ElementText.cpp:530-536). The border/background path
 has no such check -- ElementBackgroundBorder::GenerateGeometry releases and re-makes
-its mesh unconditionally (ElementBackgroundBorder.cpp:131-137) -- so a no-op write to
+its mesh unconditionally (ElementBackgroundBorder.cpp:181-187) -- so a no-op write to
 border-*-width, border-radius or box-shadow is a fresh handle plus resource traffic,
 both legs of VaCuus's publish gate. A HUD whose model dirties a coarse top-level name
 each tick (FVaCuusBoundModel::ApplyUpdate dirties the ROOT of a nested field) then
@@ -192,7 +192,7 @@ at once, and the second one hides behind the first:
       that renderable's `geometry` -- a premultiplied WHITE quad covering the border box
       extended by 1.5*blur+spread (Source/Core/BoxShadowCache.cpp:56-59) -- textured with
       the null handle. VaCuus's replayer binds GWhiteTexture and clears bUseTexture for
-      handle 0 (VaCuusReplayRenderer.cpp:506-512), so the quad comes out as pure vertex
+      handle 0 (VaCuusReplayRenderer.cpp:1139-1145), so the quad comes out as pure vertex
       colour: an opaque white box where the element's own background and border should be.
 
   (b) THE FRAME-RATE CHURN. The texture callback returns true whether or not it produced

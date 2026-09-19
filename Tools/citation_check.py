@@ -371,11 +371,123 @@ def drift():
     return 0
 
 
+# -------------------------------------------------------------------------------- rot
+
+def rot():
+    """The EXACT drift check: does the cited line still say what it said when cited?
+
+    --drift ranks suspects by two timestamps and admits it cannot judge. This can, for
+    the one case that matters most and that --drift structurally cannot see at all.
+
+    THE METHOD, and it needs no heuristics. git blame gives the commit that wrote the
+    CITING line. Read the cited file AT THAT COMMIT, take line N, and compare it with
+    line N today. The author opened that line and wrote that number, so if the text has
+    changed underneath it the citation has rotted -- no judgement about what the comment
+    claims, just whether the evidence it points at is the evidence it pointed at.
+
+    WHY IT COVERS WHAT --drift CANNOT. --drift drops every target under
+    Source/ThirdParty/ as "pinned". They are not pinned: this repo PATCHES the vendored
+    trees, and a patch that adds lines shifts every citation below it. That has now
+    happened twice -- patch #7 moved Element.cpp by +7 from line 2380 and patch #8 moved
+    DataViewDefault.cpp by +7 from line 448 -- and neither shift was visible to any
+    check. Both are found here (bead VaCuus-8sg).
+
+    WHAT IT STILL CANNOT DO. A citation written wrong is written wrong; blame says when
+    a line was authored, not whether it was authored correctly. And a target file that
+    did not exist at the citing commit (a re-vendor, a rename) is reported as UNKNOWN
+    rather than guessed at. This is a worklist like --drift, never a gate: reindentation
+    and a genuine rewrite look the same from here, and only a reader can tell them apart.
+    """
+    tracked = set(git("ls-files").split("\n")) - {""}
+    if not tracked:
+        print("ABORT: not a git checkout; --rot needs history", file=sys.stderr)
+        return 2
+
+    byname = collections.defaultdict(list)
+    for t in tracked:
+        byname[t.split("/")[-1]].append(t)
+
+    blame_cache, show_cache = {}, {}
+
+    def blame_sha(path, line):
+        if path not in blame_cache:
+            shas, cur = {}, None
+            for L in git("blame", "--line-porcelain", "--", path).split("\n"):
+                m = re.match(r"^([0-9a-f]{40}) \d+ (\d+)", L)
+                if m:
+                    cur, ln = m.group(1), int(m.group(2))
+                    shas[ln] = cur
+            blame_cache[path] = shas
+        return blame_cache[path].get(line)
+
+    def line_at(sha, path, n):
+        key = (sha, path)
+        if key not in show_cache:
+            show_cache[key] = git("show", "%s:%s" % (sha, path)).split("\n") if sha else None
+        ls = show_cache[key]
+        if not ls or n > len(ls):
+            return None
+        return ls[n - 1].strip()
+
+    head = {}
+
+    def head_lines(path):
+        if path not in head:
+            head[path] = read_lines(os.path.join(REPO, path)) or []
+        return head[path]
+
+    rotted, unknown, scanned = [], 0, 0
+    for c in cites_of(REPO):
+        parts = c.target.split("/")
+        cands = byname.get(parts[-1], [])
+        exact = [x for x in cands if x.split("/")[-len(parts):] == parts]
+        pool = exact or cands
+        if len(pool) != 1:
+            continue
+        tgt = pool[0]
+        n = cited_lines(c.spec)[0]
+        sha = blame_sha(c.file, c.line)
+        if sha is None:
+            continue
+        scanned += 1
+        then = line_at(sha, tgt, n)
+        if then is None:
+            unknown += 1
+            continue
+        now_lines = head_lines(tgt)
+        now = now_lines[n - 1].strip() if n <= len(now_lines) else None
+        if now == then:
+            continue
+        # Where did that text go? Only worth saying for something distinctive -- a lone
+        # brace matches everywhere and the answer would be noise.
+        moved = ""
+        if len(then) > 8 and then not in ("}", "{", "};", "});"):
+            hits = [i + 1 for i, L in enumerate(now_lines) if L.strip() == then]
+            if len(hits) == 1:
+                moved = "  -> now at :%d (%+d)" % (hits[0], hits[0] - n)
+            elif len(hits) > 1:
+                moved = "  -> %d matches now" % len(hits)
+        rotted.append((c, tgt, n, then, now, moved))
+
+    print("rot report: %d of %d checkable citations no longer point at the text they "
+          "were written against" % (len(rotted), scanned))
+    if unknown:
+        print("(%d skipped: the cited file did not exist at the citing commit)" % unknown)
+    print("(a hit is a READING task -- reindentation and a rewrite look the same here)\n")
+    for c, tgt, n, then, now, moved in rotted:
+        print("%s:%d  cites %s:%s -> %s:%d%s" % (c.file, c.line, c.target, c.spec, tgt, n, moved))
+        print("    was: %s" % (then[:110] if then else "<past end>"))
+        print("    now: %s" % (now[:110] if now is not None else "<past end>"))
+    return 0
+
+
 # ------------------------------------------------------------------------------- main
 
 def main():
     ap = argparse.ArgumentParser(add_help=True, description=__doc__.split("\n")[0])
     ap.add_argument("--selftest", action="store_true", help="run only the fixture leg")
+    ap.add_argument("--rot", action="store_true",
+                    help="exact drift: does each cited line still say what it said when cited?")
     ap.add_argument("--drift", action="store_true",
                     help="advisory worklist of citations whose target moved after they were written")
     ap.add_argument("--engine", default=os.environ.get("UE_ROOT", "/w/Unreal/UnrealEngine"))
@@ -385,6 +497,8 @@ def main():
 
     if args.selftest:
         return selftest()
+    if args.rot:
+        return rot()
     if args.drift:
         return drift()
 
@@ -427,8 +541,9 @@ def main():
         return 1
 
     print("\n  CLEAN -- every in-repo citation points at a line that exists.")
-    print("  This is a floor, not a proof: run --drift for the citations most likely")
-    print("  to have rotted in place, and open them.")
+    print("  This is a floor, not a proof. Run --rot for the citations that provably")
+    print("  no longer point at the text they were written against, and --drift for")
+    print("  the weaker time-based ranking over what --rot cannot reach.")
     return 0
 
 
