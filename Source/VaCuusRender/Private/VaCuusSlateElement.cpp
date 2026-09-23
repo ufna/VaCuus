@@ -256,6 +256,12 @@ void FVaCuusSlateElement::Draw_RenderThread(FRDGBuilder& GraphBuilder, const FVa
 
 namespace VaCuusGlass
 {
+/** The largest sigma, in blur-target texels, whose 3-sigma kernel fits the uniform array. */
+static constexpr float MaxKernelSigma = float(2 * FVaCuusBlurPS::MaxBlurSamples - 1) / 3.0f;
+
+/** How far below the view the blur target may go for a very large sigma. */
+static constexpr int32 MaxDivisor = 16;
+
 /**
  * The engine's paired-weight gaussian fill (AddSlatePostProcessOldGaussianBlur,
  * SlatePostProcessor.cpp:658-696), reproduced because that function is module-private.
@@ -424,6 +430,7 @@ void FVaCuusSlateElement::AddGlassPasses(FRDGBuilder& GraphBuilder, const FVaCuu
 		FIntRect SampleRect;
 		FIntRect DrawRect;
 		FIntPoint HalfSize;
+		int32 Divisor = 2;
 		FVector2f SigmaOut;
 	};
 	TArray<FMappedEntry, TInlineAllocator<4>> MappedEntries;
@@ -446,9 +453,20 @@ void FVaCuusSlateElement::AddGlassPasses(FRDGBuilder& GraphBuilder, const FVaCuu
 			continue; // Fully clipped (off the scene view): nothing to sample or draw.
 		}
 
+		// Half resolution, or lower while the sigma would outgrow the kernel: FillBlurWeights
+		// clamps to 2 * MaxBlurSamples - 1 taps without renormalising, so a truncated kernel
+		// both blurs less and darkens -- a 60rem panel blur at 2160p lost half its light.
+		// HalfRatio below follows whatever divisor this picks.
+		const float ViewSigma = FMath::Max(Mapped.SigmaOut.X, Mapped.SigmaOut.Y);
+		int32 Divisor = 2;
+		while (Divisor < VaCuusGlass::MaxDivisor && ViewSigma / float(Divisor) > VaCuusGlass::MaxKernelSigma)
+		{
+			Divisor *= 2;
+		}
+		Mapped.Divisor = Divisor;
 		Mapped.HalfSize = FIntPoint(
-			FMath::Max(1, FMath::DivideAndRoundUp(Mapped.SampleRect.Width(), 2)),
-			FMath::Max(1, FMath::DivideAndRoundUp(Mapped.SampleRect.Height(), 2)));
+			FMath::Max(1, FMath::DivideAndRoundUp(Mapped.SampleRect.Width(), Divisor)),
+			FMath::Max(1, FMath::DivideAndRoundUp(Mapped.SampleRect.Height(), Divisor)));
 		NeededExtent = FIntPoint(FMath::Max(NeededExtent.X, Mapped.HalfSize.X), FMath::Max(NeededExtent.Y, Mapped.HalfSize.Y));
 		SampleBounds = MappedEntries.Num() == 0 ? Mapped.SampleRect : FIntRect(
 			FIntPoint(FMath::Min(SampleBounds.Min.X, Mapped.SampleRect.Min.X), FMath::Min(SampleBounds.Min.Y, Mapped.SampleRect.Min.Y)),
@@ -536,16 +554,42 @@ void FVaCuusSlateElement::AddGlassPasses(FRDGBuilder& GraphBuilder, const FVaCuu
 		// measured RMSE exactly 0 between two beats 8s apart while the scene behind the
 		// blur-free control panel changed 24.8%; this shipped per-frame refresh measured
 		// 11.6% in the same protocol. Both outcomes in the Task 3 report.
+		//
+		// A divisor past 2 steps down by halves through transients: one bilinear tap per
+		// texel averages only 2x2, so a single 1/16 pass would skip most of the scene and
+		// small bright features under a large panel would shimmer as they cross the taps.
 		{
-			FVaCuusCompositePS::FParameters* Parameters = GraphBuilder.AllocParameters<FVaCuusCompositePS::FParameters>();
-			Parameters->CompositeTexture = SceneSource;
-			Parameters->CompositeSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
-			Parameters->RenderTargets[0] = FRenderTargetBinding(HalfA, ERenderTargetLoadAction::ELoad);
+			FRDGTextureRef DownSource = SceneSource;
+			FIntRect DownRect(Mapped.SampleRect.Min - SourceShift, Mapped.SampleRect.Max - SourceShift);
+			for (int32 StepDivisor = 2; StepDivisor <= Mapped.Divisor; StepDivisor *= 2)
+			{
+				const bool bLastStep = StepDivisor == Mapped.Divisor;
+				const FIntPoint StepSize = bLastStep
+					? Mapped.HalfSize
+					: FIntPoint(
+						FMath::Max(1, FMath::DivideAndRoundUp(Mapped.SampleRect.Width(), StepDivisor)),
+						FMath::Max(1, FMath::DivideAndRoundUp(Mapped.SampleRect.Height(), StepDivisor)));
+				FRDGTextureRef StepTarget = bLastStep
+					? HalfA
+					: GraphBuilder.CreateTexture(
+						FRDGTextureDesc::Create2D(StepSize, HalfFormat, FClearValueBinding::Transparent,
+							TexCreate_RenderTargetable | TexCreate_ShaderResource),
+						TEXT("VaCuusGlassDownsampleStep"));
+				const FIntRect StepRect(FIntPoint::ZeroValue, StepSize);
 
-			const FIntRect ShiftedSample(Mapped.SampleRect.Min - SourceShift, Mapped.SampleRect.Max - SourceShift);
-			AddDrawScreenPass(GraphBuilder, RDG_EVENT_NAME("VaCuusGlassDownsample"), FScreenPassViewInfo(),
-				/*OutputViewport=*/FScreenPassTextureViewport(HalfA, HalfRect),
-				/*InputViewport=*/FScreenPassTextureViewport(SceneSource, ShiftedSample), ScreenVertexShader, DownsamplePS, Parameters);
+				FVaCuusCompositePS::FParameters* Parameters = GraphBuilder.AllocParameters<FVaCuusCompositePS::FParameters>();
+				Parameters->CompositeTexture = DownSource;
+				Parameters->CompositeSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+				Parameters->RenderTargets[0] = FRenderTargetBinding(StepTarget,
+					bLastStep ? ERenderTargetLoadAction::ELoad : ERenderTargetLoadAction::ENoAction);
+
+				AddDrawScreenPass(GraphBuilder, RDG_EVENT_NAME("VaCuusGlassDownsample"), FScreenPassViewInfo(),
+					/*OutputViewport=*/FScreenPassTextureViewport(StepTarget, StepRect),
+					/*InputViewport=*/FScreenPassTextureViewport(DownSource, DownRect), ScreenVertexShader, DownsamplePS, Parameters);
+
+				DownSource = StepTarget;
+				DownRect = StepRect;
+			}
 		}
 
 		// (2) Separable gaussian ping-pong at half-res, sigma mapped per axis and then
