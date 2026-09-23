@@ -2602,7 +2602,7 @@ static UTextureRenderTarget2D* MakeTexDemoRenderTarget(int32 SizeX, int32 SizeY)
 	// RTF_RGBA8 with a FinalColorLDR capture below: the capture writes DISPLAY-ENCODED
 	// values and IsSRGB() is false for this format (TextureRenderTarget2D.cpp:79-82), so the
 	// registry's Auto derivation lands on Raw — which is exactly the pipeline's own contract
-	// (VaCuusUIShaders.h:52-65) and therefore costs the shader nothing.
+	// (VaCuusUIShaders.h:69-82) and therefore costs the shader nothing.
 	RenderTarget->RenderTargetFormat = RTF_RGBA8;
 	RenderTarget->ClearColor = FLinearColor(0.02f, 0.03f, 0.05f, 1.0f);
 	RenderTarget->InitAutoFormat(SizeX, SizeY);

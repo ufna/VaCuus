@@ -1029,4 +1029,48 @@ bool FVaCuusGlassKernelLightTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+/**
+ * The glass blur target, CPU half: VaCuusGlass::MakeBlurPlan is the one place a glass entry's
+ * divisor is chosen, and everything downstream (the pooled RT's extent, the downsample chain,
+ * the blur passes' sigma, the glass draw's UV transform) reads the plan. So the plan's own
+ * invariants are what keep those consumers consistent -- held here under NullRHI too.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusGlassBlurPlanTest, "VaCuus.Render.Glass.BlurPlan",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusGlassBlurPlanTest::RunTest(const FString& Parameters)
+{
+	// Odd sizes on purpose: the ceil is where a per-axis ratio and a flat 1/Divisor differ.
+	const FIntPoint SampleSize(641, 353);
+	for (const float Sigma : {12.0f, 83.0f, 100.0f, 200.0f, 400.0f, 666.0f})
+	{
+		const VaCuusGlass::FBlurPlan Plan = VaCuusGlass::MakeBlurPlan(SampleSize, FVector2f(Sigma, Sigma));
+		const FString At = FString::Printf(TEXT("sigma %.0fpx (divisor %d)"), Sigma, Plan.Divisor);
+
+		TestEqual(FString::Printf(TEXT("%s: the divisor is PickBlurDivisor's"), *At), Plan.Divisor,
+			VaCuusGlass::PickBlurDivisor(Sigma));
+		TestEqual(FString::Printf(TEXT("%s: the target is ceil(sample / divisor)"), *At), Plan.TargetSize,
+			FIntPoint(FMath::DivideAndRoundUp(SampleSize.X, Plan.Divisor), FMath::DivideAndRoundUp(SampleSize.Y, Plan.Divisor)));
+		TestTrue(FString::Printf(TEXT("%s: the ratio maps the sample rect onto the whole target"), *At),
+			FMath::IsNearlyEqual(Plan.Ratio.X * float(SampleSize.X), float(Plan.TargetSize.X), 1e-3f)
+				&& FMath::IsNearlyEqual(Plan.Ratio.Y * float(SampleSize.Y), float(Plan.TargetSize.Y), 1e-3f));
+
+		// Held on the light the kernel keeps, not on SigmaTexels <= MaxKernelSigma: the ceil
+		// pushes texel sigma past Sigma / Divisor on a small odd rect (666px on 353 rows is
+		// 43.4 texels against 41.7), and what that costs is a 2.9- rather than 3-sigma kernel.
+		const float SumX = VaCuusSumBlurWeights(Plan.SigmaTexels.X);
+		const float SumY = VaCuusSumBlurWeights(Plan.SigmaTexels.Y);
+		TestTrue(FString::Printf(TEXT("%s: texel sigma %.2f x %.2f keeps its light (%.4f x %.4f)"), *At,
+					 Plan.SigmaTexels.X, Plan.SigmaTexels.Y, SumX, SumY),
+			SumX > 0.99f && SumX < 1.01f && SumY > 0.99f && SumY < 1.01f);
+	}
+
+	// A sigma under 1:1 non-uniform mapping keeps its axes apart: one divisor, two sigmas.
+	const VaCuusGlass::FBlurPlan Wide = VaCuusGlass::MakeBlurPlan(SampleSize, FVector2f(300.0f, 30.0f));
+	TestEqual(TEXT("The divisor follows the larger axis"), Wide.Divisor, VaCuusGlass::PickBlurDivisor(300.0f));
+	TestTrue(TEXT("Each axis keeps its own texel sigma"), Wide.SigmaTexels.X > 5.0f * Wide.SigmaTexels.Y);
+
+	return true;
+}
+
 #endif // WITH_DEV_AUTOMATION_TESTS

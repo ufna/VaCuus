@@ -119,7 +119,7 @@ bool IsLinearValuedFormat(EPixelFormat Format)
  *  - ENCODING asks "does the shader receive linear values?". Two ways that happens: the
  *    resource is an _SRGB format and the SAMPLER decoded it, or the format is float and
  *    the content is linear by convention. Either way the pipeline's sRGB-encoded contract
- *    (VaCuusUIShaders.h:52-65) needs the curve re-applied.
+ *    (VaCuusUIShaders.h:69-82) needs the curve re-applied.
  *  - ALPHA asks "what does the A channel mean?". A render target's usually means nothing
  *    at all (see EVaCuusTextureAlpha), an imported asset's is straight.
  */

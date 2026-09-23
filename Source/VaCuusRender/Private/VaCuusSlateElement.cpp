@@ -339,6 +339,80 @@ static void AddBlurPass(FRDGBuilder& GraphBuilder, FGlobalShaderMap* ShaderMap, 
 	AddDrawScreenPass(GraphBuilder, RDG_EVENT_NAME("VaCuusGlassBlur"), FScreenPassViewInfo(),
 		/*OutputViewport=*/FScreenPassTextureViewport(Dest, HalfRect), InputViewport, VertexShader, PixelShader, Parameters);
 }
+
+FBlurPlan MakeBlurPlan(const FIntPoint& SampleSize, const FVector2f& SigmaOut)
+{
+	FBlurPlan Plan;
+	Plan.Divisor = PickBlurDivisor(FMath::Max(SigmaOut.X, SigmaOut.Y));
+	Plan.TargetSize = FIntPoint(
+		FMath::Max(1, FMath::DivideAndRoundUp(SampleSize.X, Plan.Divisor)),
+		FMath::Max(1, FMath::DivideAndRoundUp(SampleSize.Y, Plan.Divisor)));
+
+	// Each axis's ACTUAL ratio, not 1/Divisor: the ceil makes them differ on an odd size,
+	// and the downsample stretches the whole sample rect onto the whole target.
+	Plan.Ratio = FVector2f(float(Plan.TargetSize.X) / float(FMath::Max(1, SampleSize.X)),
+		float(Plan.TargetSize.Y) / float(FMath::Max(1, SampleSize.Y)));
+	Plan.SigmaTexels = SigmaOut * Plan.Ratio;
+	return Plan;
+}
+
+void AddBlurTargetPasses(FRDGBuilder& GraphBuilder, FGlobalShaderMap* ShaderMap, FRDGTextureRef Source,
+	const FIntRect& SourceRect, const FBlurPlan& Plan, FRDGTextureRef TargetA, FRDGTextureRef TargetB)
+{
+	TShaderMapRef<FScreenPassVS> ScreenVertexShader(ShaderMap);
+	// The default (LinearOutput=false) permutation, DELIBERATELY: the downsample reads
+	// the elements texture and writes a smaller copy of it — identical encoding in and
+	// out, whatever that encoding is. Glass is gamma-neutral by construction
+	// (backdrop-glass.md §6); a decode here would double-decode on a float target.
+	TShaderMapRef<FVaCuusCompositePS> DownsamplePS(ShaderMap, FVaCuusCompositePS::FPermutationDomain());
+
+	// (1) Bilinear passes sampling the scene region down to 1/Divisor — the copy and the
+	// downsample (backdrop-glass.md §2). The pass-through composite PS is the sampler this
+	// needs; the default opaque blend overwrites.
+	//
+	// A divisor past 2 steps down by halves through transients: one bilinear tap per
+	// target texel averages 2x2 source pixels, so a single 1/16 pass would read 4 of
+	// every 256 and the blur would see a sparse sampling of the scene, not its average.
+	// Step sizes are ceil(sample / StepDivisor), and ceil(ceil(W/2)/2) == ceil(W/4), so the
+	// last step lands exactly on Plan.TargetSize.
+	const FIntPoint SampleSize = SourceRect.Size();
+	FRDGTextureRef DownSource = Source;
+	FIntRect DownRect = SourceRect;
+	for (int32 StepDivisor = 2; StepDivisor <= Plan.Divisor; StepDivisor *= 2)
+	{
+		const bool bLastStep = StepDivisor == Plan.Divisor;
+		const FIntPoint StepSize = bLastStep
+			? Plan.TargetSize
+			: FIntPoint(
+				FMath::Max(1, FMath::DivideAndRoundUp(SampleSize.X, StepDivisor)),
+				FMath::Max(1, FMath::DivideAndRoundUp(SampleSize.Y, StepDivisor)));
+		FRDGTextureRef StepTarget = bLastStep
+			? TargetA
+			: GraphBuilder.CreateTexture(
+				FRDGTextureDesc::Create2D(StepSize, TargetA->Desc.Format, FClearValueBinding::Transparent,
+					TexCreate_RenderTargetable | TexCreate_ShaderResource),
+				TEXT("VaCuusGlassDownsampleStep"));
+		const FIntRect StepRect(FIntPoint::ZeroValue, StepSize);
+
+		FVaCuusCompositePS::FParameters* Parameters = GraphBuilder.AllocParameters<FVaCuusCompositePS::FParameters>();
+		Parameters->CompositeTexture = DownSource;
+		Parameters->CompositeSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+		Parameters->RenderTargets[0] = FRenderTargetBinding(StepTarget,
+			bLastStep ? ERenderTargetLoadAction::ELoad : ERenderTargetLoadAction::ENoAction);
+
+		AddDrawScreenPass(GraphBuilder, RDG_EVENT_NAME("VaCuusGlassDownsample"), FScreenPassViewInfo(),
+			/*OutputViewport=*/FScreenPassTextureViewport(StepTarget, StepRect),
+			/*InputViewport=*/FScreenPassTextureViewport(DownSource, DownRect), ScreenVertexShader, DownsamplePS, Parameters);
+
+		DownSource = StepTarget;
+		DownRect = StepRect;
+	}
+
+	// (2) Separable gaussian ping-pong on the blur target, sigma per axis in its texels.
+	const FIntRect TargetRect(FIntPoint::ZeroValue, Plan.TargetSize);
+	AddBlurPass(GraphBuilder, ShaderMap, TargetA, TargetB, TargetRect, Plan.SigmaTexels.X, FVector2f(1.0f, 0.0f));
+	AddBlurPass(GraphBuilder, ShaderMap, TargetB, TargetA, TargetRect, Plan.SigmaTexels.Y, FVector2f(0.0f, 1.0f));
+}
 } // namespace VaCuusGlass
 
 void FVaCuusSlateElement::RefreshGlassDrawResources(FRHICommandList& RHICmdList)
@@ -439,9 +513,7 @@ void FVaCuusSlateElement::AddGlassPasses(FRDGBuilder& GraphBuilder, const FVaCuu
 		int32 EntryIndex = 0;
 		FIntRect SampleRect;
 		FIntRect DrawRect;
-		FIntPoint HalfSize;
-		int32 Divisor = 2;
-		FVector2f SigmaOut;
+		VaCuusGlass::FBlurPlan Plan;
 	};
 	TArray<FMappedEntry, TInlineAllocator<4>> MappedEntries;
 	FIntPoint NeededExtent = FIntPoint::ZeroValue;
@@ -457,18 +529,16 @@ void FVaCuusSlateElement::AddGlassPasses(FRDGBuilder& GraphBuilder, const FVaCuu
 		Mapped.EntryIndex = Index;
 		Mapped.SampleRect = Mapping.MapRect(Entries[Index].SampleRegion);
 		Mapped.DrawRect = Mapping.MapRect(Entries[Index].DrawRegion);
-		Mapped.SigmaOut = Mapping.MapSigma(Entries[Index].Sigma);
+		const FVector2f SigmaOut = Mapping.MapSigma(Entries[Index].Sigma);
 		if (Mapped.SampleRect.Area() <= 0 || Mapped.DrawRect.Area() <= 0)
 		{
 			continue; // Fully clipped (off the scene view): nothing to sample or draw.
 		}
 
-		// HalfRatio below follows whatever divisor this picks.
-		Mapped.Divisor = VaCuusGlass::PickBlurDivisor(FMath::Max(Mapped.SigmaOut.X, Mapped.SigmaOut.Y));
-		Mapped.HalfSize = FIntPoint(
-			FMath::Max(1, FMath::DivideAndRoundUp(Mapped.SampleRect.Width(), Mapped.Divisor)),
-			FMath::Max(1, FMath::DivideAndRoundUp(Mapped.SampleRect.Height(), Mapped.Divisor)));
-		NeededExtent = FIntPoint(FMath::Max(NeededExtent.X, Mapped.HalfSize.X), FMath::Max(NeededExtent.Y, Mapped.HalfSize.Y));
+		// The one place the divisor is chosen; the RT extent, both pass groups and the
+		// draw's UV transform all read this plan.
+		Mapped.Plan = VaCuusGlass::MakeBlurPlan(Mapped.SampleRect.Size(), SigmaOut);
+		NeededExtent = FIntPoint(FMath::Max(NeededExtent.X, Mapped.Plan.TargetSize.X), FMath::Max(NeededExtent.Y, Mapped.Plan.TargetSize.Y));
 		SampleBounds = MappedEntries.Num() == 0 ? Mapped.SampleRect : FIntRect(
 			FIntPoint(FMath::Min(SampleBounds.Min.X, Mapped.SampleRect.Min.X), FMath::Min(SampleBounds.Min.Y, Mapped.SampleRect.Min.Y)),
 			FIntPoint(FMath::Max(SampleBounds.Max.X, Mapped.SampleRect.Max.X), FMath::Max(SampleBounds.Max.Y, Mapped.SampleRect.Max.Y)));
@@ -531,23 +601,17 @@ void FVaCuusSlateElement::AddGlassPasses(FRDGBuilder& GraphBuilder, const FVaCuu
 	}
 
 	FGlobalShaderMap* ShaderMap = GetGlobalShaderMap(GMaxRHIFeatureLevel);
-	TShaderMapRef<FScreenPassVS> ScreenVertexShader(ShaderMap);
-	// The default (LinearOutput=false) permutation, DELIBERATELY: the downsample reads
-	// the elements texture and writes a smaller copy of it — identical encoding in and
-	// out, whatever that encoding is. Glass is gamma-neutral by construction
-	// (backdrop-glass.md §6); a decode here would double-decode on a float target.
-	TShaderMapRef<FVaCuusCompositePS> DownsamplePS(ShaderMap, FVaCuusCompositePS::FPermutationDomain());
 	TShaderMapRef<FVaCuusUIVS> GlassVertexShader(ShaderMap);
 	TShaderMapRef<FVaCuusGlassPS> GlassPixelShader(ShaderMap);
 
 	for (const FMappedEntry& Mapped : MappedEntries)
 	{
 		const FVaCuusGlassEntry& Entry = Entries[Mapped.EntryIndex];
-		const FIntRect HalfRect(0, 0, Mapped.HalfSize.X, Mapped.HalfSize.Y);
+		const FVector2f& HalfRatio = Mapped.Plan.Ratio; // "Half*" names the blur target at any divisor
 
-		// (1) Bilinear passes sampling the scene region down to 1/Divisor ("Half*" names the
-		// blur target at any divisor) — the copy and the downsample (backdrop-glass.md §2).
-		// The pass-through composite PS is the sampler this needs; opaque blend overwrites.
+		// (1)-(2) The downsample chain to 1/Divisor and the separable blur, result in HalfA
+		// (VaCuusGlass::AddBlurTargetPasses -- shared with VaCuus.Render.Glass.BlurTargetGPU,
+		// which holds its light and its averaging on a real RHI).
 		//
 		// EVERY ENGINE FRAME, deliberately — gating passes (1)-(2) on "a publish arrived"
 		// is the replay-baked shape and it FREEZES: prototyped for Exp-GLASS-IDLE-FREEZE
@@ -555,50 +619,8 @@ void FVaCuusSlateElement::AddGlassPasses(FRDGBuilder& GraphBuilder, const FVaCuu
 		// measured RMSE exactly 0 between two beats 8s apart while the scene behind the
 		// blur-free control panel changed 24.8%; this shipped per-frame refresh measured
 		// 11.6% in the same protocol. Both outcomes in the Task 3 report.
-		//
-		// A divisor past 2 steps down by halves through transients: one bilinear tap per
-		// target texel averages 2x2 source pixels, so a single 1/16 pass would read 4 of
-		// every 256 and the blur would see a sparse sampling of the scene, not its average.
-		{
-			FRDGTextureRef DownSource = SceneSource;
-			FIntRect DownRect(Mapped.SampleRect.Min - SourceShift, Mapped.SampleRect.Max - SourceShift);
-			for (int32 StepDivisor = 2; StepDivisor <= Mapped.Divisor; StepDivisor *= 2)
-			{
-				const bool bLastStep = StepDivisor == Mapped.Divisor;
-				const FIntPoint StepSize = bLastStep
-					? Mapped.HalfSize
-					: FIntPoint(
-						FMath::Max(1, FMath::DivideAndRoundUp(Mapped.SampleRect.Width(), StepDivisor)),
-						FMath::Max(1, FMath::DivideAndRoundUp(Mapped.SampleRect.Height(), StepDivisor)));
-				FRDGTextureRef StepTarget = bLastStep
-					? HalfA
-					: GraphBuilder.CreateTexture(
-						FRDGTextureDesc::Create2D(StepSize, HalfFormat, FClearValueBinding::Transparent,
-							TexCreate_RenderTargetable | TexCreate_ShaderResource),
-						TEXT("VaCuusGlassDownsampleStep"));
-				const FIntRect StepRect(FIntPoint::ZeroValue, StepSize);
-
-				FVaCuusCompositePS::FParameters* Parameters = GraphBuilder.AllocParameters<FVaCuusCompositePS::FParameters>();
-				Parameters->CompositeTexture = DownSource;
-				Parameters->CompositeSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
-				Parameters->RenderTargets[0] = FRenderTargetBinding(StepTarget,
-					bLastStep ? ERenderTargetLoadAction::ELoad : ERenderTargetLoadAction::ENoAction);
-
-				AddDrawScreenPass(GraphBuilder, RDG_EVENT_NAME("VaCuusGlassDownsample"), FScreenPassViewInfo(),
-					/*OutputViewport=*/FScreenPassTextureViewport(StepTarget, StepRect),
-					/*InputViewport=*/FScreenPassTextureViewport(DownSource, DownRect), ScreenVertexShader, DownsamplePS, Parameters);
-
-				DownSource = StepTarget;
-				DownRect = StepRect;
-			}
-		}
-
-		// (2) Separable gaussian ping-pong on the blur target, sigma mapped per axis and then
-		// scaled into its texels by each axis's actual downsample ratio (~1/Divisor).
-		const FVector2f HalfRatio(
-			float(Mapped.HalfSize.X) / float(Mapped.SampleRect.Width()), float(Mapped.HalfSize.Y) / float(Mapped.SampleRect.Height()));
-		VaCuusGlass::AddBlurPass(GraphBuilder, ShaderMap, HalfA, HalfB, HalfRect, Mapped.SigmaOut.X * HalfRatio.X, FVector2f(1.0f, 0.0f));
-		VaCuusGlass::AddBlurPass(GraphBuilder, ShaderMap, HalfB, HalfA, HalfRect, Mapped.SigmaOut.Y * HalfRatio.Y, FVector2f(0.0f, 1.0f));
+		const FIntRect ShiftedSample(Mapped.SampleRect.Min - SourceShift, Mapped.SampleRect.Max - SourceShift);
+		VaCuusGlass::AddBlurTargetPasses(GraphBuilder, ShaderMap, SceneSource, ShiftedSample, Mapped.Plan, HalfA, HalfB);
 
 		// (3) The masked glass draw: the entry's geometry (mask copy or generated quad)
 		// through the mapping matrix, sampling the blurred target at the output pixel,
@@ -630,7 +652,7 @@ void FVaCuusSlateElement::AddGlassPasses(FRDGBuilder& GraphBuilder, const FVaCuu
 				-float(Mapped.SampleRect.Min.X) * HalfRatio.X * RTExtentInv.X,
 				-float(Mapped.SampleRect.Min.Y) * HalfRatio.Y * RTExtentInv.Y);
 			PSParameters->GlassUVBounds = FVector4f(0.5f * RTExtentInv.X, 0.5f * RTExtentInv.Y,
-				(float(Mapped.HalfSize.X) - 0.5f) * RTExtentInv.X, (float(Mapped.HalfSize.Y) - 0.5f) * RTExtentInv.Y);
+				(float(Mapped.Plan.TargetSize.X) - 0.5f) * RTExtentInv.X, (float(Mapped.Plan.TargetSize.Y) - 0.5f) * RTExtentInv.Y);
 
 			const FGlassDraw Draw = GlassDraws[Mapped.EntryIndex]; // ref-counted copies for the lambda
 			const FIntRect DrawRect = Mapped.DrawRect;

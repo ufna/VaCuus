@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "GlobalShader.h"
 #include "PixelFormat.h" // EPixelFormat + IsFloatFormat for VaCuusCompositeWantsLinearOutput
+#include "RenderGraphFwd.h"
 #include "RenderResource.h"
 #include "ShaderParameterStruct.h"
 
@@ -147,9 +148,9 @@ public:
 };
 
 /**
- * The glass blur's kernel sizing, defined in VaCuusSlateElement.cpp and declared here so
- * VaCuus.Render.Glass.KernelKeepsItsLight can hold the fill and the divisor to the one
- * property that shows on screen: the weights the shader sums still add up to one.
+ * The glass blur's kernel sizing and blur target, defined in VaCuusSlateElement.cpp and
+ * declared here so the Glass tests reach the production code: KernelKeepsItsLight and
+ * BlurPlan hold the math, BlurTargetGPU runs AddBlurTargetPasses on a real RHI.
  */
 namespace VaCuusGlass
 {
@@ -167,6 +168,38 @@ int32 PickBlurDivisor(float ViewSigma);
 
 /** Fills the blur's weights and sample count for Sigma in blur-target texels; returns the sample count. */
 int32 FillBlurWeights(FVaCuusBlurPS::FParameters* Parameters, float Sigma);
+
+/**
+ * One glass entry's blur target, decided once per entry per frame. Every consumer -- the
+ * pooled RT's extent, the downsample chain, the blur passes' sigma, the glass draw's UV
+ * transform -- reads it from here, so none of them can pick a divisor of its own.
+ */
+struct FBlurPlan
+{
+	int32 Divisor = 2;
+
+	/** Blur-target texels the sample rect lands on: ceil(sample size / Divisor), at least 1. */
+	FIntPoint TargetSize = FIntPoint(1, 1);
+
+	/** Target texels per output pixel, per axis: TargetSize / sample size (~1/Divisor). */
+	FVector2f Ratio = FVector2f(0.5f, 0.5f);
+
+	/** The mapped sigma in target texels, per axis -- what each blur pass is handed. */
+	FVector2f SigmaTexels = FVector2f::ZeroVector;
+};
+
+/** The plan for a mapped sample rect of SampleSize output pixels and a per-axis output-pixel sigma. */
+FBlurPlan MakeBlurPlan(const FIntPoint& SampleSize, const FVector2f& SigmaOut);
+
+/**
+ * Passes (1) and (2) of the glass pipeline, shared by AddGlassPasses and
+ * VaCuus.Render.Glass.BlurTargetGPU: Source's SourceRect is stepped down by halves to
+ * Plan.TargetSize at TargetA's origin, then blurred horizontally into TargetB and
+ * vertically back into TargetA. The result is in TargetA; intermediates are RDG transients
+ * in TargetA's format.
+ */
+void AddBlurTargetPasses(FRDGBuilder& GraphBuilder, FGlobalShaderMap* ShaderMap, FRDGTextureRef Source,
+	const FIntRect& SourceRect, const FBlurPlan& Plan, FRDGTextureRef TargetA, FRDGTextureRef TargetB);
 } // namespace VaCuusGlass
 
 /**

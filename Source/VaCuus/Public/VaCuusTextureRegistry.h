@@ -15,7 +15,7 @@ class UTexture;
  * How the pixel shader must treat the sampled values of an engine texture.
  *
  * THE PROBLEM THIS SOLVES. VaCuus stores sRGB-ENCODED premultiplied bytes in the view
- * render target and decodes them at composite time (VaCuusUIShaders.h:52-65). Its own
+ * render target and decodes them at composite time (VaCuusUIShaders.h:69-82). Its own
  * textures uphold that by construction: they are created PF_R8G8B8A8 with no sRGB flag
  * (VaCuusReplayRenderer.cpp:227-232), so the sampler hands the shader the bytes verbatim.
  *
