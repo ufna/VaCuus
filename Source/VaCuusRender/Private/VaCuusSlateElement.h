@@ -140,8 +140,8 @@ private:
 	uint64 GlassDrawsGeneration = 0;
 
 	/**
-	 * The pooled half-res pair the blur ping-pongs through: persistent (recreated only
-	 * when the required extent or the output format changes), registered external each
+	 * The pooled blur-target pair (1/2 to 1/16 res) the blur ping-pongs through: persistent
+	 * (recreated when the extent, divisor included, or output format changes), registered external each
 	 * frame, sized to the mapped glass bounds rather than the screen (spec §2(c)).
 	 * Outside the glass passes both stay in SRVMask, the same invariant as the UI RT.
 	 */

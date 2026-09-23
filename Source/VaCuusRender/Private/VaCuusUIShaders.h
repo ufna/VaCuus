@@ -118,14 +118,14 @@ public:
 bool VaCuusCompositeWantsLinearOutput(EPixelFormat OutputFormat);
 
 /**
- * One direction of the M5 glass blur (spec §2(c)): separable gaussian at half-res,
+ * One direction of the M5 glass blur (spec §2(c)): separable gaussian at 1/Divisor res,
  * paired with FScreenPassVS via AddDrawScreenPass exactly like the composite above.
  * The parameter scheme is the engine's own Slate blur verbatim
  * (FSlatePostProcessBlurPS, SlateRHIRenderer/Private/SlatePostProcessor.cpp:636-653):
  * paired weight/offset packing so bilinear filtering halves the tap count, direction and
  * texel size in one vector, bilinear-safe UV bounds. MAX_BLUR_SAMPLES matches the .usf
- * array — a 125-tap kernel ceiling: ~41.7 sigma in HALF-RES texels, i.e. ~80px of
- * view-space sigma at 1:1 scale (the earlier ~40px figure counted the texels once).
+ * array — a 125-tap kernel ceiling: ~41.7 sigma in TARGET texels (MaxKernelSigma), ~83px
+ * of view sigma at half-res; PickBlurDivisor lowers the target resolution past that.
  */
 class FVaCuusBlurPS : public FGlobalShader
 {
@@ -172,7 +172,7 @@ int32 FillBlurWeights(FVaCuusBlurPS::FParameters* Parameters, float Sigma);
 /**
  * The glass draw (spec §2(a)): renders the clip-mask geometry (or a generated quad)
  * through FVaCuusUIVS's Projection into the Slate elements texture, sampling the blurred
- * half-res RT at the output pixel's position. Bound with SrcAlpha/InvSrcAlpha so the
+ * blur target at the output pixel's position. Bound with SrcAlpha/InvSrcAlpha so the
  * mask's vertex alpha lerps blurred-over-sharp at the edge.
  */
 class FVaCuusGlassPS : public FGlobalShader

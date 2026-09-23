@@ -984,7 +984,7 @@ bool FVaCuusGlassMappingTest::RunTest(const FString& Parameters)
 
 /**
  * THE KERNEL KEEPS ITS LIGHT: the blur's weights are not renormalised, so whatever they
- * sum to is the brightness of the glass. The sum is taken the way VaCuusBlur.usf:58-68
+ * sum to scales the glass once per separable pass (squared overall). The sum is taken the way VaCuusBlur.usf:58-68
  * reads the array -- slot 0's center tap, then each (Weight, Offset) pair twice, once per
  * mirrored tap, for i < SampleCount stepping by 2 -- so a pair the fill writes and the
  * shader never reads counts for nothing here either.

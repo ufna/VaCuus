@@ -5,7 +5,7 @@
 
 /**
  * The M5 glass pair (spec §2(c)): the separable gaussian the backdrop blur runs at
- * half-res, and the masked draw that puts the blurred scene back under the panel.
+ * 1/2..1/16 res (PickBlurDivisor), and the masked draw that puts the blurred scene back under the panel.
  *
  * MainBlurPS mirrors the engine's own Slate blur (GaussianBlurMain,
  * Engine/Shaders/Private/SlatePostProcessPixelShader.usf:36-67) rather than the vendored
@@ -79,13 +79,13 @@ SamplerState GlassSampler;
 /** SV_Position.xy (output pixels) -> blurred-RT UV: uv = pos * xy + zw. */
 float4 GlassUVTransform;
 
-/** Bilinear-safe UV bounds of this entry's half-res region within the pooled RT. */
+/** Bilinear-safe UV bounds of this entry's blur-target region within the pooled RT. */
 float4 GlassUVBounds;
 
 /**
  * The glass draw: runs over the clip-mask geometry (rounded panels) or a generated quad
  * (square ones), both arriving through the standard VaCuus vertex layout and MainVS's
- * Projection. Samples the blurred half-res scene at the OUTPUT pixel's position, so the
+ * Projection. Samples the blurred low-res scene at the OUTPUT pixel's position, so the
  * blur lands exactly under the panel wherever the mapping put it. The vertex COLOR alpha
  * carries the mask's coverage (opaque white for RmlUi clip geometry —
  * MeshUtilities::GenerateBackground with ColourbPremultiplied(255),

@@ -260,7 +260,7 @@ namespace VaCuusGlass
  * FillBlurWeights clamps the kernel to 2 * MaxBlurSamples - 1 taps and does not
  * renormalise, and VaCuusBlur.usf:58-68 sums the taps as they come, so a sigma past
  * MaxKernelSigma in target texels both blurs less than asked and darkens. At half
- * resolution that is any view sigma above ~83px; a 320px one keeps 57% of its light.
+ * resolution that is any view sigma above ~83px; 320px keeps 57% per pass, 33% after both.
  */
 int32 PickBlurDivisor(float ViewSigma)
 {
@@ -533,7 +533,7 @@ void FVaCuusSlateElement::AddGlassPasses(FRDGBuilder& GraphBuilder, const FVaCuu
 	FGlobalShaderMap* ShaderMap = GetGlobalShaderMap(GMaxRHIFeatureLevel);
 	TShaderMapRef<FScreenPassVS> ScreenVertexShader(ShaderMap);
 	// The default (LinearOutput=false) permutation, DELIBERATELY: the downsample reads
-	// the elements texture and writes a half-res copy of it — identical encoding in and
+	// the elements texture and writes a smaller copy of it — identical encoding in and
 	// out, whatever that encoding is. Glass is gamma-neutral by construction
 	// (backdrop-glass.md §6); a decode here would double-decode on a float target.
 	TShaderMapRef<FVaCuusCompositePS> DownsamplePS(ShaderMap, FVaCuusCompositePS::FPermutationDomain());
@@ -545,9 +545,9 @@ void FVaCuusSlateElement::AddGlassPasses(FRDGBuilder& GraphBuilder, const FVaCuu
 		const FVaCuusGlassEntry& Entry = Entries[Mapped.EntryIndex];
 		const FIntRect HalfRect(0, 0, Mapped.HalfSize.X, Mapped.HalfSize.Y);
 
-		// (1) One bilinear pass sampling the scene region into half-res — simultaneously
-		// the copy and the downsample (backdrop-glass.md §2). The pass-through composite
-		// PS is exactly the sampler this needs; the default opaque blend overwrites.
+		// (1) Bilinear passes sampling the scene region down to 1/Divisor ("Half*" names the
+		// blur target at any divisor) — the copy and the downsample (backdrop-glass.md §2).
+		// The pass-through composite PS is the sampler this needs; opaque blend overwrites.
 		//
 		// EVERY ENGINE FRAME, deliberately — gating passes (1)-(2) on "a publish arrived"
 		// is the replay-baked shape and it FREEZES: prototyped for Exp-GLASS-IDLE-FREEZE
@@ -593,15 +593,15 @@ void FVaCuusSlateElement::AddGlassPasses(FRDGBuilder& GraphBuilder, const FVaCuu
 			}
 		}
 
-		// (2) Separable gaussian ping-pong at half-res, sigma mapped per axis and then
-		// scaled into half-res texels by each axis's actual downsample ratio.
+		// (2) Separable gaussian ping-pong on the blur target, sigma mapped per axis and then
+		// scaled into its texels by each axis's actual downsample ratio (~1/Divisor).
 		const FVector2f HalfRatio(
 			float(Mapped.HalfSize.X) / float(Mapped.SampleRect.Width()), float(Mapped.HalfSize.Y) / float(Mapped.SampleRect.Height()));
 		VaCuusGlass::AddBlurPass(GraphBuilder, ShaderMap, HalfA, HalfB, HalfRect, Mapped.SigmaOut.X * HalfRatio.X, FVector2f(1.0f, 0.0f));
 		VaCuusGlass::AddBlurPass(GraphBuilder, ShaderMap, HalfB, HalfA, HalfRect, Mapped.SigmaOut.Y * HalfRatio.Y, FVector2f(0.0f, 1.0f));
 
 		// (3) The masked glass draw: the entry's geometry (mask copy or generated quad)
-		// through the mapping matrix, sampling the blurred half-res at the output pixel,
+		// through the mapping matrix, sampling the blurred target at the output pixel,
 		// scissored to the mapped write region. SrcAlpha/InvSrcAlpha on color so the
 		// mask's coverage lerps blurred-over-sharp; dest alpha untouched (CW_RGB) — the
 		// output's alpha channel is never meaningful (2 bits on the desktop default).
@@ -621,8 +621,8 @@ void FVaCuusSlateElement::AddGlassPasses(FRDGBuilder& GraphBuilder, const FVaCuu
 			PSParameters->GlassSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 			PSParameters->RenderTargets[0] = FRenderTargetBinding(OutputTexture, ERenderTargetLoadAction::ELoad);
 
-			// SV_Position (output px, already at pixel centers) -> half-res UV: the
-			// downsample maps SampleRect.Min to half texel 0, at HalfRatio texels per
+			// SV_Position (output px, already at pixel centers) -> blur-target UV: the
+			// downsample maps SampleRect.Min to target texel 0, at HalfRatio texels per
 			// output pixel. Bounds keep bilinear taps inside this entry's region of the
 			// pooled RT, whose extent may exceed it.
 			const FVector2f RTExtentInv(1.0f / float(NeededExtent.X), 1.0f / float(NeededExtent.Y));
