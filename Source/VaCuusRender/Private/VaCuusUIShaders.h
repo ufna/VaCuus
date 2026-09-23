@@ -147,6 +147,29 @@ public:
 };
 
 /**
+ * The glass blur's kernel sizing, defined in VaCuusSlateElement.cpp and declared here so
+ * VaCuus.Render.Glass.KernelKeepsItsLight can hold the fill and the divisor to the one
+ * property that shows on screen: the weights the shader sums still add up to one.
+ */
+namespace VaCuusGlass
+{
+/** The largest sigma, in blur-target texels, whose 3-sigma kernel fits the uniform array. */
+inline constexpr float MaxKernelSigma = float(2 * FVaCuusBlurPS::MaxBlurSamples - 1) / 3.0f;
+
+/** How far below the view the blur target may go for a very large sigma. */
+inline constexpr int32 MaxDivisor = 16;
+
+/**
+ * The view-to-blur-target divisor for a view-space sigma: 2 (half resolution), doubled
+ * while the sigma in target texels would still outgrow MaxKernelSigma, up to MaxDivisor.
+ */
+int32 PickBlurDivisor(float ViewSigma);
+
+/** Fills the blur's weights and sample count for Sigma in blur-target texels; returns the sample count. */
+int32 FillBlurWeights(FVaCuusBlurPS::FParameters* Parameters, float Sigma);
+} // namespace VaCuusGlass
+
+/**
  * The glass draw (spec §2(a)): renders the clip-mask geometry (or a generated quad)
  * through FVaCuusUIVS's Projection into the Slate elements texture, sampling the blurred
  * half-res RT at the output pixel's position. Bound with SrcAlpha/InvSrcAlpha so the

@@ -6,6 +6,7 @@
 #include "VaCuusEngine.h"
 #include "VaCuusGlassDistiller.h"
 #include "VaCuusRecordingRenderInterface.h"
+#include "VaCuusUIShaders.h"
 
 #include "Misc/ScopeExit.h"
 
@@ -976,6 +977,53 @@ bool FVaCuusGlassMappingTest::RunTest(const FString& Parameters)
 			FIntPoint(960, 540));
 		TestTrue(TEXT("An empty SceneViewRect clamps to the output extent"),
 			Mapping.MapRect(FIntRect(-10, -10, 2000, 2000)) == FIntRect(0, 0, 960, 540));
+	}
+
+	return true;
+}
+
+/**
+ * THE KERNEL KEEPS ITS LIGHT: the blur's weights are not renormalised, so whatever they
+ * sum to is the brightness of the glass. The sum is taken the way VaCuusBlur.usf:58-68
+ * reads the array -- slot 0's center tap, then each (Weight, Offset) pair twice, once per
+ * mirrored tap, for i < SampleCount stepping by 2 -- so a pair the fill writes and the
+ * shader never reads counts for nothing here either.
+ */
+static float VaCuusSumBlurWeights(float Sigma)
+{
+	FVaCuusBlurPS::FParameters Parameters;
+	const int32 SampleCount = VaCuusGlass::FillBlurWeights(&Parameters, Sigma);
+
+	float Sum = Parameters.WeightAndOffsets[0].X + 2.0f * Parameters.WeightAndOffsets[0].Z;
+	for (int32 Sample = 2; Sample < SampleCount; Sample += 2)
+	{
+		const FVector4f& Slot = Parameters.WeightAndOffsets[Sample / 2];
+		Sum += 2.0f * (Slot.X + Slot.Z);
+	}
+	return Sum;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusGlassKernelLightTest, "VaCuus.Render.Glass.KernelKeepsItsLight",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusGlassKernelLightTest::RunTest(const FString& Parameters)
+{
+	// The premise: at half resolution a large sigma loses light. Should the fill ever
+	// renormalise, this fails first and says the divisor is no longer what fixes it.
+	TestTrue(TEXT("Premise: at divisor 2 a 320px view sigma truncates to under 60% of its light"),
+		VaCuusSumBlurWeights(320.0f / 2.0f) < 0.6f);
+
+	TestEqual(TEXT("A HUD-sized sigma stays at half resolution"), VaCuusGlass::PickBlurDivisor(12.0f), 2);
+	TestEqual(TEXT("So does the largest sigma half resolution holds"), VaCuusGlass::PickBlurDivisor(83.0f), 2);
+	TestEqual(TEXT("A sigma past every divisor stops at MaxDivisor"),
+		VaCuusGlass::PickBlurDivisor(2000.0f), VaCuusGlass::MaxDivisor);
+
+	for (const float ViewSigma : {12.0f, 83.0f, 100.0f, 120.0f, 240.0f, 320.0f, 480.0f, 666.0f})
+	{
+		const int32 Divisor = VaCuusGlass::PickBlurDivisor(ViewSigma);
+		const float Sum = VaCuusSumBlurWeights(ViewSigma / float(Divisor));
+		TestTrue(FString::Printf(TEXT("A %.0fpx view sigma keeps its light (divisor %d, weights sum to %.4f)"),
+			ViewSigma, Divisor, Sum), Sum > 0.99f && Sum < 1.01f);
 	}
 
 	return true;

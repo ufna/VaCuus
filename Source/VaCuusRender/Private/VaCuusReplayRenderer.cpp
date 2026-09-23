@@ -1015,7 +1015,7 @@ void FVaCuusReplayRenderer::ReplayCommands(FRHICommandList& RHICmdList, const FV
 		// once and never switches, and N consecutive DrawShaders cost one switch, not N.
 		// Scissor and viewport survive the switch — they are command-list state, not PSO
 		// state (the glass draw's own pattern: set once, draw through PSO binds,
-		// VaCuusSlateElement.cpp:556-584).
+		// VaCuusSlateElement.cpp:642-670).
 		//
 		// Material (M5 Task 5b) is the odd one out: a material draw is a FULL pipeline
 		// (its VS differs too) bound inside DrawMaterial_RenderThread, so its enum value
