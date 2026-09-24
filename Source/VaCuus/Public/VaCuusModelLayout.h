@@ -407,7 +407,7 @@ public:
 	 * only fails when its body is instantiated.
 	 *
 	 * clang never instantiated that body. `Layout = FVaCuusModelLayout(...)`
-	 * (VaCuusDataArrayTest.cpp:91, VaCuusDataVariableTest.cpp:127) binds an rvalue, move
+	 * (VaCuusDataArrayTest.cpp:91, VaCuusDataVariableTest.cpp:134) binds an rvalue, move
 	 * assignment wins overload resolution, and the copy branch is never odr-used -- so the
 	 * ill-formed member sat there compiling on Linux and macOS for the whole life of the
 	 * file. MSVC defines the implicit copy-assignment eagerly and the body finally got
@@ -448,7 +448,10 @@ public:
 	/** The names DirtyVariable takes, in first-appearance order. */
 	TConstArrayView<FString> GetTopLevelNames() const { return TopLevelNames; }
 
-	/** Exact match on the dotted path. Linear; a build-time and diagnostic helper, not a per-frame one. */
+	/**
+	 * Match on the dotted path, IGNORING CASE -- FString's operator== is Equals(IgnoreCase)
+	 * (UnrealString.h.inl:912-915). Linear; a build-time and diagnostic helper, not a per-frame one.
+	 */
 	const FVaCuusModelField* FindField(FStringView InWireName) const;
 
 private:
@@ -464,6 +467,12 @@ private:
 
 	/** The one build body behind both constructors; keeps InStruct on the stack for its duration. */
 	void Build(const UScriptStruct* InStruct, TArray<const UScriptStruct*>& BuildStack);
+
+	/**
+	 * True when a nested wire name is already a leaf OR already the prefix of a nested
+	 * struct's leaves, ignoring case either way. See the duplicate check in BuildLevel.
+	 */
+	bool IsNestedNameTaken(const FString& InWireName) const;
 
 	/** Walks one struct level, appending leaves and recursing into nested structs. */
 	void BuildLevel(const UScriptStruct* InStruct, const FString& Prefix, int32 BaseOffset, int32 TopLevelNameIndex, int32 Depth,

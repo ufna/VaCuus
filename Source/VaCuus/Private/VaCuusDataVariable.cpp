@@ -389,7 +389,7 @@ const FVaCuusStructDefinition::FMember* FVaCuusStructDefinition::Find(const Rml:
 	// A BYTE-EXACT MISS IS RETRIED IGNORING CASE, because outside the editor a member's
 	// segment is not necessarily spelled the way its author wrote it. The segment is
 	// GetAuthoredName(), which for a native member is its FName as a string
-	// (VaCuusModelLayout.cpp:745, Field.cpp:608-616, Class.cpp:2558-2565), and an FName keeps
+	// (VaCuusModelLayout.cpp:757, Field.cpp:608-616, Class.cpp:2558-2565), and an FName keeps
 	// its own spelling only WITH_CASE_PRESERVING_NAME, which is WITH_EDITORONLY_DATA
 	// (NameTypes.h:26-34). Without it FNamePool::Store looks the name up in the
 	// case-insensitive table and returns the entry already there (UnrealNames.cpp:1878-1901),
@@ -403,9 +403,10 @@ const FVaCuusStructDefinition::FMember* FVaCuusStructDefinition::Find(const Rml:
 	// ever see fail.
 	//
 	// UNAMBIGUOUS: the exact match wins whenever there is one, and the layout refuses a second
-	// leaf whose wire name equals an earlier one ignoring case (VaCuusModelLayout.cpp:766 --
-	// FString equality ignores case, UnrealString.h.inl:912-915, StringView.h:877-880), so no
-	// two leaves of a level can both match. RmlUi folds ASCII only (StringUtilities.cpp:87-92,
+	// member -- leaf or nested struct -- whose name equals an earlier one's ignoring case
+	// (VaCuusModelLayout.cpp:778, IsNestedNameTaken; FString equality ignores case,
+	// UnrealString.h.inl:912-915, StringView.h:877-880), so no two members of a level can
+	// both match. RmlUi folds ASCII only (StringUtilities.cpp:87-92,
 	// :413-428), which is every character a segment may hold (VaCuusModelLayout.cpp:555-568).
 	for (const FMember& Member : Members)
 	{
@@ -441,6 +442,23 @@ Rml::DataVariable FVaCuusStructDefinition::Child(void* InBase, const Rml::DataAd
 
 	if (const FMember* Member = Find(Address.name))
 	{
+#if WITH_CASE_PRESERVING_NAME
+		// IN THE EDITOR A FOLDED MATCH IS ALWAYS THE DOCUMENT'S TYPO. Here an FName prints the
+		// spelling it was created with, so the segment is exactly what the C++ or the struct
+		// editor says, and `Origin.x` against `X` can only be a document that differs from it.
+		// It still resolves -- Find's comment says why the fold is not cooked-only -- but it
+		// says so once, here, where the spelling can be trusted; a cooked build cannot tell a
+		// typo from the name table's first spelling and stays silent. Latched like the misses
+		// below, and the compare is behind the latch, so after the first report it costs nothing.
+		if (!bCaseFoldLogged && Member->Segment != Address.name)
+		{
+			bCaseFoldLogged = true;
+			UE_LOG(LogVaCuus, Warning,
+				TEXT("VaCuus model: '%s' resolved '%s' to its member '%s' ignoring case -- fix the document's spelling. "
+					 "Reported once per struct"),
+				*DiagnosticPath, UTF8_TO_TCHAR(Address.name.c_str()), UTF8_TO_TCHAR(Member->Segment.c_str()));
+		}
+#endif
 		return Rml::DataVariable(Member->Definition, static_cast<uint8*>(InBase) + Member->ContainerOffsetFromTypeBase);
 	}
 

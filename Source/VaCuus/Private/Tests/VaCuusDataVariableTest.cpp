@@ -72,7 +72,8 @@ static const char* GModelName = "hud";
  *
  * `Origin.x` asks for the leaf `X` in the other case. From the editor, that is what a cooked
  * build does to a correctly written document: there the member's spelling is whichever one
- * reached the name table first (FVaCuusStructDefinition::Find carries the citations).
+ * reached the name table first (FVaCuusStructDefinition::Find carries the citations). In the
+ * editor it is also a typo, and Child() says so once -- the expected message below.
  *
  * bBitfieldBool and bBitfieldTwo are seeded 0 and 1: they share a storage byte and an
  * element size and differ only in FieldMask, so reading them through RmlUi as different
@@ -248,6 +249,9 @@ private:
 				// copy into the shadow, then dirty the top-level name.
 				WriteShadowRatio(7.5f);
 				ModelHandle.DirtyVariable("Ratio");
+				// Origin too, with nothing written: it re-resolves `Origin.x` a second time, and
+				// without a second resolve the case-fold line's latch has no observable.
+				ModelHandle.DirtyVariable("Origin");
 				Context->Update();
 				AfterDirty = Capture();
 				break;
@@ -430,6 +434,13 @@ bool FVaCuusDataBindingTest::RunTest(const FString& Parameters)
 	AddExpectedMessagePlain(TEXT("refused a document write to"), ELogVerbosity::Warning, EAutomationExpectedMessageFlags::Contains,
 		/*Occurrences=*/0);
 
+	// `Origin.x` resolves, and in the editor says once that it resolved by folding case.
+	// Occurrences 1, unlike the two above: the line is latched per struct definition, and
+	// phase 2 dirties Origin so `Origin.x` resolves twice -- a second report IS the regression,
+	// the latch gone, one line per re-evaluation.
+	AddExpectedMessagePlain(TEXT("resolved 'x' to its member 'X' ignoring case"), ELogVerbosity::Warning,
+		EAutomationExpectedMessageFlags::Contains, /*Occurrences=*/1);
+
 	// RmlUi's own diagnostics for the same two events -- "Could not get value from data
 	// variable", "Error during execution. Could not assign to variable." and the program dump
 	// -- are deliberately NOT registered. They arrive as LogVaCuus Warnings through
@@ -577,6 +588,7 @@ bool FVaCuusDataBindingTest::RunTest(const FString& Parameters)
 
 	TestEqual(TEXT("a shadow write plus DirtyVariable reaches the DOM"), FCString::Atof(*Host->AfterDirty.Ratio), 7.5f);
 	TestEqual(TEXT("and an undirtied field is untouched"), Host->AfterDirty.Title, FString(TEXT("Hello")));
+	TestEqual(TEXT("a re-resolved other-case leaf still reads its value"), FCString::Atof(*Host->AfterDirty.OriginXOtherCase), 11.f);
 
 	UIThread->EnqueueRemoveView(ViewId);
 	RunFrames(*UIThread, 1);

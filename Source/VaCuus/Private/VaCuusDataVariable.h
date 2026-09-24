@@ -243,6 +243,9 @@ private:
 	bool bIndexedMissLogged = false;
 	bool bMemberMissLogged = false;
 	bool bSizeMissLogged = false;
+
+	/** Editor-only in effect: set by Child() under WITH_CASE_PRESERVING_NAME alone. */
+	bool bCaseFoldLogged = false;
 };
 
 /**

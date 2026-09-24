@@ -647,6 +647,18 @@ const FVaCuusModelField* FVaCuusModelLayout::FindField(FStringView InWireName) c
 	return Fields.FindByPredicate([InWireName](const FVaCuusModelField& Field) { return Field.WireName == InWireName; });
 }
 
+bool FVaCuusModelLayout::IsNestedNameTaken(const FString& InWireName) const
+{
+	// A NESTED STRUCT HAS NO FIELD OF ITS OWN -- only its leaves do (BuildLevel's struct
+	// interception) -- so FindField alone sees a leaf named `Panel.Armor` and is blind to a
+	// struct named `Panel.Armor` whose leaves are `Panel.Armor.X`. The prefix test is that
+	// struct. StartsWith with IgnoreCase to match FindField, whose operator== ignores case.
+	const FString AsPrefix = InWireName + TEXT(".");
+	return FindField(InWireName) != nullptr
+		|| Fields.ContainsByPredicate([&AsPrefix](const FVaCuusModelField& Field)
+			   { return Field.WireName.StartsWith(AsPrefix, ESearchCase::IgnoreCase); });
+}
+
 void FVaCuusModelLayout::BuildLevel(const UScriptStruct* InStruct, const FString& Prefix, int32 BaseOffset,
 	int32 TopLevelNameIndex, int32 Depth, TArray<const UScriptStruct*>& BuildStack)
 {
@@ -763,11 +775,17 @@ void FVaCuusModelLayout::BuildLevel(const UScriptStruct* InStruct, const FString
 
 		const FString WireName = Prefix + AuthoredName;
 
-		if (bTopLevel ? TopLevelNames.Contains(WireName) : (FindField(WireName) != nullptr))
+		if (bTopLevel ? TopLevelNames.Contains(WireName) : IsNestedNameTaken(WireName))
 		{
 			// Reachable without anyone writing a duplicate: GetAuthoredName() chops a
 			// Blueprint member down to its base, and two never-renamed members both chop to
 			// "MemberVar" in a cooked build (UserDefinedStruct.cpp:300-312).
+			//
+			// ONE MEMBER PER NAME PER LEVEL, IGNORING CASE, whatever kind each one is: a
+			// struct followed by a leaf of the same name would otherwise give its level two
+			// members and FVaCuusStructDefinition::Find two candidates. The top-level arm has
+			// always had this -- TopLevelNames carries nested names too, and TArray<FString>::
+			// Contains is operator==, which ignores case.
 			UE_LOG(LogVaCuus, Error,
 				TEXT("VaCuus model '%s': property '%s' cannot be bound under the name '%s' -- that name is already taken by "
 					 "another property"),

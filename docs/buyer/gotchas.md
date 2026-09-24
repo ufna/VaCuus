@@ -640,7 +640,9 @@ same-spelled-differently names silently take its casing (bd memory
 member `Id` reads back as `ID` in a cooked build where anything registered `ID` first.
 Struct members are matched byte-exact and then ignoring case, so `{{ row.Id }}` resolves
 either way (`Source/VaCuus/Private/VaCuusDataVariable.cpp`,
-`FVaCuusStructDefinition::Find`); a model's top-level field names are matched by RmlUi
+`FVaCuusStructDefinition::Find`). The editor, where a member's spelling is its author's, logs
+a match that needed the fold once per struct as `resolved 'id' to its member 'Id' ignoring
+case` — that is a real typo, fix it. A model's top-level field names are matched by RmlUi
 byte-for-byte (`Source/ThirdParty/RmlUi/Source/Core/DataModel.cpp:234`) and are not
 covered — a `Could not find variable name` warning that only a cooked build logs is this.
 Bundle paths dodge this by construction: they are normalized lowercase

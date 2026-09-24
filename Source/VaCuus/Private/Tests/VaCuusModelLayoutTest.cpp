@@ -547,7 +547,12 @@ static UUserDefinedStruct* MakeUserStruct(const TArray<FString>& MemberNames)
  * editor automation test only exercises the editor branch; this one reaches the other.
  *
  * BOTH BRANCHES OF THE CHECK, because it is written as a ternary over two different lookups: a
- * top-level name is tested against TopLevelNames, a nested one against FindField().
+ * top-level name is tested against TopLevelNames, a nested one against IsNestedNameTaken().
+ *
+ * AND BOTH ORDERS OF A LEAF AND A STRUCT under one nested name. A nested struct has no field
+ * of its own, so a check against leaves alone refuses a struct that follows a leaf and
+ * accepts a leaf that follows a struct -- leaving that level two members of one name, which
+ * FVaCuusStructDefinition::Find resolves to whichever was added first.
  */
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusModelLayoutDuplicateNameTest, "VaCuus.Model.LayoutDuplicateName",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -562,6 +567,10 @@ bool FVaCuusModelLayoutDuplicateNameTest::RunTest(const FString& Parameters)
 	AddExpectedMessagePlain(
 		TEXT("cannot be bound under the name 'Health' --"), ELogVerbosity::Error, EAutomationExpectedMessageFlags::Contains, 1);
 	AddExpectedMessagePlain(TEXT("cannot be bound under the name 'Panel.Health' --"), ELogVerbosity::Error,
+		EAutomationExpectedMessageFlags::Contains, 1);
+	AddExpectedMessagePlain(TEXT("cannot be bound under the name 'LeafFirst.Armor' --"), ELogVerbosity::Error,
+		EAutomationExpectedMessageFlags::Contains, 1);
+	AddExpectedMessagePlain(TEXT("cannot be bound under the name 'StructFirst.Armor' --"), ELogVerbosity::Error,
 		EAutomationExpectedMessageFlags::Contains, 1);
 
 	const FString FirstHealth = MangledMemberName(TEXT("Health"), 2, TEXT("9F3C1A084F6E4B2D8E7A5C0B1D2E3F40"));
@@ -628,6 +637,55 @@ bool FVaCuusModelLayoutDuplicateNameTest::RunTest(const FString& Parameters)
 			TestEqual(TEXT("under its dotted path"), Layout.GetFields()[0].WireName, FString(TEXT("Panel.Health")));
 		}
 		TestEqual(TEXT("and one top-level name, the struct's"), Layout.GetTopLevelNames().Num(), 1);
+	}
+
+	// ---- Nested branch, a LEAF and a STRUCT that chop to one name, in both orders. ----
+	//
+	// `Armor_2_...` is an int32, `Armor_5_...` a struct with one leaf `X`; both chop to
+	// `Armor`. Whichever the level walks first is bound, the other refused.
+	{
+		TStrongObjectPtr<UUserDefinedStruct> Point(
+			MakeUserStruct({MangledMemberName(TEXT("X"), 1, TEXT("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"))}));
+		const FString LeafName = MangledMemberName(TEXT("Armor"), 2, TEXT("BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"));
+		const FString StructName = MangledMemberName(TEXT("Armor"), 5, TEXT("CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"));
+
+		for (const bool bStructFirst : {false, true})
+		{
+			const TCHAR* const Outer = bStructFirst ? TEXT("StructFirst") : TEXT("LeafFirst");
+
+			// AddCppProperty PREPENDS (Class.cpp:723-727), so the member added LAST is walked
+			// first. The premise below asserts the walk order rather than trusting this.
+			TStrongObjectPtr<UUserDefinedStruct> Panel(NewUserStruct());
+			if (bStructFirst)
+			{
+				AddIntMember(Panel.Get(), *LeafName);
+				AddStructMember(Panel.Get(), *StructName, Point.Get());
+			}
+			else
+			{
+				AddStructMember(Panel.Get(), *StructName, Point.Get());
+				AddIntMember(Panel.Get(), *LeafName);
+			}
+			Panel->Bind();
+			Panel->StaticLink(/*bRelinkExistingProperties=*/true);
+
+			const FProperty* FirstWalked = *TFieldIterator<FProperty>(Panel.Get());
+			TestEqual(FString::Printf(TEXT("%s: the premise -- that member is walked first"), Outer),
+				FirstWalked->IsA<FStructProperty>(), bStructFirst);
+
+			TStrongObjectPtr<UUserDefinedStruct> Root(NewUserStruct());
+			AddStructMember(Root.Get(), *MangledMemberName(Outer, 0, TEXT("DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD")), Panel.Get());
+			Root->Bind();
+			Root->StaticLink(/*bRelinkExistingProperties=*/true);
+
+			const FVaCuusModelLayout Layout(Root.Get());
+
+			const FString Kept = FString(Outer) + (bStructFirst ? TEXT(".Armor.X") : TEXT(".Armor"));
+			if (TestEqual(FString::Printf(TEXT("%s: one member survives the collision"), Outer), Layout.GetFields().Num(), 1))
+			{
+				TestEqual(FString::Printf(TEXT("%s: the one walked first"), Outer), Layout.GetFields()[0].WireName, Kept);
+			}
+		}
 	}
 
 	return true;
