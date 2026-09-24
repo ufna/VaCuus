@@ -201,7 +201,7 @@ public:
 
 	virtual Rml::StringList ReflectMemberNames() override;
 
-	/** Exact segment match; null when absent. Diagnostics and tests. */
+	/** Segment match, byte-exact first and then ignoring case (see Find); null when absent. Diagnostics and tests. */
 	const FVaCuusStructDefinition* FindNested(const FString& Segment) const;
 
 private:

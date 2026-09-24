@@ -17,6 +17,7 @@
 #include "UObject/Utf8StrProperty.h"
 
 #include <RmlUi/Core/DataModelHandle.h>
+#include <RmlUi/Core/StringUtilities.h>
 
 #include <atomic>
 
@@ -380,6 +381,35 @@ const FVaCuusStructDefinition::FMember* FVaCuusStructDefinition::Find(const Rml:
 	for (const FMember& Member : Members)
 	{
 		if (Member.Segment == Segment)
+		{
+			return &Member;
+		}
+	}
+
+	// A BYTE-EXACT MISS IS RETRIED IGNORING CASE, because outside the editor a member's
+	// segment is not necessarily spelled the way its author wrote it. The segment is
+	// GetAuthoredName(), which for a native member is its FName as a string
+	// (VaCuusModelLayout.cpp:745, Field.cpp:608-616, Class.cpp:2558-2565), and an FName keeps
+	// its own spelling only WITH_CASE_PRESERVING_NAME, which is WITH_EDITORONLY_DATA
+	// (NameTypes.h:26-34). Without it FNamePool::Store looks the name up in the
+	// case-insensitive table and returns the entry already there (UnrealNames.cpp:1878-1901),
+	// so the first spelling registered in the process is the one every later FName of that
+	// name prints. A cooked game's `Id` member reads back `ID` once anything has registered
+	// `ID`, and a document's correct `row.Id` misses with nothing in the document or the
+	// struct wrong.
+	//
+	// IN THE EDITOR TOO, deliberately: a document that resolves in the editor must resolve
+	// cooked, and a fold compiled only into cooked builds is one no editor-side test could
+	// ever see fail.
+	//
+	// UNAMBIGUOUS: the exact match wins whenever there is one, and the layout refuses a second
+	// leaf whose wire name equals an earlier one ignoring case (VaCuusModelLayout.cpp:766 --
+	// FString equality ignores case, UnrealString.h.inl:912-915, StringView.h:877-880), so no
+	// two leaves of a level can both match. RmlUi folds ASCII only (StringUtilities.cpp:87-92,
+	// :413-428), which is every character a segment may hold (VaCuusModelLayout.cpp:555-568).
+	for (const FMember& Member : Members)
+	{
+		if (Rml::StringUtilities::StringCompareCaseInsensitive(Member.Segment, Segment))
 		{
 			return &Member;
 		}

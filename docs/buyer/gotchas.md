@@ -636,11 +636,17 @@ expect a PIE restart alone to drop cached styles in the same editor process.
 **16. An identifier that differs only by case works uncooked and breaks cooked.**
 Cause: FName case-collision — in cooked builds the first registration wins and later
 same-spelled-differently names silently take its casing (bd memory
-`fname-cooked-first-registration-wins`). Bundle paths dodge this by construction:
-they are normalized lowercase (`Source/VaCuus/Public/VaCuusBundle.h`,
-`NormalizePath` — the one definition).
+`fname-cooked-first-registration-wins`). The other spelling need not be yours: a model
+member `Id` reads back as `ID` in a cooked build where anything registered `ID` first.
+Struct members are matched byte-exact and then ignoring case, so `{{ row.Id }}` resolves
+either way (`Source/VaCuus/Private/VaCuusDataVariable.cpp`,
+`FVaCuusStructDefinition::Find`); a model's top-level field names are matched by RmlUi
+byte-for-byte (`Source/ThirdParty/RmlUi/Source/Core/DataModel.cpp:234`) and are not
+covered — a `Could not find variable name` warning that only a cooked build logs is this.
+Bundle paths dodge this by construction: they are normalized lowercase
+(`Source/VaCuus/Public/VaCuusBundle.h`, `NormalizePath` — the one definition).
 Do: treat UI paths and model names as case-insensitive-unique; never distinguish two
-identities by case alone.
+identities by case alone; rename a top-level field that stops resolving cooked.
 
 **17. The standalone binary exits within seconds on uncooked content — no log, exit 1.**
 Cause: a non-editor target has no compiled global shader library and cannot build one

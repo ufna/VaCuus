@@ -53,6 +53,7 @@ struct FObserved
 	FString Icon;
 	FString OriginX;
 	FString OriginY;
+	FString OriginXOtherCase;
 	FString Missing;
 };
 
@@ -68,6 +69,10 @@ static const char* GModelName = "hud";
  * it must produce a diagnostic and an empty DataVariable rather than dereference a null
  * definition -- DataVariable::Get does not null-check `definition` at all
  * (DataVariable.cpp:5-8).
+ *
+ * `Origin.x` asks for the leaf `X` in the other case. From the editor, that is what a cooked
+ * build does to a correctly written document: there the member's spelling is whichever one
+ * reached the name table first (FVaCuusStructDefinition::Find carries the citations).
  *
  * bBitfieldBool and bBitfieldTwo are seeded 0 and 1: they share a storage byte and an
  * element size and differ only in FieldMask, so reading them through RmlUi as different
@@ -92,6 +97,7 @@ static const TCHAR* GDocument = TEXT(R"(<rml>
 	<div id="originx" data-attr-p="Origin.X"/>
 	<div id="originy" data-attr-p="Origin.Y"/>
 	<div id="missing" data-attr-p="Origin.size"/>
+	<div id="xcase"   data-attr-p="Origin.x"/>
 	<div id="btn"     data-event-click="Ratio = 99"/>
 </body>
 </rml>)");
@@ -344,6 +350,7 @@ private:
 		Out.Icon = Attribute("icon");
 		Out.OriginX = Attribute("originx");
 		Out.OriginY = Attribute("originy");
+		Out.OriginXOtherCase = Attribute("xcase");
 		Out.Missing = Attribute("missing");
 		return Out;
 	}
@@ -512,6 +519,8 @@ bool FVaCuusDataBindingTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("an unsigned byte is not sign-extended"), FCString::Atoi(*Initial.Level), 200);
 	TestEqual(TEXT("a nested leaf resolves through Child()"), FCString::Atof(*Initial.OriginX), 11.f);
 	TestEqual(TEXT("and so does its sibling"), FCString::Atof(*Initial.OriginY), 22.f);
+	TestEqual(TEXT("a nested leaf asked for in the other case resolves to the same value"),
+		FCString::Atof(*Initial.OriginXOtherCase), 11.f);
 
 	// THE BITFIELD PAIR, END TO END. Both address the same byte with the same element size
 	// and differ only in FieldMask, so any read that is not mask-aware returns the same value
