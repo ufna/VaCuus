@@ -692,3 +692,54 @@ Restore-the-bug, Win64, UE 5.8.1 DebugGame host editor, -unattended -nullrhi, 20
     in range".
 
 NOT yet offered upstream -- same standing as patches #1-#6.
+
+Patch #9 -- text-transform changes the case of ASCII letters only.
+
+One file: Source/Core/ElementText.cpp. The old BuildToken body becomes BuildTokenUntransformed
+(:569, same logic, the transform parameter and the ASCII-only transform block removed), and a new
+BuildToken with the old signature (:807) calls it and then, for Uppercase or Lowercase, re-encodes
+the token code point by code point (TransformTextCase, :783). The forward declaration (:21) and both
+call sites in GenerateLine (:264, :302) are untouched.
+
+THE DEFECT IS UPSTREAM'S. BuildToken walks the UTF-8 text one BYTE at a time
+(`char character = *token_begin;`) and applied the transform only to `a-z` / `A-Z` (pre-patch
+:679-688). A multi-byte code point never matches, so `text-transform: uppercase` renders "Accept"
+as ACCEPT but a Russian, Greek, Spanish or French caption unchanged. Found in a game localised into
+Russian: ten RCSS rules (captions, buttons, toast and tracker titles, speaker names) put English in
+capitals and left every Russian string in mixed case. Only the letters of the string's own ASCII
+runs change -- "nandu" with n-tilde and u-acute comes out as n-tilde + "AND" + u-acute.
+
+The mapping (ToUpperCharacter :711, ToLowerCharacter :745) is Unicode's simple, one-to-one case
+mapping (UnicodeData.txt fields 12 and 13) for ASCII, Latin-1 Supplement, Latin Extended-A, Latin
+Extended Additional, Greek and Cyrillic + Cyrillic Supplement: the contiguous blocks by offset, the
+even/odd pair blocks by parity, and the irregular letters (y-diaeresis / Y-diaeresis, dotted
+capital I, dotless i, long s, final sigma, the Greek tonos letters, palochka, capital sharp s) by
+name. Everything else, and letters whose other case needs two code points (German sharp s), keeps
+its case -- as all of it did before. `capitalize` stays unimplemented, as it was.
+
+Only a well-formed code point is re-encoded: one whose span to the next lead byte equals its own
+canonical encoding. SeekForwardUTF8 skips every continuation byte whatever the lead byte declared
+(Include/RmlUi/Core/StringUtilities.h:100-105) while ToCharacter reads only the declared count and
+returns Null for a bad lead, a truncated or a broken sequence (Source/Core/StringUtilities.cpp:
+431-478), so without that check an orphan continuation byte after a letter would be swallowed on
+re-encoding. A bad lead, a truncated or overlong sequence and orphan continuation bytes are copied
+byte for byte, as before. That branch holds by construction and review, not by test: a document
+built from FString text cannot carry malformed UTF-8.
+
+Cost: GenerateLine runs at layout (Layout/InlineLevelBox.cpp:154, Elements/WidgetTextInput.cpp:
+1291), not per frame, and only elements with text-transform uppercase or lowercase take the second
+pass; `none` returns straight after BuildTokenUntransformed.
+
+Test: VaCuus.Rml.TextTransform.Unicode (Source/VaCuus/Private/Tests/VaCuusTextTransformTest.cpp)
+lays out an uppercase, a lowercase and an untransformed div -- Latin, Cyrillic, Greek, Latin-1,
+sharp s, dotless and dotted I -- and compares each ElementText's GetLines() text, the string before
+glyph lookup, so the LatoLatin face need not cover Cyrillic or Greek. The source file stays ASCII:
+every non-ASCII letter is built from its code point at run time.
+Restore-the-bug, Win64, UE 5.8 host editor, -unattended -nullrhi, 2026-09-26:
+  - patch absent: Result={Fail} on "upper" and "lower" only -- the uppercase div read back as
+    "ACCEPT" + the Cyrillic, Greek and accented letters unchanged + "STRA" sharp-s "E" + dotless i;
+    the untransformed control passed;
+  - patch present: Success; the rest of VaCuus. green alongside it (447 of 447 with the host's own
+    UI tests).
+
+NOT yet offered upstream -- same standing as patches #1-#6 and #8.

@@ -566,8 +566,8 @@ void ElementText::GenerateDecoration(Mesh& mesh, const FontFaceHandle font_face_
 	}
 }
 
-static bool BuildToken(String& token, const char*& token_begin, const char* string_end, bool first_token, bool collapse_white_space,
-	bool break_at_endline, Style::TextTransform text_transformation, bool decode_escape_characters)
+static bool BuildTokenUntransformed(String& token, const char*& token_begin, const char* string_end, bool first_token, bool collapse_white_space,
+	bool break_at_endline, bool decode_escape_characters)
 {
 	RMLUI_ASSERT(token_begin != string_end);
 
@@ -676,17 +676,6 @@ static bool BuildToken(String& token, const char*& token_begin, const char* stri
 		}
 		else
 		{
-			if (text_transformation == Style::TextTransform::Uppercase)
-			{
-				if (character >= 'a' && character <= 'z')
-					character += ('A' - 'a');
-			}
-			else if (text_transformation == Style::TextTransform::Lowercase)
-			{
-				if (character >= 'A' && character <= 'Z')
-					character -= ('A' - 'a');
-			}
-
 			token += character;
 		}
 
@@ -694,6 +683,136 @@ static bool BuildToken(String& token, const char*& token_begin, const char* stri
 	}
 
 	return false;
+}
+
+// VaCuus patch #9 (VENDORED_TAG.txt): text-transform maps Unicode letters, not only ASCII. Upstream
+// transformed the token byte by byte and only a-z / A-Z, so Cyrillic, Greek and accented Latin kept their case under
+// text-transform: uppercase. The mapping below is Unicode's simple (one-to-one) case mapping for the blocks a shipped UI
+// is translated into; anything else, and letters whose other case needs two code points (sharp s), is left as is.
+static bool IsInRange(char32_t c, char32_t first, char32_t last)
+{
+	return c >= first && c <= last;
+}
+
+// Blocks where an even code point is the uppercase and the next odd one its lowercase.
+static bool IsEvenUpperPair(char32_t c)
+{
+	return IsInRange(c, 0x0100, 0x012F) || IsInRange(c, 0x0132, 0x0137) || IsInRange(c, 0x014A, 0x0177) ||
+		IsInRange(c, 0x0460, 0x0481) || IsInRange(c, 0x048A, 0x04BF) || IsInRange(c, 0x04D0, 0x052F) ||
+		IsInRange(c, 0x1E00, 0x1E95) || IsInRange(c, 0x1EA0, 0x1EFF);
+}
+
+// Blocks where an odd code point is the uppercase and the next even one its lowercase.
+static bool IsOddUpperPair(char32_t c)
+{
+	return IsInRange(c, 0x0139, 0x0148) || IsInRange(c, 0x0179, 0x017E) || IsInRange(c, 0x04C1, 0x04CE);
+}
+
+static Character ToUpperCharacter(Character character)
+{
+	const char32_t c = static_cast<char32_t>(character);
+	char32_t result = c;
+	if (IsInRange(c, U'a', U'z') || (IsInRange(c, 0x00E0, 0x00FE) && c != 0x00F7) || IsInRange(c, 0x03B1, 0x03C1) ||
+		IsInRange(c, 0x03C3, 0x03CB) || IsInRange(c, 0x0430, 0x044F))
+		result = c - 0x20;
+	else if (c == 0x00FF)
+		result = 0x0178;
+	else if (c == 0x0131)
+		result = U'I';
+	else if (c == 0x017F)
+		result = U'S';
+	else if (c == 0x03C2)
+		result = 0x03A3;
+	else if (c == 0x03AC)
+		result = 0x0386;
+	else if (IsInRange(c, 0x03AD, 0x03AF))
+		result = c - 0x25;
+	else if (c == 0x03CC)
+		result = 0x038C;
+	else if (IsInRange(c, 0x03CD, 0x03CE))
+		result = c - 0x3F;
+	else if (IsInRange(c, 0x0450, 0x045F))
+		result = c - 0x50;
+	else if (c == 0x04CF)
+		result = 0x04C0;
+	else if (IsEvenUpperPair(c) && (c & 1) == 1)
+		result = c - 1;
+	else if (IsOddUpperPair(c) && (c & 1) == 0)
+		result = c - 1;
+	return static_cast<Character>(result);
+}
+
+static Character ToLowerCharacter(Character character)
+{
+	const char32_t c = static_cast<char32_t>(character);
+	char32_t result = c;
+	if (IsInRange(c, U'A', U'Z') || (IsInRange(c, 0x00C0, 0x00DE) && c != 0x00D7) || IsInRange(c, 0x0391, 0x03A1) ||
+		IsInRange(c, 0x03A3, 0x03AB) || IsInRange(c, 0x0410, 0x042F))
+		result = c + 0x20;
+	else if (c == 0x0178)
+		result = 0x00FF;
+	else if (c == 0x0130)
+		result = U'i';
+	else if (c == 0x1E9E)
+		result = 0x00DF;
+	else if (c == 0x0386)
+		result = 0x03AC;
+	else if (IsInRange(c, 0x0388, 0x038A))
+		result = c + 0x25;
+	else if (c == 0x038C)
+		result = 0x03CC;
+	else if (IsInRange(c, 0x038E, 0x038F))
+		result = c + 0x3F;
+	else if (IsInRange(c, 0x0400, 0x040F))
+		result = c + 0x50;
+	else if (c == 0x04C0)
+		result = 0x04CF;
+	else if (IsEvenUpperPair(c) && (c & 1) == 0)
+		result = c + 1;
+	else if (IsOddUpperPair(c) && (c & 1) == 1)
+		result = c + 1;
+	return static_cast<Character>(result);
+}
+
+// Re-encodes token[begin..] code point by code point, walking from one lead byte to the next. Only a well-formed span
+// is mapped -- one whose length to the next lead byte is exactly the canonical encoding of what it decodes to.
+// SeekForwardUTF8 skips every continuation byte, however many the lead byte declared (StringUtilities.h:100-105),
+// while ToCharacter reads only the declared count and returns Null for a bad lead, a truncated or a broken sequence
+// (StringUtilities.cpp:431-478); so an orphan continuation byte after a letter, or an overlong sequence, would otherwise
+// be decoded as a letter and lose bytes on re-encoding. Any other span is copied byte for byte, as upstream copied it.
+static void TransformTextCase(String& token, size_t begin, Style::TextTransform text_transformation)
+{
+	const bool to_upper = (text_transformation == Style::TextTransform::Uppercase);
+	String transformed;
+	transformed.reserve(token.size() - begin);
+	const char* p = token.data() + begin;
+	const char* const end = token.data() + token.size();
+	while (p < end)
+	{
+		const char* const next = StringUtilities::SeekForwardUTF8(p + 1, end);
+		const Character character = StringUtilities::ToCharacter(p, next);
+		const bool well_formed = character != Character::Null && size_t(next - p) == StringUtilities::BytesUTF8(character);
+		Character mapped = character;
+		if (well_formed)
+			mapped = to_upper ? ToUpperCharacter(character) : ToLowerCharacter(character);
+		if (mapped == character)
+			transformed.append(p, next);
+		else
+			transformed += StringUtilities::ToUTF8(mapped);
+		p = next;
+	}
+	token.replace(begin, String::npos, transformed);
+}
+
+static bool BuildToken(String& token, const char*& token_begin, const char* string_end, bool first_token, bool collapse_white_space,
+	bool break_at_endline, Style::TextTransform text_transformation, bool decode_escape_characters)
+{
+	const size_t transform_begin = token.size();
+	const bool result =
+		BuildTokenUntransformed(token, token_begin, string_end, first_token, collapse_white_space, break_at_endline, decode_escape_characters);
+	if (text_transformation == Style::TextTransform::Uppercase || text_transformation == Style::TextTransform::Lowercase)
+		TransformTextCase(token, transform_begin, text_transformation);
+	return result;
 }
 
 static bool LastToken(const char* token_begin, const char* string_end, bool collapse_white_space, bool break_at_endline)
