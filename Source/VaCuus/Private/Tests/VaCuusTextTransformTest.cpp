@@ -311,4 +311,140 @@ bool FVaCuusTextTransformTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+namespace VaCuusTextTransformTest
+{
+/**
+ * A text field asked for `text-transform: uppercase` twice -- inherited from body and in its own
+ * style attribute -- holding "kap" + dotless i, the Turkish word for "door". Dotless i (2 UTF-8
+ * bytes) upper-cases to ASCII 'I' (1 byte) under Patch #9, so IF the transform reached the field
+ * its displayed line would be one byte shorter than its value.
+ */
+static FString BuildInputDocument()
+{
+	FString Doc;
+	Doc += TEXT("<rml>\n<head><style>\n");
+	Doc += TEXT("body { display: block; font-family: LatoLatin; font-size: 16px; text-transform: uppercase; }\n");
+	Doc += TEXT("input { display: inline-block; width: 300px; }\n");
+	Doc += TEXT("</style></head>\n<body>\n");
+	Doc += TEXT("<input id=\"field\" type=\"text\" style=\"text-transform: uppercase;\" value=\"kap");
+	AppendCodepoints(Doc, {0x131});
+	Doc += TEXT("\"/>\n</body>\n</rml>\n");
+	return Doc;
+}
+
+static FString ExpectedInputValue()
+{
+	FString Out = TEXT("kap");
+	AppendCodepoints(Out, {0x131});
+	Out += TEXT("x");
+	return Out;
+}
+
+/** Frame 0 lays the field out; frame 1 focuses it, presses End, types 'x' and reads the value. */
+class FInputByteParityProbeHost final : public FVaCuusTestDocumentHost
+{
+public:
+	FInputByteParityProbeHost()
+		: FVaCuusTestDocumentHost(TEXT("vacuus_text_transform_input"), "vacuus://text_transform_input.rml", Rml::FocusFlag::Document)
+	{
+	}
+
+	virtual void SetVisible(bool /*bVisible*/) override {}
+
+	virtual void RecordAndPublishFrame() override
+	{
+		check(FVaCuusUIThread::IsInUIThread());
+
+		Context->Update();
+
+		if (RmlDocument != nullptr && FrameIndex++ == 1)
+		{
+			if (Rml::ElementFormControlInput* Field = rmlui_dynamic_cast<Rml::ElementFormControlInput*>(RmlDocument->GetElementById("field")))
+			{
+				Field->Focus();
+				Context->ProcessKeyDown(Rml::Input::KI_END, 0);
+				Context->ProcessTextInput("x");
+				Context->Update();
+				bFieldFound = true;
+				FieldValue = UTF8_TO_TCHAR(Field->GetValue().c_str());
+			}
+		}
+
+		Status->FramesRecorded.fetch_add(1, std::memory_order_release);
+	}
+
+	//~ Post-frame observations, same hand-off as FTextTransformProbeHost.
+	bool bFieldFound = false;
+	FString FieldValue;
+
+private:
+	int32 FrameIndex = 0;
+};
+}	 // namespace VaCuusTextTransformTest
+
+/**
+ * GUARD FOR AN UPSTREAM LINE PATCH #9 RELIES ON. Four of Patch #9's mappings change a letter's
+ * UTF-8 length (dotless i, dotted capital I, long s, capital sharp s), and the text-input widget
+ * cannot survive that: it takes the displayed line's byte count as a length in its value
+ * (WidgetTextInput.cpp:1294, used at :873 and :1098). It never sees a transform only because it
+ * pins `text-transform: none` on its element as an inline property (WidgetTextInput.cpp:169),
+ * which neither an inherited value nor the element's own style attribute overrides.
+ *
+ * Restore-the-bug, 2026-09-26: with :169 removed the field displays "KAPI", End stops one byte
+ * short and snaps BACK to the boundary before the dotless i (EndLine seeks backward, :881), and
+ * the value reads "kap" + 'x' + dotless i. With :169 in place, End lands after it.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusTextTransformInputTest, "VaCuus.Rml.TextTransform.InputByteParity",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusTextTransformInputTest::RunTest(const FString& Parameters)
+{
+	using namespace VaCuusTextTransformTest;
+
+	if (!FPlatformProcess::SupportsMultithreading())
+	{
+		AddInfo(TEXT("Skipped: no multithreading support, so there is no UI thread to drive"));
+		return true;
+	}
+
+	FVaCuusModule& Module = FVaCuusModule::Get();
+	FVaCuusUIThread* UIThread = Module.GetOrStartUIThread();
+	if (!TestNotNull(TEXT("UI thread"), UIThread))
+	{
+		return false;
+	}
+
+	ON_SCOPE_EXIT
+	{
+		Module.StopUIThread();
+	};
+
+	TUniquePtr<FInputByteParityProbeHost> Owned = MakeUnique<FInputByteParityProbeHost>();
+	FInputByteParityProbeHost* Probe = Owned.Get();
+	const TSharedRef<FVaCuusViewStatus> Status = MakeShared<FVaCuusViewStatus>();
+	const uint32 ViewId = UIThread->AllocateViewId();
+
+	UIThread->EnqueueAddView(ViewId, MoveTemp(Owned), FIntPoint(400, 200), Status);
+	UIThread->EnqueueLoadDocumentFromMemory(ViewId, BuildInputDocument(), /*LoadSerial=*/1);
+	if (!TestTrue(TEXT("frames ran over the document"), RunFrames(*UIThread, 3)))
+	{
+		return false;
+	}
+
+	if (!TestTrue(TEXT("document loaded"),
+			Status->LoadCompletedSerial.load(std::memory_order_acquire) == 1 &&
+				Status->LoadResult.load(std::memory_order_relaxed) == uint8(EVaCuusLoadResult::Succeeded)))
+	{
+		return false;
+	}
+
+	if (!TestTrue(TEXT("the field was found and driven"), Probe->bFieldFound))
+	{
+		return false;
+	}
+	TestEqual(TEXT("End + 'x' appends after the dotless i: the field stays untransformed"), Probe->FieldValue, ExpectedInputValue());
+
+	return true;
+}
+
 #endif	  // WITH_DEV_AUTOMATION_TESTS

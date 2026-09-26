@@ -743,3 +743,14 @@ Restore-the-bug, Win64, UE 5.8 host editor, -unattended -nullrhi, 2026-09-26:
     UI tests).
 
 NOT yet offered upstream -- same standing as patches #1-#6 and #8.
+
+Patch #9 follow-up (owner, landing PR #19) -- the text-input widget must stay untransformed.
+Four mappings change a letter's UTF-8 length (dotless i -> I, dotted capital I -> i, long s ->
+S, capital sharp s -> sharp s). WidgetTextInput takes the displayed line's byte count as a
+length in its value (Source/Core/Elements/WidgetTextInput.cpp:1294, used at :873 and :1098),
+so a transformed field would misplace its cursor. It is safe only because the widget pins
+`text-transform: none` on its element (:169), which neither inheritance nor the element's own
+style attribute overrides. VaCuus.Rml.TextTransform.InputByteParity guards that line: with :169
+removed it fails -- End in an uppercase "kap" + dotless i field snaps back before the dotless i
+and the typed 'x' lands inside the word; with :169 present it passes. A re-vendor that drops
+:169 must make the transform length-preserving on that path instead.
