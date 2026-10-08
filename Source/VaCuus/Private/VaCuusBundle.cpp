@@ -245,15 +245,18 @@ FString HashToHex(const FBlake3Hash& Hash)
 #if WITH_EDITOR
 namespace VaCuusBundlePack
 {
-	
 namespace
 {
-	struct FClaim
-	{
-		int32 RootIndex = 0;
-		int32 OutIndex = 0;
-	};
-}
+// At namespace scope, not local to EnumerateTree where it was first written: MSVC 19.44.35211
+// (VS 2022 17.14) stops with an internal compiler error on the function-local form -- a local
+// struct with default member initializers used as a TMap value (PR #21, Win64 editor target).
+// clang accepts both forms, so moving it back would still build on Linux and break only there.
+struct FClaim
+{
+	int32 RootIndex = 0;
+	int32 OutIndex = 0;
+};
+}	 // namespace
 
 TArray<FSourceFile> EnumerateTree(const TArray<FString>& Roots, int32* OutNumShadowed, int32* OutNumTestsExcluded,
 	const FString& AssetOnlyRoot, int32* OutNumDemosExcluded)
