@@ -1038,3 +1038,16 @@ line GenerateString draws. Line shifts: ElementText.cpp +11 from old :323 (+1 :2
 +6 from old :74; FontEngineInterface.h +10 from :90. Moved in-repo citations, each compared with the
 line it named before: ElementText.cpp :425-428, :430-439, :443-446, :530-536, :530-539, :371-374,
 :341, :535-536 (+11); FontFaceHandleDefault.cpp :349-352, :378-394, :385-389, :397-404 (+6).
+
+3. AN SBIX FACE KEEPS ITS ADVANCE. Source/Core/FontEngineDefault/FreeTypeInterface.cpp:342-346 takes
+advance_exact from linearHoriAdvance only when FT_IS_SCALABLE(ft_face). FreeType converts that field
+to 16.16 pixels for a scalable face alone (FreeType 2.14.1 src/base/ftobjs.c:1100-1102). An sbix face
+that also has outlines is not scalable (src/sfnt/sfobjs.c:1103-1110) -- Apple's emoji fonts are
+built so -- yet its glyph loader still stores the hmtx advance there (src/truetype/ttgload.c:2412),
+in font units, and PR #23 read 600 of them as 0.009 px: every glyph of such a face drew on top of
+the last. CBDT faces were never affected; their outlines are dropped and the field stays 0. Test:
+VaCuus.Font.Subpixel.SbixAdvance loads VaCuus/Private/Tests/VaCuusSbixFixture.h -- 808 bytes from
+Tools/gen_sbix_fixture.py, one 'A' with a glyf outline and a 32 ppem sbix bitmap, advance 600/1000
+-- and measures "AAAA" at 32 px. Restore-the-bug, Linux, 2026-10-16: the ungated read -> Fail,
+"four A from the sbix face measure 1 px, about 77 expected"; gated -> Success. Line shifts:
+FreeTypeInterface.cpp +2 from old :344.

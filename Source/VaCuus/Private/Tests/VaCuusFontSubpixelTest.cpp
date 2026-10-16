@@ -5,6 +5,7 @@
 
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
+#include "VaCuusSbixFixture.h"
 
 #include <RmlUi/Core.h>
 
@@ -54,6 +55,11 @@
  * (FontEngineInterface::GetStringWidthFrom) rather than re-measuring the line so far for every token. Patch #5 counts
  * every lookup of a character no face has (FontProvider.cpp:54-57), so with one such character first on the line the
  * count is the number of times its token was measured.
+ *
+ * SBIX ADVANCE (the owner's follow-up). FreeType fills linearHoriAdvance with 16.16 pixels only for a scalable face; an
+ * sbix face that also has outlines is not one, and gets font units there. The fixture (VaCuusSbixFixture.h, from
+ * Tools/gen_sbix_fixture.py, which says why each part is there) is such a face, so its advance must come from the
+ * strike's metrics: read as pixels, 600 font units are 0.009 px a glyph.
  *
  * The face is LatoLatin, the one FVaCuusEngine::Initialize loads (VaCuusEngine.cpp:136-148); kerning is off wherever
  * it would only add noise.
@@ -762,6 +768,52 @@ bool FVaCuusFontSubpixelLineMeasuredOnceTest::RunTest(const FString& Parameters)
 		AddError(FString::Printf(TEXT("GenerateLine looked the first token's character up %d times over a line of 11 tokens; 1 expected, "
 									  "11 means every token re-measures the whole line so far"),
 			Lookups));
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusFontSubpixelSbixAdvanceTest, "VaCuus.Font.Subpixel.SbixAdvance",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusFontSubpixelSbixAdvanceTest::RunTest(const FString& Parameters)
+{
+	using namespace VaCuusFontSubpixelTest;
+
+	FRig Rig;
+	if (!Rig.Boot(*this, "vacuus_font_subpixel_sbix"))
+	{
+		return false;
+	}
+
+	// A static array, so it outlives Rml::Shutdown: RmlUi reads a face loaded from memory until then (Core.h:133).
+	const Rml::String Family = "vacuussbixfixture";
+	if (!TestTrue(TEXT("the sbix fixture loads"),
+			Rml::LoadFontFace(Rml::Span<const Rml::byte>(VaCuusSbixFixture::GBytes, sizeof(VaCuusSbixFixture::GBytes)), Family,
+				Rml::Style::FontStyle::Normal, Rml::Style::FontWeight::Normal, /*fallback_face=*/false)))
+	{
+		return false;
+	}
+
+	// At the strike's own 32 ppem, so no bitmap scaling enters (FreeTypeInterface.cpp:512-518).
+	const Rml::FontFaceHandle Face =
+		Rml::GetFontEngineInterface()->GetFontFaceHandle(Family, Rml::Style::FontStyle::Normal, Rml::Style::FontWeight::Normal, 32);
+	if (!TestTrue(TEXT("the fixture at its 32 ppem strike"), Face != 0))
+	{
+		return false;
+	}
+
+	const Rml::String Language;
+	const Rml::TextShapingContext Bare{ Language, Rml::Style::Direction::Auto, Rml::Style::FontKerning::None, 0.f };
+	const int32 Width = Rml::GetFontEngineInterface()->GetStringWidth(Face, "AAAA", Bare);
+
+	// THE ASSERTION. 600 of 1000 units at 32 ppem is 19.2 px, so four A are 76 or 77 px whether the strike's advance arrives
+	// whole or in 26.6. Read as 16.16 pixels, the unscaled 600 font units are 0.009 px a glyph and the four measure 1.
+	if (Width < 72 || Width > 80)
+	{
+		AddError(FString::Printf(TEXT("four A from the sbix face measure %d px, about 77 expected; 1 means the advance was read from "
+									  "linearHoriAdvance, which stays in font units for a face that is not scalable"),
+			Width));
 	}
 
 	return true;

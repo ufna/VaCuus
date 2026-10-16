@@ -339,9 +339,11 @@ static bool BuildGlyph(FT_Face ft_face, const Character character, FontGlyphMap&
 	glyph.advance = ft_glyph->metrics.horiAdvance >> 6;
 	// VaCuus patch #15 (VENDORED_TAG.txt): linearHoriAdvance is the unhinted advance in 16.16 pixels (freetype.h:2106-2110).
 	// The glyph is loaded hinted, so horiAdvance is grid-fitted to a whole pixel (FreeType 2.14.1 src/base/ftobjs.c:889,
-	// called at :1079-1081), up to half a pixel off per glyph at UI sizes.
-	glyph.advance_exact =
-		(ft_glyph->linearHoriAdvance != 0 ? float(ft_glyph->linearHoriAdvance) / 65536.f : float(ft_glyph->metrics.horiAdvance) / 64.f);
+	// called at :1079-1081), up to half a pixel off per glyph at UI sizes. The follow-up: only a scalable face has it in
+	// pixels. FreeType converts the field for FT_IS_SCALABLE faces alone (src/base/ftobjs.c:1100-1102), and an sbix face
+	// with outlines is not scalable (src/sfnt/sfobjs.c:1103-1110) yet still gets font units in it (src/truetype/ttgload.c:2412).
+	glyph.advance_exact = (FT_IS_SCALABLE(ft_face) && ft_glyph->linearHoriAdvance != 0 ? float(ft_glyph->linearHoriAdvance) / 65536.f
+																						: float(ft_glyph->metrics.horiAdvance) / 64.f);
 	glyph.bitmap_dimensions.x = ft_glyph->bitmap.width;
 	glyph.bitmap_dimensions.y = ft_glyph->bitmap.rows;
 
