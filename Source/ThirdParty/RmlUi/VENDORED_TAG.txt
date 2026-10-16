@@ -886,10 +886,10 @@ Patch #15 -- text is laid out on whole pixels, so small type spaces unevenly and
 Files: Include/RmlUi/Core/FontGlyph.h (advance_exact :17-19, and WeakCopy carrying it :36 -- a
 fallback-face glyph without it advances by 0 and the next glyph lands on top of it),
 Source/Core/FontEngineDefault/FreeTypeInterface.h/.cpp (GetKerning :214-241, the replacement glyph
-:272, BuildGlyph and its bitmap-strike scaling :340-344 and :354), FontFaceHandleDefault.h/.cpp (the
-Math.h include, StringWidthToPixels :18-24, GetStringWidth :68-96, GenerateString :181-258, the
+:272, BuildGlyph and its bitmap-strike scaling :340-346 and :356), FontFaceHandleDefault.h/.cpp (the
+Math.h include, StringWidthToPixels :18-24, GetStringWidth :68-102, GenerateString :187-264, the
 kerning cache and its value type, GetKerning), FontFaceLayer.h (the Math.h include, GenerateGeometry
-:59-78), Source/Core/ElementText.cpp (GenerateLine, the two token measurements :262-265 and :303-304),
+:59-79), Source/Core/ElementText.cpp (GenerateLine, the two token measurements :267-272 and :311-314),
 Source/Core/Elements/WidgetTextInput.cpp (FormatText, the trailing spaces :1308). Every hunk of this
 patch, at git's default three lines of context, carries "VaCuus patch #15": grep for it, and expect
 it on includes and one-word type changes too.
@@ -963,7 +963,8 @@ FreeTypeInterface.h +1 from old :36; FontFaceHandleDefault.h and WidgetTextInput
 Moved in-repo citations, each compared with the line it named on master (equal):
 FontFaceHandleDefault.cpp:378-394 (was :367-383) in VaCuusFontRegistry.cpp, VaCuusUIQueues.h and
 VaCuusFontRegistry.h; :397-404 (was :386-393) in VaCuusFontRegistryTest.cpp, VaCuusFontRegistry.h
-and VaCuusSubsystem.h; patch #9's GenerateLine call sites above, :260 and :301 (were :264, :302).
+and VaCuusSubsystem.h; patch #9's GenerateLine call sites above, :260 and :301 (were :264, :302; :265 and
+:308 after the follow-up below, whose numbers this entry's Files: paragraph already uses).
 Dated design notes under docs/superpowers were left as records.
 
 VERIFICATION (the re-vendoring check): seven automation tests in
@@ -1054,11 +1055,12 @@ FreeTypeInterface.cpp +2 from old :344.
 
 4. FONTGLYPH'S MEMBER COUNT IS ASSERTED. WeakCopy copies FontGlyph member by member, and a member it
 does not name is silently dropped from every fallback-face glyph -- advance_exact was nearly that
-member. Include/RmlUi/Core/FontGlyph.h:44-58 asserts the class takes a brace list of seven
-initialisers and not eight, which only a member count can catch: a field inserted into existing
-padding moves neither sizeof nor any offset. Restore-the-bug, 2026-10-16: `int vacuus_probe = 0;`
-after color_format -> "static assertion failed due to requirement '!TakesEight<Rml::FontGlyph>'";
-removed -> compiles.
+member. Source/Core/FontEngineDefault/FontFaceHandleDefault.cpp:487-501 asserts the aggregate takes a
+brace list of seven initialisers and not eight, which only a member count can catch: a field
+inserted into existing padding moves neither sizeof nor any offset. It sits in the .cpp and not in
+the public FontGlyph.h, whose WeakCopy comment points at it (:30), so a buyer's module that includes
+RmlUi compiles none of it. Restore-the-bug, 2026-10-16: `int vacuus_probe = 0;` after color_format
+-> "static assertion failed due to requirement '!TakesEight<Rml::FontGlyph>'"; removed -> compiles.
 
 Not changed, and filed instead: the text-input caret still sits at the rounded-up prefix width
 (Elements/WidgetTextInput.cpp:1462-1463), up to a pixel right of the glyph boundary now that glyphs

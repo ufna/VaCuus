@@ -27,7 +27,7 @@ public:
 	// bitmap_data may point to this member or another font glyph data.
 	UniquePtr<byte[]> bitmap_owned_data;
 
-	// Create a copy with its bitmap data owned by another glyph.
+	// Create a copy with its bitmap data owned by another glyph. VaCuus patch #15 follow-up: FontFaceHandleDefault.cpp asserts the member count.
 	FontGlyph WeakCopy() const
 	{
 		FontGlyph glyph;
@@ -40,22 +40,6 @@ public:
 		return glyph;
 	}
 };
-
-// VaCuus patch #15 follow-up (VENDORED_TAG.txt): WeakCopy copies FontGlyph member by member, so a member added without a
-// line there is silently dropped from every fallback-face glyph -- the loss VaCuus.Font.Subpixel.FallbackAdvance exists for.
-// A brace list longer than the member count is ill-formed, so this stops compiling when FontGlyph gains a member: carry
-// the member in WeakCopy, then update the count.
-namespace FontGlyphMemberCount {
-	struct AnyMember {
-		template <typename T>
-		operator T() const;
-	};
-	template <typename G>
-	concept TakesSeven = requires { G{AnyMember{}, AnyMember{}, AnyMember{}, AnyMember{}, AnyMember{}, AnyMember{}, AnyMember{}}; };
-	template <typename G>
-	concept TakesEight = requires { G{AnyMember{}, AnyMember{}, AnyMember{}, AnyMember{}, AnyMember{}, AnyMember{}, AnyMember{}, AnyMember{}}; };
-	static_assert(TakesSeven<FontGlyph> && !TakesEight<FontGlyph>, "FontGlyph's member count changed: carry the member in WeakCopy, then update this.");
-} // namespace FontGlyphMemberCount
 
 using FontGlyphMap = UnorderedMap<Character, FontGlyph>;
 

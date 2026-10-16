@@ -795,7 +795,7 @@ bool FVaCuusFontSubpixelSbixAdvanceTest::RunTest(const FString& Parameters)
 		return false;
 	}
 
-	// At the strike's own 32 ppem, so no bitmap scaling enters (FreeTypeInterface.cpp:512-518).
+	// At the strike's own 32 ppem, so no bitmap scaling enters (FreeTypeInterface.cpp:513-518).
 	const Rml::FontFaceHandle Face =
 		Rml::GetFontEngineInterface()->GetFontFaceHandle(Family, Rml::Style::FontStyle::Normal, Rml::Style::FontWeight::Normal, 32);
 	if (!TestTrue(TEXT("the fixture at its 32 ppem strike"), Face != 0))

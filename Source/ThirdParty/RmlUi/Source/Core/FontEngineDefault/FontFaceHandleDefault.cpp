@@ -67,7 +67,7 @@ const FontGlyphMap& FontFaceHandleDefault::GetGlyphs() const
 
 int FontFaceHandleDefault::GetStringWidth(StringView string, const TextShapingContext& text_shaping_context, Character prior_character)
 {
-	float width = 0.f;
+	float width = 0.f; // VaCuus patch #15 follow-up (VENDORED_TAG.txt): GetStringWidth is GetStringWidthFrom from 0.
 	return GetStringWidthFrom(string, text_shaping_context, prior_character, width);
 }
 
@@ -483,5 +483,21 @@ bool FontFaceHandleDefault::GenerateLayer(FontFaceLayer* layer)
 
 	return result;
 }
+
+// VaCuus patch #15 follow-up (VENDORED_TAG.txt): WeakCopy copies FontGlyph member by member, so a member added without a
+// line there is silently dropped from every fallback-face glyph -- the loss VaCuus.Font.Subpixel.FallbackAdvance exists for.
+// A brace list longer than the member count is ill-formed, so this stops compiling when FontGlyph gains a member: carry
+// the member in WeakCopy, then update the count. Here and not in FontGlyph.h, so the check costs no includer anything.
+namespace FontGlyphMemberCount {
+	struct AnyMember {
+		template <typename T>
+		operator T() const;
+	};
+	template <typename G>
+	concept TakesSeven = requires { G{AnyMember{}, AnyMember{}, AnyMember{}, AnyMember{}, AnyMember{}, AnyMember{}, AnyMember{}}; };
+	template <typename G>
+	concept TakesEight = requires { G{AnyMember{}, AnyMember{}, AnyMember{}, AnyMember{}, AnyMember{}, AnyMember{}, AnyMember{}, AnyMember{}}; };
+	static_assert(TakesSeven<FontGlyph> && !TakesEight<FontGlyph>, "FontGlyph's member count changed: carry the member in WeakCopy, then update this.");
+} // namespace FontGlyphMemberCount
 
 } // namespace Rml

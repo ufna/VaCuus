@@ -13,6 +13,11 @@ linearHoriAdvance (src/truetype/ttgload.c:2412), but FT_Load_Glyph converts that
 pixels only for a scalable face (src/base/ftobjs.c:1100-1102), so here it stays in font units --
 the case RmlUi patch #15's advance must not read as pixels. Apple's emoji fonts are built this way.
 
+THE STRIKE MEASURES EXACTLY ITS PPEM because hhea ascent - descent + line gap = 800 + 200 + 0 = units per
+em: FreeType sizes an sbix strike from those (src/sfnt/ttsbit.c:428-435), and RmlUi picks and scales
+strikes by that size, so the test's 32 px request takes the 32 ppem strike unscaled. Change the
+vertical metrics and the test's expected width moves with them.
+
 The output is deterministic: fixed head timestamps, no recalculation on save, and a PNG written
 by hand with fixed zlib settings. The header records the bytes' SHA-256.
 """
