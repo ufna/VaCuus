@@ -270,7 +270,7 @@ background and borders at `ElementBackgroundBorder.cpp:166-173`, text at
 `:265`, `:434`, `:631` and `DecoratorShader.cpp:42`. Inheritance means *copy*, not
 *compose*: `ComputeValues` copies the parent's inherited block wholesale
 (`ComputedValues.h:394`, `inherited = parent.inherited`) and a local declaration then
-**overwrites** it (`ElementStyle.cpp:1249`, `values.opacity(p->Get<float>())`). Nothing
+**overwrites** it (`ElementStyle.cpp:1250`, `values.opacity(p->Get<float>())`). Nothing
 anywhere multiplies the two together.
 Do, and the right answer differs by what the child is:
 - **Do not redeclare `opacity` on a descendant** if any ancestor animates or toggles its
