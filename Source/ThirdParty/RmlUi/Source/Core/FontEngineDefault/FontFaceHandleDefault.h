@@ -68,8 +68,8 @@ private:
 	// Build a kerning cache for common characters.
 	void FillKerningPairCache();
 
-	// Return the kerning for a character pair.
-	int GetKerning(Character lhs, Character rhs, bool& has_set_size) const;
+	// Return the kerning for a character pair. VaCuus patch #15 (VENDORED_TAG.txt): in fractional pixels.
+	float GetKerning(Character lhs, Character rhs, bool& has_set_size) const;
 
 	// Returns whether kerning is enabled based on the text-shaping context.
 	bool IsKerningEnabled(const TextShapingContext& text_shaping_context) const;
@@ -108,8 +108,8 @@ private:
 
 	// Pre-cache kerning pairs for some ascii subset of all characters.
 	using AsciiPair = uint16_t;
-	using KerningIntType = int16_t;
-	using KerningPairs = UnorderedMap<AsciiPair, KerningIntType>;
+	using KerningValueType = float; // VaCuus patch #15 (VENDORED_TAG.txt): was int16_t.
+	using KerningPairs = UnorderedMap<AsciiPair, KerningValueType>;
 	KerningPairs kerning_pair_cache;
 
 	bool has_kerning = false;

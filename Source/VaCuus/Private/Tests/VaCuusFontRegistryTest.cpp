@@ -24,7 +24,7 @@
  * lives inside Rml::Initialise/Shutdown, so a UI thread that stops and starts again comes back
  * holding only the shipped Latin face. A game that loaded a Cyrillic face at runtime would lose
  * it, and lose it SILENTLY -- missing glyphs are substituted with U+FFFD and nothing is logged
- * (FontFaceHandleDefault.cpp:386-393). So the registry replays, and this test is what says so.
+ * (FontFaceHandleDefault.cpp:397-404). So the registry replays, and this test is what says so.
  *
  * RESTORE-THE-BUG: delete the FVaCuusFontRegistry::PublishToUIThread line from
  * FVaCuusModule::GetOrStartUIThread and the post-restart assertion below fails at 0 while the

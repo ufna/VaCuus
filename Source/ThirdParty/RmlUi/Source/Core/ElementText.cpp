@@ -255,15 +255,14 @@ bool ElementText::GenerateLine(String& line, int& line_length, float& line_width
 	{
 		String token;
 		const char* next_token_begin = token_begin;
-		Character previous_codepoint = Character::Null;
-		if (!line.empty())
-			previous_codepoint =
-				StringUtilities::ToCharacter(StringUtilities::SeekBackwardUTF8(&line.back(), line.data()), line.data() + line.size());
 
 		// Generate the next token and determine its pixel-length.
 		bool break_line = BuildToken(token, next_token_begin, string_end, line.empty() && trim_whitespace_prefix, collapse_white_space,
 			break_at_endline, text_transform_property, decode_escape_characters);
-		int token_width = font_engine_interface->GetStringWidth(font_face_handle, token, text_shaping_context, previous_codepoint);
+		// VaCuus patch #15 (VENDORED_TAG.txt): a token costs what it adds to the whole line, measured from the line's start.
+		// GetStringWidth rounds up once per call, so a sum of token widths overstated the line GenerateString draws by up to
+		// a pixel per token.
+		int token_width = font_engine_interface->GetStringWidth(font_face_handle, line + token, text_shaping_context) - int(line_width);
 
 		// If we're breaking to fit a line box, check if the token can fit on the line before we add it.
 		if (break_at_line)
@@ -301,7 +300,8 @@ bool ElementText::GenerateLine(String& line, int& line_length, float& line_width
 						next_token_begin = token_begin;
 						BuildToken(token, next_token_begin, partial_string_end, line.empty() && trim_whitespace_prefix, collapse_white_space,
 							break_at_endline, text_transform_property, decode_escape_characters);
-						token_width = font_engine_interface->GetStringWidth(font_face_handle, token, text_shaping_context, previous_codepoint);
+						// VaCuus patch #15 (VENDORED_TAG.txt): measured on the line, as above.
+						token_width = font_engine_interface->GetStringWidth(font_face_handle, line + token, text_shaping_context) - int(line_width);
 
 						if (force_loop_break_at_end || token_width <= max_token_width)
 							break;

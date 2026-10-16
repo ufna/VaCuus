@@ -386,7 +386,7 @@ public:
 	 * thread, which game code has no way to reach. And it is not optional for a localized game —
 	 * the face this plugin ships covers Latin only (measured: 20-7e, a0-17f plus symbols), so
 	 * Russian or Chinese text without your own face renders U+FFFD for every character, and RmlUi
-	 * substitutes that replacement silently (FontFaceHandleDefault.cpp:386-393).
+	 * substitutes that replacement silently (FontFaceHandleDefault.cpp:397-404).
 	 *
 	 * bFallbackFace puts the face in RmlUi's fallback chain, consulted IN REGISTRATION ORDER for
 	 * any character the styled family lacks — which is what makes mixed-script text work without

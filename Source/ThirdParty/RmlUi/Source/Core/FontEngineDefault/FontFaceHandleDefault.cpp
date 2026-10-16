@@ -1,4 +1,5 @@
 #include "FontFaceHandleDefault.h"
+#include "../../../Include/RmlUi/Core/Math.h" // VaCuus patch #15 (VENDORED_TAG.txt)
 #include "../../../Include/RmlUi/Core/Profiling.h"
 #include "../../../Include/RmlUi/Core/StringUtilities.h"
 #include "../../../Include/RmlUi/Core/StyleTypes.h"
@@ -13,6 +14,14 @@ namespace Rml {
 
 static constexpr char32_t KerningCache_AsciiSubsetBegin = 32;
 static constexpr char32_t KerningCache_AsciiSubsetLast = 126;
+
+// VaCuus patch #15 (VENDORED_TAG.txt): the pen runs in fractional pixels, the interface still answers in whole ones.
+// Up, so a box sized to the string never clips its last glyph; less a hair, so float noise on a sum that is whole
+// in design units does not grow the box by a pixel and wrap it.
+static int StringWidthToPixels(float width)
+{
+	return Math::Max(Math::RoundUpToInteger(width - 0.001f), 0);
+}
 
 FontFaceHandleDefault::FontFaceHandleDefault()
 {
@@ -62,7 +71,7 @@ int FontFaceHandleDefault::GetStringWidth(StringView string, const TextShapingCo
 
 	bool has_set_size = false;
 	bool is_kerning_enabled = IsKerningEnabled(text_shaping_context);
-	int width = 0;
+	float width = 0.f; // VaCuus patch #15 (VENDORED_TAG.txt)
 	for (auto it_string = StringIteratorU8(string); it_string; ++it_string)
 	{
 		Character character = *it_string;
@@ -75,14 +84,15 @@ int FontFaceHandleDefault::GetStringWidth(StringView string, const TextShapingCo
 		if (is_kerning_enabled)
 			width += GetKerning(prior_character, character, has_set_size);
 
-		// Adjust the cursor for this character's advance.
-		width += glyph->advance;
-		width += (int)text_shaping_context.letter_spacing;
+		// Adjust the cursor for this character's advance. VaCuus patch #15 (VENDORED_TAG.txt): the exact advance and
+		// the exact spacing -- `(int)letter_spacing` dropped anything under a pixel, so 0.12em at 7.6 px was 0.
+		width += glyph->advance_exact;
+		width += text_shaping_context.letter_spacing;
 
 		prior_character = character;
 	}
 
-	return Math::Max(width, 0);
+	return StringWidthToPixels(width);
 }
 
 int FontFaceHandleDefault::GenerateLayerConfiguration(const FontEffectList& font_effects)
@@ -175,7 +185,7 @@ int FontFaceHandleDefault::GenerateString(RenderManager& render_manager, Texture
 	RMLUI_ASSERT(layer_configuration_index < (int)layer_configurations.size());
 
 	int geometry_index = 0;
-	int line_width = 0;
+	float line_width = 0.f; // VaCuus patch #15 (VENDORED_TAG.txt)
 	bool has_set_size = false;
 	bool is_kerning_enabled = IsKerningEnabled(text_shaping_context);
 
@@ -206,7 +216,7 @@ int FontFaceHandleDefault::GenerateString(RenderManager& render_manager, Texture
 
 		RMLUI_ASSERT(geometry_index + num_textures <= (int)mesh_list.size());
 
-		line_width = 0;
+		line_width = 0.f; // VaCuus patch #15 (VENDORED_TAG.txt)
 		Character prior_character = Character::Null;
 
 		// Set the mesh and textures to the geometries.
@@ -235,15 +245,16 @@ int FontFaceHandleDefault::GenerateString(RenderManager& render_manager, Texture
 
 			layer->GenerateGeometry(&mesh_list[geometry_index], character, Vector2f(position.x + line_width, position.y), glyph_color);
 
-			line_width += glyph->advance;
-			line_width += (int)text_shaping_context.letter_spacing;
+			// VaCuus patch #15 (VENDORED_TAG.txt): see GetStringWidth.
+			line_width += glyph->advance_exact;
+			line_width += text_shaping_context.letter_spacing;
 			prior_character = character;
 		}
 
 		geometry_index += num_textures;
 	}
 
-	return Math::Max(line_width, 0);
+	return StringWidthToPixels(line_width);
 }
 
 bool FontFaceHandleDefault::UpdateLayersOnDirty()
@@ -293,22 +304,22 @@ void FontFaceHandleDefault::FillKerningPairCache()
 			const bool first_iteration = (i == KerningCache_AsciiSubsetBegin && j == KerningCache_AsciiSubsetBegin);
 
 			// Fetch the kerning from the font face. Submit zero font size on subsequent iterations for performance reasons.
-			const int kerning = FreeType::GetKerning(ft_face, first_iteration ? metrics.size : 0, Character(i), Character(j));
-			if (kerning != 0)
+			const float kerning = FreeType::GetKerning(ft_face, first_iteration ? metrics.size : 0, Character(i), Character(j));
+			if (kerning != 0.f) // VaCuus patch #15 (VENDORED_TAG.txt)
 			{
-				kerning_pair_cache.emplace(AsciiPair((i << 8) | j), KerningIntType(kerning));
+				kerning_pair_cache.emplace(AsciiPair((i << 8) | j), KerningValueType(kerning));
 			}
 		}
 	}
 }
 
-int FontFaceHandleDefault::GetKerning(Character lhs, Character rhs, bool& has_set_size) const
+float FontFaceHandleDefault::GetKerning(Character lhs, Character rhs, bool& has_set_size) const
 {
 	static_assert(' ' == 32, "Only ASCII/UTF8 character set supported.");
 
 	// Check if we have no kerning, or if we have a control character.
 	if (!has_kerning || char32_t(lhs) < ' ' || char32_t(rhs) < ' ')
-		return 0;
+		return 0.f;
 
 	// See if the kerning pair has been cached.
 	const bool lhs_in_cache = (char32_t(lhs) >= KerningCache_AsciiSubsetBegin && char32_t(lhs) <= KerningCache_AsciiSubsetLast);
@@ -323,11 +334,11 @@ int FontFaceHandleDefault::GetKerning(Character lhs, Character rhs, bool& has_se
 			return it->second;
 		}
 
-		return 0;
+		return 0.f;
 	}
 
-	// Fetch it from the font face instead.
-	const int result = FreeType::GetKerning(ft_face, has_set_size ? 0 : metrics.size, lhs, rhs);
+	// Fetch it from the font face instead. VaCuus patch #15 (VENDORED_TAG.txt): in fractional pixels.
+	const float result = FreeType::GetKerning(ft_face, has_set_size ? 0 : metrics.size, lhs, rhs);
 
 	// This is purely an optimization to avoid repeatedly setting the font size in FreeType, which can be a measurable performance hit.
 	has_set_size = true;

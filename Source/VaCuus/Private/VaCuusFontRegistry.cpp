@@ -66,7 +66,7 @@ void FVaCuusFontRegistry::PublishToUIThread(FVaCuusUIThread& UIThread)
 	check(IsInGameThread());
 
 	// IN ORDER, and the order is load-bearing: RmlUi consults fallback faces by their position
-	// in the provider's list (FontFaceHandleDefault.cpp:367-383), so a replay that reordered
+	// in the provider's list (FontFaceHandleDefault.cpp:378-394), so a replay that reordered
 	// them would change which face wins a glyph after a UI-thread restart.
 	for (const FVaCuusFontFaceRequest& Request : GFontRequests)
 	{

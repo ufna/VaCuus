@@ -1305,7 +1305,7 @@ Vector2f WidgetTextInput::FormatText(float height_constraint)
 			if (count > 0)
 			{
 				line_content.append(count, ' ');
-				line_width += ElementUtilities::GetStringWidth(text_element, " ") * (int)count;
+				line_width = (float)ElementUtilities::GetStringWidth(text_element, line_content); // VaCuus patch #15 (VENDORED_TAG.txt)
 				line.editable_length += (int)count;
 				line.size += (int)count;
 				// Consume the hard wrap if we have one on this line, so that it doesn't make its own, empty line.

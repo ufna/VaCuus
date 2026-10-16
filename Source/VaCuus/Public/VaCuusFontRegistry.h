@@ -14,7 +14,7 @@ struct FVaCuusFontFaceRequest
 
 	/**
 	 * A fallback face is consulted, IN REGISTRATION ORDER, for any character the styled face has
-	 * no glyph for (FontFaceHandleDefault.cpp:367-383). That ordering is why this registry keeps
+	 * no glyph for (FontFaceHandleDefault.cpp:378-394). That ordering is why this registry keeps
 	 * an ordered array rather than a set.
 	 */
 	bool bFallbackFace = false;
@@ -34,7 +34,7 @@ struct FVaCuusFontFaceRequest
  * that face covers Latin only -- measured: 20-7e, a0-17f plus symbols. No Cyrillic, no CJK. A
  * game that switches to Russian or Chinese without bringing its own face renders U+FFFD for
  * every character, and RmlUi substitutes that replacement silently
- * (FontFaceHandleDefault.cpp:386-393). RCSS `@font-face` is still the authoring route; this is
+ * (FontFaceHandleDefault.cpp:397-404). RCSS `@font-face` is still the authoring route; this is
  * the runtime one, for a game that decides which face to load only once it knows the language.
  *
  * IT IS A REGISTRY AND NOT JUST A CALL, for the reason the style and translation registries are:

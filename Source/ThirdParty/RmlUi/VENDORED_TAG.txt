@@ -699,7 +699,7 @@ One file: Source/Core/ElementText.cpp. The old BuildToken body becomes BuildToke
 (:569, same logic, the transform parameter and the ASCII-only transform block removed), and a new
 BuildToken with the old signature (:807) calls it and then, for Uppercase or Lowercase, re-encodes
 the token code point by code point (TransformTextCase, :783). The forward declaration (:21) and both
-call sites in GenerateLine (:264, :302) are untouched.
+call sites in GenerateLine (:260, :301) are untouched.
 
 THE DEFECT IS UPSTREAM'S. BuildToken walks the UTF-8 text one BYTE at a time
 (`char character = *token_begin;`) and applied the transform only to `a-z` / `A-Z` (pre-patch
@@ -880,3 +880,124 @@ FontEngineInterface::GetFontMetrics. Restore-the-bug, Win64, UE 5.8 host editor,
   - patch present: Success; the rest of VaCuus. green alongside it (280 of 280).
 
 NOT yet offered upstream. Upstream-shaped as it stands.
+
+Patch #15 -- text is laid out on whole pixels, so small type spaces unevenly and drops its tracking.
+
+Files: Include/RmlUi/Core/FontGlyph.h (advance_exact :17-19, and WeakCopy carrying it :36 -- a
+fallback-face glyph without it advances by 0 and the next glyph lands on top of it),
+Source/Core/FontEngineDefault/FreeTypeInterface.h/.cpp (GetKerning :214-241, the replacement glyph
+:272, BuildGlyph and its bitmap-strike scaling :340-344 and :354), FontFaceHandleDefault.h/.cpp (the
+Math.h include, StringWidthToPixels :18-24, GetStringWidth :68-96, GenerateString :181-258, the
+kerning cache and its value type, GetKerning), FontFaceLayer.h (the Math.h include, GenerateGeometry
+:59-78), Source/Core/ElementText.cpp (GenerateLine, the two token measurements :262-265 and :303-304),
+Source/Core/Elements/WidgetTextInput.cpp (FormatText, the trailing spaces :1308). Every hunk of this
+patch, at git's default three lines of context, carries "VaCuus patch #15": grep for it, and expect
+it on includes and one-word type changes too.
+
+Symptom: a root font-size in vh (a game's `body { font-size: 0.0925926vh; }`, so its UI scales with
+the window) makes every length fractional below 1080 high. An 11 px caption reads "INT ERACT IVE":
+neighbouring gaps differ by up to a pixel and a half where the face meant them equal; 0.12em of
+tracking on 9 px type vanishes; -0.05em never applies.
+
+Cause, upstream behaviour at the pinned SHA (pre-patch lines):
+- a glyph advances by `metrics.horiAdvance >> 6` (FreeTypeInterface.cpp:336, BuildGlyph). The glyph
+  is loaded hinted (:296, FT_LOAD_COLOR alone), so FreeType has already grid-fitted that advance to
+  a whole pixel (FreeType 2.14.1 src/base/ftobjs.c:889, called at :1079-1081);
+- `letter_spacing` is cast to int per glyph (FontFaceHandleDefault.cpp:80 in GetStringWidth, :239
+  in GenerateString), so anything under a pixel is 0;
+- kerning is FT_KERNING_DEFAULT shifted down (FreeTypeInterface.cpp:232-237, GetKerning). DEFAULT
+  already returns whole pixels: below 25 ppem it scales the pair by ppem/25, then rounds it to the
+  nearest pixel with FT_PIX_ROUND (FreeType 2.14.1 src/base/ftobjs.c:3630-3646, FT_Get_Kerning; the
+  macro is include/freetype/internal/ftobjs.h:91-92). UE 5.8 ships FreeType2-2.14.1 as headers and
+  libraries only, so the .c files cited here are upstream's tag VER-2-14-1. A pair under half a
+  pixel after that scaling was 0, and 9-13 px type was kerned at 36-52 % of the face's value before
+  the rounding;
+- the quad is placed at `(position + box.origin).Round()` (FontFaceLayer.h:57, GenerateGeometry).
+Computed from a game's ScienceGothic-SemiBold tables for "INTERACTIVE" at 10.95 px (drawn at the 10 px
+face patch #14 fixes): the ink gap per pair against the face's own (float advances, GPOS kerning,
+-0.05em) is off by -0.06 .. +0.95 px.
+Rounding each glyph's origin from a float pen instead was tried on paper and is no better (worse at
+13 px): only a fractional placement gives the designed gaps.
+
+The fix: the pen runs in float -- advance_exact from linearHoriAdvance, the unhinted advance in
+16.16 (FreeType's freetype.h:2106-2110), UNFITTED kerning in 26.6, the spacing as given. A glyph on
+a fraction keeps its quad on the grid one pixel wider, with its texture coordinates moved left by
+the fraction, and the bilinear sampler of VaCuus's textured draws (VaCuusReplayRenderer.cpp:1208)
+shifts the bitmap by exactly that. The extra column reads the transparent pixel the atlas keeps
+around every glyph: a row starts at x 1 and leaves a pixel after each rectangle
+(Source/Core/TextureLayoutRow.cpp:14, :45-49), and the atlas starts transparent
+(Source/Core/TextureLayoutTexture.cpp:113-114). GetStringWidth/GenerateString still answer in
+whole pixels: up, less 0.001, so a box sized to its text never clips it and float noise on a
+whole sum does not add a pixel.
+
+UNFITTED also drops DEFAULT's small-size damping: below 25 ppem a pair now gets the face's full
+value, up to 25/ppem of what DEFAULT gave before rounding (2.8x at 9 px). Kerning is on unless
+`font-kerning: none` (FontFaceHandleDefault.cpp:349-352), so this shows by default. Only faces with
+a `kern` table are touched -- this FreeType reads no GPOS kerning (TT_CONFIG_OPTION_GPOS_KERNING is
+off, FreeType2-2.14.1 include/freetype/config/ftoption.h:798; FT_FACE_FLAG_KERNING comes from `kern`
+alone, sfobjs.c:1133-1138). The shipped LatoLatin has one (10920 pairs), so its small text kerns
+tighter than before, by the face's own amounts.
+
+Measuring a line (ElementText.cpp, GenerateLine): rounding every GetStringWidth up made the sum of
+a line's token widths run past what GenerateString draws by up to a pixel per token -- centred and
+right-aligned text sat off, a box sized to its text grew a tail, a line wrapped early. A token is
+now costed as W(line + token) - W(line), W being GetStringWidth from the line's start and W(line)
+the width the loop already holds, so a line measures exactly what GenerateString returns for it;
+the price is re-measuring the line so far once per token. WidgetTextInput::FormatText re-measures a
+line after appending its trailing spaces instead of adding a rounded-up space per space. Left as
+they are: separate runs are placed at whole-pixel widths -- inline boxes on one line
+(Layout/LineBox.cpp:78) and WidgetTextInput's selected, unselected and IME runs -- so each boundary
+can shift the run after it by up to a pixel (placing it exactly needs a fractional width, i.e. a new
+FontEngineInterface entry); and `cols`/`size` x W("m") in ElementFormControlTextArea/InputTypeText
+is a size hint, at most a pixel per column wide, never narrow.
+
+Cost: a glyph off the grid is resampled, a little softer than one on it. Kerning from GPOS (faces
+with no `kern` table) is still not read -- that needs a shaper, separate work. Line breaking
+measures tokens x line length per line instead of the line's length once.
+
+Line shifts: FontFaceHandleDefault.cpp +1 from old :2, +9 from old :17, +10 from old :81, +11 from
+old :240; FreeTypeInterface.cpp +3 from old :231, +2 from old :239, +3 from old :270, +8 from old
+:337, +9 from old :346; FontFaceLayer.h +1 from old :6, +21 from old :58; FontGlyph.h +3 from old
+:17, +4 from old :33; ElementText.cpp -4 from old :262, -1 from old :267, 0 from old :305;
+FreeTypeInterface.h +1 from old :36; FontFaceHandleDefault.h and WidgetTextInput.cpp in place.
+Moved in-repo citations, each compared with the line it named on master (equal):
+FontFaceHandleDefault.cpp:378-394 (was :367-383) in VaCuusFontRegistry.cpp, VaCuusUIQueues.h and
+VaCuusFontRegistry.h; :397-404 (was :386-393) in VaCuusFontRegistryTest.cpp, VaCuusFontRegistry.h
+and VaCuusSubsystem.h; patch #9's GenerateLine call sites above, :260 and :301 (were :264, :302).
+Dated design notes under docs/superpowers were left as records.
+
+VERIFICATION (the re-vendoring check): seven automation tests in
+Source/VaCuus/Private/Tests/VaCuusFontSubpixelTest.cpp, on LatoLatin through the public
+FontEngineInterface:
+  - VaCuus.Font.Subpixel.LetterSpacing: 0.5 px of spacing over the eleven glyphs of "INTERACTIVE",
+    kerning off, adds 5 or 6 px to GetStringWidth.
+  - VaCuus.Font.Subpixel.FractionalPen: GenerateString of "H" with its pen moved by 0.25, 0.5 and
+    0.75 px moves the glyph by exactly that, read back from the quad's x and its texture coordinates.
+  - VaCuus.Font.Subpixel.LineWidth: GenerateLine's width of a twelve-word line at 0.37 px of
+    letter-spacing equals what GenerateString returns for it. Its control asks that the tokens
+    measured one by one sum to more, so the text can tell the two apart.
+  - VaCuus.Font.Subpixel.Advance: a hundred H at 16 px measure 1222 (1527/2000 em each, LatoLatin's
+    hmtx).
+  - VaCuus.Font.Subpixel.Kerning: twenty "To" kern at 10 px by their kerning at 50 px times 10/50;
+    its control asks that the run kerns at 50 px at all.
+  - VaCuus.Font.Subpixel.FallbackAdvance: a ZHE taken from a fallback face adds its own width between
+    two A. The fallback is the engine's Engine/Content/Slate/Fonts/Roboto-Regular.ttf, read at run
+    time; nothing is added to this repository.
+  - VaCuus.Font.Subpixel.ReplacementAdvance: the engine's replacement box for U+4E00 adds its 7 px
+    between two x (LatoLatin has no U+FFFD of its own).
+Restore-the-bug, Win64, UE 5.8 host editor, -unattended -nullrhi, 2026-10-16, one hunk at a time:
+  - patch absent (Include/ and Source/ at master, the tests kept): LetterSpacing (0 px added),
+    FractionalPen (shifts of 0, 1 and 1), LineWidth (its control: "12 words summed to 379 px, drawn
+    379 px"), Advance (1200) and Kerning (0 against -46.8) fail; FallbackAdvance and
+    ReplacementAdvance pass -- they guard a partial loss, not the whole patch;
+  - WeakCopy's line dropped: FallbackAdvance alone fails, 0 px against 13 or 14;
+  - the replacement box's line dropped: ReplacementAdvance alone, 0 against 7;
+  - FontFaceLayer.h at master: FractionalPen alone, shifts of 0, 1 and 1;
+  - ElementText.cpp at master: LineWidth alone, 412 measured against 408 drawn;
+  - FT_KERNING_DEFAULT back: Kerning alone, 0 against -46.8;
+  - advance_exact from horiAdvance: Advance alone, 1200;
+  - (int)letter_spacing back in GetStringWidth and GenerateString: LetterSpacing alone, 0 px added;
+  - WidgetTextInput.cpp at master: all seven pass -- no test sees that hunk;
+  - patch present: all seven Success, and the rest of VaCuus. green alongside them (286 of 286).
+
+NOT yet offered upstream.

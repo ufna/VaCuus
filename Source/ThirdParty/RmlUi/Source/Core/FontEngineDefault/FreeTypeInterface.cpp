@@ -211,7 +211,7 @@ bool FreeType::AppendGlyph(FontFaceHandleFreetype face, int font_size, Character
 	return true;
 }
 
-int FreeType::GetKerning(FontFaceHandleFreetype face, int font_size, Character lhs, Character rhs)
+float FreeType::GetKerning(FontFaceHandleFreetype face, int font_size, Character lhs, Character rhs) // VaCuus patch #15 (VENDORED_TAG.txt)
 {
 	FT_Face ft_face = (FT_Face)face;
 
@@ -228,14 +228,16 @@ int FreeType::GetKerning(FontFaceHandleFreetype face, int font_size, Character l
 
 	FT_Vector ft_kerning;
 
+	// VaCuus patch #15 (VENDORED_TAG.txt): UNFITTED, in 26.6. DEFAULT rounds a pair to the nearest pixel, and below 25 ppem
+	// first scales it by ppem/25 (FreeType 2.14.1 src/base/ftobjs.c:3630-3646, FT_Get_Kerning): -0.4 px was 0, 9-13 px
+	// type kerned at 36-52 %.
 	FT_Error ft_error = FT_Get_Kerning(ft_face, FT_Get_Char_Index(ft_face, (FT_ULong)lhs), FT_Get_Char_Index(ft_face, (FT_ULong)rhs),
-		FT_KERNING_DEFAULT, &ft_kerning);
+		FT_KERNING_UNFITTED, &ft_kerning);
 
 	if (ft_error)
-		return 0;
+		return 0.f;
 
-	int kerning = ft_kerning.x >> 6;
-	return kerning;
+	return float(ft_kerning.x) / 64.f;
 }
 
 bool FreeType::HasKerning(FontFaceHandleFreetype face)
@@ -267,6 +269,7 @@ static void BuildGlyphMap(FT_Face ft_face, int size, FontGlyphMap& glyphs, const
 		FontGlyph glyph;
 		glyph.bitmap_dimensions = {size / 3, (size * 2) / 3};
 		glyph.advance = glyph.bitmap_dimensions.x + 2;
+		glyph.advance_exact = float(glyph.advance); // VaCuus patch #15 (VENDORED_TAG.txt)
 		glyph.bearing = {1, glyph.bitmap_dimensions.y};
 
 		glyph.bitmap_owned_data.reset(new byte[glyph.bitmap_dimensions.x * glyph.bitmap_dimensions.y]);
@@ -334,6 +337,11 @@ static bool BuildGlyph(FT_Face ft_face, const Character character, FontGlyphMap&
 	glyph.bearing.x = ft_glyph->bitmap_left;
 	glyph.bearing.y = ft_glyph->bitmap_top;
 	glyph.advance = ft_glyph->metrics.horiAdvance >> 6;
+	// VaCuus patch #15 (VENDORED_TAG.txt): linearHoriAdvance is the unhinted advance in 16.16 pixels (freetype.h:2106-2110).
+	// The glyph is loaded hinted, so horiAdvance is grid-fitted to a whole pixel (FreeType 2.14.1 src/base/ftobjs.c:889,
+	// called at :1079-1081), up to half a pixel off per glyph at UI sizes.
+	glyph.advance_exact =
+		(ft_glyph->linearHoriAdvance != 0 ? float(ft_glyph->linearHoriAdvance) / 65536.f : float(ft_glyph->metrics.horiAdvance) / 64.f);
 	glyph.bitmap_dimensions.x = ft_glyph->bitmap.width;
 	glyph.bitmap_dimensions.y = ft_glyph->bitmap.rows;
 
@@ -343,6 +351,7 @@ static bool BuildGlyph(FT_Face ft_face, const Character character, FontGlyphMap&
 	{
 		glyph.bearing = Vector2i(Vector2f(glyph.bearing) * bitmap_scaling_factor);
 		glyph.advance = int(float(glyph.advance) * bitmap_scaling_factor);
+		glyph.advance_exact *= bitmap_scaling_factor; // VaCuus patch #15 (VENDORED_TAG.txt)
 		glyph.bitmap_dimensions = Vector2i(Vector2f(glyph.bitmap_dimensions) * bitmap_scaling_factor);
 	}
 

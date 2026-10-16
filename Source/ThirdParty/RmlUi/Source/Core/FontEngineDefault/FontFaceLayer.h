@@ -3,6 +3,7 @@
 #include "../../../Include/RmlUi/Core/CallbackTexture.h"
 #include "../../../Include/RmlUi/Core/FontGlyph.h"
 #include "../../../Include/RmlUi/Core/Geometry.h"
+#include "../../../Include/RmlUi/Core/Math.h" // VaCuus patch #15 (VENDORED_TAG.txt)
 #include "../../../Include/RmlUi/Core/MeshUtilities.h"
 #include "../TextureLayout.h"
 
@@ -54,7 +55,27 @@ public:
 
 		// Generate the geometry for the character.
 		Mesh& mesh = mesh_list[box.texture_index].mesh;
-		MeshUtilities::GenerateQuad(mesh, (position + box.origin).Round(), box.dimensions, colour, box.texcoords[0], box.texcoords[1]);
+
+		// VaCuus patch #15 (VENDORED_TAG.txt): the pen is fractional now, and rounding the quad here would put every
+		// glyph back on the pixel grid with the same uneven gaps. On a fraction, the quad stays on the grid one
+		// pixel wider and its texture coordinates move left by the fraction, so the bilinear sampler of VaCuus's
+		// textured draws (VaCuusReplayRenderer.cpp:1208) shifts the bitmap right by exactly that. The extra column
+		// reads the transparent pixel the atlas keeps around every glyph: a row starts at x 1 and leaves a pixel after
+		// each rectangle (TextureLayoutRow.cpp:14, :45-49), and the atlas starts transparent (TextureLayoutTexture.cpp:113-114).
+		const Vector2f quad_origin = position + box.origin;
+		const float left = Math::RoundDown(quad_origin.x);
+		const float fraction = quad_origin.x - left;
+		if (box.dimensions.x <= 0.f || fraction < 1.f / 64.f || fraction > 63.f / 64.f)
+		{
+			MeshUtilities::GenerateQuad(mesh, quad_origin.Round(), box.dimensions, colour, box.texcoords[0], box.texcoords[1]);
+			return;
+		}
+
+		const float texel_u = (box.texcoords[1].x - box.texcoords[0].x) / box.dimensions.x;
+		const Vector2f top_left(box.texcoords[0].x - fraction * texel_u, box.texcoords[0].y);
+		const Vector2f bottom_right(box.texcoords[1].x + (1.f - fraction) * texel_u, box.texcoords[1].y);
+		MeshUtilities::GenerateQuad(mesh, Vector2f(left, Math::Round(quad_origin.y)), Vector2f(box.dimensions.x + 1.f, box.dimensions.y), colour,
+			top_left, bottom_right);
 	}
 
 	/// Returns the effect used to generate the layer.
