@@ -38,13 +38,22 @@
  * -0.49 px at 10 px after DEFAULT's damping and so rounds to nothing: the run at 10 px reads 0 against about -47.
  *
  * FALLBACK ADVANCE. A glyph the styled face lacks is copied from a fallback face with FontGlyph::WeakCopy
- * (FontFaceHandleDefault.cpp:385-389). A copy without advance_exact advances by 0 on the fractional pen, so the next
+ * (FontFaceHandleDefault.cpp:391-395). A copy without advance_exact advances by 0 on the fractional pen, so the next
  * glyph lands on top of it. The repository ships one face (VaCuusFontRegistryTest.cpp:197-198 says why), so the
  * fallback here is the engine's own Slate font, read from disk for the test and never added to the repository.
  *
  * REPLACEMENT ADVANCE. LatoLatin has no U+FFFD, so for a character no face covers the engine draws its own box
  * (FreeTypeInterface.cpp:264-272), whose advance is size / 3 + 2 -- 7 px at 16 px. Without advance_exact it advances
  * by 0 too.
+ *
+ * ATLAS GUTTER (the owner's follow-up). Under a transform a sample can land anywhere in the sub-pixel quad, which reaches
+ * two texel columns past its bitmap on either side, so every glyph's reach must stay off every other glyph's ink: the
+ * atlas leaves two transparent columns between rectangles (TextureLayoutRow.cpp:19, :53), not upstream's one.
+ *
+ * LINE MEASURED ONCE (the owner's follow-up). GenerateLine continues the line's unrounded pen token by token
+ * (FontEngineInterface::GetStringWidthFrom) rather than re-measuring the line so far for every token. Patch #5 counts
+ * every lookup of a character no face has (FontProvider.cpp:54-57), so with one such character first on the line the
+ * count is the number of times its token was measured.
  *
  * The face is LatoLatin, the one FVaCuusEngine::Initialize loads (VaCuusEngine.cpp:136-148); kerning is off wherever
  * it would only add noise.
@@ -687,6 +696,72 @@ bool FVaCuusFontSubpixelAtlasGutterTest::RunTest(const FString& Parameters)
 		AddError(FString::Printf(TEXT("%d glyph pairs: a transformed glyph can sample its neighbour in the atlas, e.g. %s; a one-texel "
 									  "gutter is too narrow for the widened quad"),
 			Bleeds, *FirstBleed));
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusFontSubpixelLineMeasuredOnceTest, "VaCuus.Font.Subpixel.LineMeasuredOnce",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusFontSubpixelLineMeasuredOnceTest::RunTest(const FString& Parameters)
+{
+	using namespace VaCuusFontSubpixelTest;
+
+	FRig Rig;
+	if (!Rig.Boot(*this, "vacuus_font_subpixel_once"))
+	{
+		return false;
+	}
+
+	// U+4E00 first, which no loaded face has: every lookup of it is counted by patch #5 (FontProvider.cpp:54-57), so the
+	// count says how many times GenerateLine measured the line's first token. Ten more tokens follow on the same line.
+	const Rml::String GDocument = Rml::String(R"(<rml>
+<head><style>body { display: block; font-family: LatoLatin; font-size: 16px; } div { display: block; }</style></head>
+<body><div id="t">)") + "\xE4\xB8\x80" + R"( one two three four five six seven eight nine ten</div></body>
+</rml>)";
+
+	Rml::ElementDocument* Document = Rig.Context->LoadDocumentFromMemory(GDocument, "vacuus://font_subpixel_once.rml");
+	if (!TestNotNull(TEXT("Document"), Document))
+	{
+		return false;
+	}
+	Document->Show();
+	Rig.Context->Update();
+
+	Rml::Element* Div = Document->GetElementById("t");
+	Rml::ElementText* Text = Div != nullptr ? rmlui_dynamic_cast<Rml::ElementText*>(Div->GetFirstChild()) : nullptr;
+	if (!TestNotNull(TEXT("the text node"), Text) || !TestTrue(TEXT("the text has a face"), Text->GetFontFaceHandle() != 0))
+	{
+		return false;
+	}
+
+	Rml::FontEngineInterface* FontEngine = Rml::GetFontEngineInterface();
+	const int32 Before = FontEngine->GetNumReplacementGlyphs();
+
+	Rml::String Line;
+	int LineLength = 0;
+	float LineWidth = 0.f;
+	Text->GenerateLine(Line, LineLength, LineWidth, 0, 100000.f, 0.f, true, true, false);
+	const int32 Lookups = FontEngine->GetNumReplacementGlyphs() - Before;
+
+	if (!TestEqual(TEXT("the whole text fits one line"), LineLength, static_cast<int32>(Text->GetText().size())))
+	{
+		return false;
+	}
+
+	// THE CONTROL: the count moves at all, so a 1 below is a measurement and not a dead counter.
+	if (!TestTrue(FString::Printf(TEXT("measuring the line looks the missing character up (%d lookups)"), Lookups), Lookups > 0))
+	{
+		return false;
+	}
+
+	// THE ASSERTION: each token is measured once, so the line costs its length and not its length times its token count.
+	if (Lookups != 1)
+	{
+		AddError(FString::Printf(TEXT("GenerateLine looked the first token's character up %d times over a line of 11 tokens; 1 expected, "
+									  "11 means every token re-measures the whole line so far"),
+			Lookups));
 	}
 
 	return true;

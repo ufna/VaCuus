@@ -88,6 +88,16 @@ public:
 	virtual int GetStringWidth(FontFaceHandle handle, StringView string, const TextShapingContext& text_shaping_context,
 		Character prior_character = Character::Null);
 
+	/// VaCuus patch #15 follow-up (VENDORED_TAG.txt): GetStringWidth continued from a pen already at `pen`, for a caller
+	/// that measures a line one token at a time. Returns the whole-pixel width of everything measured so far -- what
+	/// GetStringWidth would answer for the earlier tokens and this string together -- and leaves the unrounded pen in
+	/// `pen` for the next call. The default adds this string's GetStringWidth to the pen, i.e. a per-token sum.
+	/// @param[in] prior_character The character that precedes the string, for kerning.
+	/// @param[in,out] pen The unrounded width measured so far; 0 for a line's first token.
+	/// @return The width, in pixels, of everything measured so far.
+	virtual int GetStringWidthFrom(FontFaceHandle handle, StringView string, const TextShapingContext& text_shaping_context,
+		Character prior_character, float& pen);
+
 	/// Called by RmlUi when it wants to retrieve the meshes required to render a single line of text.
 	/// @param[in] render_manager The render manager responsible for rendering the string.
 	/// @param[in] face_handle The font handle.

@@ -53,7 +53,7 @@ Whether that also costs a PUBLISHED frame depends on which property is bound, an
 first version of the test below got this wrong -- it bound `width`, and passed with
 the patch reverted. Two RmlUi shortcuts absorb the layout-only path: an unchanged box
 never reaches OnResize, and ElementText reuses its compiled geometry when the
-regenerated mesh compares equal (ElementText.cpp:530-536). The border/background path
+regenerated mesh compares equal (ElementText.cpp:541-547). The border/background path
 has no such check -- ElementBackgroundBorder::GenerateGeometry releases and re-makes
 its mesh unconditionally (ElementBackgroundBorder.cpp:181-187) -- so a no-op write to
 border-*-width, border-radius or box-shadow is a fresh handle plus resource traffic,
@@ -696,10 +696,10 @@ NOT yet offered upstream -- same standing as patches #1-#6.
 Patch #9 -- text-transform changes the case of ASCII letters only.
 
 One file: Source/Core/ElementText.cpp. The old BuildToken body becomes BuildTokenUntransformed
-(:569, same logic, the transform parameter and the ASCII-only transform block removed), and a new
-BuildToken with the old signature (:807) calls it and then, for Uppercase or Lowercase, re-encodes
-the token code point by code point (TransformTextCase, :783). The forward declaration (:21) and both
-call sites in GenerateLine (:260, :301) are untouched.
+(:580, same logic, the transform parameter and the ASCII-only transform block removed), and a new
+BuildToken with the old signature (:818) calls it and then, for Uppercase or Lowercase, re-encodes
+the token code point by code point (TransformTextCase, :794). The forward declaration (:21) and both
+call sites in GenerateLine (:265, :308) are untouched.
 
 THE DEFECT IS UPSTREAM'S. BuildToken walks the UTF-8 text one BYTE at a time
 (`char character = *token_begin;`) and applied the transform only to `a-z` / `A-Z` (pre-patch
@@ -932,7 +932,7 @@ whole sum does not add a pixel.
 
 UNFITTED also drops DEFAULT's small-size damping: below 25 ppem a pair now gets the face's full
 value, up to 25/ppem of what DEFAULT gave before rounding (2.8x at 9 px). Kerning is on unless
-`font-kerning: none` (FontFaceHandleDefault.cpp:349-352), so this shows by default. Only faces with
+`font-kerning: none` (FontFaceHandleDefault.cpp:355-358), so this shows by default. Only faces with
 a `kern` table are touched -- this FreeType reads no GPOS kerning (TT_CONFIG_OPTION_GPOS_KERNING is
 off, FreeType2-2.14.1 include/freetype/config/ftoption.h:798; FT_FACE_FLAG_KERNING comes from `kern`
 alone, sfobjs.c:1133-1138). The shipped LatoLatin has one (10920 pairs), so its small text kerns
@@ -1017,3 +1017,24 @@ one quad's reach overlaps another glyph's ink on shared rows. Restore-the-bug, L
 one-texel gutter -> Fail, "174 glyph pairs ... '!' at pen + 0.25 can read columns 10-15, and 'V'
 is drawn from 15-25"; two -> Success. Line shifts: TextureLayoutRow.cpp +4 from old :14;
 FontFaceLayer.h +1 from :64 (its comment now names the two-texel gutter).
+
+2. A LINE IS MEASURED ONCE. PR #23 costed a token as W(line + token) - W(line), re-measuring the
+line so far for every token: quadratic in the line, and worst where lines are long -- a single-line
+input is `white-space: pre` (Elements/WidgetTextInput.cpp:164) and re-formats its whole value on
+every keystroke. FontEngineInterface gains GetStringWidthFrom (Include/RmlUi/Core/FontEngineInterface.h
+:91-99): GetStringWidth continued from an unrounded pen. The default engine's GetStringWidth is now
+that one loop started at 0 (FontFaceHandleDefault.cpp:68-72, :74-102), so a line measured token by
+token makes the same float additions in the same order as one call over the line and rounds once;
+the base implementation (FontEngineInterface.cpp:54-60) adds GetStringWidth to the pen, i.e. a
+custom engine gets upstream's per-token sum. GenerateLine keeps upstream's previous_codepoint for
+kerning across a token boundary and carries the pen (ElementText.cpp:254, :259-262, :270-272,
+:311-314, :334). Test: VaCuus.Font.Subpixel.LineMeasuredOnce puts U+4E00, which no loaded face has,
+first on an eleven-token line; patch #5 counts every lookup of it (FontProvider.cpp:54-57), so the
+count is how many times GenerateLine measured that token. Restore-the-bug, Linux, 2026-10-16: PR
+#23's `line + token` -> Fail, "looked the first token's character up 11 times"; the continued pen ->
+Success, 1 lookup, and VaCuus.Font.Subpixel.LineWidth still finds GenerateLine's width equal to the
+line GenerateString draws. Line shifts: ElementText.cpp +11 from old :323 (+1 :253, +4 :257, +2
+:262, +3 :304, +1 :323), and patch #9's citations above moved with it; FontFaceHandleDefault.cpp
++6 from old :74; FontEngineInterface.h +10 from :90. Moved in-repo citations, each compared with the
+line it named before: ElementText.cpp :425-428, :430-439, :443-446, :530-536, :530-539, :371-374,
+:341, :535-536 (+11); FontFaceHandleDefault.cpp :349-352, :378-394, :385-389, :397-404 (+6).

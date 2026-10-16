@@ -194,7 +194,7 @@ enum class EVaCuusCommandKind : uint8
 	 * VFS path) and bFallbackFace.
 	 *
 	 * FIFO IS THE FALLBACK ORDER. RmlUi consults fallback faces in registration order
-	 * (FontFaceHandleDefault.cpp:378-394), so the queue's ordering is not merely convenient here
+	 * (FontFaceHandleDefault.cpp:384-400), so the queue's ordering is not merely convenient here
 	 * -- it decides which face wins a glyph.
 	 */
 	LoadFontFace,

@@ -46,7 +46,7 @@ struct FVaCuusDataStyleTestBar
 	 * not to publish on its own: a no-op `width` write costs a restyle and a whole-document
 	 * relayout, and then the gate absorbs it, because the box comes out identical (no
 	 * OnResize, so no background dirty) and RmlUi reuses a text element's compiled geometry
-	 * when the regenerated mesh compares equal (ElementText.cpp:530-536). Its cost is UI-thread
+	 * when the regenerated mesh compares equal (ElementText.cpp:541-547). Its cost is UI-thread
 	 * time, not published frames. Both bindings sit on one element so that one document says
 	 * both halves.
 	 */

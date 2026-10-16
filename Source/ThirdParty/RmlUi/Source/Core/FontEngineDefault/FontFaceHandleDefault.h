@@ -32,6 +32,11 @@ public:
 	/// @return The width, in pixels, this string will occupy if rendered with this handle.
 	int GetStringWidth(StringView string, const TextShapingContext& text_shaping_context, Character prior_character = Character::Null);
 
+	/// VaCuus patch #15 follow-up (VENDORED_TAG.txt): GetStringWidth continued from the unrounded pen `pen`, which it
+	/// advances. GetStringWidth is this from 0, so a line measured token by token adds exactly what one call over the
+	/// whole line adds, in the same order.
+	int GetStringWidthFrom(StringView string, const TextShapingContext& text_shaping_context, Character prior_character, float& pen);
+
 	/// Generates, if required, the layer configuration for a given list of font effects.
 	/// @param[in] font_effects The list of font effects to generate the configuration for.
 	/// @return The index to use when generating geometry using this configuration.

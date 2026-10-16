@@ -38,7 +38,7 @@
  * of this test got it wrong — it bound `width` only, and passed with the patch REVERTED (100
  * dirty frames, 0 published). Two RmlUi shortcuts absorb the layout path: an unchanged box
  * never reaches OnResize, so no background is dirtied, and a text element reuses its compiled
- * geometry when the regenerated mesh compares equal (ElementText.cpp:530-536). The border and
+ * geometry when the regenerated mesh compares equal (ElementText.cpp:541-547). The border and
  * background path has no such check — ElementBackgroundBorder::GenerateGeometry releases and
  * re-makes the mesh unconditionally (ElementBackgroundBorder.cpp:131-137) — so a no-op write
  * to `border-left-width` is a fresh handle plus resource traffic, which is both legs of the

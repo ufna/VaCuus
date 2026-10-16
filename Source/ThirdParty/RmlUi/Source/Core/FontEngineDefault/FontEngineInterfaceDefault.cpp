@@ -57,6 +57,14 @@ int FontEngineInterfaceDefault::GetStringWidth(FontFaceHandle handle, StringView
 	return handle_default->GetStringWidth(string, text_shaping_context, prior_character);
 }
 
+// VaCuus patch #15 follow-up (VENDORED_TAG.txt).
+int FontEngineInterfaceDefault::GetStringWidthFrom(FontFaceHandle handle, StringView string, const TextShapingContext& text_shaping_context,
+	Character prior_character, float& pen)
+{
+	auto handle_default = reinterpret_cast<FontFaceHandleDefault*>(handle);
+	return handle_default->GetStringWidthFrom(string, text_shaping_context, prior_character, pen);
+}
+
 int FontEngineInterfaceDefault::GenerateString(RenderManager& render_manager, FontFaceHandle handle, FontEffectsHandle font_effects_handle,
 	StringView string, Vector2f position, ColourbPremultiplied colour, float opacity, const TextShapingContext& text_shaping_context,
 	TexturedMeshList& mesh_list)

@@ -51,6 +51,14 @@ int FontEngineInterface::GetStringWidth(FontFaceHandle /*handle*/, StringView /*
 	return 0;
 }
 
+// VaCuus patch #15 follow-up (VENDORED_TAG.txt). An engine without a fractional pen sums its whole-pixel widths.
+int FontEngineInterface::GetStringWidthFrom(FontFaceHandle handle, StringView string, const TextShapingContext& text_shaping_context,
+	Character prior_character, float& pen)
+{
+	pen += float(GetStringWidth(handle, string, text_shaping_context, prior_character));
+	return int(pen);
+}
+
 int FontEngineInterface::GenerateString(RenderManager& /*render_manager*/, FontFaceHandle /*face_handle*/, FontEffectsHandle /*font_effects_handle*/,
 	StringView /*string*/, Vector2f /*position*/, ColourbPremultiplied /*colour*/, float /*opacity*/,
 	const TextShapingContext& /*text_shaping_context*/, TexturedMeshList& /*mesh_list*/)

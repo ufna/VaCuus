@@ -560,7 +560,7 @@ changing from `120` to `130`:
 6. **Re-layout, same frame.** Still inside the same `Context::Update()`,
    `doc->UpdateLayout()` runs at `Source/Core/Context.cpp:207-214`. Re-laying out the text runs
    `ClearLines()`/`AddLine()`, both of which set `geometry_dirty = true`
-   (`Source/Core/ElementText.cpp:341`, `:351`).
+   (`Source/Core/ElementText.cpp:352`, `:351`).
 7. **Regenerate geometry, during `Render()`.** `ElementText::OnRender` sees `geometry_dirty` and
    calls `GenerateGeometry` (`Source/Core/ElementText.cpp:147-148`). That function reuses existing
    geometry **only when the mesh compares equal**:
@@ -569,7 +569,7 @@ changing from `120` to `130`:
 		if (!geometry[i].geometry || geometry[i].geometry.GetMesh() != mesh_list[i].mesh)
 			geometry[i].geometry = render_manager.MakeGeometry(std::move(mesh_list[i].mesh));
 ```
-— `Source/Core/ElementText.cpp:535-536`
+— `Source/Core/ElementText.cpp:546-547`
 
    `Mesh::operator==` compares vertices and indices (`Include/RmlUi/Core/Mesh.h:14`) and
    `Vertex::operator==` compares position, colour and tex_coord
@@ -969,9 +969,9 @@ point, so a reader checking §6 against them would be doubly misled.
 Spot-checked the whole trail at `VaCuusCommandBuffer.h:325-347`. Correct: `RenderManager.cpp:345-354`
 (`ReleaseResource(const Geometry&)` is 345-354 exactly), `RenderManager.cpp:205-206` (the deferred
 `CompileGeometry` is at 206), `UniqueRenderResource.h:30-35` (the move-assign is 30-35),
-`ElementText.cpp:530-539` (the mesh-reuse block is 530-539), `Mesh.h:14`, `Vertex.h:20-23`.
+`ElementText.cpp:541-550` (the mesh-reuse block is 530-539), `Mesh.h:14`, `Vertex.h:20-23`.
 Slightly off by 2-3 lines: `ElementBackgroundBorder.cpp:131-137` (the pair is at 132 and 137, so the
-range is right at the top end and one line early at the bottom); `ElementText.cpp:425-428` and
+range is right at the top end and one line early at the bottom); `ElementText.cpp:436-439` and
 `:430-439` (the `geometry_dirty = true` is at 428 and the decoration re-colour block is 430-440).
 Nothing misleading — recording it only because §7.4's standard is exactness and because a reader
 checking this trail will find the same small offsets I did.

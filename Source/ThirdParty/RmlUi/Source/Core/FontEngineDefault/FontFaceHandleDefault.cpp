@@ -67,11 +67,17 @@ const FontGlyphMap& FontFaceHandleDefault::GetGlyphs() const
 
 int FontFaceHandleDefault::GetStringWidth(StringView string, const TextShapingContext& text_shaping_context, Character prior_character)
 {
+	float width = 0.f;
+	return GetStringWidthFrom(string, text_shaping_context, prior_character, width);
+}
+
+int FontFaceHandleDefault::GetStringWidthFrom(StringView string, const TextShapingContext& text_shaping_context, Character prior_character,
+	float& width)
+{
 	RMLUI_ZoneScoped;
 
 	bool has_set_size = false;
 	bool is_kerning_enabled = IsKerningEnabled(text_shaping_context);
-	float width = 0.f; // VaCuus patch #15 (VENDORED_TAG.txt)
 	for (auto it_string = StringIteratorU8(string); it_string; ++it_string)
 	{
 		Character character = *it_string;

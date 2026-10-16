@@ -177,7 +177,7 @@ bool DataViewStyle::Update(DataModel& model)
 		// (ElementBackgroundBorder.cpp:131-137) -- measured at 100 published frames in 100
 		// (VaCuus.Model.View.DataStyleIdle). The layout-only case is absorbed downstream: an
 		// unchanged box never reaches OnResize, and ElementText reuses its compiled geometry
-		// when the regenerated mesh compares equal (ElementText.cpp:530-536).
+		// when the regenerated mesh compares equal (ElementText.cpp:541-547).
 		// ToString() re-appends the unit and maps a keyword back to its name
 		// (Property.cpp:12-20 -> PropertyDefinition::GetValue, PropertyDefinition.cpp:91-135),
 		// so this compares the incoming string against the string that produced the property.

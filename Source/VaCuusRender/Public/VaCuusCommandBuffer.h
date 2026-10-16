@@ -659,9 +659,9 @@ static_assert(sizeof(FVaCuusCommandHashImage) ==
  *    render_interface->ReleaseGeometry via RenderManager::ReleaseResource
  *    (Source/Core/RenderManager.cpp:345-354), and the compile is deferred to the first draw
  *    (:205-206), i.e. to Context::Render().
- *  - text: a colour change sets geometry_dirty (Source/Core/ElementText.cpp:425-428), and the
+ *  - text: a colour change sets geometry_dirty (Source/Core/ElementText.cpp:436-439), and the
  *    regeneration REUSES existing geometry when the mesh compares equal
- *    (ElementText.cpp:530-539) -- so it is the mesh comparison that decides this case, and it
+ *    (ElementText.cpp:541-550) -- so it is the mesh comparison that decides this case, and it
  *    is colour-sensitive: Mesh::operator== compares vertices and Vertex::operator== compares
  *    `colour` (Include/RmlUi/Core/Mesh.h:14, Include/RmlUi/Core/Vertex.h:20-23). A recoloured
  *    string never matches, and the assignment that replaces it move-assigns onto a live
@@ -670,7 +670,7 @@ static_assert(sizeof(FVaCuusCommandHashImage) ==
  *
  * RmlUi also contains something that LOOKS like the counter-example, named here so it is not
  * mistaken for one later: ElementText::OnPropertyChange re-colours the text-decoration mesh
- * IN PLACE -- Release(), overwrite every vertex.colour, put it back (ElementText.cpp:430-439).
+ * IN PLACE -- Release(), overwrite every vertex.colour, put it back (ElementText.cpp:441-450).
  * The "in place" is in RmlUi's CPU-side Rml::Mesh; the put-back is MakeGeometry, so the render
  * interface still sees a release and a new compile. It could not be otherwise, for want of an
  * API to do anything else.

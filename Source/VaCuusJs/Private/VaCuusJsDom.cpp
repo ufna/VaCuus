@@ -691,7 +691,7 @@ JSValue FVaCuusJsViewContext::DocCreateTextNodeThunk(JSContext* Ctx, JSValueCons
 	// same detached-owning ownership -- and assigns the string through
 	// ElementText::SetText (ElementText.h:17, ElementText.cpp:108-117: verbatim
 	// store, layout dirtied), which scans nothing, ever. Escaping is re-applied
-	// only on RML serialization (GetRML -> EncodeRml, ElementText.cpp:443-446;
+	// only on RML serialization (GetRML -> EncodeRml, ElementText.cpp:454-457;
 	// braces are NOT escaped there -- reading innerRML back is safe, but
 	// FEEDING that string to any RML parse re-scans it, the documented
 	// round-trip hazard).

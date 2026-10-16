@@ -266,7 +266,7 @@ that buffer is then faded, so a child at `opacity: 1` inside a parent at `0.5` r
 (`Source/ThirdParty/RmlUi/Source/Core/StyleSheetSpecification.cpp:351`,
 `inherited = true`) that each element multiplies into its own colours at paint time —
 background and borders at `ElementBackgroundBorder.cpp:166-173`, text at
-`ElementText.cpp:371-374`, every gradient and shader decorator at `DecoratorGradient.cpp:140`,
+`ElementText.cpp:382-385`, every gradient and shader decorator at `DecoratorGradient.cpp:140`,
 `:265`, `:434`, `:631` and `DecoratorShader.cpp:42`. Inheritance means *copy*, not
 *compose*: `ComputeValues` copies the parent's inherited block wholesale
 (`ComputedValues.h:394`, `inherited = parent.inherited`) and a local declaration then

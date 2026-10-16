@@ -37,6 +37,10 @@ public:
 	/// Returns the width a string will take up if rendered with this handle.
 	int GetStringWidth(FontFaceHandle handle, StringView string, const TextShapingContext& text_shaping_context, Character prior_character) override;
 
+	/// VaCuus patch #15 follow-up (VENDORED_TAG.txt): the width continued from an unrounded pen.
+	int GetStringWidthFrom(FontFaceHandle handle, StringView string, const TextShapingContext& text_shaping_context, Character prior_character,
+		float& pen) override;
+
 	/// Generates the geometry required to render a single line of text.
 	int GenerateString(RenderManager& render_manager, FontFaceHandle face_handle, FontEffectsHandle effects_handle, StringView string,
 		Vector2f position, ColourbPremultiplied colour, float opacity, const TextShapingContext& text_shaping_context,
