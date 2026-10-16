@@ -1051,3 +1051,15 @@ Tools/gen_sbix_fixture.py, one 'A' with a glyf outline and a 32 ppem sbix bitmap
 -- and measures "AAAA" at 32 px. Restore-the-bug, Linux, 2026-10-16: the ungated read -> Fail,
 "four A from the sbix face measure 1 px, about 77 expected"; gated -> Success. Line shifts:
 FreeTypeInterface.cpp +2 from old :344.
+
+4. FONTGLYPH'S MEMBER COUNT IS ASSERTED. WeakCopy copies FontGlyph member by member, and a member it
+does not name is silently dropped from every fallback-face glyph -- advance_exact was nearly that
+member. Include/RmlUi/Core/FontGlyph.h:44-58 asserts the class takes a brace list of seven
+initialisers and not eight, which only a member count can catch: a field inserted into existing
+padding moves neither sizeof nor any offset. Restore-the-bug, 2026-10-16: `int vacuus_probe = 0;`
+after color_format -> "static assertion failed due to requirement '!TakesEight<Rml::FontGlyph>'";
+removed -> compiles.
+
+Not changed, and filed instead: the text-input caret still sits at the rounded-up prefix width
+(Elements/WidgetTextInput.cpp:1462-1463), up to a pixel right of the glyph boundary now that glyphs
+sit on a fractional pen. It belongs with the run boundaries the entry above leaves as they are.
