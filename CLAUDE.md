@@ -87,9 +87,21 @@ cd /w/Unreal/UnrealEngine && ./Engine/Build/BatchFiles/Linux/Build.sh \
 
 **Dev-loop hazards. Every one of these cost real time at least once.**
 
+- **A detoured UBA build can hang forever: child `clang++`s spin at 100% CPU and UBT idles.** Seen
+  2026-10-16: five children, ~30 MB RSS and three fds each (they never opened their `.rsp`), for 22
+  minutes; the UBT log stopped at `All processes queued`. UBA's own source has a path that gives
+  exactly that picture: a child that reads its shared event slot as uninitialised gets a no-op
+  `SharedEvent::Set()`, so the host never hears it, and an `IsSet()` that returns false at once
+  (`UbaEvent.cpp:292-312`), so the detour's wait loop (`UbaDetoursSharedPosix.cpp:1059-1073`) spins
+  for as long as the host lives. Three detoured builds since (2 to 223 actions) did not reproduce it.
+  **This workstation now builds undetoured**: `<bAllowUBAExecutor>false</bAllowUBAExecutor>` in the
+  user `BuildConfiguration.xml` keeps the UBA executor and drops the detours (`ExecutorFactory.cs:47-51`),
+  the same as `-NoUBA` — log lines end in `[NoUba]`, and a 2-action build went from 24 s to 12 s.
+  Anywhere detours are on, that signature means: kill by PID and rerun with `-NoUBA`.
 - **No editor may be running while you build** — it holds the `.so`. Check `pgrep -a UnrealEditor`
   and kill **by PID**. Never `pkill -f <pattern>`: the pattern matches your own bash wrapper and
-  kills your shell.
+  kills your shell. For the same reason a wait loop `until ! pgrep -f '<pattern>'` never ends: it
+  finds its own wrapper (2026-10-16, a 16 s build waited on for ten minutes).
 - **`-ExecCmds` splits on COMMAS, not semicolons.** A recipe of console commands written with `;`
   runs as one malformed command and silently does nothing — no "not recognized" line anywhere.
   (`Automation` is the one exception — next bullet.)
