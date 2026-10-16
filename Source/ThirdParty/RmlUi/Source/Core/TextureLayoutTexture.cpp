@@ -30,7 +30,7 @@ int TextureLayoutTexture::Generate(TextureLayout& layout, int maximum_dimensions
 
 		if (!rectangle.IsPlaced())
 		{
-			int x = rectangle.GetDimensions().x + 1;
+			int x = rectangle.GetDimensions().x + 2; // VaCuus patch #15 follow-up: the row's two-texel gutter (TextureLayoutRow.cpp)
 			int y = rectangle.GetDimensions().y + 1;
 
 			square_pixels += x * y;

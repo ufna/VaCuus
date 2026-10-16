@@ -521,4 +521,175 @@ bool FVaCuusFontSubpixelReplacementAdvanceTest::RunTest(const FString& Parameter
 	return true;
 }
 
+namespace VaCuusFontSubpixelTest
+{
+/** One glyph's sub-pixel quad, read back in texel columns and rows of its atlas page. */
+struct FAtlasQuad
+{
+	Rml::Texture Texture;
+	int32 InkLeft = 0;
+	int32 InkRight = 0;
+	int32 RowTop = 0;
+	int32 RowBottom = 0;
+	/** The outermost columns a bilinear sample anywhere inside the quad reads. */
+	int32 ReadLeft = 0;
+	int32 ReadRight = 0;
+};
+
+/** Draws Glyph with its pen at PenX, a whole pixel plus Fraction, and reads its quad back as atlas texels. */
+static bool ReadAtlasQuad(Rml::Context& Context, Rml::FontFaceHandle Face, const Rml::String& Glyph, float PenX, float Fraction,
+	const Rml::TextShapingContext& Shaping, FAtlasQuad& Out)
+{
+	Rml::TexturedMeshList Meshes;
+	Rml::GetFontEngineInterface()->GenerateString(Context.GetRenderManager(), Face, 0, Glyph, Rml::Vector2f(PenX, 40.f),
+		Rml::ColourbPremultiplied(255, 255), 1.f, Shaping, Meshes);
+
+	const Rml::TexturedMesh* Quad = nullptr;
+	for (const Rml::TexturedMesh& Mesh : Meshes)
+	{
+		if (Mesh.mesh.vertices.empty())
+		{
+			continue;
+		}
+
+		if (Quad != nullptr)
+		{
+			return false;
+		}
+		Quad = &Mesh;
+	}
+
+	// MeshUtilities::GenerateQuad writes top left, top right, bottom right, bottom left.
+	if (Quad == nullptr || Quad->mesh.vertices.size() != 4)
+	{
+		return false;
+	}
+
+	const Rml::Vertex& TopLeft = Quad->mesh.vertices[0];
+	const Rml::Vertex& BottomRight = Quad->mesh.vertices[2];
+	const float QuadWidth = BottomRight.position.x - TopLeft.position.x;
+	const float QuadHeight = BottomRight.position.y - TopLeft.position.y;
+	if (QuadWidth <= 1.f || QuadHeight <= 0.f)
+	{
+		return false;
+	}
+
+	// The sub-pixel quad is the bitmap one column wider, its u moved left by the fraction, so its left edge sits at
+	// (first ink column - Fraction) texels and its right edge one column past the ink, less the fraction.
+	const float TexelsPerU = QuadWidth / (BottomRight.tex_coord.x - TopLeft.tex_coord.x);
+	const float TexelsPerV = QuadHeight / (BottomRight.tex_coord.y - TopLeft.tex_coord.y);
+	const float Left = TopLeft.tex_coord.x * TexelsPerU;
+	const float Right = BottomRight.tex_coord.x * TexelsPerU;
+
+	Out.Texture = Quad->texture;
+	Out.InkLeft = FMath::RoundToInt(Left + Fraction);
+	Out.InkRight = Out.InkLeft + FMath::RoundToInt(QuadWidth) - 2;
+	Out.RowTop = FMath::RoundToInt(TopLeft.tex_coord.y * TexelsPerV);
+	Out.RowBottom = Out.RowTop + FMath::RoundToInt(QuadHeight) - 1;
+
+	// A bilinear sample at texel coordinate s reads columns floor(s - 0.5) and the one after it, and under a transform the
+	// sample can land anywhere between the quad's edges.
+	Out.ReadLeft = FMath::FloorToInt(Left - 0.5f);
+	Out.ReadRight = FMath::FloorToInt(Right - 0.5f) + 1;
+
+	// Only a quad that really is the sub-pixel kind has its ink a whole column off its edge by exactly the fraction.
+	return FMath::IsNearlyEqual(Left + Fraction, static_cast<float>(Out.InkLeft), 1e-2f);
+}
+}	 // namespace VaCuusFontSubpixelTest
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusFontSubpixelAtlasGutterTest, "VaCuus.Font.Subpixel.AtlasGutter",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusFontSubpixelAtlasGutterTest::RunTest(const FString& Parameters)
+{
+	using namespace VaCuusFontSubpixelTest;
+
+	FRig Rig;
+	if (!Rig.Boot(*this, "vacuus_font_subpixel_gutter"))
+	{
+		return false;
+	}
+
+	const Rml::FontFaceHandle Face = GetFace(16);
+	if (!TestTrue(TEXT("LatoLatin at 16 px"), Face != 0))
+	{
+		return false;
+	}
+
+	const Rml::String Language;
+	const Rml::TextShapingContext Shaping{ Language, Rml::Style::Direction::Auto, Rml::Style::FontKerning::None, 0.f };
+	Rml::FontEngineInterface* FontEngine = Rml::GetFontEngineInterface();
+
+	// Every printable ASCII glyph into the face, then one draw to lay the atlas out with all of them, so every read below
+	// sees the same layout: a glyph met for the first time would re-pack the page under the reads already taken.
+	Rml::String All;
+	for (char Glyph = '!'; Glyph <= '~'; ++Glyph)
+	{
+		All += Glyph;
+	}
+	FontEngine->GetStringWidth(Face, All, Shaping);
+	Rml::TexturedMeshList Settle;
+	FontEngine->GenerateString(Rig.Context->GetRenderManager(), Face, 0, All, Rml::Vector2f(0.f, 40.f), Rml::ColourbPremultiplied(255, 255),
+		1.f, Shaping, Settle);
+
+	// A quarter of a pixel widens the quad's reach to the right, three quarters to the left.
+	const float Fractions[] = { 0.25f, 0.75f };
+	int32 SideBySide = 0;
+	int32 Bleeds = 0;
+	FString FirstBleed;
+	for (const float Fraction : Fractions)
+	{
+		TArray<FAtlasQuad> Quads;
+		for (const char Glyph : All)
+		{
+			FAtlasQuad& Quad = Quads.AddDefaulted_GetRef();
+			if (!TestTrue(FString::Printf(TEXT("'%c' at pen + %.2f draws one sub-pixel quad"), static_cast<TCHAR>(Glyph), Fraction),
+					ReadAtlasQuad(*Rig.Context, Face, Rml::String(1, Glyph), 10.f + Fraction, Fraction, Shaping, Quad)))
+			{
+				return false;
+			}
+		}
+
+		for (int32 Reader = 0; Reader < Quads.Num(); ++Reader)
+		{
+			for (int32 Owner = 0; Owner < Quads.Num(); ++Owner)
+			{
+				const FAtlasQuad& A = Quads[Reader];
+				const FAtlasQuad& B = Quads[Owner];
+				if (Reader == Owner || !(A.Texture == B.Texture) || A.RowBottom < B.RowTop || B.RowBottom < A.RowTop)
+				{
+					continue;
+				}
+
+				++SideBySide;
+				if (A.ReadLeft <= B.InkRight && B.InkLeft <= A.ReadRight)
+				{
+					if (Bleeds++ == 0)
+					{
+						FirstBleed = FString::Printf(TEXT("'%c' at pen + %.2f can read columns %d-%d, and '%c' is drawn from %d-%d"),
+							static_cast<TCHAR>(All[Reader]), Fraction, A.ReadLeft, A.ReadRight, static_cast<TCHAR>(All[Owner]), B.InkLeft,
+							B.InkRight);
+					}
+				}
+			}
+		}
+	}
+
+	// THE CONTROL: the page packs glyphs side by side, so a gutter is there to be tested.
+	if (!TestTrue(FString::Printf(TEXT("the atlas packs glyphs side by side (%d pairs share rows)"), SideBySide), SideBySide > 0))
+	{
+		return false;
+	}
+
+	// THE ASSERTION.
+	if (Bleeds > 0)
+	{
+		AddError(FString::Printf(TEXT("%d glyph pairs: a transformed glyph can sample its neighbour in the atlas, e.g. %s; a one-texel "
+									  "gutter is too narrow for the widened quad"),
+			Bleeds, *FirstBleed));
+	}
+
+	return true;
+}
+
 #endif	// WITH_DEV_AUTOMATION_TESTS

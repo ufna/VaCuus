@@ -924,8 +924,8 @@ The fix: the pen runs in float -- advance_exact from linearHoriAdvance, the unhi
 a fraction keeps its quad on the grid one pixel wider, with its texture coordinates moved left by
 the fraction, and the bilinear sampler of VaCuus's textured draws (VaCuusReplayRenderer.cpp:1208)
 shifts the bitmap by exactly that. The extra column reads the transparent pixel the atlas keeps
-around every glyph: a row starts at x 1 and leaves a pixel after each rectangle
-(Source/Core/TextureLayoutRow.cpp:14, :45-49), and the atlas starts transparent
+around every glyph: a row starts at x 2 and leaves two pixels after each rectangle
+(Source/Core/TextureLayoutRow.cpp:19, :53; two since the follow-up below), and the atlas starts transparent
 (Source/Core/TextureLayoutTexture.cpp:113-114). GetStringWidth/GenerateString still answer in
 whole pixels: up, less 0.001, so a box sized to its text never clips it and float noise on a
 whole sum does not add a pixel.
@@ -1001,3 +1001,19 @@ Restore-the-bug, Win64, UE 5.8 host editor, -unattended -nullrhi, 2026-10-16, on
   - patch present: all seven Success, and the rest of VaCuus. green alongside them (286 of 286).
 
 NOT yet offered upstream.
+
+Patch #15 follow-up (owner, landing PR #23) -- defects the review found, each with a test.
+
+1. THE ATLAS GUTTER IS TWO TEXELS. Source/Core/TextureLayoutRow.cpp:19, :32, :53, and the page-size
+estimate in TextureLayoutTexture.cpp:33. The sub-pixel quad above samples u from (ink - fraction) to
+(ink + width + 1 - fraction) texels. Untransformed, every pixel centre lands half a texel inside
+that span and the reads stay within one column of the ink. Under any transform -- a scale, a
+rotation, a fractional translate, a transform transition in flight -- a sample can land anywhere
+in the span, and bilinear reads floor(s - 0.5) and the column after it: two columns past the ink
+on either side, so upstream's one-column gutter let a glyph pick up its neighbour's edge. Upstream's
+own rounded quad never needed more than one. Test: VaCuus.Font.Subpixel.AtlasGutter draws every
+printable ASCII glyph at pen + 0.25 and + 0.75, reads each quad back as atlas texels and fails if
+one quad's reach overlaps another glyph's ink on shared rows. Restore-the-bug, Linux, 2026-10-16:
+one-texel gutter -> Fail, "174 glyph pairs ... '!' at pen + 0.25 can read columns 10-15, and 'V'
+is drawn from 15-25"; two -> Success. Line shifts: TextureLayoutRow.cpp +4 from old :14;
+FontFaceLayer.h +1 from :64 (its comment now names the two-texel gutter).

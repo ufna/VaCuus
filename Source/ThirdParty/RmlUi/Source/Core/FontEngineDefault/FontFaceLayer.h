@@ -60,8 +60,9 @@ public:
 		// glyph back on the pixel grid with the same uneven gaps. On a fraction, the quad stays on the grid one
 		// pixel wider and its texture coordinates move left by the fraction, so the bilinear sampler of VaCuus's
 		// textured draws (VaCuusReplayRenderer.cpp:1208) shifts the bitmap right by exactly that. The extra column
-		// reads the transparent pixel the atlas keeps around every glyph: a row starts at x 1 and leaves a pixel after
-		// each rectangle (TextureLayoutRow.cpp:14, :45-49), and the atlas starts transparent (TextureLayoutTexture.cpp:113-114).
+		// reads the transparent gutter the atlas keeps around every glyph: a row starts at x 2 and leaves two pixels after
+		// each rectangle (TextureLayoutRow.cpp:19, :53 -- two, not upstream's one, because under a transform a sample at
+		// either edge of this quad reaches two columns out), and the atlas starts transparent (TextureLayoutTexture.cpp:113-114).
 		const Vector2f quad_origin = position + box.origin;
 		const float left = Math::RoundDown(quad_origin.x);
 		const float fraction = quad_origin.x - left;
