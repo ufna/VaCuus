@@ -4,7 +4,7 @@ VaCuus itself is licensed to you under the terms you bought it on. This page cov
 third-party software **inside the package**, and it is a summary — the authoritative text
 of each licence is the file named in its row, which ships beside the code it covers.
 
-The components below use MIT, BSD, FreeType License, Unicode License V3, SIL OFL 1.1
+The components below use MIT, BSD, MPL 2.0, FreeType License, Unicode License V3, SIL OFL 1.1
 and public-domain grants. Keep the listed copyright and licence notices with the
 code, data and assets when redistributing them; their full texts ship in the package.
 
@@ -21,6 +21,7 @@ code, data and assets when redistributing them; their full texts ship in the pac
 | ↳ **PlutoVG 1.3.3**, including embedded stb image/font code | MIT and the grants in each stb header | `Source/ThirdParty/lunasvg/plutovg/LICENSE`; notices in `source/plutovg-stb-*.h` |
 | ↳ FreeType-derived rasterizer and stroker | FreeType License | `Source/ThirdParty/lunasvg/plutovg/FTL.TXT` and notices in the `plutovg-ft-*` sources |
 | **rlottie** — Lottie rendering, pinned at upstream `ea06d2f` | MIT, with imported components under their own notices | `Source/ThirdParty/rlottie/COPYING` and `Source/ThirdParty/rlottie/licenses/` |
+| ↳ rlottie cubic Bézier interpolator (`src/vector/vinterpolator.cpp`) | Mozilla Public License 2.0 | `Source/ThirdParty/rlottie/licenses/COPYING.MPL`; original notice retained in the source file |
 | ↳ rlottie vector routines, rasterizer, image decoder and JSON parser | MIT, BSD and FreeType License; embedded zip/miniz grants remain in their headers | `licenses/COPYING.MIT`, `COPYING.SKIA`, `COPYING.FTL`, `COPYING.PIX`, `COPYING.STB`, `COPYING.RPD` under `Source/ThirdParty/rlottie/`; notices in `src/lottie/zip/` |
 
 The vector rasterizers contain software based in part on the work of the FreeType

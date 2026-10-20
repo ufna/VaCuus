@@ -25,3 +25,7 @@ Local patches:
 
 Keep every in-file notice and licenses/ with the source. The imported vector,
 FreeType, stb, RapidJSON and zip sources retain their respective licenses.
+
+The upstream COPYING summary omits src/vector/vinterpolator.cpp, whose header
+licenses that unmodified file under MPL 2.0. licenses/COPYING.MPL is retained,
+and THIRD-PARTY-NOTICES.md lists it separately.
