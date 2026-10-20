@@ -1212,6 +1212,9 @@ single `LT_ERROR` at `Source/Core/Element.cpp:2218` and then a fully inert docum
 
 ## 9. Deltas from upstream in this vendored copy
 
+> Update 2026-10-20: the snapshot below predates vector integration. SVG and Lottie
+> now compile in VaCuusRml; see `docs/buyer/vector-assets.md` and the current vendoring records.
+
 I have no upstream checkout to diff against, so this is a structural comparison, not a line diff.
 
 - **Root layout is `Backends/ Include/ Source/ LICENSE.txt readme.md VENDORED_SHA.txt`** — no

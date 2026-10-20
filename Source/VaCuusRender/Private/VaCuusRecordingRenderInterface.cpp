@@ -882,7 +882,7 @@ Rml::TextureHandle FVaCuusRecordingRenderInterface::GenerateTexture(Rml::Span<co
 	CheckOwnerThread();
 	check(SourceData.size() <= size_t(MAX_int32));
 
-	// Font glyph atlas path: RGBA8 with premultiplied alpha, per Rml contract.
+	// Generated font/vector bitmaps use premultiplied RGBA8, per the RmlUi render contract.
 	const FVaCuusTextureHandle Handle = NextTextureHandle++;
 	ensureMsgf(Handle != 0, TEXT("Texture handle counter wrapped to the invalid sentinel"));
 

@@ -7,7 +7,7 @@ bump with `python3 Tools/gen_rcss_matrix.py` (run from the plugin root). The
 property and shorthand tables are parsed mechanically from
 `StyleSheetSpecification::RegisterDefaultProperties` (StyleSheetSpecification.cpp:248-438
 in this vendored tree); the decorator/filter/font-effect names from the
-`Factory::RegisterDefault*Instancers` registrations in Factory.cpp. The Notes
+`Factory::RegisterDefault*Instancers` registrations in Factory.cpp and the enabled SVG plugin. The Notes
 column is hand-maintained inside the generator script (plugin-side truth with
 source cites) and survives regeneration.
 
@@ -145,7 +145,7 @@ A property with multiple parsers accepts any of them, tried in order.
 | `flex` | flex-grow, flex-shrink, flex-basis | Flex |  |
 | `flex-flow` | flex-direction, flex-wrap | FallThrough |  |
 
-## Decorators (16 registered names)
+## Decorators (17 registered names)
 
 Registered in Factory.cpp (line numbers in this vendored tree). All render
 through the record/replay path. `shader(<name-or-key>)` resolves builtin
@@ -190,24 +190,25 @@ register the `"length"` parser and nothing else
 and the corner stays square. Spell a circle as half its own side
 (`width: 64px; border-radius: 32px`).
 
-| Decorator | Factory.cpp line |
+| Decorator | Registration |
 |---|---|
-| `text` | :196 |
-| `tiled-horizontal` | :197 |
-| `tiled-vertical` | :198 |
-| `tiled-box` | :199 |
-| `image` | :200 |
-| `ninepatch` | :201 |
-| `shader` | :202 |
-| `gradient` | :204 |
-| `horizontal-gradient` | :205 |
-| `vertical-gradient` | :206 |
-| `linear-gradient` | :208 |
-| `repeating-linear-gradient` | :209 |
-| `radial-gradient` | :210 |
-| `repeating-radial-gradient` | :211 |
-| `conic-gradient` | :212 |
-| `repeating-conic-gradient` | :213 |
+| `text` | Factory.cpp:196 |
+| `tiled-horizontal` | Factory.cpp:197 |
+| `tiled-vertical` | Factory.cpp:198 |
+| `tiled-box` | Factory.cpp:199 |
+| `image` | Factory.cpp:200 |
+| `ninepatch` | Factory.cpp:201 |
+| `shader` | Factory.cpp:202 |
+| `gradient` | Factory.cpp:204 |
+| `horizontal-gradient` | Factory.cpp:205 |
+| `vertical-gradient` | Factory.cpp:206 |
+| `linear-gradient` | Factory.cpp:208 |
+| `repeating-linear-gradient` | Factory.cpp:209 |
+| `radial-gradient` | Factory.cpp:210 |
+| `repeating-radial-gradient` | Factory.cpp:211 |
+| `conic-gradient` | Factory.cpp:212 |
+| `repeating-conic-gradient` | Factory.cpp:213 |
+| `svg` | SVGPlugin.cpp:26 |
 
 ## Filters (10 registered names) -- blur-only in v1
 

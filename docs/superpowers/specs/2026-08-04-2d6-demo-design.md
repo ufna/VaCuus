@@ -91,6 +91,9 @@ preferences.
 
 ### 2.4 Assets
 
+> Update 2026-10-20: the snapshot below predates vector integration. SVG and Lottie
+> now compile in VaCuusRml; see `docs/buyer/vector-assets.md` and the current vendoring records.
+
 - **No SVG anywhere.** `Source/SVG` was deleted at vendoring
   (`VENDORED_TAG.txt:18`); `Include/RmlUi/SVG/ElementSVG.h` is an orphan header with
   no implementation and no instancer. Upstream's SVG plugin links **lunasvg**

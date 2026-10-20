@@ -31,7 +31,7 @@ const buy = buyHref()
         <li>Read, fork and modify the source</li>
         <li>Prototypes, evaluation, internal tools, game jams</li>
         <li>Ship a free, hobby or academic game</li>
-        <li>Full source, all three engines, the 290-test suite</li>
+        <li>Full source, all three engines, the 295-test suite</li>
       </ul>
 
       <div class="vc-lic-cta">
@@ -78,7 +78,7 @@ const buy = buyHref()
              <button> is what keeps it out of the tab order and unclickable; a styled <a>
              with no href would still be announced as a link to a screen reader. -->
         <button v-if="!FAB_URL" class="vc-btn vc-btn-soon" type="button" disabled>
-          Fab &middot; <span class="vc-lic-soon">soon</span>
+          Fab, <span class="vc-lic-soon">soon</span>
         </button>
         <a v-else class="vc-btn" :href="FAB_URL" target="_blank" rel="noreferrer">
           Buy on Fab &rarr;

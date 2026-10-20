@@ -87,8 +87,8 @@ Same document, two pushes apart, nothing reloaded:
 
 | `vacuus.LocDemo.Lang en` | `vacuus.LocDemo.Lang fr` |
 | --- | --- |
-| LIVE · translated live<br>**Health**<br>**Settings** | LIVE · traduit en direct<br>**Sante**<br>**Parametres** |
-| PARSE-TIME · the same key<br>**Health** | PARSE-TIME · the same key<br>**Health** |
+| LIVE, translated live<br>**Health**<br>**Settings** | LIVE, traduit en direct<br>**Sante**<br>**Parametres** |
+| PARSE-TIME, the same key<br>**Health** | PARSE-TIME, the same key<br>**Health** |
 
 The second panel uses the *same key* as the first and did not move. That is not a bug to
 report — it is §2's first row, and the demo exists to make it visible.
@@ -156,7 +156,7 @@ Greek beyond a few maths glyphs.
 
 Push a Russian table without doing anything about fonts and you get this:
 
-> LIVE · ▯▯▯▯▯ ▯▯▯▯▯▯▯
+> LIVE, ▯▯▯▯▯ ▯▯▯▯▯▯▯
 > **▯▯▯▯▯▯▯▯**
 
 The plugin patches RmlUi so that the log at least tells you, once — upstream substitutes

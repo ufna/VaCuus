@@ -84,6 +84,20 @@ struct FFixtureTree
 };
 }	 // namespace VaCuusBundlePackTest
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusVectorBundlePackTest, "VaCuus.Vector.BundlePack",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FVaCuusVectorBundlePackTest::RunTest(const FString& Parameters)
+{
+	VaCuusBundlePackTest::FFixtureTree Tree(TEXT("vector_resources"));
+	if (!TestTrue(TEXT("vector fixtures written"), Tree.Write(TEXT("icon.svg"), TEXT("<svg/>")) &&
+		Tree.Write(TEXT("animation.json"), TEXT("{}")) && Tree.Write(TEXT("ignored.txt"), TEXT("unused")))) return false;
+	const auto Files = VaCuusBundlePack::EnumerateTree({Tree.Root});
+	TestEqual(TEXT("both SVG and Lottie JSON reach the cooked pack"), Files.Num(), 2);
+	TestTrue(TEXT("SVG included"), Files.ContainsByPredicate([](const auto& File) { return File.NormalizedPath == TEXT("icon.svg"); }));
+	TestTrue(TEXT("Lottie JSON included"), Files.ContainsByPredicate([](const auto& File) { return File.NormalizedPath == TEXT("animation.json"); }));
+	return true;
+}
+
 /**
  * THE PLUGIN'S DEMOS STAY OUT OF A PROJECT'S BUNDLE (bead VaCuus-w87.14, owner decision
  * 2026-10-06). A field report's ten-file UI cooked into a 41-file bundle: the walk took every

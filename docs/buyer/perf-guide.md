@@ -1,5 +1,9 @@
 # Performance guide — the budgets, the numbers, and the idioms that hit them
 
+The reference-HUD baseline measurements below predate SVG/Lottie integration.
+For vector rasterization costs, sizes and the dedicated measurement, see
+[vector assets](vector-assets.md).
+
 Everything here is measured, and you can re-run all of it: the workload is the
 plugin's own reference HUD (`vacuus.RefHud` — 1,732 nodes at declared steady state,
 every driver family live), the instrument is the built-in perf logger

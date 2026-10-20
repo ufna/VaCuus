@@ -13,18 +13,18 @@ human half -- what is here, and the local patches. Read both before re-vendoring
 
 What is here, and why exactly this
 ----------------------------------
-Vendored per docs/superpowers/plans/2026-07-29-vacuus-m1-render-spike.md:114-122:
+The M1 Core-only recipe was extended on 2026-10-20 to retain the SVG and Lottie plugins:
 
     cp -r Include Source Backends LICENSE.txt readme.md $DEST/
-    rm -rf $DEST/Source/Lua $DEST/Source/SVG $DEST/Source/Lottie
+    rm -rf $DEST/Source/Lua
     echo "<sha>" > $DEST/VENDORED_SHA.txt
 
-Backends/ is reference material and is never compiled. Only Source/Core is built,
-through the per-file relay .cpp files that Source/VaCuusRml/Private/Gen/ generates:
-gen_relays.sh walks Source/Core alone, so all generated relays there are relay_Core_*.cpp,
-one per .cpp under Source/Core. Source/Debugger is vendored and SHIPS as source -- its
-LICENSE.txt is a disclosure Tools/fab_inventory.sh asserts reaches the package -- but no
-module compiles it and nothing in the plugin names RmlUi/Debugger.h or Rml::Debugger.
+Backends/ is reference material and is never compiled. Core, SVG and Lottie compile
+through per-file relay .cpp files in Source/VaCuusRml/Private/Gen. The same generator
+writes dependency relays to Private/VectorGen (C for PlutoVG, C++ for LunaSVG and
+rlottie). UBT builds every dependency from source, with no platform archives.
+Source/Debugger remains reference source, not compiled. The vector dependency pins,
+licenses and patches are in ../lunasvg/VENDORED_TAG.txt and ../rlottie/VENDORED_TAG.txt.
 
 Local patches
 -------------
@@ -955,3 +955,22 @@ RmlUi compiles none of it. Restore-the-bug, 2026-10-16: `int vacuus_probe = 0;` 
 Not changed, and filed instead: the text-input caret still sits at the rounded-up prefix width
 (Elements/WidgetTextInput.cpp:1462-1463), up to a pixel right of the glyph boundary now that glyphs
 sit on a fractional pen. It belongs with the run boundaries the entry above leaves as they are.
+
+Patch #16 -- SVG and Lottie integration (2026-10-20, VaCuus-dgg).
+
+Core enables RMLUI_SVG_PLUGIN and RMLUI_LOTTIE_PLUGIN. Upstream plugin sources
+are retained, with the following integration changes:
+- SVGCache scopes external image resolution to the SVG file (or owning RML for
+  inline SVG), reads through the RmlUi FileInterface, and includes source content
+  in file cache identities. A reload must see fresh bytes while another document
+  still retains the old SVG handle. VaCuus.Vector.SVG covers that case.
+- SVGPlugin registers the shipped LatoLatin font from the VFS for SVG text;
+  LunaSVG system-font scanning is disabled to keep packaged output deterministic.
+- Both plugins refuse raster dimensions above 4096 per axis; Lottie also refuses
+  nonpositive/nonfinite frame rate and duration before time-to-frame conversion.
+  VaCuus.Vector.Limits covers the allocation cap and invalid animation inputs.
+
+VaCuus.Vector.SVG and .Lottie check actual premultiplied RGBA pixels, cache/idle
+behavior, bundle-only nested images, changed animation frames and texture retirement
+through the production recorder. .LottieCost measures changed frames at three sizes,
+not cache hits. .BundlePack covers the added .svg/.json cooked-pack formats.

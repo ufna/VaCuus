@@ -1,0 +1,27 @@
+rlottie for VaCuus Lottie rendering
+===================================
+upstream: https://github.com/Samsung/rlottie
+commit: ea06d2f29ba01b8d06c00a838d107f5e484ae59b
+commit date: 2026-10-01
+vendored: 2026-10-20
+
+Pinned upstream master includes fixes after the last formal v0.2 release (2020).
+Copied inc/, src/vector/, src/lottie/, licenses/, COPYING and CMakeLists.txt.
+The CMake file records the upstream source list; UBT compiles the relays instead.
+C/wasm bindings and examples are not built. config.h intentionally enables none of
+LOTTIE_THREAD, LOTTIE_MODULE or LOTTIE_CACHE: rendering stays on the owning UI thread,
+image decoding is linked directly, and a replaced JSON file cannot hit a global model
+cache keyed only by filename.
+
+Local patches:
+- inc/rlottiecommon.h and src/vector/stb/stb_image.cpp recognize RLOTTIE_BUILD_STATIC
+  so Win64 does not import/export private static-embed symbols.
+- vdrawhelper.cpp, vdrawhelper_common.cpp and vdrawhelper_neon.cpp gate NEON on
+  RLOTTIE_NO_NEON_ASM. UE arm64 uses scalar routines; upstream's optimized path
+  requires 32-bit ARM assembler that is not part of this build. SSE2 is unchanged.
+- lottieparser.cpp loads external images through VaCuusVectorResources::LoadChildFile,
+  preserving directory-relative confinement without requiring host realpath for a
+  bundle entry. Embedded data images use the upstream decoder.
+
+Keep every in-file notice and licenses/ with the source. The imported vector,
+FreeType, stb, RapidJSON and zip sources retain their respective licenses.

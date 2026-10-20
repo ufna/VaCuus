@@ -32,8 +32,8 @@
 
 <p align="center">
   <a href="https://github.com/ufna/VaCuus/releases/latest"><img src="https://img.shields.io/github/v/release/ufna/VaCuus?style=flat-square&label=release&labelColor=12171f&color=ffb43c" alt="Latest release" /></a>
-  <a href="docs/buyer/setup.md"><img src="https://img.shields.io/badge/Unreal%20Engine-5.6%20%C2%B7%205.7%20%C2%B7%205.8-e7edf5?style=flat-square&logo=unrealengine&logoColor=white&labelColor=12171f" alt="Unreal Engine 5.6, 5.7, 5.8" /></a>
-  <a href="docs/buyer/setup.md"><img src="https://img.shields.io/badge/platforms-Win%20%C2%B7%20Mac%20%C2%B7%20Linux%20%C2%B7%20Android%20%C2%B7%20iOS-6fd3f7?style=flat-square&labelColor=12171f" alt="Windows, macOS, Linux, Android, iOS" /></a>
+  <a href="docs/buyer/setup.md"><img src="https://img.shields.io/badge/Unreal%20Engine-5.6%2C%205.7%2C%205.8-e7edf5?style=flat-square&logo=unrealengine&logoColor=white&labelColor=12171f" alt="Unreal Engine 5.6, 5.7, 5.8" /></a>
+  <a href="docs/buyer/setup.md"><img src="https://img.shields.io/badge/platforms-Win%2C%20Mac%2C%20Linux%2C%20Android%2C%20iOS-6fd3f7?style=flat-square&labelColor=12171f" alt="Windows, macOS, Linux, Android, iOS" /></a>
   <a href="LICENSE.md"><img src="https://img.shields.io/badge/license-BUSL%201.1%20%E2%86%92%20MIT-9aa6b4?style=flat-square&labelColor=12171f" alt="Business Source License 1.1, converts to MIT" /></a>
 </p>
 
@@ -49,9 +49,9 @@ Optional JavaScript (QuickJS) and a TypeScript/Preact workflow sit on top. Rende
 through the engine's RHI into a persistent render target that Slate composites, so a
 document can be a full-screen HUD or a panel on a quad in the world.
 
-> **Status: released, 1.2.0. Engines: UE 5.6, 5.7 and 5.8.** The 5.6 and 5.8
+> **Status: released, 1.3.0. Engines: UE 5.6, 5.7 and 5.8.** The 5.6 and 5.8
 > packages compile from this one source tree; the 5.7 package is derived from the 5.6
-> build with its provenance stated in the release notes. The 290-test automation suite
+> build with its provenance stated in the release notes. The 295-test automation suite
 > ships with the plugin and can be run locally (below). Supported platforms are Windows,
 > macOS, Linux, Android and iOS; consoles on request. Packages are published on
 > [GitHub Releases](https://github.com/ufna/VaCuus/releases), one archive per engine
@@ -62,7 +62,21 @@ document can be a full-screen HUD or a panel on a quad in the world.
 
 ## Features
 
+SVG files, inline SVG, SVG decorators and Lottie animations are built in. See
+[vector assets](docs/buyer/vector-assets.md) for markup, resource paths and cost,
+or run `vacuus.VectorDemo` in the editor.
+
 <table>
+  <tr>
+    <td width="42%" valign="middle">
+      <h3>Vector art and animation</h3>
+      <p>Use SVG files, inline SVG or SVG decorators for icons and artwork. Play Lottie animations from JSON, with resources loaded from the same cooked bundles as the rest of your interface.</p>
+      <p><a href="docs/buyer/vector-assets.md">SVG and Lottie guide</a></p>
+    </td>
+    <td width="58%">
+      <a href="site/public/shots/vectors.png"><img src="docs/marketing/readme/vectors.webp" alt="The vector demo showing an SVG file, inline SVG, an SVG decorator and Lottie animation over an Unreal level" width="640" /></a>
+    </td>
+  </tr>
   <tr>
     <td width="42%" valign="middle">
       <h3>The web's languages, a game's input</h3>
@@ -132,6 +146,9 @@ is unchanged, so a static pause menu costs only its composite. Every number is r
 project (`vacuus.RefHud` + `vacuus.M1HUD.PerfLog 1`); methods, the Dev column and the rows
 that are tighter than these are in [`docs/buyer/perf-guide.md`](docs/buyer/perf-guide.md).
 
+The reference-HUD baseline above was measured before vector support. See
+[vector assets](docs/buyer/vector-assets.md) for SVG/Lottie costs and their measurement.
+
 ## Read these, in this order
 
 | Page | What it answers |
@@ -139,6 +156,7 @@ that are tighter than these are in [`docs/buyer/perf-guide.md`](docs/buyer/perf-
 | [`docs/buyer/setup.md`](docs/buyer/setup.md) | **Start here.** What is in the package, what your project needs, first document, and how UI ships in a cooked build. |
 | [`docs/buyer/gotchas.md`](docs/buyer/gotchas.md) | Every recorded surprise, numbered. Read before your first authoring day — most of them cost someone a debugging session already. |
 | [`docs/buyer/rcss-matrix.md`](docs/buyer/rcss-matrix.md) | The exact supported RCSS surface, generated from the vendored RmlUi this plugin ships. RCSS is not CSS; this page is the difference. |
+| [`docs/buyer/vector-assets.md`](docs/buyer/vector-assets.md) | SVG files, inline SVG, SVG decorators and Lottie animation, with resource paths and cost. |
 | [`docs/buyer/perf-guide.md`](docs/buyer/perf-guide.md) | The budgets, the measured numbers, and the idioms that keep a HUD inside them. |
 | [`docs/buyer/ai-guide.md`](docs/buyer/ai-guide.md) | **If an AI agent writes your UI.** The whole interface is plain text, which suits agents well — but most mistakes here produce no error and a screen that renders, and an agent cannot see the screen. This page is what to brief it with. `AGENTS.md` beside this file is the short version an agent finds on its own. |
 

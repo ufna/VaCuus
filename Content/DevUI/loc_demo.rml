@@ -32,7 +32,7 @@
 	<!-- THE LIVE HALF. These re-translate in place when the game pushes a new table: one
 	     DirtyVariable("t") re-evaluates every `{{ t.* }}` in the model, and nothing reloads. -->
 	<div class="panel">
-		<div class="panel-title">LIVE &#183; {{ t.demo_label_live }}</div>
+		<div class="panel-title">LIVE : {{ t.demo_label_live }}</div>
 		<div class="value">{{ t.demo_health }}</div>
 		<div class="value">{{ t.demo_menu.settings }}</div>
 	</div>
@@ -43,12 +43,12 @@
 	     above it, deliberately: after `vacuus.LocDemo.Lang fr` the two disagree, and that
 	     disagreement is the whole lesson. -->
 	<div class="panel">
-		<div class="panel-title">PARSE-TIME &#183; the same key, translated once at load</div>
+		<div class="panel-title">PARSE-TIME : the same key, translated once at load</div>
 		<div class="value">demo_health</div>
 	</div>
 
 	<div class="note">
-		vacuus.LocDemo.Lang en | fr | ru &#183; `ru` is the font trap: the shipped face is
+		vacuus.LocDemo.Lang en | fr | ru : `ru` is the font trap: the shipped face is
 		Latin-only, so Cyrillic renders as replacement characters and the log says so once.
 	</div>
 </body>

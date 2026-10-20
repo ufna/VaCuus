@@ -172,8 +172,8 @@ work**: Slate demands a synchronous Handled/Unhandled answer about geometry that
 thread, and the snapshot is that answer, cached once per frame so every handler in a frame sees one
 stable picture.
 
-**Modules:** `VaCuusRml` (vendored library) · `VaCuus` (UI thread, VFS, subsystem, view, snapshot,
-input mapping, IME) · `VaCuusRender` (recorder, replayer, Slate element, UMG widget) ·
+**Modules:** `VaCuusRml` (vendored library), `VaCuus` (UI thread, VFS, subsystem, view, snapshot,
+input mapping, IME), `VaCuusRender` (recorder, replayer, Slate element, UMG widget),
 `VaCuusEditor` (live reload).
 
 ## Conventions & Patterns

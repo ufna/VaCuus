@@ -146,7 +146,8 @@ export default defineConfig({
             { text: 'RCSS Matrix', link: '/docs/rcss-matrix' },
             { text: 'Performance Guide', link: '/docs/perf-guide' },
             { text: 'AI Guide', link: '/docs/ai-guide' },
-            { text: 'Localization', link: '/docs/localization' }
+            { text: 'Localization', link: '/docs/localization' },
+            { text: 'SVG and Lottie', link: '/docs/vector-assets' }
           ]
         }
       ]

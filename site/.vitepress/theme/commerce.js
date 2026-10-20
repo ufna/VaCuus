@@ -4,7 +4,7 @@
 // at for the authoritative version, so the two files are edited together or not at all.
 
 export const PRICE = '$69.99'
-export const PRICE_UNIT = 'per project · perpetual'
+export const PRICE_UNIT = 'per project, perpetual'
 
 // The direct channel: the checkout, which lives with the payment backend rather than on
 // this site (ufna/vacuus-pay, private). Keeping the form there means no CORS, no JS in the

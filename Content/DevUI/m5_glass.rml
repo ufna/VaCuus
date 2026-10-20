@@ -15,14 +15,14 @@
 	<!-- Rounded: border-radius routes the clip through RenderToClipMask geometry, so this
 	     panel exercises the distiller's geometry-mask branch. -->
 	<div id="glass-round">
-		<div class="panel-title">BACKDROP BLUR 16px &#183; ROUNDED</div>
+		<div class="panel-title">BACKDROP BLUR 16px : ROUNDED</div>
 		<div class="note">clip-mask geometry path</div>
 		<div class="note">the scene behind this panel is blurred live</div>
 	</div>
 
 	<!-- Square: no radius, scissor-only clipping — the generated-quad branch. -->
 	<div id="glass-square">
-		<div class="panel-title">BACKDROP BLUR 16px &#183; SQUARE</div>
+		<div class="panel-title">BACKDROP BLUR 16px : SQUARE</div>
 		<div class="note">scissor-clipped quad path</div>
 		<div class="note">same blur, hard corners</div>
 	</div>
@@ -30,7 +30,7 @@
 	<!-- Control: identical fill and border, NO backdrop-filter — the scene behind it must
 	     stay sharp, which is what makes a screenshot an assertion instead of a mood. -->
 	<div id="control">
-		<div class="panel-title">CONTROL &#183; NO BACKDROP</div>
+		<div class="panel-title">CONTROL : NO BACKDROP</div>
 		<div class="note">same fill, no blur</div>
 		<div class="note">compare the scene through each panel</div>
 	</div>

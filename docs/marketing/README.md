@@ -56,7 +56,7 @@ badge in the rendered DOM, so the Fab listing's source retains its own published
 | --- | --- | --- |
 | `threads.svg` | one UI frame across the three threads | hand-written; restates CLAUDE.md "Architecture Overview" |
 | `refhud.webp` | the hero, full frame | `Tools/gen_readme_shots.sh` |
-| `m2demo.webp`, `world.webp`, `glass.webp`, `deco.webp` | feature-row crops | `Tools/gen_readme_shots.sh` |
+| `m2demo.webp`, `world.webp`, `glass.webp`, `deco.webp`, `vectors.webp` | feature-row crops | `Tools/gen_readme_shots.sh` |
 
 Sources are the site's 1920×1080 headless captures in `site/public/shots/`; the feature rows
 link to those full frames. The crops exist because a README table cell is ~445 px wide: the
@@ -98,7 +98,17 @@ Set with `gh repo edit`, not stored anywhere in the tree — so this is the reco
 should say:
 
 - **Description:** Game UI in HTML/CSS for Unreal Engine, rendered off the game thread —
-  RmlUi + QuickJS on a dedicated UI thread. Win · Mac · Linux · Android · iOS.
+  RmlUi + QuickJS on a dedicated UI thread. Windows, macOS, Linux, Android and iOS.
 - **Website:** https://vacuus.ufna.dev/
 - **Topics:** unreal-engine, ue5, unreal-engine-plugin, ue5-plugin, game-ui, hud, user-interface,
   webui, html, css, rmlui, quickjs, gamedev, game-development, cpp, multithreading, ai-coding
+
+## Capture recipes after the separator cleanup
+
+Use a 1920×1080 offscreen game viewport with `-ForceRes`. Screen demos use
+`vacuus.M2Demo`, `vacuus.M5Glass`, `vacuus.M5Deco`, `vacuus.RefHud` or
+`vacuus.VectorDemo`, followed by `vacuus.M1HUD.AutoShot 30`. The world capture
+uses `vacuus.M5World 0 1024 1024 0.25, vacuus.WorldDemo.Shot 2`.
+Stop each editor normally before building again. Compress the captured PNGs with
+TinyPNG before copying them to `site/public/shots`; regenerate the README crops
+from those captures. The SVG/Lottie demo is `vectors.png` / `vectors.webp`.

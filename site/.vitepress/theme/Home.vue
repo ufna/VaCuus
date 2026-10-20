@@ -60,14 +60,14 @@ onUnmounted(() => {
              because it is the whole offer in nine words: a visitor who never scrolls still
              leaves knowing they may take this today. "Pre-release" used to lead this row and
              was wrong on both counts — VaCuus.uplugin has IsBetaVersion false and
-             VersionName 1.2.0, and the status block below already says released. -->
+             VersionName 1.3.0, and the status block below already says released. -->
         <div class="vc-hero-top vc-anim vc-anim-1">
           <span class="vc-eyebrow"
-            >Unreal Engine 5.6 &ndash; 5.8 &middot; full source included</span
+            >Unreal Engine 5.6 &ndash; 5.8, full source included</span
           >
           <span class="vc-dash" />
           <span class="vc-eyebrow"
-            >Free to build &middot; {{ PRICE }} per project to ship commercially</span
+            >Free to build, {{ PRICE }} per project to ship commercially</span
           >
         </div>
 
@@ -224,14 +224,14 @@ onUnmounted(() => {
         <div class="vc-status-hazard" aria-hidden="true" />
         <div class="vc-status-body">
           <div class="vc-status-head">
-            <strong>Status &mdash; released (1.2.0)</strong>
+            <strong>Status &mdash; released (1.3.0)</strong>
             <a class="vc-cite" href="https://github.com/ufna/VaCuus#readme">README.md</a>
           </div>
           <p>
             <strong>UE 5.6, 5.7 and 5.8</strong> are supported from this one source tree.
             The 5.6 and 5.8 packages are compiled on their respective engines; the 5.7
             package is derived from 5.6, as recorded in its manifest and release notes.
-            The <strong>290-test automation suite</strong> ships with the plugin and can
+            The <strong>295-test automation suite</strong> ships with the plugin and can
             be run locally. Take the download that matches your engine from
             <a href="https://github.com/ufna/VaCuus/releases" target="_blank" rel="noreferrer"
               >GitHub Releases</a
@@ -287,7 +287,7 @@ onUnmounted(() => {
                 <tr>
                   <th scope="row">
                     Game thread / frame
-                    <span class="vc-budget">budget 0.10 ms &middot; ~8&ndash;11&times;</span>
+                    <span class="vc-budget">budget 0.10 ms, ~8&ndash;11&times;</span>
                   </th>
                   <td>
                     <b>0.012</b> ms dev<br />
@@ -297,7 +297,7 @@ onUnmounted(() => {
                 <tr>
                   <th scope="row">
                     Composite only, idle UI
-                    <span class="vc-budget">budget 0.05 ms &middot; ~12&ndash;25&times;</span>
+                    <span class="vc-budget">budget 0.05 ms, ~12&ndash;25&times;</span>
                   </th>
                   <td>
                     <b>0.002</b> ms shipping<br />
@@ -317,14 +317,14 @@ onUnmounted(() => {
                 <tr>
                   <th scope="row">
                     Added RAM
-                    <span class="vc-budget">budget 32 MB &middot; A/B median</span>
+                    <span class="vc-budget">budget 32 MB, A/B median</span>
                   </th>
                   <td><b>+14.3</b> MB</td>
                 </tr>
                 <tr>
                   <th scope="row">
                     Added disk, shipping
-                    <span class="vc-budget">budget 10 MB &middot; Linux proxy</span>
+                    <span class="vc-budget">budget 10 MB, Linux proxy</span>
                   </th>
                   <td><b>+3.22</b> MiB</td>
                 </tr>
@@ -446,7 +446,7 @@ onUnmounted(() => {
             <p>
               A declaration RmlUi cannot parse logs a warning naming <code>file:line</code>,
               in every configuration <strong>including Shipping</strong>. Plus a headless
-              1920&times;1080 render recipe and the 290-test suite, so an agent can check its
+              1920&times;1080 render recipe and the 295-test suite, so an agent can check its
               own work.
             </p>
           </div>
@@ -600,7 +600,7 @@ onUnmounted(() => {
           <span class="vc-idx">06</span>
           <h2>Why not a browser?</h2>
           <span class="vc-rule" />
-          <span class="vc-cite">middleware research &middot; 2026-07</span>
+          <span class="vc-cite">middleware research, 2026-07</span>
         </header>
 
         <p class="vc-lede vc-why-lede vc-rise">
@@ -759,7 +759,7 @@ onUnmounted(() => {
     <!-- ====================================================== numbers == -->
     <section class="vc-numbers vc-rise">
       <div class="vc-num">
-        <b>290</b>
+        <b>295</b>
         <em>automation tests, shipped with the plugin</em>
         <small>Automation RunTests VaCuus</small>
       </div>
@@ -771,12 +771,12 @@ onUnmounted(() => {
       <div class="vc-num">
         <b>0.012<i> ms</i></b>
         <em>game thread per frame at 1,732 nodes</em>
-        <small>budget 0.10 ms &middot; dev build</small>
+        <small>budget 0.10 ms, dev build</small>
       </div>
       <div class="vc-num">
         <b>5.6<i>&ndash;</i>5.8</b>
         <em>engines, built and tested from one tree</em>
-        <small>5.6 &middot; 5.7 &middot; 5.8 &middot; verified on Linux</small>
+        <small>5.6, 5.7, 5.8, verified on Linux</small>
       </div>
     </section>
 
@@ -893,7 +893,7 @@ onUnmounted(() => {
           <nav class="vc-foot-col" aria-label="Author">
             <span class="vc-foot-head">Author</span>
             <a href="https://ufna.dev" target="_blank" rel="noreferrer">ufna.dev</a>
-            <a href="https://t.me/ufna4" target="_blank" rel="noreferrer">Telegram &middot; @ufna4</a>
+            <a href="https://t.me/ufna4" target="_blank" rel="noreferrer">Telegram, @ufna4</a>
             <a href="https://github.com/ufna/VaCuus/issues" target="_blank" rel="noreferrer"
               >GitHub issues</a
             >

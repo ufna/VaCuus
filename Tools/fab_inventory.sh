@@ -56,6 +56,12 @@ absent  "Web/package-lock.json"
 
 # Backends struck from the vendored tree; the compiled subtree intact
 absent  "Source/ThirdParty/RmlUi/Backends"
+present "Source/ThirdParty/RmlUi/Source/SVG"
+present "Source/ThirdParty/RmlUi/Source/Lottie"
+present "Source/ThirdParty/lunasvg/LICENSE"
+present "Source/ThirdParty/lunasvg/plutovg/LICENSE"
+present "Source/ThirdParty/rlottie/COPYING"
+present "Source/ThirdParty/rlottie/licenses/COPYING.FTL"
 present "Source/ThirdParty/RmlUi/Source/Core"
 present "Source/ThirdParty/RmlUi/Include/RmlUi/Core"
 
@@ -111,6 +117,16 @@ present "docs/buyer/setup.md"
 present "docs/buyer/gotchas.md"
 present "docs/buyer/perf-guide.md"
 present "docs/buyer/rcss-matrix.md"
+present "docs/buyer/vector-assets.md"
+present "Content/DevUI/vector_demo.rml"
+present "Content/DevUI/vectors/check.svg"
+present "Content/DevUI/vectors/pulse.json"
+present "Source/ThirdParty/lunasvg/plutovg/FTL.TXT"
+present "Source/ThirdParty/rlottie/licenses/COPYING.MIT"
+present "Source/ThirdParty/rlottie/licenses/COPYING.SKIA"
+present "Source/ThirdParty/rlottie/licenses/COPYING.PIX"
+present "Source/ThirdParty/rlottie/licenses/COPYING.STB"
+present "Source/ThirdParty/rlottie/licenses/COPYING.RPD"
 
 # ...but the handoff is INTERNAL: it enumerates the owner's unrun hardware matrix, machine
 # hostnames and bead ids. FilterPlugin.ini:70-76 excludes it with a later-wins rule; this

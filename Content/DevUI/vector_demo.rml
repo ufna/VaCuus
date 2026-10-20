@@ -1,0 +1,19 @@
+<rml>
+<head><title>VaCuus vectors</title><style>
+body { display:block; margin:60px; font-family:LatoLatin; font-size:22px; color:#e7edf5; }
+h1 { display:block; font-size:40px; margin-bottom:14px; }
+p { display:block; margin-bottom:30px; }
+.panel { display:inline-block; vertical-align:top; width:260px; height:300px; padding:24px; margin-right:20px; background-color:#12171fe8; border:1px #34465b; border-radius:12px; }
+.label { display:block; font-size:18px; margin-bottom:20px; color:#ffb43c; }
+svg,lottie,.decorated { display:block; width:160px; height:160px; margin:auto; }
+.decorated { decorator:svg("vectors/check.svg"); }
+</style></head>
+<body>
+<h1>SVG and Lottie</h1>
+<p>Vector assets use the same UI thread, resource bundles and renderer as the rest of the interface.</p>
+<div class="panel"><div class="label">SVG file</div><svg src="vectors/check.svg"/></div>
+<div class="panel"><div class="label">Inline SVG</div><svg width="160" height="160" viewBox="0 0 160 160"><circle cx="80" cy="80" r="65" fill="#142735" stroke="#6fd3f7" stroke-width="5"/><path d="M45 100 L80 40 L115 100 Z" fill="#ffb43c"/></svg></div>
+<div class="panel"><div class="label">SVG decorator</div><div class="decorated"/></div>
+<div class="panel"><div class="label">Lottie animation</div><lottie src="vectors/pulse.json"/></div>
+</body>
+</rml>

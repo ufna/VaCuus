@@ -244,6 +244,10 @@ bool FVaCuusLiveReloadFilterTest::RunTest(const FString& Parameters)
 		FVaCuusLiveReload::ShouldTrackChange(EAction::FCA_Modified, TEXT("DevUI/hud_logic.js")));
 	TestTrue(TEXT(".mjs is tracked (Task 7: the module-entry convention)"),
 		FVaCuusLiveReload::ShouldTrackChange(EAction::FCA_Modified, TEXT("DevUI/hud_main.mjs")));
+	TestTrue(TEXT("SVG changes reload the document and its vector cache"),
+		FVaCuusLiveReload::ShouldTrackChange(EAction::FCA_Modified, TEXT("DevUI/icons/avatar.svg")));
+	TestTrue(TEXT("Lottie JSON changes reload the document"),
+		FVaCuusLiveReload::ShouldTrackChange(EAction::FCA_Modified, TEXT("DevUI/animation.json")));
 
 	//~ Normalisation. FFileChangeData's constructor runs FPaths::MakeStandardFilename, so
 	//~ what the delegate receives is usually relative -- comparing or reloading it as-is

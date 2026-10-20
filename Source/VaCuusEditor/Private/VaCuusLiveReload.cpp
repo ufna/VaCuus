@@ -37,7 +37,9 @@ static bool IsWatchedExtension(const FString& Extension)
 	return Extension.Equals(TEXT("rml"), ESearchCase::IgnoreCase) ||
 		   Extension.Equals(TEXT("rcss"), ESearchCase::IgnoreCase) ||
 		   Extension.Equals(TEXT("js"), ESearchCase::IgnoreCase) ||
-		   Extension.Equals(TEXT("mjs"), ESearchCase::IgnoreCase);
+		   Extension.Equals(TEXT("mjs"), ESearchCase::IgnoreCase) ||
+		   Extension.Equals(TEXT("svg"), ESearchCase::IgnoreCase) ||
+		   Extension.Equals(TEXT("json"), ESearchCase::IgnoreCase);
 }
 
 /**

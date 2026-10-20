@@ -41,7 +41,7 @@
 			<!-- Static registration + MarkTextureDirty after each capture: one published
 			     frame per capture, not sixty per second. -->
 			<img id="minimap" src="unreal://vacuus-demo-minimap"/>
-			<div class="mode dirty">ON DEMAND &#183; MarkTextureDirty, 1 Hz</div>
+			<div class="mode dirty">ON DEMAND : MarkTextureDirty, 1 Hz</div>
 			<div class="note">refreshes: {{ Refreshes }}</div>
 		</div>
 
@@ -50,8 +50,8 @@
 			<!-- Not a render target at all: an ordinary UTexture2D. Static, so it costs
 			     the idle gate nothing after the first frame. -->
 			<img id="icon" src="unreal://vacuus-demo-icon"/>
-			<div class="mode static">STATIC &#183; plain UTexture2D</div>
-			<div class="note">shape is alpha, not geometry &#183; zero publishes</div>
+			<div class="mode static">STATIC : plain UTexture2D</div>
+			<div class="note">shape is alpha, not geometry : zero publishes</div>
 		</div>
 	</div>
 

@@ -2872,6 +2872,11 @@ static void StartTexDemo(UVaCuusView* View, UWorld* World)
 	}
 }
 
+static FAutoConsoleCommand GVectorDemoCommand(
+	TEXT("vacuus.VectorDemo"),
+	TEXT("Toggle the SVG and Lottie demo (DevUI/vector_demo.rml)."),
+	FConsoleCommandDelegate::CreateLambda([] { Toggle(TEXT("vector_demo.rml")); }));
+
 static FAutoConsoleCommand GTexDemoCommand(
 	TEXT("vacuus.TexDemo"),
 	TEXT("Toggle the engine-texture demo (DevUI/tex_demo.rml): three <img src=\"unreal://...\"> tiles proving the three ")

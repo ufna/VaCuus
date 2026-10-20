@@ -174,7 +174,7 @@ body {
   opacity: 0.85;
 }
 
-/* Section head: index · title · rule · cite. Same grammar as every landing section. */
+/* Section head: index, title, rule, cite. Same grammar as every landing section. */
 .sec-head {
   display: flex;
   align-items: baseline;

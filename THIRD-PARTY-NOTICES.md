@@ -4,8 +4,8 @@ VaCuus itself is licensed to you under the terms you bought it on. This page cov
 third-party software **inside the package**, and it is a summary — the authoritative text
 of each licence is the file named in its row, which ships beside the code it covers.
 
-Nothing here restricts shipping a game that uses this plugin. The licences below are MIT,
-Unicode License V3 and SIL OFL 1.1. Keep the listed copyright and licence notices with the
+The components below use MIT, BSD, FreeType License, Unicode License V3, SIL OFL 1.1
+and public-domain grants. Keep the listed copyright and licence notices with the
 code, data and assets when redistributing them; their full texts ship in the package.
 
 ## Vendored source — compiled into the plugin's modules
@@ -17,6 +17,17 @@ code, data and assets when redistributing them; their full texts ship in the pac
 | ↳ RmlUi Debugger font assets (*Courier Prime Code*, regular and italic) | SIL Open Font License 1.1 | `Source/ThirdParty/RmlUi/Source/Debugger/LICENSE.txt` |
 | **quickjs-ng 0.17.0** — the JavaScript engine | MIT © 2017–2026 Fabrice Bellard; © 2017–2024 Charlie Gordon; © 2023–2026 Ben Noordhuis; © 2023–2026 Saúl Ibarra Corretgé | `Source/ThirdParty/quickjs-ng/LICENSE` |
 | ↳ Unicode data tables used by quickjs-ng | Unicode License V3 © 1991–2026 Unicode, Inc. | `Source/ThirdParty/quickjs-ng/libunicode-table.h` (notice at the top) |
+| **LunaSVG 3.5.0** — SVG rendering | MIT | `Source/ThirdParty/lunasvg/LICENSE` |
+| ↳ **PlutoVG 1.3.3**, including embedded stb image/font code | MIT and the grants in each stb header | `Source/ThirdParty/lunasvg/plutovg/LICENSE`; notices in `source/plutovg-stb-*.h` |
+| ↳ FreeType-derived rasterizer and stroker | FreeType License | `Source/ThirdParty/lunasvg/plutovg/FTL.TXT` and notices in the `plutovg-ft-*` sources |
+| **rlottie** — Lottie rendering, pinned at upstream `ea06d2f` | MIT, with imported components under their own notices | `Source/ThirdParty/rlottie/COPYING` and `Source/ThirdParty/rlottie/licenses/` |
+| ↳ rlottie vector routines, rasterizer, image decoder and JSON parser | MIT, BSD and FreeType License; embedded zip/miniz grants remain in their headers | `licenses/COPYING.MIT`, `COPYING.SKIA`, `COPYING.FTL`, `COPYING.PIX`, `COPYING.STB`, `COPYING.RPD` under `Source/ThirdParty/rlottie/`; notices in `src/lottie/zip/` |
+
+The vector rasterizers contain software based in part on the work of the FreeType
+Team. These are selected, renamed rasterizer/stroker routines; font loading still
+links the engine's FreeType2 library as described below. LunaSVG and rlottie are
+modified for static embedding and VaCuus resource loading; their `VENDORED_TAG.txt`
+files describe each local change.
 
 **RmlUi is modified.** Local patches are applied on top of the vendored commit; each
 is described, with its reason and its named regression test, in

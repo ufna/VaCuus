@@ -1,4 +1,4 @@
-// Copy the six public buyer pages into the VitePress source tree.
+// Copy the public buyer pages into the VitePress source tree.
 //
 // docs/buyer/ is the single source of truth and is never edited from here; site/docs/ is a
 // build artifact and is gitignored. Node builtins only — the site must be buildable from a
@@ -26,7 +26,8 @@ const PAGES = [
   'rcss-matrix.md',
   'perf-guide.md',
   'ai-guide.md',
-  'localization.md'
+  'localization.md',
+  'vector-assets.md'
 ]
 
 const GITHUB_BLOB = 'https://github.com/ufna/VaCuus/blob/master'

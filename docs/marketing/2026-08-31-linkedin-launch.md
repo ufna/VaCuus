@@ -74,7 +74,7 @@ that has to work in isolation.
   shortener, `https://lnkd.in/endxkWcD`; the docs URL was left alone.
 - **Image: none attached.** An uploaded image and a link card are mutually exclusive, and
   the card was worth more than either gallery shot. What rendered is the compact card —
-  small thumbnail beside "VaCuus · fab.com" — which is what LinkedIn gives a long text
+  small thumbnail beside "VaCuus, fab.com" — which is what LinkedIn gives a long text
   post, not a full-width image.
 
 ## Two things worth knowing for the next post

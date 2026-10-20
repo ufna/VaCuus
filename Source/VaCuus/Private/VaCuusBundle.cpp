@@ -66,7 +66,7 @@ TConstArrayView<const TCHAR*> GetPackedExtensions()
 	// The Build.cs comment records why exactly these formats.
 	static const TCHAR* Extensions[] = {
 		TEXT("rml"), TEXT("rcss"), TEXT("js"), TEXT("mjs"),
-		TEXT("png"), TEXT("jpg"), TEXT("jpeg"), TEXT("ttf"), TEXT("otf")};
+		TEXT("png"), TEXT("jpg"), TEXT("jpeg"), TEXT("svg"), TEXT("json"), TEXT("ttf"), TEXT("otf")};
 	return Extensions;
 }
 

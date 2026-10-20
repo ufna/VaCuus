@@ -21,22 +21,22 @@
 	</div>
 
 	<div id="g-radial" class="deco panel">
-		<div class="panel-title">RADIAL &#183; CIRCLE</div>
+		<div class="panel-title">RADIAL : CIRCLE</div>
 		<div class="note">decorator off</div>
 	</div>
 
 	<div id="g-conic" class="deco panel">
-		<div class="panel-title">CONIC &#183; HUE WHEEL</div>
+		<div class="panel-title">CONIC : HUE WHEEL</div>
 		<div class="note">decorator off</div>
 	</div>
 
 	<div id="g-glass" class="deco panel">
-		<div class="panel-title">BUILTIN &#183; shader(glass-panel)</div>
+		<div class="panel-title">BUILTIN : shader(glass-panel)</div>
 		<div class="note">decorator off</div>
 	</div>
 
 	<div id="g-control" class="panel">
-		<div class="panel-title">CONTROL &#183; NO DECORATOR</div>
+		<div class="panel-title">CONTROL : NO DECORATOR</div>
 		<div class="note">plain background-color fill</div>
 	</div>
 </body>

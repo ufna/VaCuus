@@ -385,7 +385,7 @@
   color: var(--vc-ink-3);
 }
 
-/* Section head: index · title · rule · source cite. The cite is not decoration — every
+/* Section head: index, title, rule, source cite. The cite is not decoration — every
    section names the repo file its claims come from, and links it where it is published. */
 .vc-sec {
   padding-block: clamp(56px, 8vw, 104px);

@@ -179,7 +179,9 @@ def main():
     factory = FACTORY_CPP.read_text()
     sha = SHA_FILE.read_text().strip()
     props, shorthands = parse_properties(spec)
-    decorators = parse_instancers(factory, "Decorator")
+    decorators = [(name, f"Factory.cpp:{line}") for name, line in parse_instancers(factory, "Decorator")]
+    svg_plugin = ROOT / "Source/ThirdParty/RmlUi/Source/SVG/SVGPlugin.cpp"
+    decorators += [(name, f"SVGPlugin.cpp:{line}") for name, line in parse_instancers(svg_plugin.read_text(), "Decorator")]
     filters = parse_instancers(factory, "Filter")
     font_effects = parse_instancers(factory, "FontEffect")
     fstart, fend = func_lines(spec, "void StyleSheetSpecification::RegisterDefaultProperties()")
@@ -194,7 +196,7 @@ def main():
     w.append("property and shorthand tables are parsed mechanically from")
     w.append(f"`StyleSheetSpecification::RegisterDefaultProperties` (StyleSheetSpecification.cpp:{fstart}-{fend}");
     w.append("in this vendored tree); the decorator/filter/font-effect names from the")
-    w.append("`Factory::RegisterDefault*Instancers` registrations in Factory.cpp. The Notes")
+    w.append("`Factory::RegisterDefault*Instancers` registrations in Factory.cpp and the enabled SVG plugin. The Notes")
     w.append("column is hand-maintained inside the generator script (plugin-side truth with")
     w.append("source cites) and survives regeneration.")
     w.append("")
@@ -271,10 +273,10 @@ def main():
     w.append("and the corner stays square. Spell a circle as half its own side")
     w.append("(`width: 64px; border-radius: 32px`).")
     w.append("")
-    w.append("| Decorator | Factory.cpp line |")
+    w.append("| Decorator | Registration |")
     w.append("|---|---|")
     for name, line in decorators:
-        w.append(f"| `{name}` | :{line} |")
+        w.append(f"| `{name}` | {line} |")
     w.append("")
     w.append(f"## Filters ({len(filters)} registered names) -- blur-only in v1")
     w.append("")

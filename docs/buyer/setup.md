@@ -537,3 +537,6 @@ reproduce the pipeline cannot check any claim in `perf-guide.md` against their o
   RmlUi this plugin ships.
 - `perf-guide.md` — the budgets, the measured numbers, and the design idioms
   (read the passport's "The re-baseline" before planning a 1,700-node always-animated HUD).
+
+SVG images and Lottie animations are described in [vector assets](vector-assets.md),
+including relative resource paths, cooked bundles and CPU rasterization cost.

@@ -15,7 +15,7 @@ next: false
 <LicenseBox />
 
 VaCuus is **source-available**: not open source, and not shareware either. The whole plugin —
-every line of it, all three engine versions, the 290-test automation suite — is public, free to
+every line of it, all three engine versions, the 295-test automation suite — is public, free to
 download, and free to read, modify and build with. What you buy is the right to **ship a
 commercial product** with it.
 

@@ -140,6 +140,13 @@ public class VaCuusRml : ModuleRules
 		// Compile-time switch in Core.cpp that installs FontEngineInterfaceDefault
 		// (FreeType) as the default font engine; only read by .cpp files, so Private.
 		PrivateDefinitions.Add("RMLUI_FONT_ENGINE_FREETYPE=1");
+		PrivateDefinitions.AddRange(new[] {
+			"RMLUI_SVG_PLUGIN=1", "RMLUI_LOTTIE_PLUGIN=1",
+			"LUNASVG_BUILD_STATIC=1", "PLUTOVG_BUILD_STATIC=1", "RLOTTIE_BUILD_STATIC=1",
+			"LUNASVG_DISABLE_LOAD_SYSTEM_FONTS=1", "PLUTOVG_DISABLE_FONT_FACE_CACHE_LOAD=1",
+			"RLOTTIE_NO_NEON_ASM=1"
+		});
+		PrivateDependencyModuleNames.Add("VaCuusVectorDependencies");
 
 		PrivateDependencyModuleNames.AddRange(new[] { "Core" });
 

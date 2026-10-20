@@ -156,7 +156,7 @@ public class VaCuus : ModuleRules
 	 * refused at the probe), and the font list is what RmlUi's FreeType interface loads.
 	 */
 	private static readonly string[] DevUIStagedPatterns = new string[] {
-		"*.rml", "*.rcss", "*.js", "*.mjs", "*.png", "*.jpg", "*.jpeg", "*.ttf", "*.otf"
+		"*.rml", "*.rcss", "*.js", "*.mjs", "*.png", "*.jpg", "*.jpeg", "*.svg", "*.json", "*.ttf", "*.otf"
 	};
 
 	/**

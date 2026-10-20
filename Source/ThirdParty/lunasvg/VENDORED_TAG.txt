@@ -1,0 +1,23 @@
+LunaSVG for VaCuus SVG rendering
+================================
+upstream: https://github.com/sammycage/lunasvg
+tag: v3.5.0
+commit: 83c58df8103dc7dca423dfd824992af94d49bed6
+vendored: 2026-10-20
+
+Copied include/, source/, LICENSE and CMakeLists.txt. The CMake file is reference
+for the source list; UBT compiles the individual files through VaCuusRml relays.
+Local patch: source/svgelement.cpp routes external image hrefs through
+VaCuusVectorResources instead of host stdio. RmlUi scopes the base URI while
+parsing both external and inline SVG. Embedded data images retain upstream behavior.
+System font scanning is disabled; the SVG plugin registers VFS LatoLatin as the
+default face. SVG text uses this font cache, independently of RmlUi's text engine.
+
+PlutoVG is updated independently of LunaSVG's bundled snapshot:
+upstream: https://github.com/sammycage/plutovg
+tag: v1.3.3
+commit: bbd91f0d06a71491691b36330f29dffa4af87ccf
+Copied include/, source/, LICENSE and CMakeLists.txt into plutovg/. No source patches.
+FTL.TXT is the FreeType license from rlottie's licenses/COPYING.FTL, required by
+the borrowed rasterizer/stroker sources. Embedded stb headers retain their notices.
+Both libraries use static declarations and source compilation inside VaCuusRml.

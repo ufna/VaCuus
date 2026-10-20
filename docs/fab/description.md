@@ -86,7 +86,7 @@ breaking changes are reserved for major versions and carry release notes. The do
 still state every known limitation by name — read them before you buy at
 https://vacuus.ufna.dev
 
-Documentation: https://vacuus.ufna.dev · Issues and questions:
+Documentation: https://vacuus.ufna.dev, Issues and questions:
 https://github.com/ufna/VaCuus/issues
 
 ---
