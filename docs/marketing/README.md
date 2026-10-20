@@ -35,6 +35,21 @@ rsvg-convert -w 128 -h 128 docs/marketing/brand/vacuus-mark.svg -o Resources/Ico
 The site favicons (`site/public/favicon-*.png`, `apple-touch-icon.png`) are this same design,
 rendered earlier from live text; they have not been re-exported from the SVG.
 
+The site's `site/public/og.jpg` uses the shared thumbnail layout with the current test count
+from `site/.vitepress/theme/Home.vue`. Render it with `Tools/gen_site_card.mjs`, then resize
+and crop it and compress it through TinyPNG as required by `docs/dev/site-images.md`:
+
+```bash
+# Serve the repository root on port 8765; Playwright and Chromium must be installed.
+node Tools/gen_site_card.mjs /tmp/vacuus-site-card.png
+magick /tmp/vacuus-site-card.png -filter Lanczos -resize 1200x675 -crop 1200x630+0+22 +repage -quality 88 /tmp/vacuus-site-card.jpg
+# TinyPNG shrink the JPEG into site/public/og.jpg before committing.
+```
+
+`PLAYWRIGHT_MODULE` and `CHROMIUM_EXECUTABLE` can select an existing local installation.
+`CARD_ORIGIN` can select a different local server. The generator changes only the numeric
+badge in the rendered DOM, so the Fab listing's source retains its own published count.
+
 ## README images — `docs/marketing/readme/`
 
 | File | What | Made by |

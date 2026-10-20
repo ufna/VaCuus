@@ -31,7 +31,7 @@ const buy = buyHref()
         <li>Read, fork and modify the source</li>
         <li>Prototypes, evaluation, internal tools, game jams</li>
         <li>Ship a free, hobby or academic game</li>
-        <li>Full source, all three engines, the 279-test suite</li>
+        <li>Full source, all three engines, the 290-test suite</li>
       </ul>
 
       <div class="vc-lic-cta">

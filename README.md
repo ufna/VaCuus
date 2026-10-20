@@ -49,15 +49,14 @@ Optional JavaScript (QuickJS) and a TypeScript/Preact workflow sit on top. Rende
 through the engine's RHI into a persistent render target that Slate composites, so a
 document can be a full-screen HUD or a panel on a quad in the world.
 
-> **Status: released, 1.1.0. Engines: UE 5.6, 5.7 and 5.8.** All three are built and
-> tested from this one source tree — editor and packaged-game targets, plus the
-> 279-test automation suite that ships with the plugin and that you can run yourself
-> (below). Every shipping platform is supported: Windows, macOS, Linux, Android and
-> iOS; consoles on request. Packages are published on
+> **Status: released, 1.2.0. Engines: UE 5.6, 5.7 and 5.8.** The 5.6 and 5.8
+> packages compile from this one source tree; the 5.7 package is derived from the 5.6
+> build with its provenance stated in the release notes. The 290-test automation suite
+> ships with the plugin and can be run locally (below). Supported platforms are Windows,
+> macOS, Linux, Android and iOS; consoles on request. Packages are published on
 > [GitHub Releases](https://github.com/ufna/VaCuus/releases), one archive per engine
-> (`VaCuus-<version>-UE5.8.zip` and its 5.6 and 5.7 siblings), each stamped with the engine
-> that built it — take the one that matches yours
-> ([`docs/buyer/setup.md`](docs/buyer/setup.md) says how to check).
+> (`VaCuus-<version>-UE5.8.zip` and its 5.6 and 5.7 siblings). Take the download that
+> matches your engine ([`docs/buyer/setup.md`](docs/buyer/setup.md) says how to check).
 > The API is stable — breaking changes are reserved for major versions and carry
 > release notes.
 

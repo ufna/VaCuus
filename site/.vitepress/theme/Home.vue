@@ -60,7 +60,7 @@ onUnmounted(() => {
              because it is the whole offer in nine words: a visitor who never scrolls still
              leaves knowing they may take this today. "Pre-release" used to lead this row and
              was wrong on both counts — VaCuus.uplugin has IsBetaVersion false and
-             VersionName 1.1.0, and the status block below already says released. -->
+             VersionName 1.2.0, and the status block below already says released. -->
         <div class="vc-hero-top vc-anim vc-anim-1">
           <span class="vc-eyebrow"
             >Unreal Engine 5.6 &ndash; 5.8 &middot; full source included</span
@@ -224,15 +224,15 @@ onUnmounted(() => {
         <div class="vc-status-hazard" aria-hidden="true" />
         <div class="vc-status-body">
           <div class="vc-status-head">
-            <strong>Status &mdash; released (1.1.0)</strong>
+            <strong>Status &mdash; released (1.2.0)</strong>
             <a class="vc-cite" href="https://github.com/ufna/VaCuus#readme">README.md</a>
           </div>
           <p>
-            <strong>UE 5.6, 5.7 and 5.8</strong> are built and tested from this one
-            source tree &mdash; editor and packaged-game targets, plus the
-            <strong>279-test automation suite</strong> that ships with the plugin and that
-            you can run yourself. A package is stamped with the engine that built it, so
-            take the download that matches yours from
+            <strong>UE 5.6, 5.7 and 5.8</strong> are supported from this one source tree.
+            The 5.6 and 5.8 packages are compiled on their respective engines; the 5.7
+            package is derived from 5.6, as recorded in its manifest and release notes.
+            The <strong>290-test automation suite</strong> ships with the plugin and can
+            be run locally. Take the download that matches your engine from
             <a href="https://github.com/ufna/VaCuus/releases" target="_blank" rel="noreferrer"
               >GitHub Releases</a
             >.
@@ -446,7 +446,7 @@ onUnmounted(() => {
             <p>
               A declaration RmlUi cannot parse logs a warning naming <code>file:line</code>,
               in every configuration <strong>including Shipping</strong>. Plus a headless
-              1920&times;1080 render recipe and the 279-test suite, so an agent can check its
+              1920&times;1080 render recipe and the 290-test suite, so an agent can check its
               own work.
             </p>
           </div>
@@ -759,7 +759,7 @@ onUnmounted(() => {
     <!-- ====================================================== numbers == -->
     <section class="vc-numbers vc-rise">
       <div class="vc-num">
-        <b>279</b>
+        <b>290</b>
         <em>automation tests, shipped with the plugin</em>
         <small>Automation RunTests VaCuus</small>
       </div>

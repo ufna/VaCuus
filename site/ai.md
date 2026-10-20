@@ -91,7 +91,7 @@ wrong frame.
 
 ### 4. A suite that clears the plugin before it blames itself
 
-The 279-test automation suite ships **in the package** — test source and fixtures, on
+The 290-test automation suite ships **in the package** — test source and fixtures, on
 purpose — and needs no RHI:
 
 ```bash
@@ -167,7 +167,7 @@ That is precisely why the shipped documentation exists in the shape it does: the
 enumerated, numbered, and attributed to the source line that causes them, so the agent can
 look the answer up instead of deriving it from a screen it cannot see.
 
-VaCuus is **released (1.1.0)** and its API is stable — breaking changes are reserved for
+VaCuus is **released (1.2.0)** and its API is stable — breaking changes are reserved for
 major versions and carry release notes.
 If your agent is going to write your UI, read [the full agent guide](/docs/ai-guide) and
 [the gotchas](/docs/gotchas) before you decide; both are the same text that ships in the
