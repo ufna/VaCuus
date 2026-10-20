@@ -92,7 +92,8 @@ public class VaCuusRml : ModuleRules
 		// Warnings in our OWN code are untouched on every platform; only the vendored
 		// headers go quiet.
 		PublicSystemIncludePaths.Add(Path.Combine(RmlRoot, "Include"));
-		PublicDefinitions.Add("RMLUI_CUSTOM_RTTI=1");
+		// RmlUi 6.3 always supplies custom RTTI; identify this vendored release in diagnostics.
+		PrivateDefinitions.Add("RMLUI_VERSION=\"6.3\"");
 
 		// RMLUI_DEBUG: DELIBERATELY NOT DEFINED HERE, IN ANY CONFIGURATION -- this comment is
 		// the decision record (bead VaCuus-akj.11). The vendored default chain is

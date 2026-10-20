@@ -265,12 +265,11 @@ JSValue FVaCuusJsViewContext::EvalModuleToPromise(const FString& Source, const F
 	// quickjs.c:37278) and runs the graph's bodies, dependencies first. The
 	// return is the module promise, dup'd for us (quickjs.c:31553-31554, :31589).
 	// A RUNTIME throw in a body is NOT an exception here -- it rejects the
-	// promise (quickjs.c:31571-31575) and fires the rejection tracker with
-	// is_handled=false (quickjs.c:54371-54375; TWICE for a throw before the
-	// first await -- the engine's own sync path leaves the body's async-function
-	// promise unhandled too, quickjs.c:31390-31410; the ThrowRejects test pins
-	// it), which logs and counts it; the exception branch below is for
-	// link-time failures only.
+	// promise and fires the rejection tracker. QuickJS 0.17 still reports the
+	// internal body's rejection first, then retracts it when propagating to
+	// the module promise (quickjs.c:32257-32260). SyncModuleCoalesces verifies
+	// that only the outstanding rejection remains in the overlay. The exception
+	// branch below handles link-time failures.
 	JSValue Ret;
 	{
 		FVaCuusJsEntryGuard Guard(Runtime, Ctx, *ModuleName);

@@ -312,21 +312,12 @@ bool FVaCuusJsModuleTlaTest::RunTest(const FString& /*Parameters*/)
  * rejects promises, and the rejection tracker is the reporter; the module-eval
  * path adds NO report of its own, so every count below is the tracker's.
  *
- * THE OBSERVED ENGINE SHAPE, pinned because Task 8's overlay must know it (this
- * test's first version expected one fire for the sync throw and went red with
- * 2 -- the "open every line you cite" find of this task): a throw BEFORE the
- * first await fires the tracker TWICE for one throw. Every module body runs as
- * an async function, and on the sync path its promise gets NO handlers -- the
- * state is read off it, never .then'd (js_execute_sync_module,
- * quickjs.c:31390-31410) -- so the body promise rejects unhandled (fire 1,
- * quickjs.c:54371-54375), and then js_evaluate_module rejects m->promise,
- * which the host holds and never handles (fire 2, quickjs.c:31573-31575).
- * A throw AFTER an await fires ONCE: the async path DOES attach handlers to
- * the body promise (js_execute_async_module, quickjs.c:31377-31381), leaving
- * only m->promise to reject unhandled. Both reasons stringify identically, so
- * a sync throw is two IDENTICAL Error lines -- an overlay that wants one entry
- * per throw must coalesce, and neither fire ever retracts (nothing can reach
- * either promise to handle it).
+ * A synchronous module throw fires the tracker for the body promise and again
+ * for the module evaluation promise. QuickJS 0.17 marks the internal rejection
+ * handled during propagation (quickjs.c:32257-32260); the fired counter remains
+ * two while SyncModuleCoalesces checks that the overlay retracts the internal
+ * entry. A throw after an await has handlers on the body promise and fires once.
+
  */
 bool FVaCuusJsModuleThrowTest::RunTest(const FString& /*Parameters*/)
 {

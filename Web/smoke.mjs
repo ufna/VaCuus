@@ -107,7 +107,7 @@ try {
 
 	const provenance = existsSync(provenancePath) ? JSON.parse(readFileSync(provenancePath, 'utf8')) : {};
 	check('build: provenance carries preact version + facade-manifest hash + command',
-		provenance.preactVersion === '10.29.7' &&
+		provenance.preactVersion === '11.0.1' &&
 		/^[0-9a-f]{40}$/.test(provenance.facadeManifestHash || '') &&
 		(provenance.buildCommand || '').includes('vacuus.mjs build'),
 		JSON.stringify(provenance));

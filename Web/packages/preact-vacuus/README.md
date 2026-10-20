@@ -1,6 +1,6 @@
 # @vacuus/preact
 
-Stock `preact@10.29.7` (npm-fetched at install time — never committed) plus an
+Stock `preact@11.0.1` (npm-fetched at install time — never committed) plus an
 **options-based adapter** (`src/index.js`) that pins the three divergences the E-P
 experiments observed between preact and the VaCuus DOM facade. Import this package
 instead of `preact`; it re-exports all of `preact` and `preact/hooks`.

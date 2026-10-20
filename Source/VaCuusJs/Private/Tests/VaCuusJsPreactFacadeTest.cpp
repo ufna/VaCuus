@@ -22,7 +22,7 @@
  *    nodeType G4, localName, the style camelCase mapping, the attributes
  *    snapshot) driven as plain JS through the M4 rig;
  *  - the two committed stock-preact fixtures (Content/DevUI/Tests, preact
- *    10.29.7, provenance in each file's header) re-running the decisive E-P
+ *    11.0.1, provenance in each file's header) re-running the decisive E-P
  *    scenarios against the real facade on every suite run -- cold mount,
  *    adoption into non-empty DOM, keyed reversal, and the counter's
  *    create-once-then-`data` text path.

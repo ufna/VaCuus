@@ -1,11 +1,11 @@
-// itlib-flat-map v1.07
+// itlib-flat-map v1.11
 //
 // std::map-like class with an underlying vector
 //
 // SPDX-License-Identifier: MIT
 // MIT License:
 // Copyright(c) 2016-2019 Chobolabs Inc.
-// Copyright(c) 2020-2023 Borislav Stanimirov
+// Copyright(c) 2020-2025 Borislav Stanimirov
 //
 // Permission is hereby granted, free of charge, to any person obtaining
 // a copy of this software and associated documentation files(the
@@ -29,6 +29,13 @@
 //
 //                  VERSION HISTORY
 //
+//  1.11 (2025-07-24) Fix const_pointer typedef
+//  1.10 (2025-03-18) Add hint-based insert and emplace ops
+//                    Add constructors from ready-to-use containers and
+//                    sequences
+//  1.09 (2023-01-17) BUGIFX: at() was not throwing exceptions as it should
+//  1.08 (2023-01-16) Constructors from iterator ranges.
+//                    Constructor from container
 //  1.07 (2023-01-14) Inherit from Compare to enable empty base optimization
 //  1.06 (2023-01-09) Fixed transparency for std::string_view
 //  1.05 (2022-09-17) upper_bound and equal_range
@@ -87,7 +94,7 @@
 //
 //                  TESTS
 //
-// You can find unit tests for static_vector in its official repo:
+// You can find unit tests in the official repo:
 // https://github.com/iboB/itlib/blob/master/test/
 //
 #pragma once
@@ -130,6 +137,9 @@ struct pair_compare : public Compare
 };
 }
 
+// tag for constructors which tage ready-to-use containers and sequences
+struct flat_map_ready_tag {};
+
 template <typename Key, typename T, typename Compare = fmimpl::less, typename Container = std::vector<std::pair<Key, T>>>
 class flat_map : private fmimpl::pair_compare<Key, T, Compare>
 {
@@ -147,7 +157,7 @@ public:
     typedef const value_type& const_reference;
     typedef typename container_type::allocator_type allocator_type;
     typedef typename std::allocator_traits<allocator_type>::pointer pointer;
-    typedef typename std::allocator_traits<allocator_type>::pointer const_pointer;
+    typedef typename std::allocator_traits<allocator_type>::const_pointer const_pointer;
     typedef typename container_type::iterator iterator;
     typedef typename container_type::const_iterator const_iterator;
     typedef typename container_type::reverse_iterator reverse_iterator;
@@ -162,9 +172,9 @@ public:
         , m_container(alloc)
     {}
 
-    flat_map(std::initializer_list<value_type> init, const key_compare& comp = key_compare(), const allocator_type& alloc = allocator_type())
+    explicit flat_map(container_type container, const key_compare& comp = key_compare())
         : pair_compare(comp)
-        , m_container(std::move(init), alloc)
+        , m_container(std::move(container))
     {
         std::sort(m_container.begin(), m_container.end(), cmp());
         auto new_end = std::unique(m_container.begin(), m_container.end(), [this](const value_type& a, const value_type& b) {
@@ -173,8 +183,47 @@ public:
         m_container.erase(new_end, m_container.end());
     }
 
+    flat_map(std::initializer_list<value_type> init, const key_compare& comp = key_compare(), const allocator_type& alloc = allocator_type())
+        : flat_map(container_type(std::move(init), alloc), comp)
+    {}
+
     flat_map(std::initializer_list<value_type> init, const allocator_type& alloc)
         : flat_map(std::move(init), key_compare(), alloc)
+    {}
+
+    template <class InputIterator, typename = decltype(*std::declval<InputIterator>())>
+    flat_map(InputIterator begin, InputIterator end, const key_compare& comp, const allocator_type& alloc = allocator_type())
+        : flat_map(container_type(begin, end, alloc), comp)
+    {}
+
+    template <class InputIterator, typename = decltype(*std::declval<InputIterator>())>
+    flat_map(InputIterator begin, InputIterator end, const allocator_type& alloc = allocator_type())
+        : flat_map(begin, end, key_compare(), alloc)
+    {}
+
+    // ready-to-use containers and sequences
+
+    flat_map(container_type container, flat_map_ready_tag, const key_compare& comp = key_compare())
+        : pair_compare(comp)
+        , m_container(std::move(container))
+    {}
+
+    flat_map(std::initializer_list<value_type> init, flat_map_ready_tag, const key_compare& comp = key_compare(), const allocator_type& alloc = allocator_type())
+        : flat_map(container_type(std::move(init), alloc), flat_map_ready_tag{}, comp)
+    {}
+
+    flat_map(std::initializer_list<value_type> init, flat_map_ready_tag, const allocator_type& alloc)
+        : flat_map(std::move(init), flat_map_ready_tag{}, key_compare(), alloc)
+    {}
+
+    template <class InputIterator, typename = decltype(*std::declval<InputIterator>())>
+    flat_map(InputIterator begin, InputIterator end, flat_map_ready_tag, const key_compare& comp, const allocator_type& alloc = allocator_type())
+        : flat_map(container_type(begin, end, alloc), flat_map_ready_tag{}, comp)
+    {}
+
+    template <class InputIterator, typename = decltype(*std::declval<InputIterator>())>
+    flat_map(InputIterator begin, InputIterator end, flat_map_ready_tag, const allocator_type& alloc = allocator_type())
+        : flat_map(begin, end, flat_map_ready_tag{}, key_compare(), alloc)
     {}
 
     flat_map(const flat_map& x) = default;
@@ -274,7 +323,7 @@ public:
             return { i, false };
         }
 
-        return{ m_container.emplace(i, std::forward<P>(val)), true };
+        return {m_container.emplace(i, std::forward<P>(val)), true};
     }
 
     std::pair<iterator, bool> insert(const value_type& val)
@@ -285,7 +334,18 @@ public:
             return { i, false };
         }
 
-        return{ m_container.emplace(i, val), true };
+        return {m_container.emplace(i, val), true};
+    }
+
+    template <typename P>
+    iterator insert(const_iterator pos, P&& val)
+    {
+        return emplace_hint(pos, std::forward<P>(val));
+    }
+
+    iterator insert(const_iterator pos, const value_type& val)
+    {
+        return emplace_hint(pos, val);
     }
 
     template <typename... Args>
@@ -293,6 +353,37 @@ public:
     {
         value_type val(std::forward<Args>(args)...);
         return insert(std::move(val));
+    }
+
+    template <typename... Args>
+    iterator emplace_hint(const_iterator pos, Args&&... args)
+    {
+        if (empty())
+        {
+            m_container.emplace_back(std::forward<Args>(args)...);
+            return begin();
+        }
+
+        value_type val(std::forward<Args>(args)...);
+
+        bool bok = true, eok = true;
+
+        if (pos != end())
+        {
+            bok = cmp()(val, *pos);
+        }
+
+        if (pos != begin())
+        {
+            eok = cmp()(*(pos - 1), val);
+        }
+
+        if (bok && eok)
+        {
+            return m_container.emplace(pos, std::move(val));
+        }
+
+        return insert(std::move(val)).first;
     }
 
     iterator erase(const_iterator pos)
@@ -335,7 +426,7 @@ public:
     mapped_type& at(const key_type& k)
     {
         auto i = lower_bound(k);
-        if (i == end() || cmp()(*i, k))
+        if (i == end() || cmp()(k, *i))
         {
             I_ITLIB_THROW_FLAT_MAP_OUT_OF_RANGE();
         }
@@ -346,7 +437,7 @@ public:
     const mapped_type& at(const key_type& k) const
     {
         auto i = lower_bound(k);
-        if (i == end() || cmp()(*i, k))
+        if (i == end() || cmp()(k, *i))
         {
             I_ITLIB_THROW_FLAT_MAP_OUT_OF_RANGE();
         }

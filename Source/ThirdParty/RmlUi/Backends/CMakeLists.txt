@@ -49,6 +49,17 @@ target_sources(rmlui_backend_Win32_VK INTERFACE
 )
 target_link_libraries(rmlui_backend_Win32_VK INTERFACE rmlui_backend_common_headers)
 
+add_library(rmlui_backend_Win32_DX11 INTERFACE)
+target_sources(rmlui_backend_Win32_DX11 INTERFACE
+	"${CMAKE_CURRENT_LIST_DIR}/RmlUi_Platform_Win32.cpp"
+	"${CMAKE_CURRENT_LIST_DIR}/RmlUi_Renderer_DX11.cpp"
+	"${CMAKE_CURRENT_LIST_DIR}/RmlUi_Backend_Win32_DX11.cpp"
+	"${CMAKE_CURRENT_LIST_DIR}/RmlUi_Platform_Win32.h"
+	"${CMAKE_CURRENT_LIST_DIR}/RmlUi_Renderer_DX11.h"
+	"${CMAKE_CURRENT_LIST_DIR}/RmlUi_Include_Windows.h"
+)
+target_link_libraries(rmlui_backend_Win32_DX11 INTERFACE rmlui_backend_common_headers d3d11.lib dxgi.lib d3dcompiler.lib)
+
 add_library(rmlui_backend_Win32_DX12 INTERFACE)
 target_sources(rmlui_backend_Win32_DX12 INTERFACE
 	"${CMAKE_CURRENT_LIST_DIR}/RmlUi_Platform_Win32.cpp"
@@ -76,6 +87,67 @@ target_sources(rmlui_backend_X11_GL2 INTERFACE
 # be required. More info:
 # https://cmake.org/cmake/help/latest/module/FindX11.html
 target_link_libraries(rmlui_backend_X11_GL2 INTERFACE rmlui_backend_common_headers OpenGL::GL ${X11_LIBRARIES})
+
+if(RMLUI_BACKEND MATCHES "^Wayland")
+	add_library(rmlui_backend_Wayland_GL3 INTERFACE)
+	set(rmlui_wayland_generated_dir "${CMAKE_CURRENT_BINARY_DIR}/GeneratedWayland")
+	set(rmlui_wayland_cursor_shape_header "${rmlui_wayland_generated_dir}/cursor-shape-v1-client-protocol.h")
+	set(rmlui_wayland_cursor_shape_code "${rmlui_wayland_generated_dir}/cursor-shape-v1-protocol.c")
+	set(rmlui_wayland_tablet_code "${rmlui_wayland_generated_dir}/tablet-unstable-v2-protocol.c")
+	file(MAKE_DIRECTORY "${rmlui_wayland_generated_dir}")
+	add_custom_command(
+		OUTPUT
+			"${rmlui_wayland_cursor_shape_header}"
+			"${rmlui_wayland_cursor_shape_code}"
+			"${rmlui_wayland_tablet_code}"
+		COMMAND
+			"${RMLUI_WAYLAND_SCANNER_EXECUTABLE}" client-header
+			"${RMLUI_WAYLAND_CURSOR_SHAPE_PROTOCOL}" "${rmlui_wayland_cursor_shape_header}"
+		COMMAND
+			"${RMLUI_WAYLAND_SCANNER_EXECUTABLE}" private-code
+			"${RMLUI_WAYLAND_CURSOR_SHAPE_PROTOCOL}" "${rmlui_wayland_cursor_shape_code}"
+		COMMAND
+			"${RMLUI_WAYLAND_SCANNER_EXECUTABLE}" private-code
+			"${RMLUI_WAYLAND_TABLET_PROTOCOL}" "${rmlui_wayland_tablet_code}"
+		DEPENDS
+			"${RMLUI_WAYLAND_CURSOR_SHAPE_PROTOCOL}"
+			"${RMLUI_WAYLAND_TABLET_PROTOCOL}"
+		VERBATIM
+	)
+	add_custom_target(rmlui_backend_Wayland_protocols
+		DEPENDS
+			"${rmlui_wayland_cursor_shape_header}"
+			"${rmlui_wayland_cursor_shape_code}"
+			"${rmlui_wayland_tablet_code}"
+	)
+	add_dependencies(rmlui_backend_Wayland_GL3 rmlui_backend_Wayland_protocols)
+	target_sources(rmlui_backend_Wayland_GL3 INTERFACE
+		"${rmlui_wayland_cursor_shape_header}"
+		"${rmlui_wayland_cursor_shape_code}"
+		"${rmlui_wayland_tablet_code}"
+	)
+	target_include_directories(rmlui_backend_Wayland_GL3 INTERFACE "${rmlui_wayland_generated_dir}")
+	target_sources(rmlui_backend_Wayland_GL3 INTERFACE
+		"${CMAKE_CURRENT_LIST_DIR}/RmlUi_Platform_Wayland.cpp"
+		"${CMAKE_CURRENT_LIST_DIR}/RmlUi_Renderer_GL3.cpp"
+		"${CMAKE_CURRENT_LIST_DIR}/RmlUi_Backend_Wayland_GL3.cpp"
+		"${CMAKE_CURRENT_LIST_DIR}/RmlUi_Platform_Wayland.h"
+		"${CMAKE_CURRENT_LIST_DIR}/RmlUi_Renderer_GL3.h"
+		"${CMAKE_CURRENT_LIST_DIR}/RmlUi_Include_GL3.h"
+	)
+	target_link_libraries(rmlui_backend_Wayland_GL3 INTERFACE
+		rmlui_backend_common_headers
+		PkgConfig::RMLUI_WAYLAND_CLIENT
+		PkgConfig::RMLUI_WAYLAND_CURSOR
+		PkgConfig::RMLUI_WAYLAND_EGL
+		PkgConfig::RMLUI_XKBCOMMON
+		PkgConfig::RMLUI_EGL
+		PkgConfig::RMLUI_LIBDECOR
+	)
+	if(UNIX)
+		target_link_libraries(rmlui_backend_Wayland_GL3 INTERFACE ${CMAKE_DL_LIBS})
+	endif()
+endif()
 
 add_library(rmlui_backend_SDL_GL2 INTERFACE)
 target_sources(rmlui_backend_SDL_GL2 INTERFACE
@@ -192,6 +264,17 @@ if(UNIX)
 	# This is required in some UNIX and UNIX-like operating systems to load shared object files at runtime
 	target_link_libraries(rmlui_backend_GLFW_GL3 INTERFACE ${CMAKE_DL_LIBS})
 endif()
+
+add_library(rmlui_backend_GLFW_DX11 INTERFACE)
+target_sources(rmlui_backend_GLFW_DX11 INTERFACE
+	"${CMAKE_CURRENT_LIST_DIR}/RmlUi_Platform_GLFW.cpp"
+	"${CMAKE_CURRENT_LIST_DIR}/RmlUi_Renderer_DX11.cpp"
+	"${CMAKE_CURRENT_LIST_DIR}/RmlUi_Backend_GLFW_DX11.cpp"
+	"${CMAKE_CURRENT_LIST_DIR}/RmlUi_Platform_GLFW.h"
+	"${CMAKE_CURRENT_LIST_DIR}/RmlUi_Renderer_DX11.h"
+	"${CMAKE_CURRENT_LIST_DIR}/RmlUi_Include_Windows.h"
+)
+target_link_libraries(rmlui_backend_GLFW_DX11 INTERFACE rmlui_backend_common_headers d3d11.lib dxgi.lib d3dcompiler.lib glfw)
 
 add_library(rmlui_backend_GLFW_VK INTERFACE)
 target_sources(rmlui_backend_GLFW_VK INTERFACE

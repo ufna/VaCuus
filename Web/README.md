@@ -22,7 +22,7 @@ violation, not a style choice.
 ## Setup and daily use
 
 ```bash
-cd Web && npm install          # once per checkout (preact 10.29.7 + esbuild 0.28.1, exact pins)
+cd Web && npm install          # once per checkout (preact 11.0.1 + esbuild 0.28.2, exact pins)
 
 node packages/cli/bin/vacuus.mjs create myhud            # scaffold Web/apps/myhud + Content/DevUI/myhud
 node packages/cli/bin/vacuus.mjs dev --app apps/myhud    # watch -> Content/DevUI/myhud/ (M2 live reload picks it up)
@@ -56,3 +56,16 @@ left out by design and why). `smoke.mjs` fails when the committed manifest is
 stale against the `.d.ts`. Changing the facade surface therefore requires
 touching the `.d.ts`, regenerating the manifest, and rebuilding the committed
 bundles — and every step that is skipped has a named failure.
+
+Dependency upgrades: after changing the Preact or esbuild pins, rebuild all four
+committed bundles from the repository root:
+
+```sh
+node Web/build-stock-fixtures.mjs
+node Web/packages/cli/bin/vacuus.mjs build --app Web/apps/demo-hud
+node Web/packages/cli/bin/vacuus.mjs build --app Web/apps/ep-fixture
+```
+
+Preact 11.0.1 uses the same facade text-node and keyed-reorder paths verified by
+the stock fixtures. Its native `onClick` casing now reaches lowercase RmlUi events;
+the adapter retains event normalization, className mapping and scheduling pins.

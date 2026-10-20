@@ -12,29 +12,12 @@
 #include <RmlUi/Core/Types.h>
 
 /*
- * The capture-only script document (M4 Task 6) -- the ONE piece of VaCuus's own
- * code that lives inside the vendored library's module, and the location is
- * load-bearing, enforced by an observed SIGSEGV rather than by taste:
- *
- * RmlUi's custom RTTI compares the addresses of function-local statics inside
- * INLINE members (RMLUI_CUSTOM_RTTI, Traits.h:67-91). Under UBT's Linux modular
- * builds (-fvisibility-inlines-hidden), every .so that instantiates those
- * inline members gets its own copy of the static -- so an ElementDocument
- * subclass whose vtable is emitted in ANOTHER module answers
- * rmlui_dynamic_cast<ElementDocument*>() with NULL for every cast made from
- * inside VaCuusRml.so. Two such casts are load-bearing in the library itself:
- * the context constructor's cursor proxy -- instanced through the documents
- * base tag and cast with the assert compiled out, so the very next line writes
- * through null (Context.cpp:70-72; observed as a SIGSEGV at
- * null+offsetof(context) the first time a context was created with the
- * subclass registered from VaCuusJs) -- and Factory::InstanceDocumentStream,
- * which would refuse every document load (Factory.cpp:440-446). Defining the
- * class here, with its key function in this module's own .cpp, emits the
- * vtable -- and the inherited IsClass it dispatches -- in VaCuusRml.so, where
- * both casts resolve against the same static copy. (The mirror direction is
- * unchanged and documented at its site: VaCuusJs still must not
- * rmlui_dynamic_cast; it identifies these documents through the instancer's
- * membership set below.)
+ * Parser-side script capture lives beside the RmlUi document instancer; the JS
+ * module consumes the captured records after the new document is ready.
+ * This placement originally also worked around the pre-6.3 inline RTTI defect
+ * (bead VaCuus-akj.22). RmlUi 6.3 now defines its class identifiers out of line
+ * (Traits.h:87-107). Keep the instancer membership check: an ElementDocument
+ * cast cannot establish that a document is this VaCuus-specific subclass.
  */
 
 /** One <head> script as the parser handed it over, in document order. */
@@ -168,8 +151,8 @@ public:
 	/**
 	 * True when Document was instanced HERE -- the license for a consumer's
 	 * static_cast to FVaCuusScriptDocument. A membership set rather than
-	 * rmlui_dynamic_cast, because the consumer sits in another module (the file
-	 * comment's visibility argument, mirror direction), and rather than trusting
+	 * rmlui_dynamic_cast, which identifies only the base ElementDocument, and
+	 * rather than trusting
 	 * "every document is ours by construction": a host created into an
 	 * already-running RmlUi session cannot vouch for documents loaded before it
 	 * existed. Un-mutexed like RmlUi's own instancer state -- instancing and

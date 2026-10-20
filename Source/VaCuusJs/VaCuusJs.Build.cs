@@ -24,7 +24,7 @@ public class VaCuusJs : ModuleRules
 		// sources with warnings, and warnings are not errors here.
 		CStandard = CStandardVersion.C11;
 
-		// PRIVATE include path, deliberately: patch #1 (VENDORED_TAG.txt) strips
+		// PRIVATE include path, deliberately: upstream static-build declarations hide
 		// JS_* symbol visibility, so nothing outside this module could link against
 		// quickjs anyway -- keeping the headers unreachable makes the wrong include
 		// fail at compile time instead of at load time. All script access goes
@@ -35,8 +35,7 @@ public class VaCuusJs : ModuleRules
 		// Upstream compile definitions for the core library (quickjs-ng
 		// CMakeLists.txt:278-282). Neither BUILDING_QJS_SHARED nor
 		// USING_QJS_SHARED: this is a static-style embed; the Win32 JS_EXTERN
-		// branch degrades to nothing without them, and the non-Win32 branch is
-		// patch #1's subject.
+		// branch degrades to nothing without them, and the non-Win32 branch also requires BUILDING_QJS_SHARED.
 		PrivateDefinitions.Add("_GNU_SOURCE");
 		if (Target.Platform == UnrealTargetPlatform.Win64)
 		{
@@ -97,11 +96,11 @@ public class VaCuusJs : ModuleRules
 			// it is sharper than a plain "Win64 lacks Atomics" would be.
 		}
 
-		// EXPORT CHECK (Linux modular builds): patch #1 must keep every JS_*
+		// EXPORT CHECK (Linux modular builds): the static-style embed must keep every JS_*
 		// symbol out of the module's dynamic symbol table. After a build, verify:
 		//   nm -D Binaries/Linux/libUnrealEditor-VaCuusJs.so | grep ' JS_' -> empty
-		// If any JS_ symbol appears, the vendored quickjs.h lost patch #1
-		// (VENDORED_TAG.txt has the diff and the re-vendoring procedure).
+		// If any JS_ symbol appears, check the shared-build definitions and
+		// quickjs.h visibility gates before shipping (see VENDORED_TAG.txt).
 
 		// VaCuus for the seam this module implements (IVaCuusScriptHost, declared in
 		// core) and the stats/perf-log surface (VACUUS_API). STRICTLY one-way: core

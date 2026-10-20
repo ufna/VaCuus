@@ -401,21 +401,14 @@ JSValue FVaCuusJsViewContext::WrapElement(Rml::Element* Element)
 	// of a top-level element IS the ElementDocument in RmlUi.
 	//
 	// The discriminator is the owner-document SELF-reference: ElementDocument's
-	// constructor force-sets owner_document = this (ElementDocument.cpp:135) and
+	// constructor force-sets owner_document = this (ElementDocument.cpp:137) and
 	// Element::SetOwnerDocument refuses to change it for a document ever after
 	// ("If this element is a document, then never change owner_document, except
-	// if forced", Element.cpp:2136-2141) -- the only force-clear is
-	// ~ElementDocument (ElementDocument.cpp:144), long past any possible wrap.
-	// DELIBERATELY NOT rmlui_dynamic_cast: under RMLUI_CUSTOM_RTTI the class
-	// identifier is the address of a function-local static inside an inline
-	// member (Traits.h:67-91), and UBT's Linux modular builds compile with
-	// -fvisibility-ms-compat / -fvisibility-inlines-hidden
-	// (LinuxToolChain.cs:439, :450), under which THIS module instantiates its
-	// own copy of that static -- the cast answers null for any object whose
-	// vtable lives in VaCuusRml.so. Observed directly: with the cast, every
-	// document wrapped as a plain element and document.getElementById did not
-	// exist. (The same hazard hangs over every cross-module rmlui_dynamic_cast;
-	// flagged to the milestone controller, out of this task's scope.)
+	// if forced", Element.cpp:2138-2143) -- the only force-clear is
+	// ~ElementDocument (ElementDocument.cpp:146), long past any possible wrap.
+	// This structural check also covers VaCuus's document subclass without a
+	// dependency on its concrete type. RmlUi 6.3 fixed the old cross-module
+	// RTTI identity defect; no cast is needed for this owner-document test.
 	const bool bIsDocument = Element->GetOwnerDocument() == Element;
 	JSValue Wrapper = JS_NewObjectClass(Ctx, bIsDocument ? Runtime.GetDocumentClassId() : Runtime.GetElementClassId());
 	if (JS_IsException(Wrapper))
@@ -1475,8 +1468,8 @@ JSValue FVaCuusJsViewContext::NodeTypeGetterThunk(JSContext* Ctx, JSValueConst T
 
 	// The three node kinds this facade can ever wrap, discriminated the same
 	// way the wrapping itself is: a document is the owner-document
-	// SELF-reference (WrapElement's comment; ElementDocument.cpp:135,
-	// Element.cpp:2136-2141), text is the "#text" tag (IsTextElement), and
+	// SELF-reference (WrapElement's comment; ElementDocument.cpp:137,
+	// Element.cpp:2138-2143), text is the "#text" tag (IsTextElement), and
 	// everything else is an element. Preact branches on 3 to match text against
 	// existing DOM (src/diff/index.js:451) and on 8 -- comments, which cannot
 	// exist here -- in its anchor walk (src/diff/children.js:376).

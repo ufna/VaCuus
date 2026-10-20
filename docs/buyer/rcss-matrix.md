@@ -1,6 +1,6 @@
 # Supported RCSS matrix -- generated, keyed to the vendored RmlUi
 
-**Vendored RmlUi SHA:** `0ae381e00d7426762bb5ed897973366358b16642` (`Source/ThirdParty/RmlUi/VENDORED_SHA.txt`)
+**Vendored RmlUi SHA:** `ba95ffe8bfb6370efb2cdcca927eaad4710c5413` (`Source/ThirdParty/RmlUi/VENDORED_SHA.txt`)
 
 **GENERATED FILE -- do not edit the tables by hand.** Regenerate after any RmlUi
 bump with `python3 Tools/gen_rcss_matrix.py` (run from the plugin root). The

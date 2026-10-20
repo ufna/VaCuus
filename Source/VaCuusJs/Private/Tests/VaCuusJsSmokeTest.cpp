@@ -92,10 +92,10 @@ bool FVaCuusJsVendoringSmokeTest::RunTest(const FString& Parameters)
 		JS_FreeValue(Ctx, Value);
 	}
 
-	// The vendored snapshot is the pinned tag: QJS_VERSION_* (quickjs.h:1415-1418)
+	// The vendored snapshot is the pinned tag: QJS_VERSION_* (quickjs.h:1458-1461)
 	// stringified by JS_GetVersion (quickjs.c:98-100). Drift here means the tree
 	// no longer matches VENDORED_TAG.txt.
-	TestEqual(TEXT("JS_GetVersion is the pinned 0.15.1"), FString(UTF8_TO_TCHAR(JS_GetVersion())), FString(TEXT("0.15.1")));
+	TestEqual(TEXT("JS_GetVersion is the pinned 0.17.0"), FString(UTF8_TO_TCHAR(JS_GetVersion())), FString(TEXT("0.17.0")));
 
 	// queueMicrotask is a CORE builtin, not ours: js_global_queueMicrotask
 	// (quickjs.c:40200) is installed on the global object via js_global_funcs

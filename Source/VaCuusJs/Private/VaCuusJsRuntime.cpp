@@ -316,12 +316,9 @@ void FVaCuusJsRuntime::RejectionThunk(
 	Self->NumErrors.fetch_add(1, std::memory_order_relaxed);
 	UE_LOG(LogVaCuusJS, Error, TEXT("Unhandled JS promise rejection: %s"), *ReasonText);
 
-	// The overlay entry. No stack even when the reason is an Error: `stack` is
-	// normally a plain data property (build_backtrace, quickjs.c:7766), but a
-	// script can redefine it as an accessor, and JS_GetPropertyStr would then run
-	// user JS from inside the engine's promise machinery -- ReportException may
-	// afford that risk at its closed entry boundary; this mid-operation callback
-	// may not.
+	// Do not read Error.stack in this mid-operation tracker: QuickJS 0.17 uses
+	// an accessor and scripts may replace it, so reading can execute user code.
+	// ReportException reads it only after leaving the guarded JS entry.
 	if (Self->ErrorSink != nullptr)
 	{
 		Self->ErrorSink->OnJsError(
@@ -403,8 +400,8 @@ void FVaCuusJsRuntime::ReportException(JSContext* Ctx, const TCHAR* SourceName)
 		JS_FreeValue(Ctx, JS_GetException(Ctx));
 	}
 
-	// `stack` is a real string property, installed by build_backtrace
-	// (quickjs.c:7766) -- present on Error instances, absent on thrown non-Errors.
+	// Read stack outside the JS entry: Error.stack is an accessor in QuickJS
+	// 0.17 and may execute user code. Consume a throwing accessor's exception.
 	FString Stack;
 	if (JS_IsError(Exception))
 	{

@@ -255,10 +255,10 @@ bool FVaCuusJsErrorRetractTest::RunTest(const FString& /*Parameters*/)
 /**
  * THE COALESCING RULE, against the engine's own duplication: a module throw
  * BEFORE the first await rejects TWO promises with one reason -- the body
- * promise (never .then'd by the sync path, js_execute_sync_module,
- * quickjs.c:31390-31410) and m->promise (held only by the host) -- so the
- * tracker fires twice, identically, and NEITHER can ever retract. The overlay
- * shows ONE line with a multiplicity suffix; the counter honestly says two.
+ * promise and m->promise. Since QuickJS 0.16 the sync path marks the internal
+ * rejection handled (quickjs.c:32257-32260), retracting its overlay entry.
+ * The counter still records both fired diagnostics. Explicit duplicate
+ * rejections below independently exercise the overlay's coalescing rule.
  */
 bool FVaCuusJsErrorCoalesceTest::RunTest(const FString& /*Parameters*/)
 {
@@ -294,16 +294,29 @@ bool FVaCuusJsErrorCoalesceTest::RunTest(const FString& /*Parameters*/)
 		return false;
 	}
 
-	// One line, suffixed x2 -- counted JS-side so the assertion reads the
-	// overlay exactly as a developer would.
-	TestEqual(TEXT("the double-fire coalesces to ONE line with the x2 suffix"),
+	TestEqual(TEXT("the handled internal promise leaves ONE module error without a duplicate suffix"),
 		Rig.Eval(ViewId,
 			"(function(){ var o = document.getElementById('vacuus-js-overlay');"
 			" if (o === null) return '<none>';"
 			" var rml = o.innerRML;"
 			" return (rml.split('coalesce boom').length - 1) + '|' + (rml.indexOf('\\u00D72') >= 0); })()"),
-		FString(TEXT("1|true")));
+		FString(TEXT("1|false")));
 	TestEqual(TEXT("the counter is not coalesced: two fired diagnostics"), ReadErrorCount(Rig), uint64(2));
+
+	AddExpectedMessagePlain(TEXT("Unhandled JS promise rejection: Error: coalesce duplicate"), ELogVerbosity::Error,
+		EAutomationExpectedMessageFlags::Contains, 2);
+	Rig.Eval(ViewId, "Promise.reject(new Error('coalesce duplicate')); Promise.reject(new Error('coalesce duplicate')); 'ok'");
+	if (!TestTrue(TEXT("duplicate rejection overlay refreshed"), PumpRealFrames(*Rig.Thread, 2)))
+	{
+		return false;
+	}
+	TestEqual(TEXT("two outstanding identical rejections coalesce to ONE line with the x2 suffix"),
+		Rig.Eval(ViewId,
+			"(function(){ var o = document.getElementById('vacuus-js-overlay');"
+			" if (o === null) return '<none>'; var rml = o.innerRML;"
+			" return (rml.split('coalesce duplicate').length - 1) + '|' + (rml.indexOf('\\u00D72') >= 0); })()"),
+		FString(TEXT("1|true")));
+	TestEqual(TEXT("all four fired diagnostics remain counted"), ReadErrorCount(Rig), uint64(4));
 
 	return true;
 }
