@@ -948,4 +948,191 @@ bool FVaCuusWorldMipContentGPUTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+/**
+ * THE FIRST PUBLISH SURVIVES THE RENDER TARGET'S DEFERRED CLEAR (bead VaCuus-wwdn, a
+ * field report: a freshly spawned VR hand menu with a static document showed an empty
+ * quad until something in the document changed).
+ *
+ * The window: InitRHI links every fresh render-target resource on the deferred-update
+ * list once (AddToDeferredUpdateList(true), TextureRenderTarget2D.cpp:578), and the
+ * next scene render runs that update -- a CLEAR, plus mips of the cleared content
+ * (UpdateDeferredResource, :617-660) -- as the first thing its render command does
+ * (FDeferredUpdateResource::UpdateResources, SceneRenderBuilder.cpp:844). Publishes
+ * reach the render thread from the UI thread on their own schedule, so behind a long
+ * game-thread frame (a headset frame) the first one lands BEFORE that scene render;
+ * on a static document the idle gate then withholds every later frame, and nothing
+ * ever repaints what the clear erased.
+ *
+ * Built deterministically instead of raced for: RunTest owns the game thread, so no
+ * scene render can run between registration and the readbacks (the MipContentGPU
+ * argument) and the publish is guaranteed to land first. The scene render's
+ * deferred-update step is then made by hand -- the renderer's exact call -- and the
+ * panel is read back from the GPU on each side of it:
+ *
+ *   - BEFORE: the div is there. The control -- it proves the publish really did land
+ *     ahead of any clear; a run where the clear happened to go first would otherwise
+ *     pass vacuously.
+ *   - AFTER: the div is STILL there, and no buffer arrived in between, so what
+ *     survives is the first publish itself, with no heal to lean on.
+ *
+ * Both halves of bGenerateMips: the window was the same on the single-mip path, and
+ * with mips on a wipe also rebuilds the chain from cleared content, so mip 1 is read
+ * too. Under NullRHI this self-skips loudly, as MipContentGPU does.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusWorldFirstPublishSurvivesClearTest, "VaCuus.World.FirstPublishSurvivesDeferredClear",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusWorldFirstPublishSurvivesClearTest::RunTest(const FString& Parameters)
+{
+	using namespace VaCuusWorldComponentTest;
+	using namespace VaCuusWorldMipsGPU;
+	if (!SuiteViable(*this))
+	{
+		return true;
+	}
+
+	if (GUsingNullRHI || !FApp::CanEverRender())
+	{
+		UE_LOG(LogVaCuus, Display,
+			TEXT("VaCuus.World.FirstPublishSurvivesDeferredClear: SKIPPED under NullRHI (no RT resource, no copy, no readback)"));
+		return true;
+	}
+
+	FVaCuusModule& Module = FVaCuusModule::Get();
+	FVaCuusUIThread* UIThread = Module.GetOrStartUIThread();
+	if (!TestNotNull(TEXT("UI thread"), UIThread))
+	{
+		return false;
+	}
+	ON_SCOPE_EXIT
+	{
+		Module.StopUIThread();
+	};
+
+	FWorldFixture Fixture;
+	if (!Fixture.Init(*this))
+	{
+		return false;
+	}
+	UWorld* World = Fixture.GetWorld();
+
+	const FColor DivColor(208, 64, 48, 255);
+	const auto TestClose = [this](const FString& What, const FColor& Actual, const FColor& Expected, int32 Tolerance)
+	{
+		TestTrue(FString::Printf(TEXT("%s: got (%d %d %d %d), expected (%d %d %d %d) +/-%d"), *What, Actual.R, Actual.G,
+					 Actual.B, Actual.A, Expected.R, Expected.G, Expected.B, Expected.A, Tolerance),
+			FMath::Abs(int32(Actual.R) - int32(Expected.R)) <= Tolerance &&
+				FMath::Abs(int32(Actual.G) - int32(Expected.G)) <= Tolerance &&
+				FMath::Abs(int32(Actual.B) - int32(Expected.B)) <= Tolerance &&
+				FMath::Abs(int32(Actual.A) - int32(Expected.A)) <= Tolerance);
+	};
+
+	const bool MipLegs[] = {true, false};
+	for (const bool bMips : MipLegs)
+	{
+		const TCHAR* Leg = bMips ? TEXT("mips on") : TEXT("mips off");
+
+		AActor* Actor = World->SpawnActor<AActor>();
+		UVaCuusWorldComponent* Component = NewObject<UVaCuusWorldComponent>(Actor);
+		Component->DrawSize = FIntPoint(128, 64);
+		Component->bGenerateMips = bMips;
+		Component->bAutoLoadDocument = false;
+		Component->RegisterComponentWithWorld(World);
+
+		UVaCuusView* View = Component->GetView();
+		TSharedPtr<FVaCuusWorldSink> Sink = Component->GetWorldSink();
+		if (!TestNotNull(*FString::Printf(TEXT("%s: view"), Leg), View) ||
+			!TestTrue(*FString::Printf(TEXT("%s: sink"), Leg), Sink.IsValid()))
+		{
+			return false;
+		}
+
+		View->LoadDocumentFromMemory(GTinyDocument);
+		if (!TestTrue(*FString::Printf(TEXT("%s: UI frames ran for the load"), Leg), RunFrames(*UIThread, 3)))
+		{
+			return false;
+		}
+		FlushRenderingCommands();
+		if (!TestTrue(*FString::Printf(TEXT("%s: the first publish copied into the fresh panel"), Leg), Sink->GetNumCopies() >= 1))
+		{
+			return false;
+		}
+
+		FTextureRenderTargetResource* Resource = Component->GetRenderTarget()->GameThread_GetRenderTargetResource();
+		if (!TestNotNull(*FString::Printf(TEXT("%s: the RT resource exists"), Leg), Resource))
+		{
+			return false;
+		}
+
+		const auto ReadPanel = [Resource, bMips](FMipReadback& OutMip0, FMipReadback& OutMip1)
+		{
+			ENQUEUE_RENDER_COMMAND(VaCuusWorldFirstPublishReadback)
+			([&OutMip0, &OutMip1, Resource, bMips](FRHICommandListImmediate& RHICmdList)
+				{
+					FRHITexture* WorldRT = Resource->GetRenderTargetTexture();
+					if (!WorldRT)
+					{
+						return;
+					}
+					OutMip0 = ReadMip(RHICmdList, WorldRT, 0);
+					if (bMips && WorldRT->GetDesc().NumMips > 1)
+					{
+						OutMip1 = ReadMip(RHICmdList, WorldRT, 1);
+					}
+				});
+			FlushRenderingCommands();
+		};
+
+		FMipReadback Before0, Before1;
+		ReadPanel(Before0, Before1);
+		if (!TestTrue(*FString::Printf(TEXT("%s: control readback completed"), Leg), Before0.bRead))
+		{
+			return false;
+		}
+		TestClose(FString::Printf(TEXT("%s: CONTROL -- the publish landed before any scene render"), Leg),
+			Before0.At(24, 12), DivColor, 2);
+
+		// The scene render's first act, verbatim (SceneRenderBuilder.cpp:844). Global by
+		// nature: it flushes every resource on the list, which is what the next real
+		// scene render would have done to them anyway.
+		const uint64 ArrivalsBefore = Sink->GetNumArrivals();
+		ENQUEUE_RENDER_COMMAND(VaCuusWorldSimulatedSceneRender)
+		([](FRHICommandListImmediate& RHICmdList)
+			{
+				FDeferredUpdateResource::UpdateResources(RHICmdList);
+			});
+		FlushRenderingCommands();
+		TestEqual(*FString::Printf(TEXT("%s: no publish arrived to heal anything"), Leg),
+			int64(Sink->GetNumArrivals()), int64(ArrivalsBefore));
+
+		FMipReadback After0, After1;
+		ReadPanel(After0, After1);
+		if (!TestTrue(*FString::Printf(TEXT("%s: readback after the scene render completed"), Leg),
+				After0.bRead && (!bMips || After1.bRead)))
+		{
+			return false;
+		}
+		TestClose(FString::Printf(TEXT("%s: mip 0 still shows the first publish after the scene render"), Leg),
+			After0.At(24, 12), DivColor, 2);
+		if (bMips)
+		{
+			TestClose(FString::Printf(TEXT("%s: mip 1 is still the chain of the first publish, not of a clear"), Leg),
+				After1.At(12, 6), DivColor, 6);
+		}
+
+		AddInfo(FString::Printf(TEXT("GPU evidence (%s): mip0(24,12) before=(%d %d %d %d) after=(%d %d %d %d), %llu cop(ies)"),
+			Leg, Before0.At(24, 12).R, Before0.At(24, 12).G, Before0.At(24, 12).B, Before0.At(24, 12).A, After0.At(24, 12).R,
+			After0.At(24, 12).G, After0.At(24, 12).B, After0.At(24, 12).A, Sink->GetNumCopies()));
+
+		Component->UnregisterComponent();
+		if (TestTrue(*FString::Printf(TEXT("%s: UI frames ran after the unregister"), Leg), RunFrames(*UIThread, 2)))
+		{
+			TestEqual(*FString::Printf(TEXT("%s: no views survive the component"), Leg), UIThread->GetNumViews(), 0);
+		}
+		FlushRenderingCommands();
+	}
+
+	return true;
+}
+
 #endif	// WITH_DEV_AUTOMATION_TESTS

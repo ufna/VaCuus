@@ -492,11 +492,11 @@ void UVaCuusWorldComponent::UpdateRenderTarget()
 	// TextureRenderTarget2D.cpp:498-504, :542, :570-573). The flag's NAME promises a
 	// generation cadence we do not let it have: the engine's own generation site
 	// (UpdateDeferredResource, :649-657) runs only on freshly CLEARED content and only
-	// once per resource (re)init -- the InitRHI-time one-shot (AddToDeferredUpdateList
-	// with OnlyUpdateOnce=true, :578; unhooked after that single run,
-	// TextureRenderTarget.cpp:634-638) and the resize path's UpdateResourceImmediate
-	// below -- so every mip of a REAL frame is built at exactly one place, the sink's
-	// copy tail (VaCuusWorldSink.cpp, GenerateDestinationMips).
+	// once per resource (re)init -- the UpdateResourceImmediate below, which also
+	// consumes the InitRHI-time one-shot (AddToDeferredUpdateList with
+	// OnlyUpdateOnce=true, :578; the run unhooks it first, :628) -- so every mip of a
+	// REAL frame is built at exactly one place, the sink's copy tail
+	// (VaCuusWorldSink.cpp, GenerateDestinationMips).
 	//
 	// Filter rides the same switch: the preset samples this RT through the resource's
 	// own sampler (the default SSM_FromTextureAsset binds GetResource()->SamplerStateRHI,
@@ -512,12 +512,6 @@ void UVaCuusWorldComponent::UpdateRenderTarget()
 		RenderTarget->ClearColor = FLinearColor::Transparent;
 		RenderTarget->bAutoGenerateMips = bGenerateMips;
 		RenderTarget->Filter = bGenerateMips ? TF_Trilinear : TF_Default;
-		// KNOWN WINDOW, pre-dating mips and unchanged by them: InitRHI joins the
-		// deferred-update list once (AddToDeferredUpdateList(true),
-		// TextureRenderTarget2D.cpp:578), so the NEXT scene render clears this RT
-		// one time (and, with mips on, regenerates mips of that cleared content) --
-		// a publish that lands before that scene render is wiped and heals on the
-		// following publish. Identical on the single-mip path since M5; accepted.
 		RenderTarget->InitCustomFormat(CurrentDrawSize.X, CurrentDrawSize.Y, PF_B8G8R8A8, /*bInForceLinearGamma=*/true);
 		bChanged = true;
 	}
@@ -527,12 +521,31 @@ void UVaCuusWorldComponent::UpdateRenderTarget()
 		RenderTarget->bAutoGenerateMips = bGenerateMips;
 		RenderTarget->Filter = bGenerateMips ? TF_Trilinear : TF_Default;
 		RenderTarget->InitCustomFormat(CurrentDrawSize.X, CurrentDrawSize.Y, PF_B8G8R8A8, /*bInForceLinearGamma=*/true);
-		RenderTarget->UpdateResourceImmediate();
 		bChanged = true;
 	}
 
 	if (bChanged)
 	{
+		// THE CLEAR, NOW RATHER THAN AT THE NEXT SCENE RENDER, after EVERY (re)init
+		// (bead VaCuus-wwdn, a field report). InitRHI links a fresh resource on the
+		// deferred-update list once (AddToDeferredUpdateList(true),
+		// TextureRenderTarget2D.cpp:578), and the next scene render runs that update --
+		// a clear, plus mips of the cleared content -- before it draws anything
+		// (FDeferredUpdateResource::UpdateResources, SceneRenderBuilder.cpp:844).
+		// Publishes reach the render thread on the UI thread's schedule, not this
+		// one's, so behind a long frame (a headset frame) the first publish was copied
+		// in and then wiped; a static document sends no second one (the idle gate), so
+		// the panel stayed blank until its content changed. This enqueues that same
+		// update (UpdateDeferredResource, which unlinks the resource first,
+		// TextureRenderTarget2D.cpp:628) FIFO between the re-init above and the slot
+		// update below. Only the slot update exposes the new texture to publishes, so
+		// none can land before its clear, and the clear-time mips are rebuilt by the
+		// sink's copy tail over the first real frame. The resize branch always did
+		// this (UWidgetComponent's own shape, WidgetComponent.cpp:1985); the create
+		// branch called the window accepted because it "heals on the following
+		// publish" -- the one thing an idle view never sends.
+		RenderTarget->UpdateResourceImmediate();
+
 		// THE SLOT-UPDATE ENQUEUE, after EVERY (re)init and from this thread only --
 		// the FIFO half of spec 2(g)'s discipline: the (re)init above already enqueued
 		// the resource's own recreation, so by the time this command resolves the
