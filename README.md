@@ -49,9 +49,9 @@ Optional JavaScript (QuickJS) and a TypeScript/Preact workflow sit on top. Rende
 through the engine's RHI into a persistent render target that Slate composites, so a
 document can be a full-screen HUD or a panel on a quad in the world.
 
-> **Status: released, 1.3.0. Engines: UE 5.6, 5.7 and 5.8.** The 5.6 and 5.8
+> **Status: released, 1.3.1. Engines: UE 5.6, 5.7 and 5.8.** The 5.6 and 5.8
 > packages compile from this one source tree; the 5.7 package is derived from the 5.6
-> build with its provenance stated in the release notes. The 295-test automation suite
+> build with its provenance stated in the release notes. The 296-test automation suite
 > ships with the plugin and can be run locally (below). Supported platforms are Windows,
 > macOS, Linux, Android and iOS; consoles on request. Packages are published on
 > [GitHub Releases](https://github.com/ufna/VaCuus/releases), one archive per engine
