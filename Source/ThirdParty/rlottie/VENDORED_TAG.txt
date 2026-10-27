@@ -14,8 +14,8 @@ image decoding is linked directly, and a replaced JSON file cannot hit a global 
 cache keyed only by filename.
 
 Local patches:
-- inc/rlottiecommon.h and src/vector/stb/stb_image.cpp recognize RLOTTIE_BUILD_STATIC
-  so Win64 does not import/export private static-embed symbols.
+- inc/rlottie.h, inc/rlottiecommon.h and src/vector/stb/stb_image.cpp recognize
+  RLOTTIE_BUILD_STATIC so Win64 does not import/export private static-embed symbols.
 - vdrawhelper.cpp, vdrawhelper_common.cpp and vdrawhelper_neon.cpp gate NEON on
   RLOTTIE_NO_NEON_ASM. UE arm64 uses scalar routines; upstream's optimized path
   requires 32-bit ARM assembler that is not part of this build. SSE2 is unchanged.
