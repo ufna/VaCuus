@@ -128,28 +128,37 @@ static bool RunFrames(FVaCuusUIThread& UIThread, int32 NumFrames)
  *  #evclick    a plain <div> with `data-event-click`           -> reported, NOT focusable
  *  #onpress    a plain <div> with `onmousedown`                -> reported
  *  #evhover    a plain <div> with `data-event-mouseover` only  -> NOT reported
+ *  #measured   pointer-events:none div, `vacuus-measure="7"`   -> MEASURED, not covered
+ *  #measured-clipped  `VACUUS-MEASURE="8"` in #clip, past it   -> measured UNCLIPPED
+ *  #measured-bad      `vacuus-measure="x"`                     -> not measured
+ *  #pass-measured     `vacuus-measure="9"` under #pass         -> not measured (pruned)
  *
- * The last five are controller decision D11's assertions: interactive and focusable
- * are DIFFERENT properties of the same rect. #marked proves the direction that
- * matters -- an opt-in marker makes a div take clicks without making it take the
- * keyboard -- and #field proves the other one without any RCSS at all, because
- * RmlUi's form controls set `tab-index: auto` on themselves
+ * #marked, #field, #noFocus and #noFocusKid are controller decision D11's assertions:
+ * interactive and focusable are DIFFERENT properties of the same rect. #marked proves
+ * the direction that matters -- an opt-in marker makes a div take clicks without
+ * making it take the keyboard -- and #field proves the other one without any RCSS
+ * at all, because RmlUi's form controls set `tab-index: auto` on themselves
  * (ElementFormControl.cpp:8). #noFocus is the `focus: none` subtree prune, which is
  * the one focusability rule that is inherited rather than per element
  * (ElementDocument.cpp:34-38).
  *
- * The last two are the case guard: RmlUi lowercases TAG names while parsing but
- * leaves attribute names exactly as the author typed them
+ * #pass-mixed and #mark-mixed are the case guard: RmlUi lowercases TAG names while
+ * parsing but leaves attribute names exactly as the author typed them
  * (BaseXMLParser.cpp:306-345) and HasAttribute is a case-sensitive find
  * (Element.cpp:861-864), so a lowercase-only marker lookup silently ignores both
  * of them -- which for the opt-OUT means eating clicks meant for the game.
  *
- * The last three are bead VaCuus-w87.2: a press handler the author
+ * #evclick, #onpress and #evhover are bead VaCuus-w87.2: a press handler the author
  * wrote IN THE MARKUP is visible to the attribute pass -- `data-event-*` attributes stay on
  * the element after ApplyDataViewsControllers parses them (ElementUtilities.cpp:407-455), and
  * an inline `on*` handler is an attribute by definition -- so the element takes the press
  * without anyone having to know about `vacuus-interactive`. Hover-only handlers do not: an
  * overlay that lights up under the cursor must not eat the click aimed at the game.
+ *
+ * The #measured entries are `vacuus-measure` (5d): a box published under its key, NOT
+ * clipped and independent of pointer coverage, its attribute name matched the same
+ * case-insensitive way as the two markers, and nothing published from a pass-through
+ * subtree, which the walk never enters.
  *
  * Coordinates are absolute and border-box-sized (no borders, no padding) so the
  * expected rects are exactly what the RCSS says.
@@ -175,13 +184,19 @@ div, button { display: block; position: absolute; }
 #evclick    { left: 140px; top: 70px;  width: 40px;  height: 30px; }
 #onpress    { left: 140px; top: 110px; width: 40px;  height: 30px; }
 #evhover    { left: 140px; top: 150px; width: 40px;  height: 30px; }
+#measured   { left: 200px; top: 150px; width: 60px;  height: 30px; pointer-events: none; }
+#measured-clipped { left: 0px; top: 30px; width: 50px; height: 40px; }
+#measured-bad     { left: 140px; top: 200px; width: 40px; height: 20px; }
+#pass-measured    { left: 40px; top: 10px; width: 20px; height: 20px; }
 </style>
 </head>
 <body>
 	<button id="btn"/>
 	<div id="ghost"><button id="ghost-kid"/></div>
-	<div id="pass" vacuus-passthrough><button id="pass-kid"/></div>
-	<div id="clip"><button id="clipped"/></div>
+	<div id="pass" vacuus-passthrough><button id="pass-kid"/><div id="pass-measured" vacuus-measure="9"/></div>
+	<div id="clip"><button id="clipped"/><div id="measured-clipped" VACUUS-MEASURE="8"/></div>
+	<div id="measured" vacuus-measure="7"/>
+	<div id="measured-bad" vacuus-measure="x"/>
 	<div id="marked" vacuus-interactive/>
 	<div id="pass-mixed" vacuus-PassThrough/>
 	<div id="mark-mixed" VACUUS-INTERACTIVE/>
@@ -381,6 +396,37 @@ bool FVaCuusSnapshotTest::RunTest(const FString& Parameters)
 	// And a point nothing covers is neither.
 	TestFalse(TEXT("An uncovered point is not focusable"), Snapshot.IsFocusableAt(FIntPoint(370, 290)));
 
+	// 5d. `vacuus-measure` publishes a box, independently of coverage. #measured is
+	// pointer-events:none and still measured -- measuring is about layout, not clicks --
+	// and it adds no coverage of its own.
+	{
+		const FIntRect* const Measured = Snapshot.FindMeasuredRect(7);
+		TestNotNull(TEXT("A vacuus-measure element is measured"), Measured);
+		if (Measured != nullptr)
+		{
+			TestTrue(TEXT("The measured box is the element's border box"), *Measured == FIntRect(200, 150, 260, 180));
+		}
+		TestFalse(TEXT("Measuring adds no pointer coverage"), Snapshot.Contains(FIntPoint(230, 165)));
+
+		// UNCLIPPED: #measured-clipped runs 20px past #clip's bottom edge (70), and the
+		// published box keeps them -- a caller asking for a size wants the whole box.
+		// The upper-case attribute name rides the same case-insensitive match as the
+		// two coverage markers.
+		const FIntRect* const Clipped = Snapshot.FindMeasuredRect(8);
+		TestNotNull(TEXT("An upper-case VACUUS-MEASURE element is measured"), Clipped);
+		if (Clipped != nullptr)
+		{
+			TestTrue(TEXT("A measured box is not cut to its clipping ancestor"), *Clipped == FIntRect(200, 50, 250, 90));
+		}
+
+		TestNull(TEXT("A pass-through subtree is not walked, so nothing in it is measured"),
+			Snapshot.FindMeasuredRect(9));
+
+		// "x" is the only non-integer key in the document; were it published it would
+		// sit next to 7 and 8 under whatever GetInto left in the key.
+		TestEqual(TEXT("A key that is not an integer is not published"), Snapshot.MeasuredRects.Num(), 2);
+	}
+
 	// 6. Controller decision D9: a document element holding focus is NOT "the UI wants
 	// the keyboard". Show() focuses the document itself when nothing inside it carries
 	// `autofocus` (FocusFlag::Auto), which is the case here -- so the document holds
@@ -407,6 +453,7 @@ bool FVaCuusSnapshotTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("A newer snapshot arrived after hiding"), Hidden.Generation > Snapshot.Generation);
 	TestEqual(TEXT("A hidden document reports no interactive rects"), Hidden.InteractiveRects.Num(), 0);
 	TestEqual(TEXT("A hidden document reports no rect flags either"), Hidden.RectFlags.Num(), 0);
+	TestEqual(TEXT("A hidden document measures nothing"), Hidden.MeasuredRects.Num(), 0);
 	TestFalse(TEXT("A hidden document covers nothing"), Hidden.Contains(FIntPoint(70, 40)));
 	TestFalse(TEXT("A hidden document is focusable nowhere"), Hidden.IsFocusableAt(FIntPoint(70, 40)));
 

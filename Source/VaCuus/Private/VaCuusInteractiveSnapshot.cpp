@@ -40,6 +40,13 @@ namespace VaCuusInteractiveSnapshot
 static constexpr char GPassthroughAttribute[] = "vacuus-passthrough";
 static constexpr char GInteractiveAttribute[] = "vacuus-interactive";
 
+/**
+ * Not a coverage marker at all: it asks for the element's laid-out box to be published
+ * (FVaCuusInteractiveSnapshot::MeasuredRects). Read in the same pass as the two above and
+ * matched the same case-insensitive way, so it costs no extra walk over the attributes.
+ */
+static constexpr char GMeasureAttribute[] = "vacuus-measure";
+
 /** ASCII case-insensitive compare against a lowercase literal; length-gated first. */
 template <SIZE_T Length>
 static bool EqualsIgnoreCaseAscii(const Rml::String& Name, const char (&Lowercase)[Length])
@@ -71,6 +78,9 @@ struct FMarkerAttributes
 
 	/** A press handler written in the markup: `data-event-<press>` or inline `on<press>`. */
 	bool bPressHandler = false;
+
+	/** Points into the element's own attribute map; valid only until the element is touched again. */
+	const Rml::Variant* Measure = nullptr;
 };
 
 /**
@@ -150,6 +160,10 @@ static FMarkerAttributes ReadMarkerAttributes(const Rml::Element& Element)
 		else if (EqualsIgnoreCaseAscii(Attribute.first, GInteractiveAttribute))
 		{
 			Markers.bInteractive = true;
+		}
+		else if (EqualsIgnoreCaseAscii(Attribute.first, GMeasureAttribute))
+		{
+			Markers.Measure = &Attribute.second;
 		}
 		else if (IsPressHandlerAttribute(Attribute.first))
 		{
@@ -513,6 +527,19 @@ void FSnapshotWalk::Visit(Rml::Element* Element, const FIntRect& Clip, bool bFoc
 		// (Element.cpp:464). That is what makes a per-frame full-tree walk affordable.
 		Rect = ToPixelRect(
 			Element->GetAbsoluteOffset(Rml::BoxArea::Border), Element->GetBox().GetSize(Rml::BoxArea::Border));
+	}
+
+	// BEFORE the clip, on purpose: a measured box is asked for its size, and a box half
+	// off-screen is still its full size (see FVaCuusInteractiveSnapshot::MeasuredRects).
+	// The attribute is a STRING both when the parser stored it (BaseXMLParser.cpp:341)
+	// and when a `data-attr` binding set it (DataViewDefault.cpp:76-81). Variant::GetInto
+	// converts it through TypeConverter (Variant.inl:48), which is `sscanf("%d")`
+	// (TypeConverter.inl:181-184): a leading integer is enough ("7px" reads 7), and a
+	// string with none fails the conversion and is simply not published.
+	int MeasureKey = 0;
+	if (Markers.Measure != nullptr && Markers.Measure->GetInto(MeasureKey))
+	{
+		Out.MeasuredRects.Add(FVaCuusMeasuredRect{MeasureKey, Rect});
 	}
 
 	Rect.Clip(Clip);

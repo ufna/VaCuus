@@ -490,6 +490,23 @@ it stopped on, then silence. The tick deliberately does not take the publish bac
 quietly restore the one-frame staleness above, and that is invisible at 60 fps where a frozen UI is
 not. (Engine line numbers are 5.8.)
 
+**27. Your code places boxes itself and needs the size each one came out at after text wrap.**
+Symptom: labels the host positions — nameplates, speech bubbles — have to be kept from overlapping,
+and that takes their laid-out height, which only RmlUi knows once a line wraps.
+Cause: layout lives on the UI thread. Every RmlUi read asserts it is on that thread
+(`check(FVaCuusUIThread::IsInUIThread())` in `BuildVaCuusInteractiveSnapshot`,
+`Source/VaCuus/Private/VaCuusInteractiveSnapshot.cpp`), and the JS DOM has no `offsetWidth`,
+`clientWidth` or `getBoundingClientRect` (the element prototype in
+`Source/VaCuusJs/Private/VaCuusJsDom.cpp`). `UVaCuusView::QueryElementBounds` does answer — for one
+element, looked up by `id`, a UI frame later, into a query you allocate and poll. That is the shape
+for aiming one click, not for a layout pass over every label on every frame.
+Do: put `vacuus-measure="<integer>"` on the element (`data-attr-vacuus-measure="row.Key"` in a
+`data-for`) and read `View->GetSnapshot().FindMeasuredRect(Key)` on the game thread. You get the
+border box in view pixels, NOT clipped, one UI frame late, for every marked element at once and with
+no allocation in steady state. Change the key whenever the content changes, and a rect under the old
+key can't be mistaken for the new one. An invisible element and anything under `vacuus-passthrough`
+are not measured.
+
 ## Data binding and JS
 
 **9. Your data model binds to nothing, one Error at load time.**

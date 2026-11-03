@@ -58,7 +58,7 @@ Plugins/VaCuus/docs/buyer/rcss-matrix.md.
 | --- | --- |
 | Before the first document | [`setup.md`](setup.md) §2 — where files live, and the two host classes |
 | Before writing any style | [`rcss-matrix.md`](rcss-matrix.md) — the supported surface, generated |
-| Before the first authoring session | [`gotchas.md`](gotchas.md) — 26 numbered recorded findings |
+| Before the first authoring session | [`gotchas.md`](gotchas.md) — 27 numbered recorded findings |
 | Before optimising anything | [`perf-guide.md`](perf-guide.md) — measured budgets, not guesses |
 | Before adding vector assets | [`vector-assets.md`](vector-assets.md) — SVG/Lottie markup, bundles and rasterization cost |
 | Before the second language | [`localization.md`](localization.md) — the table, the two readers' different timing, and the Latin-only shipped font |

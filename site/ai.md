@@ -110,7 +110,7 @@ eliminate one on its own is a much cheaper agent to supervise.
 | `AGENTS.md` at the package root | The front door. Five things that would otherwise cost the session, the verify command, and a table of where the answers are. Agents find it without being told. |
 | [`docs/buyer/ai-guide.md`](/docs/ai-guide) | The full briefing: the three RCSS failure modes, where files go, how to host a document, how to know it worked, and **Rules for an agent**. |
 | [`docs/buyer/rcss-matrix.md`](/docs/rcss-matrix) | The generated surface, above. |
-| [`docs/buyer/gotchas.md`](/docs/gotchas) | 26 numbered recorded findings — symptom, cause with the source that proves it, what to do. Every one is a finding from building the plugin's own demos, none is speculative. |
+| [`docs/buyer/gotchas.md`](/docs/gotchas) | 27 numbered recorded findings — symptom, cause with the source that proves it, what to do. Every one is a finding from building the plugin's own demos, none is speculative. |
 | [`docs/buyer/perf-guide.md`](/docs/perf-guide) | Measured budgets, so an optimisation pass has a target instead of an opinion. |
 
 The "Rules for an agent" section is the part worth quoting, because it is written at the
