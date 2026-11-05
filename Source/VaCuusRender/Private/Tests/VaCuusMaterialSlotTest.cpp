@@ -146,8 +146,10 @@ static UMaterial* MakeCustomizedUVMaterial()
  * UV 0..1 (DecoratorShader.cpp:45-47). The desc is what the recorder mints for
  * `decorator: shader(slot-probe)` — Kind Material, the snapshot's stable id, Dimensions the
  * paint box (VaCuusRecordingRenderInterface.cpp, CompileShader's Material branch).
+ * VertexColour is every corner's colour (an element at opacity 1 is white); ClearValue is the target's clear.
  */
-static bool RenderProbe(uint64 StableId, const TCHAR* Key, TArray<FColor>& OutPixels, bool& bOutDrawn, bool& bOutRead)
+static bool RenderProbe(uint64 StableId, const TCHAR* Key, TArray<FColor>& OutPixels, bool& bOutDrawn, bool& bOutRead,
+	const FColor& VertexColour = FColor(255, 255, 255, 255), const FClearValueBinding& ClearValue = FClearValueBinding::Black)
 {
 	bool bDrawn = false;
 	bool bRead = false;
@@ -160,21 +162,20 @@ static bool RenderProbe(uint64 StableId, const TCHAR* Key, TArray<FColor>& OutPi
 	Desc.Dimensions = FVector2f(float(GBox.X), float(GBox.Y));
 
 	ENQUEUE_RENDER_COMMAND(VaCuusMaterialSlotProbe)
-	([Desc, &OutPixels, &bDrawn, &bRead](FRHICommandListImmediate& RHICmdList)
+	([Desc, VertexColour, ClearValue, &OutPixels, &bDrawn, &bRead](FRHICommandListImmediate& RHICmdList)
 		{
 			const FIntPoint Extent = GBox;
 			const FRHITextureCreateDesc RTDesc = FRHITextureCreateDesc::Create2D(TEXT("VaCuusMaterialSlotRT"), Extent, PF_B8G8R8A8)
 													  .SetFlags(ETextureCreateFlags::RenderTargetable | ETextureCreateFlags::ShaderResource)
-													  .SetClearValue(FClearValueBinding::Black)
+													  .SetClearValue(ClearValue)
 													  .SetInitialState(ERHIAccess::SRVMask);
 			FTextureRHIRef Target = RHICmdList.CreateTexture(RTDesc);
 
-			const FColor White(255, 255, 255, 255);
 			TArray<FVaCuusVertex> Vertices;
-			Vertices.Add({FVector2f(0.0f, 0.0f), White, FVector2f(0.0f, 0.0f)});
-			Vertices.Add({FVector2f(float(Extent.X), 0.0f), White, FVector2f(1.0f, 0.0f)});
-			Vertices.Add({FVector2f(float(Extent.X), float(Extent.Y)), White, FVector2f(1.0f, 1.0f)});
-			Vertices.Add({FVector2f(0.0f, float(Extent.Y)), White, FVector2f(0.0f, 1.0f)});
+			Vertices.Add({FVector2f(0.0f, 0.0f), VertexColour, FVector2f(0.0f, 0.0f)});
+			Vertices.Add({FVector2f(float(Extent.X), 0.0f), VertexColour, FVector2f(1.0f, 0.0f)});
+			Vertices.Add({FVector2f(float(Extent.X), float(Extent.Y)), VertexColour, FVector2f(1.0f, 1.0f)});
+			Vertices.Add({FVector2f(0.0f, float(Extent.Y)), VertexColour, FVector2f(0.0f, 1.0f)});
 			const TArray<int32> Indices = {0, 1, 2, 0, 2, 3};
 
 			FBufferRHIRef VB = UE::RHIResourceUtils::CreateVertexBufferFromArray<FVaCuusVertex>(
@@ -401,6 +402,98 @@ bool FVaCuusMaterialCustomizedUVsTest::RunTest(const FString& Parameters)
 
 	// The shape: a ramp rises; a constant (flat (1,1) or flat black) does not.
 	TestTrue(TEXT("the ramp rises across the row"), int32(Seen[2].R) - int32(Seen[0].R) >= 60 && int32(Seen[1].R) > int32(Seen[0].R));
+
+	return true;
+}
+
+/**
+ * THE VERTEX-COLOUR PROBE. A shader decorator's geometry carries the element's opacity as its
+ * premultiplied vertex colour (DecoratorShader.cpp:42-43, ColourbPremultiplied(alpha, alpha)), and
+ * Slate multiplies a material brush by its vertex colour (SlateElementPixelShader.usf:318).
+ * So an element's opacity has to fade the material: the same opaque material drawn with white and
+ * with premultiplied 0.5 must come back half as bright in colour and in alpha.
+ *
+ * The target clears to TRANSPARENT black, not the opaque black of the other probes. The draw blends
+ * One/InvSrcAlpha on alpha as well, so over an opaque clear every draw would read alpha 255 whatever
+ * the material wrote, and the alpha half of the check would prove nothing.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusMaterialVertexColourTest, "VaCuus.Render.Decorator.MaterialVertexColour",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusMaterialVertexColourTest::RunTest(const FString& Parameters)
+{
+	using namespace VaCuusMaterialSlotTest;
+
+	if (GUsingNullRHI)
+	{
+		UE_LOG(LogVaCuus, Display, TEXT("VaCuus.Render.Decorator.MaterialVertexColour: SKIPPED under NullRHI (no draw, no readback)"));
+		return true;
+	}
+
+	static const TCHAR* Key = TEXT("vertex-colour-probe");
+	UMaterial* Probe = MakeProbeMaterial();
+	TStrongObjectPtr<UMaterial> ProbeRoot(Probe);
+
+	UVaCuusStyleSet* StyleSet = NewObject<UVaCuusStyleSet>(GetTransientPackage());
+	StyleSet->Materials.Add(Key, Probe);
+	TStrongObjectPtr<UVaCuusStyleSet> StyleSetRoot(StyleSet);
+	ON_SCOPE_EXIT
+	{
+		FVaCuusStyleRegistry::UnregisterStyleSet(StyleSetRoot.Get());
+		FlushRenderingCommands();
+		FVaCuusStyleRegistry::TickDeferredReleases_GameThread();
+	};
+	if (!TestEqual(TEXT("the vertex-colour material registers"), FVaCuusStyleRegistry::RegisterStyleSet(StyleSet), 1))
+	{
+		return false;
+	}
+	const uint64* StableId = FVaCuusStyleRegistry::GetSnapshot_GameThread()->KeyToId.Find(Key);
+	if (!TestNotNull(TEXT("the snapshot carries the probe's id"), StableId))
+	{
+		return false;
+	}
+	FlushRenderingCommands();
+
+	const FClearValueBinding Transparent(FLinearColor(0.0f, 0.0f, 0.0f, 0.0f));
+	// Premultiplied 0.5 at byte precision is 128/255; the tolerance below absorbs the rounding.
+	const FColor HalfVertex(128, 128, 128, 128);
+	TArray<FColor> WhitePixels;
+	TArray<FColor> FadedPixels;
+	bool bDrawn = false, bRead = false;
+	const bool bWhiteProbed = RenderProbe(*StableId, Key, WhitePixels, bDrawn, bRead, FColor(255, 255, 255, 255), Transparent);
+	AddInfo(FString::Printf(TEXT("white draw: drawn %d, read back %d"), int32(bDrawn), int32(bRead)));
+	if (!TestTrue(TEXT("the white draw went through DrawMaterial_RenderThread and read back"), bWhiteProbed))
+	{
+		return false;
+	}
+	const bool bFadedProbed = RenderProbe(*StableId, Key, FadedPixels, bDrawn, bRead, HalfVertex, Transparent);
+	AddInfo(FString::Printf(TEXT("premultiplied 0.5 draw: drawn %d, read back %d"), int32(bDrawn), int32(bRead)));
+	if (!TestTrue(TEXT("the premultiplied draw went through DrawMaterial_RenderThread and read back"), bFadedProbed))
+	{
+		return false;
+	}
+
+	// The white draw is the material's own fill, flat (1.0, 0.5, 0.0) linear as in the slot probe.
+	// Without that, black against black would pass the halving checks below.
+	const FColor Expected = FLinearColor(1.0f, 0.5f, 0.0f).ToFColorSRGB();
+	const FIntPoint Samples[] = {FIntPoint(GBox.X / 2, GBox.Y / 2), FIntPoint(4, 4), FIntPoint(GBox.X - 5, GBox.Y - 5)};
+	for (const FIntPoint& P : Samples)
+	{
+		const int32 Index = P.Y * GBox.X + P.X;
+		const FColor& Whole = WhitePixels[Index];
+		const FColor& Faded = FadedPixels[Index];
+		AddInfo(FString::Printf(TEXT("(%d,%d): white (%d, %d, %d, %d), premultiplied 0.5 (%d, %d, %d, %d)"),
+			P.X, P.Y, Whole.R, Whole.G, Whole.B, Whole.A, Faded.R, Faded.G, Faded.B, Faded.A));
+		TestTrue(*FString::Printf(TEXT("white draw is the material fill at (%d,%d)"), P.X, P.Y),
+			FMath::Abs(int32(Whole.R) - int32(Expected.R)) <= 3 && FMath::Abs(int32(Whole.G) - int32(Expected.G)) <= 3);
+		TestEqual(*FString::Printf(TEXT("white draw is opaque at (%d,%d)"), P.X, P.Y), int32(Whole.A), 255);
+		TestTrue(*FString::Printf(TEXT("premultiplied colour is half the white draw's at (%d,%d) (R)"), P.X, P.Y),
+			FMath::Abs(float(Faded.R) - 0.5f * float(Whole.R)) <= 2.0f);
+		TestTrue(*FString::Printf(TEXT("premultiplied colour is half the white draw's at (%d,%d) (G)"), P.X, P.Y),
+			FMath::Abs(float(Faded.G) - 0.5f * float(Whole.G)) <= 2.0f);
+		TestTrue(*FString::Printf(TEXT("premultiplied alpha is half the white draw's at (%d,%d)"), P.X, P.Y),
+			FMath::Abs(float(Faded.A) - 0.5f * float(Whole.A)) <= 2.0f);
+	}
 
 	return true;
 }

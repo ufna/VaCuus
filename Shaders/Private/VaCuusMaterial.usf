@@ -306,4 +306,8 @@ void MainPS(
 #else
 	OutColor = float4(Encoded * Opacity, Opacity);
 #endif
+
+	// The element's premultiplied opacity (the vertex colour) fades the material, as Slate's
+	// BaseColor * InVertex.Color does (SlateElementPixelShader.usf:318). Opacity 1 is white, so content is unchanged.
+	OutColor *= In.Color;
 }
