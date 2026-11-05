@@ -141,7 +141,7 @@ struct FVaCuusInlineUIThreadScope
  * "the event was NOT consumed" (false means an element called StopPropagation),
  * while ProcessMouseMove/ButtonDown/ButtonUp/MouseLeave return
  * `!IsMouseInteracting()` -- a hover/active STATE hint evaluated after dispatch,
- * not consumption (Context.cpp:849). Collapsing the two into a single "handled"
+ * not consumption (Context.cpp:871). Collapsing the two into a single "handled"
  * bit is how embedders get this wrong. There is also nowhere for the answer to go:
  * Slate was answered synchronously on the game thread from the published snapshot,
  * frames ago in queue terms, and it cannot be un-answered now.
@@ -175,7 +175,7 @@ void DispatchInputEvent(Rml::Context& Context, const FVaCuusInputEvent& Event)
 			// appeared under the cursor, a window that just took focus, or a
 			// synthesized event. Redundant when a move did precede it, and cheap:
 			// ProcessMouseMove guards its mousemove dispatch on the position actually
-			// having changed (Context.cpp:586-601), so this costs one hit test and
+			// having changed (Context.cpp:608-623), so this costs one hit test and
 			// emits no spurious events.
 			Context.ProcessMouseMove(Event.Position.X, Event.Position.Y, Modifiers);
 
@@ -213,7 +213,7 @@ void DispatchInputEvent(Rml::Context& Context, const FVaCuusInputEvent& Event)
 
 		case EVaCuusInputEventKind::MouseLeave:
 			// Not optional: without it `mouse_active` stays set, the hover chain is never
-			// cleared and `:hover` styling sticks forever (Context.cpp:839-846). The next
+			// cleared and `:hover` styling sticks forever (Context.cpp:861-868). The next
 			// ProcessMouseMove re-arms the context.
 			Context.ProcessMouseLeave();
 			break;
@@ -224,9 +224,9 @@ void DispatchInputEvent(Rml::Context& Context, const FVaCuusInputEvent& Event)
 		case EVaCuusInputEventKind::TouchCancel:
 		{
 			// A ONE-ELEMENT LIST, and not because we only ever have one finger: the
-			// singular overloads are PRIVATE (Context.h:432-439; the public API is the
+			// singular overloads are PRIVATE (Context.h:461-468; the public API is the
 			// TouchList quartet at :209-230), and the plural ones are a bare loop over them
-			// (Context.cpp:860-890). So batching N fingers into one call and making N calls
+			// (Context.cpp:882-912). So batching N fingers into one call and making N calls
 			// are the same thing to RmlUi, and one event per finger is what the queue
 			// already carries.
 			const Rml::TouchList Touches{Rml::Touch{static_cast<Rml::TouchId>(Event.TouchId),
@@ -271,7 +271,7 @@ void DispatchInputEvent(Rml::Context& Context, const FVaCuusInputEvent& Event)
 			// RmlUi does NOT synthesise a newline text-input from Return, so multiline
 			// controls stay empty unless the embedder sends one -- exactly what the SDL
 			// backend does (RmlUi_Platform_SDL.cpp:207-210). The `char` overload is safe
-			// here and only here: it silently drops any byte above 127 (Context.cpp:553-557)
+			// here and only here: it silently drops any byte above 127 (Context.cpp:575-579)
 			// and '\n' is 10.
 			if (KeyId == Rml::Input::KI_RETURN || KeyId == Rml::Input::KI_NUMPADENTER)
 			{
@@ -1999,9 +1999,9 @@ void FVaCuusUIThread::DropModelForRecompile(uint32 ViewId, const TSharedPtr<FVaC
 	//  2. Out of the write router, purging its pending reverts -- a revert flushed later this
 	//     frame must not DirtyVariable into the data model step 3 removes.
 	//  3. Context::RemoveDataModel, while the element tree is still up: it detaches every
-	//     root (SetDataModel(nullptr), Context.cpp:1106-1107) and destroys the DataModel
+	//     root (SetDataModel(nullptr), Context.cpp:1463-1464) and destroys the DataModel
 	//     holding the raw void* into the UI shadow -- which is what makes step 4 legal at
-	//     all. It also erases the NAME (data_models.erase, :1111), so a recovery re-bind
+	//     all. It also erases the NAME (data_models.erase, :1468), so a recovery re-bind
 	//     under the same name is not refused by CreateDataModel.
 	//  4. The buffers, through the model's drop-state machine (Reset within the fence
 	//     window, Abandon past it).

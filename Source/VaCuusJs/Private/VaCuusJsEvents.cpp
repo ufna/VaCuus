@@ -246,14 +246,14 @@ JSValue FVaCuusJsViewContext::BuildEventObject(Rml::Event& Event)
 
 	// THE DOM-ISH ALIASES, set only when the parameter exists on this event.
 	// The mapping, verbatim from RmlUi's parameter generators:
-	//   mouse_x/mouse_y/button   -> mouseX/mouseY/button   (Context.cpp:1535-1542;
-	//     `button` only on button events, same rule as RmlUi's :1540-1541)
-	//   key_identifier           -> keyIdentifier           (Context.cpp:1530-1533;
+	//   mouse_x/mouse_y/button   -> mouseX/mouseY/button   (Context.cpp:1931-1938;
+	//     `button` only on button events, same rule as RmlUi's :1936-1937)
+	//   key_identifier           -> keyIdentifier           (Context.cpp:1926-1929;
 	//     a NUMERIC Rml::Input::KeyIdentifier, not DOM's key string -- RmlUi has
 	//     no character-level key names, the text arrives via textinput)
-	//   text                     -> text                    (Context.cpp:573)
+	//   text                     -> text                    (Context.cpp:595)
 	//   ctrl_key/shift_key/alt_key/meta_key -> ctrlKey/shiftKey/altKey/metaKey
-	//     (Context.cpp:1544-1550 stores them as int 0/1; the aliases convert to
+	//     (Context.cpp:1940-1946 stores them as int 0/1; the aliases convert to
 	//     real JS booleans, `params` keeps the raw numbers)
 	struct FAlias
 	{
@@ -413,7 +413,7 @@ void FVaCuusJsEventListener::OnDetach(Rml::Element* /*Element*/)
 	// (removeEventListener / an on* attribute rewrite, EventDispatcher.cpp:54-62),
 	// ~EventDispatcher on direct element destruction (Element.cpp:99 -> :112;
 	// EventDispatcher.cpp:33-38), or the unload sweep's DetachAllEvents
-	// (Context.cpp:1565-1566; EventDispatcher.cpp:64-73) -- after which the
+	// (Context.cpp:1961-1962; EventDispatcher.cpp:64-73) -- after which the
 	// destructor's own loop iterates an emptied list and cannot re-fire.
 	if (!bNeutered)
 	{

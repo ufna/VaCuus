@@ -986,3 +986,143 @@ The vacuus-measure publisher unions all fragments before clipping, projecting ea
 separately: rotating an untransformed union would also measure gaps between fragments.
 VaCuus.Input.MeasuredFragments compares the published bounds with native border-box
 corners under identity, scale(2) and rotate(30deg), including padding and borders.
+
+Patch #18 -- a second finger takes over the primary's touch state.
+
+Found in a mobile game whose HUD is VaCuus: a movement button held by one thumb and an action
+button tapped by the other. Applied 2026-11-05.
+
+Symptom: with one finger already down, a second finger's press replaces the first finger's state.
+The first finger's click is lost, its :active resets, and a drag the first finger started is
+cancelled when the second finger moves. Events from the second finger carry no touch_id, so a
+handler cannot tell the fingers apart.
+
+Cause: Context models one touch point, the primary, as a mouse emulation. ProcessTouchStart treats
+every new identifier as that primary and re-runs hover, :active and the drag decision at its
+position. RmlUi has no notion of several simultaneous touches.
+
+The change (Source/Core/Context.cpp, Include/RmlUi/Core/Context.h):
+- ProcessTouchStart routes a touch whose identifier differs from primary_touch_id to
+  ProcessSecondaryTouchStart. The primary path is unchanged, except that it records
+  primary_touch_id and has_primary_touch; ProcessTouchEnd and ProcessTouchCancel clear
+  has_primary_touch when the primary lifts.
+- ProcessTouchMove, ProcessTouchEnd and ProcessTouchCancel route an identifier found in
+  secondary_touch_states to the matching ProcessSecondaryTouch* function.
+- A secondary finger presses and captures; it does not touch hover, focus or scrolling. Its
+  mousedown goes to the element under the press. Every move dispatches mousemove to that element,
+  however far the finger has travelled. Its mouseup goes to the same element at release. Its click
+  goes there too, when the release is over that element or one of its descendants, and, for a press
+  that would drag, only if the finger has never left the click radius (TOUCH_CLICK_MAX_DISTANCE,
+  3 dp). A press on any other element has no radius: it clicks on a release over it, however far
+  the finger wobbled. The primary differs: its click radius applies only to touches that start in a
+  scroll container.
+- Drag: a secondary finger on an element whose drag is not none dispatches dragstart, drag and
+  dragend once it leaves the click radius (strictly beyond TOUCH_CLICK_MAX_DISTANCE times the
+  density ratio). The dragstart carries the position the finger came from. There is no drag clone.
+  The primary has no drag threshold: its drag starts on the first mouse move that has a drag
+  element.
+- :active for a secondary finger is reference counted per element in secondary_active_counts, over
+  the element and its ancestors, as the primary's hover chain is. A release decrements; the last
+  one clears :active unless the primary's active_chain still holds the element. ResetActiveChain
+  skips elements a secondary finger holds, so the primary's moves cannot strip them.
+- OnElementDetach forgets the element in secondary_active_counts and in every secondary state's
+  pressed_element, drag_element and active_chain, so a later release cannot write through a stale
+  pointer. When it erases the primary's TouchState (the primary's scroll container went away while
+  the primary was down), it clears has_primary_touch as well; otherwise the stale flag routes every
+  later finger to the secondary path until a touch with the stale id arrives.
+- Each secondary dispatch carries touch_id (uint64) beside mouse_x and mouse_y.
+- ProcessTouchStart ends a live secondary whose id starts again, as a cancel, before it routes the
+  start. The old End was lost; without this the start falls through to the primary path with the id
+  in both maps.
+- A cancelled secondary finger never clicks. It ends its drag (dragend) if it was dragging, then
+  sends its pressed element one mouseup (button 0) at its last reported position, then releases
+  :active. The primary's cancel also ends in a mouseup, through ProcessMouseButtonUp.
+- UnloadDocument drops a secondary finger's pressed and drag element when they belong to the
+  document being unloaded. The unloaded elements stay alive until the document is released, so
+  without this the finger would keep dispatching into them. Its :active counts and chains are still
+  cleaned by OnElementDetach.
+
+The shape is deliberately small. It covers a held button plus a second finger that presses or
+drags; it does not reproduce browser multitouch (pinch, gestures, several hovers). Known
+limitation, intentionally not fixed: if a held element is re-parented, its :active stays set; the
+primary behaves the same way.
+
+Line shifts: Context.cpp grows by 396 lines (397 added, 1 replaced), the first 22 after :376;
+Context.h by 47, after :357 and :440. 118 in-repo citations into the two files moved: 110 in 33
+files under Source/, Content/DevUI/ and docs/buyer/, six that continue a citation from the line
+before (a bare `:NNN` with the file named one line up), and two in Tools/gen_rcss_matrix.py, whose
+output regenerates docs/buyer/rcss-matrix.md identical to the edited copy. Each was remapped through
+a line map of master's file against the patched one, so it names the same line text it named on
+master. Dated notes under docs/research, docs/superpowers and docs/passport were left as records.
+
+Test: VaCuus.Input.MultiTouch.* (Source/VaCuusJs/Private/Tests/VaCuusMultiTouchTest.cpp, 17 tests)
+over the fixture Content/DevUI/Tests/multitouch.rml. The fixture's head script exists only so that
+the view's JS context is created: on*-attribute handlers are inert without it. Restore-the-bug,
+Win64, UE 5.8 host editor, -unattended -nullrhi, 2026-11-05:
+  - #18 and #19 absent (Context.cpp and Context.h as on master): 10 of the 17 Fail --
+    TwoButtonsClickIndependently ("each finger clicks the button it pressed": 0,1 against 1,1),
+    HoldAndTap, PrimaryLiftsFirst, ActiveSurvivesPrimaryMove, SecondaryDragCaptured (touch_id
+    undefined), CancelSecondary, CancelWhileDragging, DragEventsSecondary, SecondaryDropTarget and
+    SecondaryCancelOverDropTarget -- and VaCuus.Input.MultiTouchRouting.
+    FirstFingerEndDoesNotCancelSecond ("finger 1's tap on the second button still clicks": 0).
+    The seven that pass are the primary-finger references (DragEventsPrimary,
+    DragDropEventsPrimary, PrimaryCancelOverDropTarget) and four guards against defects found in
+    drafts of this patch (PrimaryRecoversAfterScrollerRemoval, SecondaryIdRestartedAfterPrimaryLift,
+    SecondaryWobblyTapClicks, UnloadDocumentDropsSecondary), which need the secondary path to exist
+    before they can fail;
+  - present: all 17 Success; the whole VaCuus suite 324 of 324.
+
+NOT yet offered upstream. RmlUi has no multitouch to fit it into; offering it means designing that
+API first.
+
+Removal: drop this patch only if RmlUi gains multitouch. Re-run VaCuus.Input.MultiTouch after any
+re-vendor.
+
+Patch #19 -- a secondary finger's drag never reaches a drop target.
+
+Applied 2026-11-05, with #18, for the same HUD: its touch cancel regions are drop targets and must
+see a second finger arrive over them.
+
+Symptom: a secondary finger that drags a drag-drop source gets dragstart, drag and dragend, but
+never dragover, dragout or dragdrop on the element under it. The primary finger gets all of them.
+A cancel region that waits for dragover therefore never sees a secondary finger.
+
+Cause: patch #18 routes a secondary finger to ProcessSecondaryTouch*, which keeps no hover chain
+and so never runs the drop-target code that UpdateHoverChain runs for the primary.
+
+The change (Source/Core/Context.cpp, Include/RmlUi/Core/Context.h):
+- SecondaryTouchState gains drag_hover, drag_hover_chain and drag_verbose, the secondary
+  counterparts of the primary's fields of the same names.
+- drag_verbose is read at the press with the primary's rule: the drag source's style is DragDrop
+  or Clone (IsVerboseDrag, the same test ProcessMouseButtonDown makes). Source style drag, block or
+  none sends no drop-target event, for either finger.
+- UpdateSecondaryDropTarget runs after a secondary finger's dragstart and drag, when it moves. It
+  sends dragout to the elements it left and dragover to the elements it entered, then dragmove to
+  the element under it, as UpdateHoverChain and ProcessMouseMove do.
+- DispatchSecondaryDragEnd runs at the release, and at the cancel in place of the bare dragend. It
+  sends dragdrop and dragout to the element under the finger, then dragend, as ProcessMouseButtonUp
+  does. A cancel therefore gives the same drop the primary's cancel gives, since the primary's
+  cancel also runs ProcessMouseButtonUp.
+- OnElementDetach removes a detached element from drag_hover and drag_hover_chain; a detached
+  source clears both. UnloadDocument clears drag_hover and drag_hover_chain when the target belongs
+  to the document being unloaded.
+- No hover is computed for a secondary finger: it moves no hover, focus or :active. The chain is
+  for drop targets only.
+
+A secondary finger has no ghost clone: the Clone style sends the same drop events, but no ghost is
+drawn under the finger. A handler that removes its target during dragover or dragdrop receives no
+further drop events for it: OnElementDetach keeps the chain free of removed elements.
+
+Test: SecondaryDropTarget and SecondaryCancelOverDropTarget, with DragEventsPrimary,
+DragEventsSecondary, DragDropEventsPrimary and PrimaryCancelOverDropTarget as the primary's
+reference (same file and fixture; #k is the drag-drop source, #zone the target). Restore-the-bug,
+same host and flags, 2026-11-05:
+  - #18 present, #19's drop targets off (the secondary's drag_verbose forced false at the press,
+    which is the behaviour before #19: dragstart, drag and dragend, no drop event): exactly those
+    two Fail -- the zone gets no dragover, dragmove, dragdrop or dragout from the secondary finger
+    -- and the other 15 pass;
+  - present: all 17 Success.
+
+NOT yet offered upstream, for the reason #18 gives.
+
+Removal: with #18. Re-run VaCuus.Input.MultiTouch after any re-vendor.

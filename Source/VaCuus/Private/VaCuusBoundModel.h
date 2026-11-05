@@ -116,7 +116,7 @@ public:
 	 * THE NAME IS AN FString, NOT AN FName, AND THE TYPE IS THE FIX FOR A PACKAGED-ONLY BUG
 	 * (VaCuus-akj.23). RmlUi resolves `data-model` byte-for-byte: Element::SetParent hands the
 	 * attribute's string to Context::GetDataModelPtr (Element.cpp:2212), which is a find() on
-	 * `UnorderedMap<String, ...> data_models` (Context.h:383) -- robin_hood::unordered_flat_map
+	 * `UnorderedMap<String, ...> data_models` (Context.h:412) -- robin_hood::unordered_flat_map
 	 * keyed on std::string (Config.h:83; the vendored build defines no
 	 * RMLUI_NO_THIRDPARTY_CONTAINERS), so 'hud' and 'HUD' are different models. An FName cannot carry
 	 * that identity in a packaged game: WITH_CASE_PRESERVING_NAME follows WITH_EDITORONLY_DATA

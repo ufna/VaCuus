@@ -9,16 +9,16 @@
  * Context::Process*). What is being proven:
  *
  *  - RmlUi's drag machinery works through OUR event synthesis: dragstart on
- *    the first held move (no threshold, Context.cpp:1290), dragover/dragdrop
+ *    the first held move (no threshold, Context.cpp:1682), dragover/dragdrop
  *    on the TARGET, the release order dragdrop -> dragout -> dragend
- *    (Context.cpp:760-775), a cancelled drag still delivering dragend;
+ *    (Context.cpp:782-797), a cancelled drag still delivering dragend;
  *  - the demo's JS policy holds: typed slots accept and refuse correctly, the
  *    move happens (in dragend -- reparenting in dragdrop would cancel the drag
- *    through OnElementDetach, Context.cpp:1150-1159 -- the demo's header has
+ *    through OnElementDetach, Context.cpp:1535-1544 -- the demo's header has
  *    the full argument), highlights come and go;
  *  - the SAME drag works by TOUCH (TouchStart/Move/End) -- the suite-wide gap
  *    the VaCuus-61d family named: RmlUi synthesises button 0 from touch verbs
- *    (Context.cpp:919), so one fixture covers both pointers;
+ *    (Context.cpp:988), so one fixture covers both pointers;
  *  - listeners ride the node: an item moved by a drop is draggable again.
  *
  * COORDINATES are the fixed-pixel layout drag_demo.rcss commits to; the sheet
@@ -212,7 +212,7 @@ bool FVaCuusJsDragDropTest::RunTest(const FString& Parameters)
 		FString(TEXT("it-plate~it-rifle~false~REFUSED IT-PLATE x EQ-WEAPON")));
 
 	// --- 3. THE CANCELLED DRAG, mouse: it-scope released over nothing. dragend
-	// STILL fires (Context.cpp:772 is unconditional on the release path) -- the
+	// STILL fires (Context.cpp:794 is unconditional on the release path) -- the
 	// contract the demo's cleanup rests on.
 	Press(GItScope);
 	Move(GNowhere);
@@ -227,7 +227,7 @@ bool FVaCuusJsDragDropTest::RunTest(const FString& Parameters)
 		FString(TEXT("it-scope~RETURNED IT-SCOPE")));
 
 	// --- 4. THE SAME DRAG BY TOUCH: it-plate -> eq-armor (typed armor, empty).
-	// TouchStart synthesises the move + button-0 press (Context.cpp:916-919),
+	// TouchStart synthesises the move + button-0 press (Context.cpp:985-988),
 	// TouchMove the moves, TouchEnd the release -- so the log must be
 	// byte-identical in shape to beat 1's. This is the pointer the suite had
 	// never sent through a drag (the VaCuus-61d coverage gap).

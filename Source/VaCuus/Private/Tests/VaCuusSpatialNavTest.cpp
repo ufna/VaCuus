@@ -33,7 +33,7 @@ namespace VaCuusSpatialNavTest
  * FocusFlag::Document), the same call FVaCuusRmlDocumentHost makes. Without focus
  * INSIDE a document, Context::ProcessKeyDown dispatches to the context root, which
  * is not an ElementDocument and has no default action, and every arrow key is
- * silently dropped (Context.cpp:533-537).
+ * silently dropped (Context.cpp:555-559).
  *
  * THREAD HAND-OFF: plain members written on the UI thread, read on the test thread
  * only after WaitForFrameCount() saw the frame counter advance -- which the UI

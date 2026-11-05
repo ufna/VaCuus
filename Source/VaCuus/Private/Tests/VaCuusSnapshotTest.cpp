@@ -340,7 +340,7 @@ bool FVaCuusSnapshotTest::RunTest(const FString& Parameters)
 
 	// 2. pointer-events:none is a per-element skip, never a subtree prune: #ghost is
 	// focusable but opted out, while its interactive descendant is still hit by RmlUi
-	// (Context.cpp:1442 checks pointer-events only after descending) and so must
+	// (Context.cpp:1838 checks pointer-events only after descending) and so must
 	// still be reported.
 	TestFalse(TEXT("pointer-events:none element is not reported"),
 		Snapshot.Contains(FIntPoint(90, 130)));

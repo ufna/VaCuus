@@ -1,0 +1,54 @@
+<rml>
+<head>
+<style>
+/*
+	The multitouch fixture (VaCuus.Input.MultiTouch, VaCuus patch #18).
+
+	Every box is absolute, so the coordinates the tests press at are fixed, in the 800x480 view:
+	#a is centred on (80,60) inside #scroll; #b is centred on (80,320), outside #scroll; #j is
+	centred on (360,60) and is draggable. #k is centred on (360,180) and is draggable with drag-drop: the drop-target
+	tests press it. #zone (560..720 x 300..420) is the drop target of a drag that ends over it.
+
+	#scroll is a scroll container through overscroll-behavior alone (it has no overflow), so a
+	primary move through it reaches the primary's click-radius path in Context::ProcessTouchMove,
+	which is where the primary resets its :active chain.
+
+	#panel is the ancestor #a and #b share. A secondary finger on #b holds :active on #panel, and
+	the test checks that the primary's reset leaves it there.
+
+	The head script exists for one reason: a view's JS context is created lazily, at the first
+	script the document carries, and the on*-attribute handlers below resolve only through that
+	context. A document with no head script leaves them inert. The script sets a readiness flag
+	and nothing else.
+*/
+body, div { display: block; }
+body { width: 100%; height: 100%; }
+#panel { position: absolute; left: 0px; top: 0px; width: 800px; height: 480px; }
+#scroll { position: absolute; left: 0px; top: 0px; width: 200px; height: 240px; overscroll-behavior: contain; }
+#a { position: absolute; left: 20px; top: 20px; width: 120px; height: 80px; background-color: #2050C0; }
+#b { position: absolute; left: 20px; top: 280px; width: 120px; height: 80px; background-color: #C05020; }
+#b:active { width: 201px; }
+#j { position: absolute; left: 300px; top: 20px; width: 120px; height: 80px; background-color: #208040; drag: drag; }
+#k { position: absolute; left: 300px; top: 140px; width: 120px; height: 80px; background-color: #8040A0; drag: drag-drop; }
+#zone { position: absolute; left: 560px; top: 300px; width: 160px; height: 120px; background-color: #606060; }
+</style>
+<script>globalThis.multitouchReady = true;</script>
+</head>
+<body>
+<div id="panel">
+	<div id="scroll">
+		<div id="a" onclick="globalThis.clicksA = (globalThis.clicksA || 0) + 1"></div>
+	</div>
+	<div id="b" onclick="globalThis.clicksB = (globalThis.clicksB || 0) + 1"
+		onmouseup="globalThis.upsB = (globalThis.upsB || 0) + 1"></div>
+	<div id="j" onclick="globalThis.clicksJ = (globalThis.clicksJ || 0) + 1"
+		onmouseup="globalThis.upsJ = (globalThis.upsJ || 0) + 1; (globalThis.seqJ = globalThis.seqJ || []).push('mouseup')"
+		onmousemove="globalThis.moveOnJ = (globalThis.moveOnJ || 0) + 1"
+		ondragstart="(globalThis.dragEvents = globalThis.dragEvents || []).push('dragstart')"
+		ondrag="(globalThis.dragEvents = globalThis.dragEvents || []).push('drag'); globalThis.lastDragX = event.params.mouse_x; globalThis.lastDragTouch = event.params.touch_id"
+		ondragend="(globalThis.dragEvents = globalThis.dragEvents || []).push('dragend'); (globalThis.seqJ = globalThis.seqJ || []).push('dragend')"></div>
+	<div id="k"></div>
+	<div id="zone"></div>
+</div>
+</body>
+</rml>

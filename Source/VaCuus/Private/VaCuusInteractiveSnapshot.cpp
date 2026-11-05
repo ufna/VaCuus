@@ -586,7 +586,7 @@ void FSnapshotWalk::Visit(Rml::Element* Element, const FIntRect& Clip, bool bFoc
 
 	// pointer-events is checked PER ELEMENT and never used to prune the subtree.
 	// It is an inherited property (StyleSheetSpecification.cpp:386) but RmlUi
-	// evaluates it only after descending into children (Context.cpp:1442, after the
+	// evaluates it only after descending into children (Context.cpp:1838, after the
 	// stacking-context loop), so a `pointer-events: auto` descendant of a `none`
 	// parent IS hit -- and must therefore still be reported here.
 	const bool bInteractive = Computed.pointer_events() != Rml::Style::PointerEvents::None &&
@@ -696,7 +696,7 @@ FVaCuusSnapshotBuildStats BuildVaCuusInteractiveSnapshot(
 	// already knows. What it cannot know is whether keys will land on an element --
 	// Context::ProcessKeyDown dispatches to `focus`, or to the context root if there
 	// is none, and the root is not a document and has no default action, so nothing
-	// happens (Context.cpp:533-537).
+	// happens (Context.cpp:555-559).
 	Rml::Element* const Focus = Context.GetFocusElement();
 	bool bFocusIsRealElement = Focus != nullptr && Focus != Context.GetRootElement();
 
@@ -709,7 +709,7 @@ FVaCuusSnapshotBuildStats BuildVaCuusInteractiveSnapshot(
 	Rml::ElementDocument* FocusedDocument = nullptr;
 
 	// Front to back: a higher document index is closer to the front
-	// (PullDocumentToFront appends to the root's children, Context.cpp:468-481). The
+	// (PullDocumentToFront appends to the root's children, Context.cpp:490-503). The
 	// order does not change the union, but it costs nothing to produce the rects in
 	// the order RmlUi would have hit-tested them.
 	const int32 NumDocuments = Context.GetNumDocuments();
@@ -745,7 +745,7 @@ FVaCuusSnapshotBuildStats BuildVaCuusInteractiveSnapshot(
 	// why neither is derivable from the rects.
 	//
 	// A DOCUMENT MUST HOLD FOCUS, not merely exist. If focus is null or on the context
-	// root, ProcessKeyDown dispatches to the root (Context.cpp:534-537), whose
+	// root, ProcessKeyDown dispatches to the root (Context.cpp:556-559), whose
 	// ProcessDefaultAction is Element's and has no navigation in it -- so no key moves
 	// focus and consuming one would be a lie. If focus is on something INSIDE a document,
 	// bWantsKeyboardFocus is already true and these are irrelevant (and false: the loop

@@ -84,7 +84,7 @@ TSharedRef<SWidget> UVaCuusWidget::RebuildWidget()
 	OwningSubsystem = Subsystem;
 	Element = NewElement;
 
-	MyVaCuusWidget = SNew(SVaCuusWidget, NewView, NewElement);
+	MyVaCuusWidget = SNew(SVaCuusWidget, NewView, NewElement, bTakesKeyboardFocus);
 
 	// The document is NOT loaded here: TakeWidget_Private calls SynchronizeProperties()
 	// immediately after this on the newly-created path, and that is the one place the

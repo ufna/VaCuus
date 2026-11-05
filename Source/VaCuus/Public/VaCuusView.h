@@ -318,11 +318,11 @@ public:
 	//~
 	//~ 2. THERE IS NO UNBIND, AND THERE WILL NOT BE. RmlUi has no API for it: the only
 	//~    teardown is Context::RemoveDataModel, and that is a one-way door -- it calls
-	//~    Element::SetDataModel(nullptr) on every attached root (Context.cpp:1106-1107), and
+	//~    Element::SetDataModel(nullptr) on every attached root (Context.cpp:1463-1464), and
 	//~    SetDataModel is PRIVATE (Element.h:662, and SetParent is the only caller), so a
 	//~    document that is still loaded is permanently detached with no way to re-attach it.
 	//~    Re-binding the same name instead is refused: Context::CreateDataModel returns a
-	//~    falsy constructor (Context.cpp:1075-1076) and the existing model keeps pointing at
+	//~    falsy constructor (Context.cpp:1432-1433) and the existing model keeps pointing at
 	//~    the OLD shadow. A model therefore lives as long as its view, and dies with the
 	//~    context.
 	//~
@@ -354,7 +354,7 @@ public:
 	 * THE NAME IS AN FString, NOT AN FName, AND CHANGING IT BACK REINTRODUCES A PACKAGED-ONLY
 	 * BUG (VaCuus-akj.23). RmlUi matches `data-model` byte-for-byte (Element.cpp:2212 hands the
 	 * attribute string to Context::GetDataModelPtr, a find() on a map keyed on
-	 * std::string -- Context.h:383, Config.h:83), but an FName cannot carry an exact-case
+	 * std::string -- Context.h:412, Config.h:83), but an FName cannot carry an exact-case
 	 * identity in a cooked game: WITH_CASE_PRESERVING_NAME follows WITH_EDITORONLY_DATA
 	 * (NameTypes.h:32-33), so FName("hud") stringifies to the FIRST process-wide registration of
 	 * that name -- the engine's 'HUD' (class AHUD) -- and the model binds under a name the

@@ -117,8 +117,8 @@ with RmlUi's own inertia and cancels the click as a scroll should, and focusing 
 field summons the platform's on-screen keyboard, with typed text landing in the
 document and a tap outside dismissing it. World panels take taps too. The finer edges
 still recorded in the tracker rather than hidden: the click-vs-scroll threshold is not
-yet DPI-scaled on very dense screens, multi-finger gestures share one capture, and an
-iPad with a hardware keyboard types without IME composition.
+yet DPI-scaled on very dense screens, and an iPad with a hardware keyboard types
+without IME composition.
 
 Unreal's own refusal for an unsupported platform is quiet, so here is what you will
 actually see:

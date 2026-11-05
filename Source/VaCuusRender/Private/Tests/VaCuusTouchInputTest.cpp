@@ -113,7 +113,7 @@ public:
 				break;
 			case Rml::EventId::Dblclick:
 				// THE PHANTOM. RmlUi synthesises this from two presses in quick succession at
-				// nearly the same point (Context.cpp:653-661), which is exactly the shape a
+				// nearly the same point (Context.cpp:675-683), which is exactly the shape a
 				// finger delivered as BOTH a touch and a synthesized mouse press would have.
 				++NumDblClick;
 				break;
@@ -213,7 +213,7 @@ static const FVector2D GButton2Point(70.0, 120.0);
 
 //~ The drag, entirely inside #list (x 200..320, y 20..80). It runs UPWARDS, because that is
 //~ the direction a reader has to get right: ProcessTouchMove scrolls by MINUS the finger's
-//~ delta (Context.cpp:937, :945), so a finger travelling up (y decreasing) moves the content down
+//~ delta (Context.cpp:1009, :1017), so a finger travelling up (y decreasing) moves the content down
 //~ and GetScrollTop() GROWS. A sign error here scrolls the wrong way, which compiles fine.
 static const FVector2D GListDragStart(240.0, 70.0);
 static const FVector2D GListDragMid(240.0, 50.0);
@@ -421,7 +421,7 @@ bool FVaCuusTouchInputTest::RunTest(const FString& Parameters)
 		}
 
 		// RmlUi cancels the pending click once the finger has travelled past
-		// TOUCH_CLICK_MAX_DISTANCE (Context.cpp:978-981; the constant is 3 dp, :27 and :33). We must not defeat that by
+		// TOUCH_CLICK_MAX_DISTANCE (Context.cpp:1050-1053; the constant is 3 dp, :27 and :33). We must not defeat that by
 		// re-implementing tap detection, and we must not defeat it by failing to forward the
 		// moves that make the distance add up -- which is what makes this row the one that
 		// notices a missing ProcessTouchMove even though it is phrased about clicks.
@@ -457,7 +457,7 @@ bool FVaCuusTouchInputTest::RunTest(const FString& Parameters)
 	// the release pair is :5644 and :5576). bTouchFallbackToMouse defaults true (:905), so the
 	// fallback has to be assumed live. If the mouse handler queued as well, RmlUi would press
 	// button 0 twice for one finger -- and two presses in quick succession at the same point
-	// is exactly what it synthesises `dblclick` from (Context.cpp:653-661).
+	// is exactly what it synthesises `dblclick` from (Context.cpp:675-683).
 	//
 	// Both handlers are called here on purpose, which is the fallback's worst case rather than
 	// its actual one: a press over the button answers Handled, so the real Slate would not
@@ -517,7 +517,7 @@ bool FVaCuusTouchInputTest::RunTest(const FString& Parameters)
 	// SWidget has no touch-cancel virtual and FSlateApplication has no ProcessTouchCancelled:
 	// OnMouseCaptureLost is the only notification a stolen gesture produces. Left unhandled,
 	// RmlUi keeps the finger in its touch_states map forever -- only ProcessTouchEnd and
-	// ProcessTouchCancel erase it (Context.cpp:1017, :1031) -- and keeps button 0 down.
+	// ProcessTouchCancel erase it (Context.cpp:1092, :1110) -- and keeps button 0 down.
 	{
 		const int32 UpBefore = Host->NumMouseUp;
 
@@ -526,8 +526,8 @@ bool FVaCuusTouchInputTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("6: ...leaving one finger outstanding"), Widget->GetNumActiveTouches_Debug(), 1);
 
 		// The event Slate builds when it revokes capture (FCaptureLostEvent, Events.h:118): a
-		// user index and the pointer index it was revoked for, and nothing else -- which is
-		// exactly why the handler cannot ask "which finger" and has to keep its own ledger.
+		// user index and the pointer index it was revoked for, and nothing else. The handler used to
+		// ignore the pointer index and drain every finger; it now maps that index to its finger.
 		Widget->OnMouseCaptureLost(FCaptureLostEvent(/*InUserIndex=*/0, /*InPointerIndex=*/0));
 
 		TestEqual(TEXT("6: capture loss cancels the outstanding finger"), Widget->GetNumActiveTouches_Debug(), 0);

@@ -44,7 +44,7 @@ public:
 	/**
 	 * Cursor shape is PUSH-based, and this is the only place it can be caught.
 	 * RmlUi calls this from inside Context::Update's hover-chain pass and ONLY when
-	 * the name changed (Context.cpp:1315-1327); there is no "what cursor do you want"
+	 * the name changed (Context.cpp:1707-1719); there is no "what cursor do you want"
 	 * query to answer from the game thread. So the name is latched here and each
 	 * host picks it up right after its own Update() -- see
 	 * GetVaCuusLatchedMouseCursor() for why that attributes the change to the right

@@ -374,6 +374,28 @@ void Context::UnloadDocument(ElementDocument* _document)
 		drag_hover = nullptr;
 	}
 
+	// VaCuus patch #18: a secondary finger keeps its pressed and dragged elements until its release. Those belong to the
+	// document that is going away, and the finger must not dispatch into them any more.
+	for (auto& entry : secondary_touch_states)
+	{
+		SecondaryTouchState& state = entry.second;
+		if (state.pressed_element && state.pressed_element->GetOwnerDocument() == document)
+			state.pressed_element = nullptr;
+
+		if (state.drag_element && state.drag_element->GetOwnerDocument() == document)
+		{
+			state.drag_element = nullptr;
+			state.dragging = false;
+		}
+
+		// VaCuus patch #19: a target in the unloaded document takes its chain with it; the chain runs up through the document.
+		if (state.drag_hover && state.drag_hover->GetOwnerDocument() == document)
+		{
+			state.drag_hover = nullptr;
+			state.drag_hover_chain.clear();
+		}
+	}
+
 	// Rebuild the hover state.
 	UpdateHoverChain(mouse_position);
 }
@@ -889,8 +911,53 @@ bool Context::ProcessTouchCancel(const TouchList& touches)
 	return result;
 }
 
+// The element a press on `element` would drag: the closest one with `drag` other than none, or none if a `block` comes first.
+// The same walk as ProcessMouseButtonDown, for the secondary fingers that do not run it.
+static Element* FindDragElement(Element* element)
+{
+	while (element)
+	{
+		switch (element->GetComputedValues().drag())
+		{
+		case Style::Drag::None: element = element->GetParentNode(); break;
+		case Style::Drag::Block: return nullptr;
+		default: return element;
+		}
+	}
+	return nullptr;
+}
+
+// The drag styles whose source gets the drop-target events (dragover, dragout, dragdrop, dragmove), as the primary's
+// ProcessMouseButtonDown decides them. VaCuus patch #19 reads it at the press.
+static bool IsVerboseDrag(const Element* drag_element)
+{
+	if (!drag_element)
+		return false;
+
+	const Style::Drag drag_style = drag_element->GetComputedValues().drag();
+	return drag_style == Style::Drag::DragDrop || drag_style == Style::Drag::Clone;
+}
+
+static bool IsSelfOrDescendant(Element* element, const Element* ancestor)
+{
+	for (; element; element = element->GetParentNode())
+	{
+		if (element == ancestor)
+			return true;
+	}
+	return false;
+}
+
 bool Context::ProcessTouchStart(const Touch& touch, int key_modifier_state)
 {
+	// VaCuus patch #18: a start for an id that is still a live secondary means its End was lost. End that finger as a
+	// cancel, then treat the start as a fresh touch.
+	if (secondary_touch_states.find(touch.identifier) != secondary_touch_states.end())
+		ProcessSecondaryTouchCancel(touch.identifier);
+
+	if (has_primary_touch && touch.identifier != primary_touch_id)
+		return ProcessSecondaryTouchStart(touch, key_modifier_state);
+
 	TouchState* state = LookupTouch(touch.identifier);
 	RMLUI_ASSERTMSG(state == nullptr, "Receiving touch start event for an already started touch.");
 	if (!state)
@@ -898,6 +965,8 @@ bool Context::ProcessTouchStart(const Touch& touch, int key_modifier_state)
 		auto it_inserted = touch_states.emplace(touch.identifier, TouchState()).first;
 		state = &it_inserted->second;
 	}
+	primary_touch_id = touch.identifier;
+	has_primary_touch = true;
 
 	state->start_position = touch.position;
 	state->inertia_position = touch.position;
@@ -921,6 +990,9 @@ bool Context::ProcessTouchStart(const Touch& touch, int key_modifier_state)
 
 bool Context::ProcessTouchMove(const Touch& touch, int key_modifier_state)
 {
+	if (secondary_touch_states.find(touch.identifier) != secondary_touch_states.end())
+		return ProcessSecondaryTouchMove(touch, key_modifier_state);
+
 	TouchState* state = LookupTouch(touch.identifier);
 	if (!state)
 		return true;
@@ -989,6 +1061,9 @@ bool Context::ProcessTouchMove(const Touch& touch, int key_modifier_state)
 
 bool Context::ProcessTouchEnd(const Touch& touch, int key_modifier_state)
 {
+	if (secondary_touch_states.find(touch.identifier) != secondary_touch_states.end())
+		return ProcessSecondaryTouchEnd(touch, key_modifier_state);
+
 	TouchState* state = LookupTouch(touch.identifier);
 	if (!state)
 		return true;
@@ -1015,6 +1090,7 @@ bool Context::ProcessTouchEnd(const Touch& touch, int key_modifier_state)
 	}
 
 	touch_states.erase(touch.identifier);
+	has_primary_touch = false;
 
 	ProcessMouseMove(static_cast<int>(touch.position.x), static_cast<int>(touch.position.y), key_modifier_state);
 
@@ -1024,13 +1100,294 @@ bool Context::ProcessTouchEnd(const Touch& touch, int key_modifier_state)
 
 bool Context::ProcessTouchCancel(const Touch& touch)
 {
+	if (secondary_touch_states.find(touch.identifier) != secondary_touch_states.end())
+		return ProcessSecondaryTouchCancel(touch.identifier);
+
 	TouchState* state = LookupTouch(touch.identifier);
 	if (!state)
 		return false;
 
 	touch_states.erase(touch.identifier);
+	has_primary_touch = false;
 
 	return ProcessMouseButtonUp(0, 0);
+}
+
+bool Context::ProcessSecondaryTouchStart(const Touch& touch, int key_modifier_state)
+{
+	auto it_inserted = secondary_touch_states.emplace(touch.identifier, SecondaryTouchState());
+	RMLUI_ASSERTMSG(it_inserted.second, "Receiving touch start event for an already started touch.");
+	if (!it_inserted.second)
+		return !IsMouseInteracting() && !IsSecondaryTouchInteracting();
+
+	SecondaryTouchState& state = it_inserted.first->second;
+	state.start_position = touch.position;
+	state.last_position = touch.position;
+
+	Element* touch_element = GetElementAtPoint(touch.position);
+	state.pressed_element = touch_element;
+	for (Element* element = touch_element; element; element = element->GetParentNode())
+		state.active_chain.push_back(element);
+	AcquireSecondaryActive(state.active_chain);
+
+	// Unlike the primary, this touches neither hover nor focus nor scrolling: it only presses the element under the finger.
+	Dictionary parameters;
+	GenerateSecondaryTouchParameters(parameters, touch.position, touch.identifier, key_modifier_state);
+	parameters["button"] = 0;
+	bool propagate = true;
+	if (touch_element)
+		propagate = touch_element->DispatchEvent(EventId::Mousedown, parameters);
+
+	// As for the primary, a press the page prevents starts no drag. Read the element back from the state: a mousedown
+	// handler may have removed it, which OnElementDetach reports by clearing the field.
+	if (propagate)
+	{
+		state.drag_element = FindDragElement(state.pressed_element);
+		state.drag_verbose = IsVerboseDrag(state.drag_element);
+	}
+
+	return !IsMouseInteracting() && !IsSecondaryTouchInteracting();
+}
+
+bool Context::ProcessSecondaryTouchMove(const Touch& touch, int key_modifier_state)
+{
+	auto it = secondary_touch_states.find(touch.identifier);
+	if (it == secondary_touch_states.end())
+		return true;
+
+	SecondaryTouchState& state = it->second;
+	const Vector2f previous_position = state.last_position;
+	state.last_position = touch.position;
+
+	if (touch.position != previous_position)
+	{
+		UpdateSecondaryTouchDrag(state, touch.identifier, previous_position, touch.position, key_modifier_state);
+
+		// Captured: the move goes to the element that was pressed, however far the finger has travelled since.
+		if (state.pressed_element)
+		{
+			Dictionary parameters;
+			GenerateSecondaryTouchParameters(parameters, touch.position, touch.identifier, key_modifier_state);
+			state.pressed_element->DispatchEvent(EventId::Mousemove, parameters);
+		}
+	}
+
+	return !IsMouseInteracting() && !IsSecondaryTouchInteracting();
+}
+
+bool Context::ProcessSecondaryTouchEnd(const Touch& touch, int key_modifier_state)
+{
+	auto it = secondary_touch_states.find(touch.identifier);
+	if (it == secondary_touch_states.end())
+		return true;
+
+	// Taken before the release, as ProcessMouseButtonUp does, so the element that was pressed still captures the event.
+	const bool result = !IsMouseInteracting() && !IsSecondaryTouchInteracting();
+
+	SecondaryTouchState& state = it->second;
+	const Vector2f previous_position = state.last_position;
+	state.last_position = touch.position;
+	if (touch.position != previous_position)
+		UpdateSecondaryTouchDrag(state, touch.identifier, previous_position, touch.position, key_modifier_state);
+
+	if (state.pressed_element)
+	{
+		Dictionary parameters;
+		GenerateSecondaryTouchParameters(parameters, touch.position, touch.identifier, key_modifier_state);
+		parameters["button"] = 0;
+		state.pressed_element->DispatchEvent(EventId::Mouseup, parameters);
+	}
+
+	// Only a press that would drag is held to the click radius: drag_element is what the drag walk found at the press.
+	// Elsewhere a release over the pressed element clicks, as the primary does outside scroll containers.
+	const bool radius_applies = state.drag_element != nullptr;
+	const bool within_radius = !radius_applies || !state.moved_beyond_click_distance;
+	if (state.pressed_element && within_radius)
+	{
+		if (IsSelfOrDescendant(GetElementAtPoint(touch.position), state.pressed_element))
+		{
+			Dictionary parameters;
+			GenerateSecondaryTouchParameters(parameters, touch.position, touch.identifier, key_modifier_state);
+			parameters["button"] = 0;
+			state.pressed_element->DispatchEvent(EventId::Click, parameters);
+		}
+	}
+
+	ReleaseSecondaryActive(state.active_chain);
+
+	DispatchSecondaryDragEnd(state, touch.position, touch.identifier, key_modifier_state);
+
+	secondary_touch_states.erase(touch.identifier);
+	return result;
+}
+
+bool Context::ProcessSecondaryTouchCancel(TouchId identifier)
+{
+	auto it = secondary_touch_states.find(identifier);
+	if (it == secondary_touch_states.end())
+		return true;
+
+	const bool result = !IsMouseInteracting() && !IsSecondaryTouchInteracting();
+
+	// A cancelled finger never clicks. Its drag ends where the finger last reported, since the cancel carries no position
+	// worth trusting. Its pressed element still gets the mouseup the primary's cancel sends through ProcessMouseButtonUp,
+	// so a press always pairs with a release. A drop target under it gets the drop the primary's cancel gives (VaCuus patch #19).
+	SecondaryTouchState& state = it->second;
+
+	DispatchSecondaryDragEnd(state, state.last_position, identifier, 0);
+
+	if (state.pressed_element)
+	{
+		Dictionary parameters;
+		GenerateSecondaryTouchParameters(parameters, state.last_position, identifier, 0);
+		parameters["button"] = 0;
+		state.pressed_element->DispatchEvent(EventId::Mouseup, parameters);
+	}
+
+	ReleaseSecondaryActive(state.active_chain);
+
+	secondary_touch_states.erase(identifier);
+	return result;
+}
+
+void Context::UpdateSecondaryTouchDrag(SecondaryTouchState& state, TouchId identifier, Vector2f previous_position, Vector2f position,
+	int key_modifier_state)
+{
+	const float touch_max_distance = TOUCH_CLICK_MAX_DISTANCE * density_independent_pixel_ratio;
+	const Vector2f delta_from_start = position - state.start_position;
+	if (!state.moved_beyond_click_distance && delta_from_start.SquaredMagnitude() > touch_max_distance * touch_max_distance)
+	{
+		state.moved_beyond_click_distance = true;
+
+		// The drag starts on the first move past the radius and reports the position the finger came from, as the primary's
+		// dragstart does (ProcessMouseMove's UpdateHoverChain).
+		if (state.drag_element)
+		{
+			state.dragging = true;
+			Dictionary parameters;
+			GenerateSecondaryTouchParameters(parameters, previous_position, identifier, key_modifier_state);
+			parameters["drag_element"] = (void*)state.drag_element;
+			state.drag_element->DispatchEvent(EventId::Dragstart, parameters);
+		}
+	}
+
+	// dragstart's handlers may have removed the source; OnElementDetach clears both fields then, so test them again.
+	if (state.dragging && state.drag_element)
+	{
+		Dictionary parameters;
+		GenerateSecondaryTouchParameters(parameters, position, identifier, key_modifier_state);
+		parameters["drag_element"] = (void*)state.drag_element;
+		state.drag_element->DispatchEvent(EventId::Drag, parameters);
+	}
+
+	// VaCuus patch #19: the drop targets follow the finger after its drag events, as the primary's UpdateHoverChain does.
+	if (state.dragging && state.drag_element)
+	{
+		UpdateSecondaryDropTarget(state, identifier, position, key_modifier_state);
+	}
+}
+
+void Context::UpdateSecondaryDropTarget(SecondaryTouchState& state, TouchId identifier, Vector2f position, int key_modifier_state)
+{
+	if (!state.drag_verbose)
+		return;
+
+	// The new chain goes into the state before any event is sent. A handler that removes an element of it reaches
+	// OnElementDetach, which then clears the state's copy; a local copy would keep the stale pointer.
+	ElementSet old_drag_hover_chain;
+	old_drag_hover_chain.swap(state.drag_hover_chain);
+
+	state.drag_hover = GetElementAtPoint(position, state.drag_element);
+	for (Element* element = state.drag_hover; element != nullptr; element = element->GetParentNode())
+		state.drag_hover_chain.insert(element);
+
+	Dictionary parameters;
+	GenerateSecondaryTouchParameters(parameters, position, identifier, key_modifier_state);
+	parameters["drag_element"] = (void*)state.drag_element;
+
+	SendEvents(old_drag_hover_chain, state.drag_hover_chain, EventId::Dragout, parameters);
+	SendEvents(state.drag_hover_chain, old_drag_hover_chain, EventId::Dragover, parameters);
+
+	// A dragover handler may have removed the source or the target; either clears its field, so test both again.
+	if (state.dragging && state.drag_element && state.drag_hover)
+		state.drag_hover->DispatchEvent(EventId::Dragmove, parameters);
+}
+
+void Context::DispatchSecondaryDragEnd(SecondaryTouchState& state, Vector2f position, TouchId identifier, int key_modifier_state)
+{
+	if (!state.dragging || !state.drag_element)
+		return;
+
+	// The primary's order: the drop on the target, the target's dragout, then the source's dragend.
+	if (state.drag_verbose && state.drag_hover)
+	{
+		Dictionary parameters;
+		GenerateSecondaryTouchParameters(parameters, position, identifier, key_modifier_state);
+		parameters["drag_element"] = (void*)state.drag_element;
+
+		state.drag_hover->DispatchEvent(EventId::Dragdrop, parameters);
+		// The drop may have removed the target; OnElementDetach has cleared the field then.
+		if (state.drag_hover)
+			state.drag_hover->DispatchEvent(EventId::Dragout, parameters);
+	}
+
+	// The drop may have removed the source, which clears dragging, so test again before the dragend.
+	if (state.dragging && state.drag_element)
+	{
+		Dictionary parameters;
+		GenerateSecondaryTouchParameters(parameters, position, identifier, key_modifier_state);
+		parameters["drag_element"] = (void*)state.drag_element;
+		state.drag_element->DispatchEvent(EventId::Dragend, parameters);
+	}
+}
+
+bool Context::IsSecondaryTouchInteracting() const
+{
+	for (const auto& entry : secondary_touch_states)
+	{
+		const Element* pressed_element = entry.second.pressed_element;
+		if (pressed_element && pressed_element != root.get())
+			return true;
+	}
+	return false;
+}
+
+void Context::AcquireSecondaryActive(const ElementList& chain)
+{
+	for (Element* element : chain)
+	{
+		++secondary_active_counts[element];
+		element->SetPseudoClass("active", true);
+	}
+}
+
+void Context::ReleaseSecondaryActive(const ElementList& chain)
+{
+	for (Element* element : chain)
+	{
+		auto it = secondary_active_counts.find(element);
+		// OnElementDetach forgot this element: it is gone, so there is nothing left to clear.
+		if (it == secondary_active_counts.end())
+			continue;
+
+		if (--it->second > 0)
+			continue;
+
+		secondary_active_counts.erase(it);
+
+		// The primary's chain may still hold :active on this element. ResetActiveChain clears it when the primary releases.
+		const bool held_by_primary = std::find(active_chain.begin(), active_chain.end(), element) != active_chain.end();
+		if (!held_by_primary)
+			element->SetPseudoClass("active", false);
+	}
+}
+
+void Context::GenerateSecondaryTouchParameters(Dictionary& parameters, Vector2f position, TouchId identifier, int key_modifier_state)
+{
+	parameters["mouse_x"] = static_cast<int>(position.x);
+	parameters["mouse_y"] = static_cast<int>(position.y);
+	parameters["touch_id"] = static_cast<uint64_t>(identifier);
+	GenerateKeyModifierEventParameters(parameters, key_modifier_state);
 }
 
 void Context::SetDefaultScrollBehavior(ScrollBehavior scroll_behavior, float speed_factor)
@@ -1137,6 +1494,34 @@ void Context::OnElementDetach(Element* element)
 			active = nullptr;
 	}
 
+	// VaCuus patch #18: a secondary finger forgets the element too. Its :active count goes, and every chain it is held in
+	// drops the element, so that a later release cannot write through the stale address.
+	secondary_active_counts.erase(element);
+	for (auto& entry : secondary_touch_states)
+	{
+		SecondaryTouchState& state = entry.second;
+		if (state.pressed_element == element)
+			state.pressed_element = nullptr;
+
+		// Silently cancelled, as the primary's drag is below: no dragend, and no further drag events.
+		if (state.drag_element == element)
+		{
+			state.drag_element = nullptr;
+			state.dragging = false;
+			state.drag_hover = nullptr;
+			state.drag_hover_chain.clear();
+		}
+
+		// VaCuus patch #19: a removed drop target leaves the field and the chain, as the source does above.
+		if (state.drag_hover == element)
+			state.drag_hover = nullptr;
+		auto it_drag_hover = state.drag_hover_chain.find(element);
+		if (it_drag_hover != state.drag_hover_chain.end())
+			state.drag_hover_chain.erase(it_drag_hover);
+
+		state.active_chain.erase(std::remove(state.active_chain.begin(), state.active_chain.end(), element), state.active_chain.end());
+	}
+
 	if (drag)
 	{
 		auto it = drag_hover_chain.find(element);
@@ -1181,7 +1566,14 @@ void Context::OnElementDetach(Element* element)
 	for (auto touch_it = touch_states.begin(); touch_it != touch_states.end();)
 	{
 		if (touch_it->second.scroll_container == element)
+		{
+			// VaCuus patch #18: the primary slot is free again, as after its End or Cancel. Otherwise the stale flag routes
+			// every later finger to the secondary path.
+			if (has_primary_touch && touch_it->first == primary_touch_id)
+				has_primary_touch = false;
+
 			touch_it = touch_states.erase(touch_it);
+		}
 		else
 			++touch_it;
 	}
@@ -1373,7 +1765,11 @@ void Context::ResetActiveChain()
 	// Unset the 'active' pseudo-class on all the elements in the active chain; because they may not necessarily
 	// have had 'onmouseup' called on them, we can't guarantee this has happened already.
 	for (Element* element : active_chain)
-		element->SetPseudoClass("active", false);
+	{
+		// A secondary finger that still holds :active on this element keeps it (VaCuus patch #18).
+		if (secondary_active_counts.find(element) == secondary_active_counts.end())
+			element->SetPseudoClass("active", false);
+	}
 
 	active_chain.clear();
 	active = nullptr;

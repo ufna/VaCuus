@@ -116,6 +116,14 @@ public:
 	bool bAutoLoadDocument = true;
 
 	/**
+	 * Whether a press on this view may give it the keyboard. Read when the widget is built, so a
+	 * change made later takes effect on the next rebuild. Off for a HUD that must never take the
+	 * keyboard away from the game.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "VaCuus")
+	bool bTakesKeyboardFocus = true;
+
+	/**
 	 * Replaces the current document. Asynchronous, like everything else on the view:
 	 * the UI thread loads it and reports back through UVaCuusView::OnLoadCompleted.
 	 *

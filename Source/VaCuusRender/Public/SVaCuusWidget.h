@@ -50,17 +50,17 @@ private:
  * The fingers this widget has told RmlUi about and has not yet ended (bead VaCuus-ujm).
  *
  * WHY A LEDGER IS NEEDED AT ALL. RmlUi keeps per-touch state in a map keyed by identifier
- * and erases an entry only in ProcessTouchEnd or ProcessTouchCancel (Context.cpp:1017,
- * :1031). Slate has no "cancel" hook to mirror: a gesture can be taken away instead of
+ * and erases an entry only in ProcessTouchEnd or ProcessTouchCancel (Context.cpp:1092,
+ * :1110). Slate has no "cancel" hook to mirror: a gesture can be taken away instead of
  * finished -- capture revoked, the window deactivated, the widget destroyed mid-drag -- and
- * when that happens the only notification is OnMouseCaptureLost, which names no finger. So
- * the widget has to remember which fingers are outstanding, or a stolen gesture leaves RmlUi
- * holding a touch that will never end AND a button 0 it will never see released.
+ * when that happens the only notification is OnMouseCaptureLost, which names the pointer that
+ * lost its capture. So the widget has to remember which fingers are outstanding, or a stolen
+ * gesture leaves RmlUi holding a touch that will never end AND a button 0 it will never see
+ * released.
  *
- * WHY IT IS NOT "MULTI-TOUCH SUPPORT", which is a separate and larger item (mobile-support
- * .md 3.1: the capture state is one bool and every finger dispatches RmlUi button 0). This
- * set decides only WHOM TO CANCEL. It grants no per-finger capture, no per-finger hover and
- * no second button; two fingers still share one gesture, exactly as before.
+ * WHAT IT DECIDES: only WHOM TO CANCEL. Which fingers Slate routes to the widget is answered by
+ * CapturedTouchIds beside this set. That one records what Slate was asked to capture, this one
+ * what RmlUi was told, and the two can differ for a finger that pressed outside every rect.
  *
  * ENFORCEMENT BY SHAPE: the set is private and every mutator answers whether the id was
  * actually new/known, so "send TouchEnd for a finger we never started" and "cancel a finger
@@ -90,6 +90,9 @@ public:
 		ActiveTouchIds.Reset();
 		return Outstanding;
 	}
+
+	/** Everything still outstanding, left in place. The caller ends the ids it chooses with NoteEnd. */
+	TArray<uint64> OutstandingIds() const { return ActiveTouchIds.Array(); }
 
 	int32 Num() const { return ActiveTouchIds.Num(); }
 
@@ -135,8 +138,10 @@ private:
  * cursor shape across regions it deliberately does not own.
  *
  * The widget is EVisibility::Visible (it was HitTestInvisible while it was
- * render-only in Task 4) and SupportsKeyboardFocus() is true; without either, none
- * of the handlers below would ever be called.
+ * render-only in Task 4). Visible is what the pointer handlers need, keyboard focus is
+ * what the key handlers need, and SupportsKeyboardFocus() is true by default. A view built
+ * with bTakesKeyboardFocus = false (a HUD) gives up the second on purpose: its key and focus
+ * handlers never run.
  *
  * KEYBOARD ARBITRATION (controller decision D12) has two halves, both of them here
  * because both are Slate-side policy:
@@ -188,10 +193,14 @@ public:
 	 * InView is a handle, not an owner: the subsystem owns the view and the console
 	 * command calls DetachView() before destroying it. Held weakly, so a
 	 * garbage-collected or invalidated view simply stops being driven.
+	 *
+	 * bInTakesKeyboardFocus = false keeps the view out of keyboard focus entirely (see
+	 * SupportsKeyboardFocus). A HUD uses it so a press on it never takes the keyboard from the game.
 	 */
 	void Construct(const FArguments& InArgs,
 		UVaCuusView* InView,
-		const TSharedRef<FVaCuusSlateElement>& InElement);
+		const TSharedRef<FVaCuusSlateElement>& InElement,
+		bool bInTakesKeyboardFocus = true);
 
 	/** Restores Slate's navigation config if this widget is destroyed while still focused. */
 	virtual ~SVaCuusWidget() override;
@@ -242,7 +251,7 @@ public:
 
 	//~ Input. Signatures are SWidget's (SLeafWidget declares no input virtuals of its
 	//~ own); all of them are non-deprecated in 5.8.
-	virtual bool SupportsKeyboardFocus() const override { return true; }
+	virtual bool SupportsKeyboardFocus() const override { return bTakesKeyboardFocus; }
 	virtual FReply OnMouseMove(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override;
 	virtual FReply OnMouseButtonDown(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override;
 	virtual FReply OnMouseButtonUp(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override;
@@ -302,13 +311,14 @@ public:
 	FVector2D ViewPixelsToScreen_Debug(const FVector2D& ViewPixels) const;
 
 	/**
-	 * Whether this widget believes it holds Slate's mouse capture.
+	 * Whether this widget believes it holds Slate's pointer capture: the mouse's, or any finger's.
 	 *
 	 * Exposed for VaCuus.Input.SlateRouting, which asserts the multi-button release
 	 * rule against the bookkeeping and not only against the returned FReply -- the two
-	 * can disagree, and a stuck flag makes every later mouse move answer Handled.
+	 * can disagree, and a stuck flag makes every later mouse move answer Handled. The touch
+	 * tests read it for the same reason: a finger's capture is bookkeeping too.
 	 */
-	bool IsTrackingMouseCapture_Debug() const { return MouseCapture.IsHeld(); }
+	bool IsTrackingMouseCapture_Debug() const { return MouseCapture.IsHeld() || CapturedTouchIds.Num() > 0; }
 
 	/**
 	 * How many fingers this widget has started with RmlUi and not yet ended.
@@ -341,6 +351,10 @@ public:
 	 *
 	 * SAMPLE IT BETWEEN A PRESS AND ITS RELEASE: the release hands capture back, so a sample
 	 * afterwards always reads "nobody".
+	 *
+	 * THE MOUSE ONLY. A finger's capture is in CapturedTouchIds and does not move this. Its
+	 * consumers all synthesize mouse presses, so a finger press attributed here would be a press
+	 * they never sent.
 	 */
 	static TSharedPtr<const SVaCuusWidget> GetMouseCaptureHolder_Debug();
 
@@ -529,9 +543,11 @@ private:
 	/**
 	 * The reply half of a press -- capture, D11 focus and D14a IME -- shared by the mouse's
 	 * OnMouseButtonDown and the finger's OnTouchStarted. See the .cpp for why it is shared
-	 * rather than copied. UserIndex is the pressing event's user, whose focus the press may move.
+	 * rather than copied. The event is the pressing pointer: a finger captures its own pointer
+	 * (CapturedTouchIds), the mouse takes the one-bit capture, and the event's user is the one
+	 * whose focus the press may move.
 	 */
-	FReply AnswerPointerDown(FIntPoint Position, uint32 UserIndex);
+	FReply AnswerPointerDown(FIntPoint Position, const FPointerEvent& PointerEvent);
 
 	/**
 	 * Services the AutoShot debug screenshot for WHATEVER view this widget hosts, on the
@@ -551,7 +567,7 @@ private:
 
 	/**
 	 * SLATE'S ANSWER TO "DO YOU ROUTE POINTER EVENTS TO ME", with our mirror reconciled to it.
-	 * Every routing decision asks THIS, never MouseCapture.IsHeld() directly (bead VaCuus-86x).
+	 * Every MOUSE routing decision asks THIS, never MouseCapture.IsHeld() directly (bead VaCuus-86x).
 	 *
 	 * The flag alone is wrong in both directions, and each has a named mechanism:
 	 *
@@ -575,10 +591,10 @@ private:
 	 *    eating the game's camera input until the next button-up.
 	 *
 	 * Both are the same defect -- trusting our own bookkeeping about a fact Slate owns -- so
-	 * both get the same answer rather than two guards. HasMouseCapture() reads the same
-	 * PointerCaptorPathsByIndex the Mac restore writes (SWidget::HasMouseCapture ->
-	 * FSlateApplication::DoesWidgetHaveMouseCapture -> FSlateUser::DoesWidgetHaveAnyCapture),
-	 * which is what makes it the authority and not just a second opinion.
+	 * both get the same answer rather than two guards. The question is asked of the CURSOR
+	 * pointer alone (HasMouseCaptureByUser with CursorPointerIndex): the entry the Mac restore
+	 * writes is that pointer's, and a finger's capture is another pointer's, which this flag
+	 * must not adopt. Only mouse moves ask this; touch answers from CapturedTouchIds.
 	 *
 	 * WHAT THIS IS NOT FOR: the press and button-up bookkeeping. "Have we already requested
 	 * capture for this gesture" and "is the last button up" are questions about OUR presses,
@@ -589,7 +605,7 @@ private:
 	 * "who holds capture" attribution reads. The adopt is ONE-WAY on purpose; the
 	 * implementation says why the other direction would be wrong.
 	 */
-	bool HoldsPointerCapture();
+	bool HoldsPointerCapture(uint32 UserIndex);
 
 
 	/** The left stick's latched deflection as a direction, or None inside the dead zone. */
@@ -675,10 +691,13 @@ private:
 	FGeometry CachedInputGeometry;
 
 	/**
-	 * True while we hold Slate's mouse capture. Capture is taken on a press over an
+	 * True while we hold Slate's MOUSE capture. Capture is taken on a press over an
 	 * interactive region so a drag that wanders off it keeps being delivered here, and
 	 * released when the last button comes up. It is also why a drag's moves keep
 	 * answering Handled after the pointer has left every rect.
+	 *
+	 * Fingers do not use it: each finger's capture is in CapturedTouchIds, so one finger's
+	 * release cannot clear the mouse's flag, and the mouse's release cannot strand a finger.
 	 *
 	 * Only SetMouseCapture() may write it, and only through FVaCuusMouseCaptureState::Set();
 	 * that type's comment says why the bool is not a plain member any more.
@@ -688,19 +707,50 @@ private:
 	/**
 	 * The fingers RmlUi still believes are down for this view; see FVaCuusTouchLedger.
 	 *
-	 * SEPARATE FROM MouseCapture ON PURPOSE. Capture answers "does Slate route this stream
-	 * to us" and is one flag for the whole gesture; this answers "which touch identifiers
-	 * has RmlUi been told about", which is a set and has to be, because the cancel path
-	 * needs to name every one of them.
+	 * SEPARATE FROM THE CAPTURE SET ON PURPOSE. CapturedTouchIds answers "which fingers does Slate
+	 * route to us"; this answers "which touch identifiers has RmlUi been told about", which is a set
+	 * and has to be, because the cancel path needs to name every one of them.
 	 */
 	FVaCuusTouchLedger TouchLedger;
+
+	/**
+	 * The fingers for which this widget asked Slate for capture and has not yet released it.
+	 *
+	 * PER FINGER, BECAUSE SLATE'S CAPTURE IS PER POINTER. A press's reply names its captor for the
+	 * pointer that pressed (FSlateApplication::ProcessReply, SlateApplication.cpp:3493-3501), and a
+	 * touch release frees that pointer alone (SlateUser.cpp:1284-1290). So a second finger's capture
+	 * is its own: one finger lifting does not give up the other's, and a move of either is routed
+	 * to us, wherever it goes. Keyed by the ledger's identifier, so the two cannot disagree about a
+	 * finger.
+	 *
+	 * NOT EVERY PRESS GETS ITS GRANT. ProcessReply applies a reply's captor only when the application is
+	 * active, or bHandleDeviceInputWhenApplicationNotActive is set, or the event's window is virtual
+	 * (SlateApplication.cpp:3494; the flag's accessors are SlateApplication.h:789-790). SetPointerCaptor
+	 * can also refuse (SlateUser.cpp:256-282). A finger whose grant is skipped is still in this set,
+	 * so its moves and its end are Handled here, and Slate routes them to us only by hit test. Its end
+	 * normally removes it. If Slate never routes that end here, the entry stays until the same finger ends
+	 * in this widget, or until the cursor pointer loses capture while Slate does not hold that finger
+	 * (the cursor's loss cancels only the fingers Slate does not hold for us). A repeat press of that
+	 * finger asks for the capture again while Slate holds no captor for its pointer (AnswerPointerDown),
+	 * so a repeat press restores the capture. The handler-level tests
+	 * never route the reply. The routed tests set the handle flag on the application, for the routed block,
+	 * so the grant applies whichever window has focus.
+	 *
+	 * TOUCH ANSWERS FROM THIS SET. Slate's captor map answers two touch questions, both per pointer: the
+	 * repress re-ask (AnswerPointerDown), and whether a finger survives the cursor pointer's loss
+	 * (OnMouseCaptureLost). The mouse's HoldsPointerCapture asks Slate because the macOS activation restore
+	 * can give a mouse capture back without telling us.
+	 * No platform restores a finger's capture that way, and a finger Slate does take away is
+	 * reported through OnMouseCaptureLost, which removes it here.
+	 */
+	TSet<uint64> CapturedTouchIds;
 
 	/**
 	 * Pending UTF-16 high surrogate from a previous OnKeyChar, or 0.
 	 *
 	 * TCHAR is char16_t here (PLATFORM_TCHAR_IS_CHAR16 is 1 for Unix), so a code point
 	 * above the BMP arrives as two calls. RmlUi wants one UTF-32 value and its `char`
-	 * overload would silently drop the whole thing anyway (Context.cpp:553-557), so
+	 * overload would silently drop the whole thing anyway (Context.cpp:575-579), so
 	 * the halves are joined here rather than forwarded.
 	 */
 	uint32 PendingHighSurrogate = 0;
@@ -770,6 +820,9 @@ private:
 
 	/** Previous frame's bWantsKeyboardFocus; makes the release above edge-triggered. */
 	bool bLastWantedKeyboardFocus = false;
+
+	/** Fixed at Construct; SupportsKeyboardFocus answers with it. */
+	bool bTakesKeyboardFocus = true;
 
 	bool bAutoShotDone = false;
 };

@@ -355,6 +355,35 @@ private:
 	};
 	SmallUnorderedMap<TouchId, TouchState> touch_states;
 
+	// VaCuus patch #18: a finger that starts while the primary is down. It keeps no hover, focus, scroll or inertia
+	// state; it captures the element it pressed and drives its own drag. See the Context.cpp secondary-touch block.
+	struct SecondaryTouchState {
+		// Receives this finger's mousemove, mouseup and click, wherever the finger is. Cleared by OnElementDetach and UnloadDocument.
+		Element* pressed_element = nullptr;
+		// The element the press would drag, or null. Cleared by OnElementDetach and UnloadDocument.
+		Element* drag_element = nullptr;
+		Vector2f start_position;
+		Vector2f last_position;
+		// Set once the finger has gone past TOUCH_CLICK_MAX_DISTANCE, and kept. Only a press that would drag consults it, for its click.
+		bool moved_beyond_click_distance = false;
+		// From the dragstart until the release or cancel.
+		bool dragging = false;
+		// VaCuus patch #19: the drop targets under this finger, as the primary's drag_hover and drag_hover_chain. Kept only while
+		// drag_verbose is set. Cleared by OnElementDetach and UnloadDocument.
+		Element* drag_hover = nullptr;
+		ElementSet drag_hover_chain;
+		// The drag source's style is DragDrop or Clone, read at the press (the primary's drag_verbose).
+		bool drag_verbose = false;
+		// The chain this finger holds :active on. Each element is counted in secondary_active_counts.
+		ElementList active_chain;
+	};
+	SmallUnorderedMap<TouchId, SecondaryTouchState> secondary_touch_states;
+	// Secondary fingers holding :active on each element. ResetActiveChain leaves an element alone while its count is set.
+	SmallUnorderedMap<Element*, int> secondary_active_counts;
+	// The primary finger's id, saved at its start. Meaningful only while has_primary_touch is set.
+	TouchId primary_touch_id = 0;
+	bool has_primary_touch = false;
+
 	// Controller for various scroll behavior modes.
 	UniquePtr<ScrollController> scroll_controller; // [not-null]
 
@@ -437,6 +466,24 @@ private:
 	bool ProcessTouchEnd(const Touch& touch, int key_modifier_state);
 	// Cancel processing a touch for this context.
 	bool ProcessTouchCancel(const Touch& touch);
+
+	// Secondary-finger verbs (VaCuus patch #18). The touch verbs above route to these while a primary finger is down.
+	bool ProcessSecondaryTouchStart(const Touch& touch, int key_modifier_state);
+	bool ProcessSecondaryTouchMove(const Touch& touch, int key_modifier_state);
+	bool ProcessSecondaryTouchEnd(const Touch& touch, int key_modifier_state);
+	bool ProcessSecondaryTouchCancel(TouchId identifier);
+	// Threshold, dragstart and drag for a secondary finger that moved from previous_position to position.
+	void UpdateSecondaryTouchDrag(SecondaryTouchState& state, TouchId identifier, Vector2f previous_position, Vector2f position,
+		int key_modifier_state);
+	// VaCuus patch #19: the drop targets under a dragging secondary finger, and the release or cancel that ends its drag.
+	void UpdateSecondaryDropTarget(SecondaryTouchState& state, TouchId identifier, Vector2f position, int key_modifier_state);
+	void DispatchSecondaryDragEnd(SecondaryTouchState& state, Vector2f position, TouchId identifier, int key_modifier_state);
+	// True while a secondary finger presses an element other than the root.
+	bool IsSecondaryTouchInteracting() const;
+	void AcquireSecondaryActive(const ElementList& chain);
+	void ReleaseSecondaryActive(const ElementList& chain);
+	// Position, touch id and modifiers, which every secondary-finger event carries. Not mouse_position: that is the primary's.
+	void GenerateSecondaryTouchParameters(Dictionary& parameters, Vector2f position, TouchId identifier, int key_modifier_state);
 
 	// Sends the specified event to all elements in new_items that don't appear in old_items.
 	static void SendEvents(const ElementSet& old_items, const ElementSet& new_items, EventId id, const Dictionary& parameters);

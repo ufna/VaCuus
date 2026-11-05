@@ -152,6 +152,7 @@ bool FVaCuusUMGWidgetTest::RunTest(const FString& Parameters)
 	// once, which is a game-thread fact recorded before the UI thread ever sees it.
 	Widget->DocumentPath = TEXT("m1_hud.rml");
 	Widget->bAutoLoadDocument = true;
+	Widget->bTakesKeyboardFocus = false;
 
 	// 1. TakeWidget(): the one call UMG makes on a child widget. It runs RebuildWidget()
 	// and then SynchronizeProperties() on the newly-created path.
@@ -163,6 +164,7 @@ bool FVaCuusUMGWidgetTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("...which is not the null widget"), SlateWidget.Get() == &SNullWidget::NullWidget.Get());
 	TestEqual(TEXT("...and is the VaCuus Slate widget"), SlateWidget->GetType(), FName(TEXT("SVaCuusWidget")));
 	TestTrue(TEXT("...and is what the UWidget cached"), SlateWidget == Widget->GetCachedWidget());
+	TestFalse(TEXT("...and RebuildWidget passed bTakesKeyboardFocus = false on to it"), SlateWidget->SupportsKeyboardFocus());
 
 	// 2. Building the Slate widget created a view.
 	UVaCuusView* View = Widget->GetView();
@@ -259,8 +261,10 @@ bool FVaCuusUMGWidgetTest::RunTest(const FString& Parameters)
 	// 6. THE DUPLICATE-VIEW GUARD. RebuildWidget() fires again here, because the cached
 	// Slate widget is gone -- which is exactly what a re-add to the viewport does. One
 	// new view must appear, not one new view plus the old one.
+	Widget->bTakesKeyboardFocus = true;
 	TSharedPtr<SWidget> RebuiltSlateWidget = Widget->TakeWidget();
 	TestTrue(TEXT("A rebuild produces a widget again"), RebuiltSlateWidget.IsValid());
+	TestTrue(TEXT("...and a rebuild re-reads the flag"), RebuiltSlateWidget->SupportsKeyboardFocus());
 
 	UVaCuusView* RebuiltView = Widget->GetView();
 	if (TestNotNull(TEXT("The rebuild created a new view"), RebuiltView))
