@@ -120,7 +120,7 @@ body
 
 /* THE TARGET HIGHLIGHTS ARE CLASSES, NOT PSEUDO-CLASSES, BY NECESSITY. RmlUi
    sets no pseudo-class on a drop target -- the library's one drag pseudo-class
-   is `:drag`, set on the CLONE only (Context.cpp:1504) -- so drag_demo.js adds
+   is `:drag`, set on the CLONE only (Context.cpp:1900) -- so drag_demo.js adds
    drop-ok / drop-bad from its dragover handler and clears them on dragout and
    dragend. Ordinary :hover does keep firing on targets during a drag, which is
    why the slots have no :hover rule: a hover restyle would be indistinguishable
@@ -141,7 +141,7 @@ body
    ORIGINAL never moves until a drop is accepted, so a refused or cancelled
    drag needs no restore logic at all. (`drag: drag` would be wrong outright:
    it suppresses dragover/dragout/dragdrop entirely -- only drag-drop and
-   clone set drag_verbose, Context.cpp:692.)
+   clone set drag_verbose, Context.cpp:714.)
 
    The clone is reparented under RmlUi's cursor proxy, OUTSIDE this document's
    tree, so every .item rule stays ancestor-free on purpose: a descendant

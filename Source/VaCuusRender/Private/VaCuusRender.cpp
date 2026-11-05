@@ -1586,8 +1586,8 @@ bool ClickWhereThePointerIs(const FVector2D& Position)
  *
  * THE MOVE FIRST IS NOT A CONVENIENCE. Rml::Context::ProcessMouseWheel resolves its scroll
  * target from the HOVER element and returns immediately when there is none
- * (Context.cpp:811-814), and hover is only ever set by a processed mouse move
- * (Context.cpp:1311). A wheel event delivered to a context that has never seen a position
+ * (Context.cpp:833-836), and hover is only ever set by a processed mouse move
+ * (Context.cpp:1703). A wheel event delivered to a context that has never seen a position
  * scrolls nothing, silently -- so the pair is what the real path looks like anyway.
  *
  * Delta is in WHEEL NOTCHES, positive up, which is UE's convention;

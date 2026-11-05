@@ -211,7 +211,7 @@ void FVaCuusRmlDocumentHost::AdoptDocument(Rml::ElementDocument* NewDocument, co
 	// Return/Space all live in ElementDocument::ProcessDefaultAction, which only runs
 	// when the keydown was dispatched to something inside a document -- and
 	// Context::ProcessKeyDown falls back to the context ROOT when nothing holds focus
-	// (Context.cpp:533-537). The root is not an ElementDocument and has no default
+	// (Context.cpp:555-559). The root is not an ElementDocument and has no default
 	// action, so every arrow key would be silently swallowed.
 	//
 	// NOT FocusFlag::Auto (the library default), and that is a policy choice: Auto

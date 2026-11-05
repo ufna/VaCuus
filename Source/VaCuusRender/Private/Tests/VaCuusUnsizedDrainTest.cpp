@@ -35,7 +35,7 @@
  * (VaCuusUMGWidget.cpp:75-76) because the only correct size is the arranged pixel rect UMG
  * has not measured yet, SynchronizeProperties loads the document immediately afterwards
  * (:121-122), and the size only arrives on the first SVaCuusWidget::Tick
- * (SVaCuusWidget.cpp:288-291). A payload finishing in that window -- one measured at 144 MB
+ * (SVaCuusWidget.cpp:290-293). A payload finishing in that window -- one measured at 144 MB
  * for a single 6000x6000 PNG (bead akj.6.25) -- stayed resident in the recorder's queue for
  * as long as the view stayed unsized, which for a widget that is never arranged is the rest
  * of the session.
