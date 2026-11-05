@@ -748,13 +748,11 @@ void SVaCuusWidget::SendInput(const FVaCuusInputEvent& Event)
  * a pass-through touch keep reaching the game (the mouse handler answers Unhandled, so Slate
  * bubbles it on to SViewport) without the UI hearing the press twice.
  *
- * NOT USED BY OnMouseEnter/OnMouseLeave, which Slate ALSO drives from touch
- * (SlateApplication.cpp:5467-5478 on begin, :5584-5591 on end). Those are the engine's
- * deliberate hover synthesis for a device with no hover, they carry no button, and both are
- * harmless after a touch verb: the enter's MouseMove lands on the position ProcessTouchStart
- * already moved to, and ProcessMouseMove dispatches nothing when the position is unchanged
- * (Context.cpp:606, :615); the end's MouseLeave clears a hover a lifted finger should not keep.
- * Nor by OnMouseWheel: a wheel or gesture event is never IsTouchEvent() (only the touch
+ * OnMouseEnter uses this filter too: Slate synthesises it for every finger
+ * (SlateApplication.cpp:5466-5473), but only the primary touch owns RmlUi's mouse position.
+ * OnMouseLeave permits touch synthesis only after the last finger lifts, so a secondary
+ * release cannot clear the primary's hover (SlateApplication.cpp:5584-5587).
+ * Not used by OnMouseWheel: a wheel or gesture event is never IsTouchEvent() (only the touch
  * constructors set that flag, Events.h:893-947), so the question does not arise there.
  */
 void SVaCuusWidget::SendMouseInput(const FPointerEvent& PointerEvent, const FVaCuusInputEvent& Event)
@@ -1304,12 +1302,19 @@ void SVaCuusWidget::OnMouseEnter(const FGeometry& MyGeometry, const FPointerEven
 	// queued: it is what re-arms `mouse_active` after a ProcessMouseLeave
 	// (Context.cpp:605-607), and without it hover stays dead until the pointer
 	// happens to move again inside the widget.
-	SendInput(FVaCuusInputEvent::MouseMove(
+	SendMouseInput(MouseEvent, FVaCuusInputEvent::MouseMove(
 		ToViewPixels(MyGeometry, MouseEvent.GetScreenSpacePosition()), ToModifierState(MouseEvent)));
 }
 
 void SVaCuusWidget::OnMouseLeave(const FPointerEvent& MouseEvent)
 {
+	// Slate synthesises a leave for each lifted finger (SlateUser.cpp:1258-1263).
+	// Another finger or a captured mouse still owns the shared RmlUi hover.
+	if (MouseEvent.IsTouchEvent() && (TouchLedger.Num() > 0 || MouseCapture.IsHeld()))
+	{
+		return;
+	}
+
 	// Mandatory. Without ProcessMouseLeave the hover chain is never cleared and
 	// `:hover` styling sticks forever (Context.cpp:861-868). No geometry is needed --
 	// and none is given (SWidget.h:430).

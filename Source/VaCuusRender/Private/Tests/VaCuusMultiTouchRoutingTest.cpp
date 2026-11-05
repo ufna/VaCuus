@@ -530,6 +530,37 @@ bool FVaCuusMultiTouchFirstEndTest::RunTest(const FString& Parameters)
 		Slate.RoutePointerUpEvent(WidgetPath, MakeTouchEvent(Finger1Screen, Finger1Screen, /*FingerIndex=*/1));
 		TestFalse(TEXT("routed: lifting finger 1 releases it"), Widget->HasMouseCaptureByUser(UserIndex, 1));
 		TestEqual(TEXT("routed: nothing is left outstanding"), Widget->GetNumActiveTouches_Debug(), 0);
+
+		// Route both orders through Slate: its touch enter/leave synthesis must not move the
+		// primary's hover (SlateApplication.cpp:5466-5473, :5584-5587).
+		Slate.RoutePointerDownEvent(WidgetPath, MakeTouchEvent(Finger0Screen, Finger0Screen, /*FingerIndex=*/0));
+		if (!TestTrue(TEXT("routed hover: primary press processed"), RunFrames(*Rig.UIThread, 1)))
+		{
+			return false;
+		}
+		const int32 OutsBeforeSecondary = Rig.Host->NumMouseOutOnButton;
+		Slate.RoutePointerDownEvent(WidgetPath, MakeTouchEvent(Finger1Screen, Finger1Screen, /*FingerIndex=*/1));
+		if (!TestTrue(TEXT("routed hover: secondary press processed"), RunFrames(*Rig.UIThread, 1)))
+		{
+			return false;
+		}
+		TestEqual(TEXT("a secondary touch enter leaves the primary hovered"), Rig.Host->NumMouseOutOnButton, OutsBeforeSecondary);
+
+		Slate.RoutePointerUpEvent(WidgetPath, MakeTouchEvent(Finger1Screen, Finger1Screen, /*FingerIndex=*/1));
+		if (!TestTrue(TEXT("routed hover: secondary release processed"), RunFrames(*Rig.UIThread, 1)))
+		{
+			return false;
+		}
+		TestEqual(TEXT("a secondary touch leave leaves the primary hovered"), Rig.Host->NumMouseOutOnButton, OutsBeforeSecondary);
+		TestTrue(TEXT("routed: primary still owns pointer 0 after secondary lifts"), Widget->HasMouseCaptureByUser(UserIndex, 0));
+		const int32 ClicksBeforePrimary = Rig.Host->NumClick;
+		Slate.RoutePointerUpEvent(WidgetPath, MakeTouchEvent(Finger0Screen, Finger0Screen, /*FingerIndex=*/0));
+		if (!TestTrue(TEXT("routed hover: primary release processed"), RunFrames(*Rig.UIThread, 1)))
+		{
+			return false;
+		}
+		TestEqual(TEXT("routed: primary still clicks after secondary lifts"), Rig.Host->NumClick, ClicksBeforePrimary + 1);
+		TestEqual(TEXT("routed: that click belongs to the primary's button"), Rig.Host->LastClickId, FString(TEXT("btn")));
 	}
 
 	return true;
