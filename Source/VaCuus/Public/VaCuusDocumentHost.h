@@ -123,7 +123,7 @@ public:
 	 * UVaCuusWidget::RebuildWidget creates its view at FIntPoint::ZeroValue on purpose
 	 * (VaCuusUMGWidget.cpp:75-76) and SynchronizeProperties loads the document immediately
 	 * afterwards (:121-122), while the only correct size arrives on the first
-	 * SVaCuusWidget::Tick (SVaCuusWidget.cpp:290-293). Finished payloads decoded in that window
+	 * SVaCuusWidget::Tick (SVaCuusWidget.cpp:344-347). Finished payloads decoded in that window
 	 * -- one measured at 144 MB for a single 6000x6000 PNG (bead akj.6.25) -- used to sit in the
 	 * recorder's queue for the whole unsized window, which for a widget that is never arranged
 	 * is the rest of the session.

@@ -35,7 +35,7 @@
  * is a SAME-FRAME claim: rows must appear in the very UI frame whose DataApply consumed the
  * publish. That needs, per recorded frame, both the rows and evidence of the apply, taken
  * together on the UI thread. So this host keeps a per-frame log: ApplyModelUpdates runs
- * before the per-view record loop inside one RunFrame (VaCuusUIThread.cpp:1149-1158), so the
+ * before the per-view record loop inside one RunFrame (VaCuusUIThread.cpp:1153-1162), so the
  * frame's record already includes its own apply, and "the frame whose cumulative
  * fields-applied counter moved also shows the rows" IS the same-frame property -- with no
  * race on how many frames a coalesced trigger actually granted.
@@ -208,9 +208,9 @@ static bool RunFrames(FVaCuusUIThread& UIThread, int32 NumFrames)
  * FrameLog must stay below this, and never trust FrameLog.Num() or Last().
  *
  * WHY WaitForFrameCount IS NOT ENOUGH: every Enqueue* ends in Trigger()
- * (VaCuusUIThread.cpp:549-555), the wake event is a binary AutoReset latch
+ * (VaCuusUIThread.cpp:553-559), the wake event is a binary AutoReset latch
  * (VaCuusUIThread.h:507-508), and FrameCount increments only AFTER RunFrame returns
- * (VaCuusUIThread.cpp:1015-1016). A trigger that lands mid-frame therefore leaves the event
+ * (VaCuusUIThread.cpp:1019-1020). A trigger that lands mid-frame therefore leaves the event
  * set, and the worker runs ONE MORE frame concurrent with test-thread code that already saw
  * its awaited count -- a frame whose AddDefaulted_GetRef bumps ArrayNum BEFORE the record's
  * FStrings and TArrays are constructed, so FrameLog.Num()/Last() can name a record that is

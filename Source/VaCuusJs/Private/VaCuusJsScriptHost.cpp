@@ -213,7 +213,7 @@ void FVaCuusJsScriptHost::OnDocumentReady(uint32 ViewId, Rml::ElementDocument* D
 	// document host's AdoptDocument, after the old document's close (whose
 	// OnDocumentClosing already dispatched unload JS into the old context) and
 	// after Show() -- never Plugin::OnDocumentLoad, which fires inside
-	// Context::LoadDocument (Context.cpp:299) while the OLD context is current;
+	// Context::LoadDocument (Context.cpp:296) while the OLD context is current;
 	// running scripts there is v1's recorded bug (spec 12.1), restored and
 	// observed by the Reload test's red half.
 	TUniquePtr<FVaCuusJsViewContext>* Entry = ViewContexts.Find(ViewId);

@@ -141,7 +141,7 @@ struct FVaCuusInlineUIThreadScope
  * "the event was NOT consumed" (false means an element called StopPropagation),
  * while ProcessMouseMove/ButtonDown/ButtonUp/MouseLeave return
  * `!IsMouseInteracting()` -- a hover/active STATE hint evaluated after dispatch,
- * not consumption (Context.cpp:871). Collapsing the two into a single "handled"
+ * not consumption (Context.cpp:924). Collapsing the two into a single "handled"
  * bit is how embedders get this wrong. There is also nowhere for the answer to go:
  * Slate was answered synchronously on the game thread from the published snapshot,
  * frames ago in queue terms, and it cannot be un-answered now.
@@ -175,7 +175,7 @@ void DispatchInputEvent(Rml::Context& Context, const FVaCuusInputEvent& Event)
 			// appeared under the cursor, a window that just took focus, or a
 			// synthesized event. Redundant when a move did precede it, and cheap:
 			// ProcessMouseMove guards its mousemove dispatch on the position actually
-			// having changed (Context.cpp:608-623), so this costs one hit test and
+			// having changed (Context.cpp:661-676), so this costs one hit test and
 			// emits no spurious events.
 			Context.ProcessMouseMove(Event.Position.X, Event.Position.Y, Modifiers);
 
@@ -211,9 +211,13 @@ void DispatchInputEvent(Rml::Context& Context, const FVaCuusInputEvent& Event)
 			Context.ProcessMouseWheel(Rml::Vector2f(0.0f, -Event.WheelDelta), Modifiers);
 			break;
 
+		case EVaCuusInputEventKind::MouseCancel:
+			Context.ProcessMouseCancel();
+			break;
+
 		case EVaCuusInputEventKind::MouseLeave:
 			// Not optional: without it `mouse_active` stays set, the hover chain is never
-			// cleared and `:hover` styling sticks forever (Context.cpp:861-868). The next
+			// cleared and `:hover` styling sticks forever (Context.cpp:914-921). The next
 			// ProcessMouseMove re-arms the context.
 			Context.ProcessMouseLeave();
 			break;
@@ -224,9 +228,9 @@ void DispatchInputEvent(Rml::Context& Context, const FVaCuusInputEvent& Event)
 		case EVaCuusInputEventKind::TouchCancel:
 		{
 			// A ONE-ELEMENT LIST, and not because we only ever have one finger: the
-			// singular overloads are PRIVATE (Context.h:461-468; the public API is the
-			// TouchList quartet at :209-230), and the plural ones are a bare loop over them
-			// (Context.cpp:882-912). So batching N fingers into one call and making N calls
+			// singular overloads are PRIVATE (Context.h:466-473; the public API is the
+			// TouchList quartet at :211-232), and the plural ones are a bare loop over them
+			// (Context.cpp:935-969). So batching N fingers into one call and making N calls
 			// are the same thing to RmlUi, and one event per finger is what the queue
 			// already carries.
 			const Rml::TouchList Touches{Rml::Touch{static_cast<Rml::TouchId>(Event.TouchId),
@@ -248,7 +252,7 @@ void DispatchInputEvent(Rml::Context& Context, const FVaCuusInputEvent& Event)
 					Context.ProcessTouchEnd(Touches, Modifiers);
 					break;
 				default:
-					// ProcessTouchCancel takes no modifier state at all (Context.h:230): a
+					// ProcessTouchCancel takes no modifier state at all (Context.h:232): a
 					// cancelled gesture has no key semantics to report.
 					Context.ProcessTouchCancel(Touches);
 					break;
@@ -271,7 +275,7 @@ void DispatchInputEvent(Rml::Context& Context, const FVaCuusInputEvent& Event)
 			// RmlUi does NOT synthesise a newline text-input from Return, so multiline
 			// controls stay empty unless the embedder sends one -- exactly what the SDL
 			// backend does (RmlUi_Platform_SDL.cpp:207-210). The `char` overload is safe
-			// here and only here: it silently drops any byte above 127 (Context.cpp:575-579)
+			// here and only here: it silently drops any byte above 127 (Context.cpp:581-585)
 			// and '\n' is 10.
 			if (KeyId == Rml::Input::KI_RETURN || KeyId == Rml::Input::KI_NUMPADENTER)
 			{
@@ -1712,7 +1716,7 @@ void FVaCuusUIThread::DrainCommands()
 		// widget sizes it from its render bounding rect -- so without this `dp` meant `px` and
 		// a document authored in dp came out half size at 4K. Set on the context, not per
 		// document: RmlUi re-dirties every document's dp properties and media queries itself
-		// when the value changes (Context.cpp:158-173), and ignores an unchanged one.
+		// when the value changes (Context.cpp:155-170), and ignores an unchanged one.
 		if (Command->DpRatio > 0.0f)
 		{
 			if (Rml::Context* Context = Host->GetContext())
@@ -1999,9 +2003,9 @@ void FVaCuusUIThread::DropModelForRecompile(uint32 ViewId, const TSharedPtr<FVaC
 	//  2. Out of the write router, purging its pending reverts -- a revert flushed later this
 	//     frame must not DirtyVariable into the data model step 3 removes.
 	//  3. Context::RemoveDataModel, while the element tree is still up: it detaches every
-	//     root (SetDataModel(nullptr), Context.cpp:1463-1464) and destroys the DataModel
+	//     root (SetDataModel(nullptr), Context.cpp:1532-1533) and destroys the DataModel
 	//     holding the raw void* into the UI shadow -- which is what makes step 4 legal at
-	//     all. It also erases the NAME (data_models.erase, :1468), so a recovery re-bind
+	//     all. It also erases the NAME (data_models.erase, :1537), so a recovery re-bind
 	//     under the same name is not refused by CreateDataModel.
 	//  4. The buffers, through the model's drop-state machine (Reset within the fence
 	//     window, Abandon past it).

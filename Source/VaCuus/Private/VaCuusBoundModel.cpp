@@ -269,7 +269,7 @@ bool FVaCuusBoundModel::BindToContext(Rml::Context& Context)
 
 	// ModelNameStr AND NEVER ModelName.ToString(): `data-model` is matched byte-for-byte
 	// (Context::GetDataModelPtr is a find() on a map keyed on std::string,
-	// Context.cpp:1918-1922 over Context.h:412), while an FName round-trip in a packaged game
+	// Context.cpp:2005-2009 over Context.h:406), while an FName round-trip in a packaged game
 	// (WITH_CASE_PRESERVING_NAME=0, NameTypes.h:32-33) returns whatever casing was registered
 	// FIRST process-wide -- the engine's 'HUD' (class AHUD) turned FName("hud") into a model
 	// called 'HUD' that no document could address (VaCuus-akj.23).
@@ -278,7 +278,7 @@ bool FVaCuusBoundModel::BindToContext(Rml::Context& Context)
 	{
 		// The one way this fails: the name is already taken in THIS context. RmlUi logs
 		// Log::LT_ERROR ("Data model name '%s' already exists.") and hands back a
-		// default-constructed (falsy) constructor (Context.cpp:1423-1433). That line DOES reach
+		// default-constructed (falsy) constructor (Context.cpp:1492-1502). That line DOES reach
 		// the log, as `LogVaCuus: Error: [Rml] ...` -- see FVaCuusSystemInterface::LogMessage --
 		// but it names only the model, not the view, and says nothing about the consequence
 		// below, which is the reason this line exists as well rather than instead.

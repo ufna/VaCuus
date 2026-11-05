@@ -38,7 +38,7 @@ class FVaCuusJsViewContext;
  * entries leave the map inside OnDetach, which on every element-death path
  * runs before the allocator could recycle the address -- directly from
  * ~Element (Element.cpp:99 -> :112) or from the unload sweep's DetachAllEvents
- * (Context.cpp:1961-1962) -- and on context death the neuter walk empties the
+ * (Context.cpp:2050-2051) -- and on context death the neuter walk empties the
  * map wholesale. No stale key survives its element.
  */
 struct FVaCuusJsListenerKey
@@ -85,7 +85,7 @@ struct FVaCuusJsListenerKey
  *      every remaining entry (Element.cpp:99 -> :112; EventDispatcher.cpp:33-38)
  *      -> release the JS ref, leave the registry, delete this;
  *  (2) document unload: ReleaseUnloadedDocuments detaches the WHOLE tree first,
- *      then destroys it (Context.cpp:1961-1963; DetachAllEvents recursion,
+ *      then destroys it (Context.cpp:2050-2052; DetachAllEvents recursion,
  *      EventDispatcher.cpp:64-73) -> same OnDetach path, before any destroy;
  *  (3) the context dies FIRST (view removed / shutdown, the old tree still
  *      attached): the context's neuter walk frees the JS ref and NEUTERS the

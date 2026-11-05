@@ -209,6 +209,10 @@ void SVaCuusWidget::Construct(const FArguments& InArgs,
 
 SVaCuusWidget::~SVaCuusWidget()
 {
+	if (IsInGameThread() && FSlateApplication::IsInitialized() && TouchActivationHandle.IsValid())
+	{
+		FSlateApplication::Get().OnApplicationActivationStateChanged().Remove(TouchActivationHandle);
+	}
 	// Last line of defence for the navigation config: a widget destroyed while it still
 	// holds focus never gets an OnFocusLost, and a leaked FNullNavigationConfig would
 	// disable arrow-key navigation for every other widget in the application -- with
@@ -231,6 +235,14 @@ bool SVaCuusWidget::RemovePassThroughKey(const FKey& Key)
 void SVaCuusWidget::DetachView()
 {
 	check(IsInGameThread());
+	ReleaseOwnPointerCapture(TEXT("view detached"));
+	CancelOutstandingTouches();
+	CancelMouseGesture();
+	if (FSlateApplication::IsInitialized() && TouchActivationHandle.IsValid())
+	{
+		FSlateApplication::Get().OnApplicationActivationStateChanged().Remove(TouchActivationHandle);
+		TouchActivationHandle.Reset();
+	}
 
 	// CONTROLLER DECISION D18, AND IT MUST BE BEFORE THE RESET. ITextInputMethodSystem holds
 	// the IME context by TSharedRef, so a context registered on focus keeps the platform
@@ -278,22 +290,30 @@ void SVaCuusWidget::ReleaseOwnPointerCapture(const TCHAR* Reason)
 	}
 
 	const TSharedRef<const SWidget> Self = SharedThis(this);
+	const TArray<uint64> Fingers = CapturedTouchIds.Array();
 
 	int32 NumReleased = 0;
 	FSlateApplication::Get().ForEachUser(
-		[&Self, &NumReleased](FSlateUser& User)
+		[&Self, &Fingers, &NumReleased](FSlateUser& User)
 		{
-			// DoesWidgetHaveAnyCapture compares the LAST widget of each of this user's
-			// captor paths against us (SlateUser.cpp), which is exactly "this widget is
-			// your captor" and nothing wider.
-			if (User.DoesWidgetHaveAnyCapture(Self))
+			if (User.DoesWidgetHaveCursorCapture(Self))
 			{
-				User.ReleaseAllCapture();
+				User.ReleaseCursorCapture();
 				++NumReleased;
 			}
-		});
+			for (const uint64 Id : Fingers)
+			{
+				const uint32 Index = FVaCuusInputEvent::TouchIdPointerIndex(Id);
+				if (FVaCuusInputEvent::TouchIdUserIndex(Id) == static_cast<uint32>(User.GetUserIndex()) &&
+					User.DoesWidgetHaveCapture(Self, Index))
+				{
+					User.ReleaseCapture(Index);
+					++NumReleased;
+				}
+			}
+		}, /*bIncludeVirtualUsers=*/true);
 
-	UE_LOG(LogVaCuus, Log, TEXT("VaCuus widget released pointer capture for %d user(s) (%s)"), NumReleased, Reason);
+	UE_LOG(LogVaCuus, Log, TEXT("VaCuus widget released %d pointer capture(s) (%s)"), NumReleased, Reason);
 }
 
 void SVaCuusWidget::Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime)
@@ -719,41 +739,13 @@ void SVaCuusWidget::SendInput(const FVaCuusInputEvent& Event)
 }
 
 /**
- * THE ONE CHOKE POINT FOR THE MOUSE-SHAPED HANDLERS, and the answer to double delivery
- * (bead VaCuus-ujm).
- *
- * THE PROBLEM. Slate offers a touch to the widget's TOUCH handler first and, if that handler
- * answers Unhandled, delivers the very same FPointerEvent again through the MOUSE handler:
- * `if (!Event.IsTouchEvent() || (!TempReply.IsEventHandled() && this->bTouchFallbackToMouse))`
- * -- press at SlateApplication.cpp:5455 (bubble) and :5369 (captor), release at :5644 and
- * :5576, move at :5967 and :5872. `bTouchFallbackToMouse` defaults TRUE and is only ever
- * turned off by a project's `[MobileSlateUI] bTouchFallbackToMouse` (:905, :929), so the
- * fallback must be assumed live.
- *
- * WHY THAT WOULD BE A BUG RATHER THAN A DUPLICATE NO-OP. RmlUi's touch verbs already do the
- * mouse half themselves -- ProcessTouchStart ends in ProcessMouseButtonDown(0)
- * (Context.cpp:985-988) and ProcessTouchEnd in ProcessMouseButtonUp(0) (:1095-1098) -- so a
- * finger that ALSO arrived as a synthesized mouse press would press button 0 twice and
- * release it twice. Two presses in a row is exactly what RmlUi synthesises `dblclick` from
- * (Context.cpp:675-683), so every pass-through tap would fire a phantom double-click at the
- * document.
- *
- * THE RULE, therefore: a touch is queued by the touch handlers and by nobody else. This
- * function is where that is enforced, rather than an `if` repeated in each handler, because
- * the failure mode of the repeated form is silent -- a fifth pointer handler added later
- * simply forgets it, and the phantom press is invisible until a document acts on dblclick.
- *
- * WHAT STILL RUNS FOR A TOUCH: everything after the enqueue. The caller's FReply, its capture
- * bookkeeping and its focus decision are all computed exactly as before, which is what makes
- * a pass-through touch keep reaching the game (the mouse handler answers Unhandled, so Slate
- * bubbles it on to SViewport) without the UI hearing the press twice.
- *
- * OnMouseEnter uses this filter too: Slate synthesises it for every finger
- * (SlateApplication.cpp:5466-5473), but only the primary touch owns RmlUi's mouse position.
- * OnMouseLeave permits touch synthesis only after the last finger lifts, so a secondary
- * release cannot clear the primary's hover (SlateApplication.cpp:5584-5587).
- * Not used by OnMouseWheel: a wheel or gesture event is never IsTouchEvent() (only the touch
- * constructors set that flag, Events.h:893-947), so the question does not arise there.
+ * Slate offers an unhandled touch again through the mouse handler
+ * (SlateApplication.cpp:5455, :5576). Forwarding that fallback would create a
+ * physical-mouse gesture beside the real finger, delivering two presses and clicks.
+ * The touch handlers alone enqueue fingers; this filter is shared by the fallback
+ * handlers and touch-synthesized OnMouseEnter (SlateApplication.cpp:5466-5473).
+ * Touch hover is retired by RmlUi's touch end/cancel, so OnMouseLeave filters Slate's
+ * per-finger synthesis too (SlateUser.cpp:1258-1263).
  */
 void SVaCuusWidget::SendMouseInput(const FPointerEvent& PointerEvent, const FVaCuusInputEvent& Event)
 {
@@ -1131,7 +1123,7 @@ FReply SVaCuusWidget::OnMouseButtonDoubleClick(const FGeometry& InMyGeometry, co
 	// double-click would arrive as down/up/up.
 	//
 	// Forwarded as a plain press. RmlUi synthesises its own `dblclick` from
-	// consecutive presses (Context.cpp:643+), so it needs the press, not a special
+	// consecutive presses (Context.cpp:696+), so it needs the press, not a special
 	// event.
 	return OnMouseButtonDown(InMyGeometry, InMouseEvent);
 }
@@ -1164,7 +1156,7 @@ FReply SVaCuusWidget::OnMouseWheel(const FGeometry& MyGeometry, const FPointerEv
  *
  * WHAT MAKES THIS DIFFERENT FROM A MOUSE PRESS, and the only reason it exists: RmlUi's
  * ProcessTouchStart records the press position and looks up the closest scrollable ancestor
- * of the element under it (Context.cpp:961-983) -- state that ProcessMouseButtonDown does not
+ * of the element under it (Context.cpp:1018-1040) -- state that ProcessMouseButtonDown does not
  * have and cannot reconstruct. Without it, ProcessTouchMove has nothing to scroll, which is
  * why a finger drag over a list did nothing on a phone before this.
  *
@@ -1186,6 +1178,14 @@ FReply SVaCuusWidget::OnTouchStarted(const FGeometry& MyGeometry, const FPointer
 
 	const FIntPoint Position = ToViewPixels(MyGeometry, InTouchEvent.GetScreenSpacePosition());
 
+	// A pass-through finger has no capture-lost callback. App deactivation still has to
+	// cancel it explicitly (SlateApplication.cpp:7297-7300), independently of the mouse.
+	if (!TouchActivationHandle.IsValid() && FSlateApplication::IsInitialized())
+	{
+		TouchActivationHandle = FSlateApplication::Get().OnApplicationActivationStateChanged().AddSP(
+			SharedThis(this), &SVaCuusWidget::OnApplicationActivationChanged);
+	}
+
 	// Ledgered even when the press is pass-through: the finger is one RmlUi now knows about,
 	// so it is one that must be ended or cancelled. Ledgering only the covered ones would
 	// leak exactly the fingers whose gesture ends somewhere else.
@@ -1206,7 +1206,7 @@ FReply SVaCuusWidget::OnTouchMoved(const FGeometry& MyGeometry, const FPointerEv
 	// THE EVENT THAT ACTUALLY SCROLLS. ProcessTouchMove applies the frame's delta to the
 	// container the start latched onto, accumulates the decayed inertia position the release
 	// will fling with, and cancels the pending click once the finger has travelled
-	// TOUCH_CLICK_MAX_DISTANCE (Context.cpp:1000-1053). None of that is reproduced here: the
+	// TOUCH_CLICK_MAX_DISTANCE (Context.cpp:1057-1110). None of that is reproduced here: the
 	// host's job is an honest position, and the tap-vs-drag decision is RmlUi's.
 	SendInput(FVaCuusInputEvent::Touch(
 		EVaCuusInputEventKind::TouchMove, ToTouchId(InTouchEvent), Position, ToModifierState(InTouchEvent)));
@@ -1232,7 +1232,7 @@ FReply SVaCuusWidget::OnTouchFirstMove(const FGeometry& MyGeometry, const FPoint
 	// (SlateApplication.cpp:5856-5863 captor, :5951-5958 bubble), so an unoverridden
 	// OnTouchFirstMove drops that event on the floor -- it does not even fall back to
 	// OnMouseMove. The first delta is the one that decides the scroll's direction in
-	// ProcessTouchMove (Context.cpp:1030-1036), so losing it is not cosmetic.
+	// ProcessTouchMove (Context.cpp:1087-1093), so losing it is not cosmetic.
 	return OnTouchMoved(MyGeometry, InTouchEvent);
 }
 
@@ -1271,7 +1271,7 @@ FReply SVaCuusWidget::OnTouchEnded(const FGeometry& MyGeometry, const FPointerEv
 		// A finger whose press this widget never saw -- it started over another widget and
 		// Slate routed the end here, or a cancel already accounted for it. RmlUi would treat
 		// the end as a no-op anyway (ProcessTouchEnd returns before touching anything when
-		// LookupTouch finds nothing, Context.cpp:1067-1069), so not sending it is what keeps
+		// LookupTouch finds nothing, Context.cpp:1124-1126), so not sending it is what keeps
 		// "one start, one end" true by construction rather than by RmlUi's tolerance.
 		UE_LOG(LogVaCuus, Verbose, TEXT("VaCuus widget saw a touch end for a finger it never started; ignored"));
 		return FReply::Unhandled();
@@ -1280,7 +1280,7 @@ FReply SVaCuusWidget::OnTouchEnded(const FGeometry& MyGeometry, const FPointerEv
 	const bool bWasCapturing = CapturedTouchIds.Remove(TouchId) > 0;
 
 	// ProcessTouchEnd, which releases button 0 and -- if the finger was still travelling --
-	// converts the accumulated velocity into an inertial fling (Context.cpp:1071-1089, :1098).
+	// converts the accumulated velocity into an inertial fling (Context.cpp:1128-1146, :1155).
 	SendInput(FVaCuusInputEvent::Touch(
 		EVaCuusInputEventKind::TouchEnd, TouchId, Position, ToModifierState(InTouchEvent)));
 
@@ -1300,7 +1300,7 @@ void SVaCuusWidget::OnMouseEnter(const FGeometry& MyGeometry, const FPointerEven
 {
 	// Returns void, so there is nothing to answer -- but the move still has to be
 	// queued: it is what re-arms `mouse_active` after a ProcessMouseLeave
-	// (Context.cpp:605-607), and without it hover stays dead until the pointer
+	// (Context.cpp:658-660), and without it hover stays dead until the pointer
 	// happens to move again inside the widget.
 	SendMouseInput(MouseEvent, FVaCuusInputEvent::MouseMove(
 		ToViewPixels(MyGeometry, MouseEvent.GetScreenSpacePosition()), ToModifierState(MouseEvent)));
@@ -1309,89 +1309,33 @@ void SVaCuusWidget::OnMouseEnter(const FGeometry& MyGeometry, const FPointerEven
 void SVaCuusWidget::OnMouseLeave(const FPointerEvent& MouseEvent)
 {
 	// Slate synthesises a leave for each lifted finger (SlateUser.cpp:1258-1263).
-	// Another finger or a captured mouse still owns the shared RmlUi hover.
-	if (MouseEvent.IsTouchEvent() && (TouchLedger.Num() > 0 || MouseCapture.IsHeld()))
+	// RmlUi now retires touch hover in ProcessTouchEnd/Cancel; this is only the physical mouse.
+	if (MouseEvent.IsTouchEvent())
 	{
 		return;
 	}
 
 	// Mandatory. Without ProcessMouseLeave the hover chain is never cleared and
-	// `:hover` styling sticks forever (Context.cpp:861-868). No geometry is needed --
+	// `:hover` styling sticks forever (Context.cpp:914-921). No geometry is needed --
 	// and none is given (SWidget.h:430).
 	SendInput(FVaCuusInputEvent::MouseLeave());
 }
 
 void SVaCuusWidget::OnMouseCaptureLost(const FCaptureLostEvent& CaptureLostEvent)
 {
-	// SLATE'S ONLY "the gesture was taken away" SIGNAL, and therefore the only place a touch
-	// can be cancelled (bead VaCuus-ujm). SWidget has no touch-cancel virtual at all and
-	// FSlateApplication has no ProcessTouchCancelled: a stolen gesture surfaces here or
-	// nowhere. Left unhandled, RmlUi would keep the finger in its touch_states map forever
-	// (only ProcessTouchEnd/Cancel erase it, Context.cpp:1092, :1110) and keep button 0 down.
+	// Slate reports capture loss by pointer index (SlateUser.cpp:314). Cancel only
+	// that pointer; app deactivation and DetachView handle uncaptured ledger entries.
 	//
 	// WHICH FINGER IS THE QUESTION. The notification names the pointer that lost its capture
 	// (FSlateUser::ReleaseCapture builds it from that pointer's own index, SlateUser.cpp:314), so a
 	// finger's pointer cancels that finger and no other. The others were not taken away, and
 	// cancelling them would end drags that are still going.
-	// THE CURSOR'S POINTER: losing it cancels only the fingers Slate does not hold for this widget.
-	// A held finger keeps its gesture. Two kinds of finger are not held: a ledger-only finger, which pressed
-	// outside every rect and never asked for capture, and a finger whose grant was skipped or refused. Slate
-	// never reports the loss of a pointer it did not give us, so those are cancelled here.
-	// In the common case, the mouse's own orderly button-up, no loss follows and a held finger lives on.
-	// Where the loss comes from FSlateUser::ReleaseAllCapture (SlateUser.cpp:284-292), it calls
-	// ReleaseCapture once per captured pointer, so each held finger receives its own loss there.
-	// A ledger-only finger is cancelled by the mouse's release as well: RmlUi sees touches go from one to
-	// zero plus one mouseup that does not click, and the finger's later lift is Unhandled. No test pins that yet.
-	//
-	// OUTSIDE the mirror check below, deliberately. That check asks "did WE think we had
-	// capture", which is about the mouse bookkeeping; the fingers are outstanding regardless,
-	// and a cancel that ran only when the mirror agreed would be the same class of
-	// load-bearing-condition mistake as VaCuus-61d.
+	// The cursor and fingers have independent state. A cursor release never cancels a
+	// ledger-only finger; app deactivation and view detachment cancel those explicitly.
 	if (CaptureLostEvent.PointerIndex == static_cast<int32>(FSlateApplicationBase::CursorPointerIndex))
 	{
-		// A finger Slate still holds keeps its gesture. The loop walks a copy, because the cancel
-		// removes ids from the live ledger.
-		for (const uint64 TouchId : TouchLedger.OutstandingIds())
-		{
-			const uint32 FingerUserIndex = FVaCuusInputEvent::TouchIdUserIndex(TouchId);
-			const uint32 FingerPointerIndex = FVaCuusInputEvent::TouchIdPointerIndex(TouchId);
-			const TSharedPtr<FSlateUser> FingerUser = FSlateApplication::IsInitialized()
-				? FSlateApplication::Get().GetUser(static_cast<int32>(FingerUserIndex))
-				: TSharedPtr<FSlateUser>();
-			const bool bSlateHoldsFinger =
-				FingerUser.IsValid() && FingerUser->DoesWidgetHaveCapture(SharedThis(this), FingerPointerIndex);
-			if (bSlateHoldsFinger)
-			{
-				continue;
-			}
 
-			TouchLedger.NoteEnd(TouchId);
-			CapturedTouchIds.Remove(TouchId);
-			SendInput(FVaCuusInputEvent::TouchCancel(TouchId));
-
-			UE_LOG(LogVaCuus, Verbose, TEXT("VaCuus widget cancelled touch %llu; Slate does not hold its pointer"),
-				static_cast<unsigned long long>(TouchId));
-		}
-
-		// Slate can take capture away without ever sending the matching button-up: the
-		// window loses focus, another widget captures, the viewport changes input mode.
-		// Without this the flag would stay set forever and every later mouse move would
-		// answer Handled, silently eating the game's camera input.
-		//~ The RAW mirror here, deliberately: by the time this notification arrives Slate has
-		//~ ALREADY dropped the captor -- FSlateUser::ReleaseCapture removes the path
-		//~ (SlateUser.cpp:310) before it calls OnMouseCaptureLost (:314) -- so
-		//~ HoldsPointerCapture(UserIndex) would answer false and this branch would never run. The
-		//~ question is "did WE think we had it", which is exactly what the mirror records.
-		if (MouseCapture.IsHeld())
-		{
-			SetMouseCapture(false);
-
-			// RmlUi is told the pointer is gone rather than left mid-drag: it has no
-			// "capture lost" concept, and a stuck :active/drag state is exactly what
-			// ProcessMouseLeave clears.
-			SendInput(FVaCuusInputEvent::MouseLeave());
-			UE_LOG(LogVaCuus, Verbose, TEXT("VaCuus widget lost mouse capture; hover and drag state cleared"));
-		}
+		CancelMouseGesture();
 		return;
 	}
 
@@ -1401,7 +1345,7 @@ void SVaCuusWidget::OnMouseCaptureLost(const FCaptureLostEvent& CaptureLostEvent
 	// after routing (FSlateUser::NotifyPointerReleased, SlateUser.cpp:1290) finds no captor and does nothing.
 	const uint64 TouchId = FVaCuusInputEvent::MakeTouchId(
 		static_cast<uint32>(CaptureLostEvent.UserIndex), static_cast<uint32>(CaptureLostEvent.PointerIndex));
-	const bool bWasCapturing = CapturedTouchIds.Remove(TouchId) > 0;
+	CapturedTouchIds.Remove(TouchId);
 
 	if (TouchLedger.NoteEnd(TouchId))
 	{
@@ -1411,12 +1355,39 @@ void SVaCuusWidget::OnMouseCaptureLost(const FCaptureLostEvent& CaptureLostEvent
 			static_cast<unsigned long long>(TouchId));
 	}
 
-	// The last finger holding this widget's capture has gone, so the gesture is over: clear the hover
-	// as the one-finger path always has. Not while the mouse still holds a drag, and not when another
-	// finger keeps one.
-	if (bWasCapturing && CapturedTouchIds.IsEmpty() && !MouseCapture.IsHeld())
+
+}
+
+void SVaCuusWidget::CancelMouseGesture()
+{
+	check(IsInGameThread());
+	// Slate has removed its captor before the callback (SlateUser.cpp:310-314), so
+	// the raw mirror identifies a stolen gesture. An orderly release already cleared it.
+	if (MouseCapture.IsHeld())
 	{
-		SendInput(FVaCuusInputEvent::MouseLeave());
+		SetMouseCapture(false);
+		SendInput(FVaCuusInputEvent::MouseCancel());
+	}
+}
+
+void SVaCuusWidget::CancelOutstandingTouches()
+{
+	check(IsInGameThread());
+	for (const uint64 Id : TouchLedger.Drain())
+	{
+		SendInput(FVaCuusInputEvent::TouchCancel(Id));
+	}
+	CapturedTouchIds.Reset();
+}
+
+void SVaCuusWidget::OnApplicationActivationChanged(bool bActive)
+{
+	check(IsInGameThread());
+	if (!bActive)
+	{
+		ReleaseOwnPointerCapture(TEXT("application deactivated"));
+		CancelOutstandingTouches();
+		CancelMouseGesture();
 	}
 }
 

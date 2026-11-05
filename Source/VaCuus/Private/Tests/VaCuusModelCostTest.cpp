@@ -764,9 +764,9 @@ private:
 /**
  * How many FrameLog records the test thread may read; every test-thread index must stay
  * below it, and FrameLog.Num()/Last() are never trusted. WaitForFrameCount alone is not
- * enough: every Enqueue* ends in Trigger() (VaCuusUIThread.cpp:549-555), the wake event is a
+ * enough: every Enqueue* ends in Trigger() (VaCuusUIThread.cpp:553-559), the wake event is a
  * binary AutoReset latch (VaCuusUIThread.h:507-508), and FrameCount increments only AFTER
- * RunFrame returns (VaCuusUIThread.cpp:1015-1016) -- so a trigger landing mid-frame leaves
+ * RunFrame returns (VaCuusUIThread.cpp:1019-1020) -- so a trigger landing mid-frame leaves
  * the event set and the worker runs one more frame concurrent with test-thread code, whose
  * AddDefaulted_GetRef bumps ArrayNum before the record's FStrings are constructed.
  * FramesRecorded is incremented with release AFTER the record is completely filled, exactly

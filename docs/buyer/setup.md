@@ -120,6 +120,12 @@ still recorded in the tracker rather than hidden: the click-vs-scroll threshold 
 yet DPI-scaled on very dense screens, and an iPad with a hardware keyboard types
 without IME composition.
 
+HUD buttons support independent fingers, including simultaneous `drag: clone` copies.
+A connected mouse has its own gesture state, so a mouse click does not consume a held
+finger's click or drag. Touch events carry `event.params.touch_id`, including the first
+finger; physical mouse events omit it. Set the UMG widget's `bTakesKeyboardFocus` to
+`false` before it is built for a HUD that should keep keyboard focus in the game.
+
 Unreal's own refusal for an unsupported platform is quiet, so here is what you will
 actually see:
 

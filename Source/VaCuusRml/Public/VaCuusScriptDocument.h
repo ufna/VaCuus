@@ -82,7 +82,7 @@ struct FVaCuusCapturedScript
  * MID-PARSE: <body> does not exist yet and the document has not joined its
  * context. Worse, on a document REPLACE the whole load runs while the OLD
  * document -- and therefore the OLD JS context -- is still current
- * (Context::LoadDocument fires its plugin hooks inside itself, Context.cpp:299;
+ * (Context::LoadDocument fires its plugin hooks inside itself, Context.cpp:296;
  * the old document closes only after it returns). Anything executed from here
  * lands in a context the recycle is about to free: JS silently dead after
  * every live reload. So the overrides store; the script host's OnDocumentReady
@@ -118,7 +118,7 @@ private:
 /**
  * The instancer that makes every document an FVaCuusScriptDocument. RmlUi has
  * no separate "document instancer": Context::LoadDocument instances its base
- * tag ("body" by default, Context.h:303) through the ordinary element-instancer
+ * tag ("body" by default, Context.h:305) through the ordinary element-instancer
  * map (Factory::InstanceDocumentStream, Factory.cpp:429-436), where
  * Factory::Initialise registers ElementInstancerGeneric<ElementDocument> under
  * "body" (Factory.cpp:180). RegisterWithFactory() replaces that default.

@@ -176,7 +176,7 @@ static const FVector2f GReferenceTranslation(10.f, 10.f);
 /** pane_reference's matrix in Buffer, after asserting that it draws and not under identity: the
  *  positive control that the rig applies #window's transform at all, so a later identity is the bug
  *  and not a broken fixture. It is recorded afresh every frame because Context::Render ends in
- *  ResetState (Context.cpp:239), which returns the active matrix to identity (RenderManager.cpp:187-190,
+ *  ResetState (Context.cpp:236), which returns the active matrix to identity (RenderManager.cpp:187-190,
  *  RenderManager.h:37) and so defeats the dedupe across frames. */
 static bool ReferenceTransformIn(FAutomationTestBase& Test, const FVaCuusCommandBuffer& Buffer, const TCHAR* Frame, FMatrix44f& OutTransform)
 {

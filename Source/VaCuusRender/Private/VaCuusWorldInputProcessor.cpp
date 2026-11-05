@@ -103,7 +103,7 @@ namespace VaCuusWorldInput
 static int32 GInstallRefCount = 0;
 static TSharedPtr<FVaCuusWorldInputProcessor> GProcessor;
 
-/** FInputEvent's five observable modifiers; the same conversion the Slate widget makes (SVaCuusWidget.cpp:472-481). */
+/** FInputEvent's five observable modifiers; the same conversion the Slate widget makes (SVaCuusWidget.cpp:708-716). */
 static FVaCuusModifierState ToModifiers(const FInputEvent& Event)
 {
 	FVaCuusModifierState State;
@@ -131,14 +131,14 @@ static FVaCuusModifierState ToModifiers(const FInputEvent& Event)
  * WHY IT MATTERS: forwarded as a mouse press, a finger reaches RmlUi through
  * ProcessMouseButtonDown, which has no per-finger state and no scroll container -- so a world
  * panel's list could never drag-scroll, however hard the finger pulled. Forwarded as a touch
- * it reaches ProcessTouchStart/Move/End, where all of that lives (Context.cpp:951-1391).
+ * it reaches ProcessTouchStart/Move/End, where all of that lives (Context.cpp:1008-1460).
  *
  * NO DOUBLE-DELIVERY QUESTION HERE, unlike the Slate widget's: a preprocessor is offered each
  * event exactly once, before all routing, and there is no fallback path that re-offers it.
  *
  * THE ONE HONEST GAP, stated rather than papered over: a finger whose press did not resolve
  * onto a panel gets no ProcessTouchStart, and RmlUi's ProcessTouchMove then returns before it
- * does anything -- including before its trailing ProcessMouseMove at :987 (the early return is Context.cpp:996-998). So a
+ * does anything -- including before its trailing ProcessPointerMove at :1044 (the early return is Context.cpp:1053-1055). So a
  * finger that misses a panel on the press and crosses onto one mid-drag updates nothing until
  * it lifts. That is the correct outcome for a gesture that began somewhere else; the mouse
  * path differs only because a mouse can hover with no button down at all.
@@ -416,7 +416,7 @@ void FVaCuusWorldInputProcessor::SendLeaveIfHovering(const UVaCuusWorldComponent
 	}
 
 	// Mandatory, or `:hover` sticks forever -- the widget's OnMouseLeave contract
-	// (SVaCuusWidget.cpp:742-748; Context.cpp:861-868). The next MouseMove re-arms
+	// (SVaCuusWidget.cpp:1309-1321; Context.cpp:914-921). The next MouseMove re-arms
 	// the context on its own.
 	if (UVaCuusView* View = Panel->GetView())
 	{
@@ -450,7 +450,7 @@ bool FVaCuusWorldInputProcessor::HandleMouseMoveEvent(FSlateApplication& SlateAp
 				Panel->GetView()->SendInput(VaCuusWorldInput::MakeForwardedMove(MouseEvent, Pixel));
 			}
 			// Consumed regardless of coverage while latched -- the widget's capture
-			// rule (SVaCuusWidget.cpp:571-574): a drag that started on a scrollbar
+			// rule (SVaCuusWidget.cpp:880-885): a drag that started on a scrollbar
 			// keeps being ours after the pointer wanders off it.
 			++NumConsumed;
 			return true;
@@ -539,7 +539,7 @@ bool FVaCuusWorldInputProcessor::HandleMouseButtonDownEvent(FSlateApplication& S
 	SendLeaveIfHovering(Hit.Component);
 	HoveredPanel = Hit.Component;
 
-	// Sent BEFORE the verdict -- the widget's own order (SVaCuusWidget.cpp:586-594):
+	// Sent BEFORE the verdict -- the widget's own order (SVaCuusWidget.cpp:895-900):
 	// RmlUi sees the press either way (it may close a dropdown); coverage only
 	// decides whether the game ALSO hears it.
 	UVaCuusView* View = Hit.Component->GetView();
@@ -611,7 +611,7 @@ bool FVaCuusWorldInputProcessor::HandleMouseButtonUpEvent(FSlateApplication& Sla
 
 	// An unlatched up means the press was not ours (it passed through, or predates
 	// the processor). Forwarded, and consumed only on coverage -- the widget's
-	// no-capture rule (SVaCuusWidget.cpp:684-691): swallowing a release whose press
+	// no-capture rule (SVaCuusWidget.cpp:1106-1113): swallowing a release whose press
 	// the game heard would leave the game holding a button down forever.
 	UVaCuusView* View = Hit.Component->GetView();
 	View->SendInput(VaCuusWorldInput::MakeForwardedPress(MouseEvent, Hit.Pixel, /*bDown=*/false));
@@ -632,7 +632,7 @@ bool FVaCuusWorldInputProcessor::HandleMouseButtonDoubleClickEvent(FSlateApplica
 	// only for a captor) -- and this processor never holds Slate capture. Forwarded
 	// as a plain press: RmlUi synthesises its own `dblclick` from consecutive
 	// presses, so it needs the press, not a special event -- the widget's argument
-	// verbatim (SVaCuusWidget.cpp:696-706).
+	// verbatim (SVaCuusWidget.cpp:1116-1128).
 	return HandleMouseButtonDownEvent(SlateApp, MouseEvent);
 }
 
@@ -687,7 +687,7 @@ bool FVaCuusWorldInputProcessor::HandleMouseWheelOrGestureEvent(
 	// UE's sign and unit carried through unchanged; the flip to RmlUi's convention
 	// happens at dispatch (VaCuusUIThread.cpp:175-192). Consume on coverage, not on
 	// "is anything scrollable" -- the widget's wheel rule and its stated visible
-	// consequence (SVaCuusWidget.cpp:719-723).
+	// consequence (SVaCuusWidget.cpp:1139-1151).
 	UVaCuusView* View = Hit.Component->GetView();
 	View->SendInput(FVaCuusInputEvent::MouseWheel(
 		Hit.Pixel, InWheelEvent.GetWheelDelta(), VaCuusWorldInput::ToModifiers(InWheelEvent)));

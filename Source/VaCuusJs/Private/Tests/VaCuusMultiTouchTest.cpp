@@ -92,6 +92,11 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusMultiTouchPrimaryCancelOverDropTargetTes
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusMultiTouchSecondaryCancelOverDropTargetTest, "VaCuus.Input.MultiTouch.SecondaryCancelOverDropTarget",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusMouseTouchActiveTest, "VaCuus.Input.MultiTouch.MouseTouchSharedActive",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusMouseDragTouchTest, "VaCuus.Input.MultiTouch.MouseDragSurvivesTouch",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
 namespace VaCuusMultiTouchTest
 {
 using namespace VaCuusJsDomTest;
@@ -327,6 +332,17 @@ struct FMultiTouchScene
 	void Cancel(uint32 Pointer)
 	{
 		Rig.Thread->EnqueueInput(ViewId, FVaCuusInputEvent::TouchCancel(Id(Pointer)));
+	}
+
+	void Mouse(bool bDown, FIntPoint Position)
+	{
+		Rig.Thread->EnqueueInput(ViewId,
+			FVaCuusInputEvent::MouseButton(bDown, Position, EKeys::LeftMouseButton, FVaCuusModifierState()));
+	}
+
+	void MouseMove(FIntPoint Position)
+	{
+		Rig.Thread->EnqueueInput(ViewId, FVaCuusInputEvent::MouseMove(Position, FVaCuusModifierState()));
 	}
 
 	/** Runs Source on the view's context; the commands enqueued before it are applied first. */
@@ -783,13 +799,13 @@ bool FVaCuusMultiTouchDragEventsPrimaryTest::RunTest(const FString& Parameters)
 	const FString JSequence = Scene.Trace(JTrace);
 	AddInfo(FString::Printf(TEXT("primary #j: %s"), *JSequence));
 	AddInfo(FString::Printf(TEXT("primary #zone: %s"), *Scene.Trace(ZoneTrace)));
-	TestEqual(TEXT("#j, primary: the press, the first move starts the drag, each move drags, the lift ends it; no touch_id"),
+	TestEqual(TEXT("#j, primary: the press, the first move starts the drag, each move drags, the lift ends it; touch_id 0"),
 		JSequence,
-		FString(TEXT("mousemove 360,60|mousedown 360,60|dragstart 360,60 source j|drag 500,60 source j|drag 640,360 source j|dragend 640,360 source j")));
+		FString(TEXT("mousemove 360,60 touch 0|mousedown 360,60 touch 0|dragstart 360,60 touch 0 source j|drag 500,60 touch 0 source j|drag 640,360 touch 0 source j|dragend 640,360 touch 0 source j")));
 	// The zone is the hover element under the finger, so it gets the hover mousemove and the release's mouseup. A plain
 	// drag still sends it none of the drop-target events.
 	TestEqual(TEXT("#zone, primary: the hover events reach it, but a plain drag sends no dragover, dragout or dragdrop"),
-		Scene.Trace(ZoneTrace), FString(TEXT("mousemove 640,360|mouseup 640,360")));
+		Scene.Trace(ZoneTrace), FString(TEXT("mousemove 640,360 touch 0|mouseup 640,360 touch 0")));
 	TestEqual(TEXT("no JS error anywhere in the run"), FWrappedDomHost::Inner->GetRuntime()->GetNumErrors(), uint64(0));
 	return true;
 }
@@ -860,14 +876,14 @@ bool FVaCuusMultiTouchDragDropEventsPrimaryTest::RunTest(const FString& Paramete
 	const FString ZoneSequence = Scene.Trace(ZoneTrace);
 	AddInfo(FString::Printf(TEXT("primary #k: %s"), *KSequence));
 	AddInfo(FString::Printf(TEXT("primary #zone: %s"), *ZoneSequence));
-	TestEqual(TEXT("#k, primary: a drag-drop source sends its drag events as a plain drag does, with no touch_id"), KSequence,
-		FString(TEXT("mousemove 360,180|mousedown 360,180|dragstart 360,180 source k|drag 640,360 source k|drag 700,460 source k|drag 640,360 source k|dragend 640,360 source k")));
+	TestEqual(TEXT("#k, primary: a drag-drop source sends its drag events as a plain drag does, with touch_id 0"), KSequence,
+		FString(TEXT("mousemove 360,180 touch 0|mousedown 360,180 touch 0|dragstart 360,180 touch 0 source k|drag 640,360 touch 0 source k|drag 700,460 touch 0 source k|drag 640,360 touch 0 source k|dragend 640,360 touch 0 source k")));
 	// The zone is the hover element under the finger, so it also gets mousemove and mouseup.
 	TestEqual(TEXT("#zone, primary: dragover on entering, dragout on leaving, and on the lift dragdrop then dragout before the source's dragend"),
 		ZoneSequence,
-		FString(TEXT("dragover 640,360 source k|mousemove 640,360|dragmove 640,360 source k|dragout 700,460 source k|dragover 640,360 source k|mousemove 640,360|dragmove 640,360 source k|mouseup 640,360|dragdrop 640,360 source k|dragout 640,360 source k")));
+		FString(TEXT("dragover 640,360 touch 0 source k|mousemove 640,360 touch 0|dragmove 640,360 touch 0 source k|dragout 700,460 touch 0 source k|dragover 640,360 touch 0 source k|mousemove 640,360 touch 0|dragmove 640,360 touch 0 source k|mouseup 640,360 touch 0|dragdrop 640,360 touch 0 source k|dragout 640,360 touch 0 source k")));
 	TestEqual(TEXT("merged order: the zone's mouseup, dragdrop and dragout come before #k's dragend"), Scene.Join(Merged, 4),
-		FString(TEXT("zone:mouseup 640,360|zone:dragdrop 640,360 source k|zone:dragout 640,360 source k|k:dragend 640,360 source k")));
+		FString(TEXT("zone:mouseup 640,360 touch 0|zone:dragdrop 640,360 touch 0 source k|zone:dragout 640,360 touch 0 source k|k:dragend 640,360 touch 0 source k")));
 	TestEqual(TEXT("no JS error anywhere in the run"), FWrappedDomHost::Inner->GetRuntime()->GetNumErrors(), uint64(0));
 	return true;
 }
@@ -954,9 +970,9 @@ bool FVaCuusMultiTouchPrimaryCancelOverDropTargetTest::RunTest(const FString& Pa
 	Scene.Eval("'cancelled'");
 
 	TestEqual(TEXT("#zone, primary cancel: the hover mouseup, then dragdrop and dragout, as on a release"), Scene.Trace(ZoneTrace),
-		FString(TEXT("dragover 640,360 source k|mousemove 640,360|dragmove 640,360 source k|mouseup 640,360|dragdrop 640,360 source k|dragout 640,360 source k")));
+		FString(TEXT("dragover 640,360 touch 0 source k|mousemove 640,360 touch 0|dragmove 640,360 touch 0 source k|mouseup 640,360 touch 0|dragdrop 640,360 touch 0 source k|dragout 640,360 touch 0 source k")));
 	TestEqual(TEXT("merged order, primary cancel: the zone's dragdrop and dragout come before #k's dragend"), Scene.Join(Merged, 4),
-		FString(TEXT("zone:mouseup 640,360|zone:dragdrop 640,360 source k|zone:dragout 640,360 source k|k:dragend 640,360 source k")));
+		FString(TEXT("zone:mouseup 640,360 touch 0|zone:dragdrop 640,360 touch 0 source k|zone:dragout 640,360 touch 0 source k|k:dragend 640,360 touch 0 source k")));
 	TestEqual(TEXT("no JS error anywhere in the run"), FWrappedDomHost::Inner->GetRuntime()->GetNumErrors(), uint64(0));
 	return true;
 }
@@ -997,6 +1013,64 @@ bool FVaCuusMultiTouchSecondaryCancelOverDropTargetTest::RunTest(const FString& 
 
 	Scene.Up(0, GPressA);
 	TestEqual(TEXT("no JS error anywhere in the run"), FWrappedDomHost::Inner->GetRuntime()->GetNumErrors(), uint64(0));
+	return true;
+}
+
+bool FVaCuusMouseTouchActiveTest::RunTest(const FString& Parameters)
+{
+	using namespace VaCuusMultiTouchTest;
+	FMultiTouchScene Scene;
+	if (const EOpen Open = Scene.Open(*this); Open != EOpen::Ready)
+	{
+		return Open == EOpen::Skipped;
+	}
+	Scene.Down(0, GPressB);
+	Scene.Mouse(true, GPressB);
+	Scene.Mouse(false, GPressB);
+	Scene.Eval("'mouse released'");
+	TestEqual(TEXT("a finger keeps shared :active after the mouse releases"), Scene.IsActive("b"), FString(TEXT("true")));
+	Scene.Up(0, GPressB);
+	TestEqual(TEXT("both devices click the shared button"), Scene.Eval("String(globalThis.clicksB)"), FString(TEXT("2")));
+	TestEqual(TEXT("both released means inactive"), Scene.IsActive("b"), FString(TEXT("false")));
+
+	Scene.Mouse(true, GPressB);
+	Scene.Down(0, GPressB);
+	Scene.Up(0, GPressB);
+	Scene.Eval("'touch released'");
+	TestEqual(TEXT("the mouse keeps shared :active after the finger releases"), Scene.IsActive("b"), FString(TEXT("true")));
+	Scene.Mouse(false, GPressB);
+	TestEqual(TEXT("both devices click in the reverse order too"), Scene.Eval("String(globalThis.clicksB)"), FString(TEXT("4")));
+	TestEqual(TEXT("the last mouse release clears :active"), Scene.IsActive("b"), FString(TEXT("false")));
+	return true;
+}
+
+bool FVaCuusMouseDragTouchTest::RunTest(const FString& Parameters)
+{
+	using namespace VaCuusMultiTouchTest;
+	FMultiTouchScene Scene;
+	if (const EOpen Open = Scene.Open(*this); Open != EOpen::Ready)
+	{
+		return Open == EOpen::Skipped;
+	}
+	Scene.Mouse(true, GPressJ);
+	Scene.Down(0, GPressA);
+	Scene.MouseMove(GMoveBeyondJ);
+	TestEqual(TEXT("a mouse drag still starts while the first touch is down"),
+		Scene.Eval("globalThis.dragEvents.join('|')"), FString(TEXT("dragstart|drag")));
+	Scene.Up(0, GPressA);
+	Scene.Mouse(false, GMoveBeyondJ);
+	TestEqual(TEXT("the touch release does not finish or replace the mouse drag"),
+		Scene.Eval("globalThis.dragEvents.join('|')"), FString(TEXT("dragstart|drag|dragend")));
+	TestEqual(TEXT("the touch still clicks its own button"), Scene.Eval(GClicksAB), FString(TEXT("1,0")));
+
+	Scene.Mouse(true, GPressB);
+	Scene.Down(0, GPressA);
+	Scene.Rig.Thread->EnqueueInput(Scene.ViewId, FVaCuusInputEvent::MouseCancel());
+	Scene.Eval("'mouse cancelled'");
+	TestEqual(TEXT("mouse cancel clears only the mouse's :active"), Scene.IsActive("b"), FString(TEXT("false")));
+	TestEqual(TEXT("mouse cancel keeps the finger's :active"), Scene.IsActive("a"), FString(TEXT("true")));
+	Scene.Up(0, GPressA);
+	TestEqual(TEXT("mouse cancellation does not click; the finger still does"), Scene.Eval(GClicksAB), FString(TEXT("2,0")));
 	return true;
 }
 

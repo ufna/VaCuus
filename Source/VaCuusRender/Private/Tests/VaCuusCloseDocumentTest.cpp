@@ -199,7 +199,7 @@ bool FVaCuusCloseClearingFrameTest::RunTest(const FString& Parameters)
  * QUEUES the unload (ElementDocument.cpp:421-425 -> Context::UnloadDocument, which moves
  * the document into `unloaded_documents`). The elements, their compiled geometry and their
  * textures are freed by ReleaseUnloadedDocuments, which runs at the END of the next
- * Context::Update() (Context.cpp:216-217) -- so without a post-close frame the closed
+ * Context::Update() (Context.cpp:217-218) -- so without a post-close frame the closed
  * document stays fully resident on both sides until Rml::RemoveContext.
  */
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusCloseUnloadDrainTest, "VaCuus.Render.Close.UnloadDrain",

@@ -391,7 +391,7 @@ bool UVaCuusView::BindModel(const FString& ModelName, const UScriptStruct* Type)
 		if (!(*ExistingModel)->IsCondemned())
 		{
 			// Refused here rather than left to RmlUi, which would also refuse it -- one
-			// Log::LT_ERROR from Context::CreateDataModel (Context.cpp:1432), and that one does
+			// Log::LT_ERROR from Context::CreateDataModel (Context.cpp:1501), and that one does
 			// reach LogVaCuus (see FVaCuusSystemInterface::LogMessage). What it does NOT say is
 			// the part that matters: the second model's values then go nowhere while the FIRST
 			// model's shadow stays on screen, so the UI keeps looking plausible. Refusing on this
@@ -406,7 +406,7 @@ bool UVaCuusView::BindModel(const FString& ModelName, const UScriptStruct* Type)
 		// THE RECOVERY RE-BIND (VaCuus-akj.16): the entry is a corpse -- torn down when its
 		// struct was recompiled -- and refusing to replace it would leave the name dead for
 		// the life of the view. The no-unbind rule above is not violated: the recompile drop
-		// already ran Context::RemoveDataModel (which erases the name, Context.cpp:1468), so
+		// already ran Context::RemoveDataModel (which erases the name, Context.cpp:1537), so
 		// RmlUi will accept the re-creation. Replacing the map entry drops the last game-side
 		// reference; the UI side let go in the drop, so the corpse is destroyed here, with
 		// its drop state at TornDown and its buffers already empty. The caller still owes a

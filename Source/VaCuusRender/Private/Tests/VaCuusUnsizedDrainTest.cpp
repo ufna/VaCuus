@@ -35,7 +35,7 @@
  * (VaCuusUMGWidget.cpp:75-76) because the only correct size is the arranged pixel rect UMG
  * has not measured yet, SynchronizeProperties loads the document immediately afterwards
  * (:121-122), and the size only arrives on the first SVaCuusWidget::Tick
- * (SVaCuusWidget.cpp:290-293). A payload finishing in that window -- one measured at 144 MB
+ * (SVaCuusWidget.cpp:344-347). A payload finishing in that window -- one measured at 144 MB
  * for a single 6000x6000 PNG (bead akj.6.25) -- stayed resident in the recorder's queue for
  * as long as the view stayed unsized, which for a widget that is never arranged is the rest
  * of the session.
@@ -231,7 +231,7 @@ bool FVaCuusUnsizedDecodeDrainTest::RunTest(const FString& Parameters)
 	// The size finally arrives, exactly as SVaCuusWidget::Tick delivers it.
 	//
 	// Sampled BEFORE the enqueue because Enqueue() triggers the wake event itself
-	// (VaCuusUIThread.cpp:852-853): the resize's own trigger can start a frame before
+	// (VaCuusUIThread.cpp:856-857): the resize's own trigger can start a frame before
 	// RunFrames below ever samples anything, so the count of frames this leg actually ran
 	// is not a constant. It bounds the recording assertion at the end of the test.
 	const uint64 FramesBeforeResize = UIThread->GetFrameCount();
@@ -285,7 +285,7 @@ bool FVaCuusUnsizedDecodeDrainTest::RunTest(const FString& Parameters)
 	// THE READ ORDER IS LOAD-BEARING, which is why the two loads are not folded into the
 	// assertion arguments: FVaCuusRmlDocumentHost bumps FramesRecorded inside the frame
 	// (VaCuusRmlDocumentHost.cpp:576) and FVaCuusUIThread::Run bumps FrameCount only after
-	// RunFrame returns (VaCuusUIThread.cpp:1031-1032), so a frame in flight is recorded but not
+	// RunFrame returns (VaCuusUIThread.cpp:1035-1036), so a frame in flight is recorded but not
 	// yet counted. Reading Recorded first and the frame count second makes that skew at most
 	// ONE frame -- the worker is a single thread, so frame k's count bump precedes frame k+1's
 	// record -- and the ceiling carries exactly that one frame of slack, no more.

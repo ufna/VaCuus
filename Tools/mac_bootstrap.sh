@@ -1507,7 +1507,7 @@ run_rows() {
 	rep "were the same numbers. **On Mac they are not, and the plugin does not compensate**:"
 	rep "\`HoverShot\`/\`TypeShot\` feed their x y straight to \`FSlateApplication::SetCursorPos\`"
 	rep "(\`VaCuusRender.cpp:1359-1399\`) while the widget converts back with"
-	rep "\`AbsoluteToLocal(...) * Geometry.Scale\` (\`SVaCuusWidget.cpp:416-423\`). The delta is the"
+	rep "\`AbsoluteToLocal(...) * Geometry.Scale\` (\`SVaCuusWidget.cpp:526-532\`). The delta is the"
 	rep "window origin plus the title bar. So the script runs only the parts that are immune:"
 	rep ""
 	grep_report "${LAST_SESSION_LOG}" "Rects\[|rects=|interactive rect" "rect list (view pixels — window-position-immune, plan block 6 step 2)"

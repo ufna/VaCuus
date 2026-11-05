@@ -205,6 +205,8 @@ public:
 	/// @return True if the mouse is not interacting with any elements in the context (see 'IsMouseInteracting'), otherwise false.
 	/// @note The mouse is considered activated again after the next call to 'ProcessMouseMove()'.
 	bool ProcessMouseLeave();
+	/// Cancel the physical mouse press/drag without a click; touches are unaffected.
+	bool ProcessMouseCancel();
 
 	/// Process touch movements for this context.
 	/// @param[in] touches List of touches.
@@ -311,35 +313,43 @@ private:
 
 	using ElementSet = SmallOrderedSet<Element*>;
 	using ElementList = Vector<Element*>;
-	// Set of elements that are currently in hover state.
-	ElementSet hover_chain;
-	// List of elements that are currently in active state.
-	ElementList active_chain;
-	// History of windows that have had focus
+	// VaCuus: physical mouse and primary touch use the same pointer algorithm, with separate
+	// state. A public device entry selects its state for the entire dispatch, including nested
+	// element callbacks; neither device can overwrite the other's press, drag or click history.
+	struct PointerState {
+		ElementSet hover_chain;
+		ElementList active_chain;
+		Element* hover = nullptr;
+		Element* active = nullptr;
+		Element* last_click_element = nullptr;
+		double last_click_time = 0;
+		Vector2i last_click_mouse_position;
+		Vector2i mouse_position;
+		bool mouse_active = false;
+		Element* drag = nullptr;
+		bool drag_started = false;
+		bool drag_verbose = false;
+		Element* drag_hover = nullptr;
+		ElementSet drag_hover_chain;
+		ElementPtr cursor_proxy;
+	};
+	PointerState mouse_pointer;
+	PointerState touch_pointer;
+	PointerState* pointer = &mouse_pointer;
+
+	struct PointerScope {
+		PointerScope(Context& context, PointerState& state) : context(context), previous(context.pointer) { context.pointer = &state; }
+		~PointerScope() { context.pointer = previous; }
+		PointerScope(const PointerScope&) = delete;
+		PointerScope& operator=(const PointerScope&) = delete;
+		Context& context;
+		PointerState* previous;
+	};
+
 	ElementList document_focus_history;
-
-	// Documents that have been unloaded from the context but not yet released.
 	OwnedElementList unloaded_documents;
-
-	// Root of the element tree.
 	ElementPtr root;
-	// The element that currently has input focus.
 	Element* focus;
-	// The top-most element being hovered over.
-	Element* hover;
-	// The element that was being hovered over when the primary mouse button was pressed most recently.
-	Element* active;
-
-	// The element that was clicked on last.
-	Element* last_click_element;
-	// The time the last click occurred.
-	double last_click_time;
-	// Mouse position during the last mouse_down event.
-	Vector2i last_click_mouse_position;
-
-	// Input state; stored from the most recent input events we receive from the application.
-	Vector2i mouse_position;
-	bool mouse_active;
 
 	// The current state of Touches, required to implement proper inertia scrolling.
 	struct TouchState {
@@ -368,6 +378,8 @@ private:
 		bool moved_beyond_click_distance = false;
 		// From the dragstart until the release or cancel.
 		bool dragging = false;
+		// Detached from root: the visual copy is neither a hit target nor part of the input snapshot.
+		ElementPtr drag_proxy;
 		// VaCuus patch #19: the drop targets under this finger, as the primary's drag_hover and drag_hover_chain. Kept only while
 		// drag_verbose is set. Cleared by OnElementDetach and UnloadDocument.
 		Element* drag_hover = nullptr;
@@ -390,24 +402,6 @@ private:
 	// Enables cursor handling.
 	bool enable_cursor;
 	String cursor_name;
-	// Document attached to cursor (e.g. while dragging).
-	ElementPtr cursor_proxy;
-
-	// The element that is currently being dragged (or about to be dragged).
-	Element* drag;
-	// True if a drag has begun (ie, the ondragstart event has been fired for the drag element), false otherwise.
-	bool drag_started;
-	// True if the current drag is a verbose drag (ie, sends ondragover, ondragout, ondragdrop, etc, events).
-	bool drag_verbose;
-	// Used when dragging a cloned object.
-	Element* drag_clone;
-
-	// The element currently being dragged over. This is equivalent to hover, but only set while an element is being
-	// dragged, and excludes the dragged element.
-	Element* drag_hover;
-	// Set of elements that are currently being dragged over; this differs from the hover state as the dragged element
-	// itself can't be part of it.
-	ElementSet drag_hover_chain;
 
 	UnorderedMap<String, UniquePtr<DataModel>> data_models;
 
@@ -418,6 +412,17 @@ private:
 	// Time in seconds until Update and Render should be called again. This allows applications to only redraw the ui if needed.
 	// See RequestNextUpdate() and NextUpdateRequested() for details.
 	double next_update_timeout = 0;
+
+	ElementPtr CreateCursorProxy();
+	ElementPtr CreateDragCloneProxy(Element* element, Vector2f position);
+	void RenderDragCloneProxy(Element* proxy, Vector2f position);
+	void OnPointerElementDetach(PointerState& state, Element* element);
+	bool ProcessPointerMove(int x, int y, int key_modifier_state);
+	bool ProcessPointerButtonDown(int button_index, int key_modifier_state);
+	bool ProcessPointerButtonUp(int button_index, int key_modifier_state);
+	bool ProcessPointerWheel(Vector2f wheel_delta, int key_modifier_state);
+	bool ProcessPointerLeave();
+	bool IsPointerInteracting() const;
 
 	// Internal callback for when an element is detached or removed from the hierarchy.
 	void OnElementDetach(Element* element);

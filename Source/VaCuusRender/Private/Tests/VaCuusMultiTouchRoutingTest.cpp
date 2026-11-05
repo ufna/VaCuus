@@ -7,6 +7,12 @@
 #include "VaCuusDocumentHost.h"
 #include "VaCuusEngine.h"
 #include "VaCuusInteractiveSnapshot.h"
+#include "VaCuusCommandBuffer.h"
+#include "VaCuusRecordingRenderInterface.h"
+#include "VaCuusReplayRenderer.h"
+#include "RHICommandList.h"
+#include "RHIGPUReadback.h"
+#include "RenderingThread.h"
 #include "VaCuusSlateElement.h"
 #include "VaCuusSubsystem.h"
 #include "VaCuusTestDocumentHost.h"
@@ -27,6 +33,8 @@
 
 #include <RmlUi/Core.h>
 
+#include <atomic>
+
 #if WITH_DEV_AUTOMATION_TESTS
 
 namespace VaCuusMultiTouchRoutingTest
@@ -39,13 +47,33 @@ namespace VaCuusMultiTouchRoutingTest
  * Same hand-off rule as VaCuusTouchInputTest's probe: plain members written on the UI thread,
  * read on the test thread only after RunFrames() has seen the frame counter advance.
  */
+// A virtual green image makes document-relative resolution observable without disk IO.
+// The production recorder still generates/uploads the texture and records every draw.
+class FRelativeImageRecorder final : public FVaCuusRecordingRenderInterface
+{
+public:
+	virtual Rml::TextureHandle LoadTexture(Rml::Vector2i& OutDimensions, const Rml::String& Source) override
+	{
+		if (Source.find("marker.png") == Rml::String::npos)
+		{
+			return FVaCuusRecordingRenderInterface::LoadTexture(OutDimensions, Source);
+		}
+		BadRequests += Source != "Tests/marker.png";
+		OutDimensions = Rml::Vector2i(1, 1);
+		const Rml::byte Green[] = {0, 255, 0, 255};
+		return GenerateTexture(Rml::Span<const Rml::byte>(Green, 4), OutDimensions);
+	}
+	int32 BadRequests = 0;
+};
+
 class FProbeHost final
 	: public FVaCuusTestDocumentHost
 	, public Rml::EventListener
 {
 public:
-	FProbeHost()
-		: FVaCuusTestDocumentHost(TEXT("vacuus_multitouch_routing_view"), "vacuus://multitouch_routing.rml", Rml::FocusFlag::Auto)
+	explicit FProbeHost(bool bInRecord = false)
+		: FVaCuusTestDocumentHost(TEXT("vacuus_multitouch_routing_view"), bInRecord ? "Tests/clone-source.rml" : "vacuus://multitouch_routing.rml", Rml::FocusFlag::Auto)
+		, bRecord(bInRecord)
 	{
 	}
 
@@ -62,11 +90,82 @@ public:
 	{
 		check(FVaCuusUIThread::IsInUIThread());
 
+		if (Recorder)
+		{
+			Recorder->BeginFrame(ViewSize);
+		}
+		switch (Action.exchange(EAction::None, std::memory_order_acq_rel))
+		{
+			case EAction::RemoveSecond:
+				if (Rml::Element* Source = RmlDocument ? RmlDocument->GetElementById("btn2") : nullptr)
+				{
+					Rml::ElementPtr Removed = Source->GetParentNode()->RemoveChild(Source);
+				}
+				break;
+			case EAction::Close:
+				CloseDocument();
+				break;
+			default:
+				break;
+		}
 		Context->Update();
 
 		FVaCuusInteractiveSnapshot& Snapshot = Status->GetSnapshotWriteBuffer();
 		BuildVaCuusInteractiveSnapshot(*Context, ViewSize, ++SnapshotGeneration, Snapshot);
 		Status->PublishSnapshot();
+		if (Recorder)
+		{
+			Context->Render();
+			if (TUniquePtr<FVaCuusCommandBuffer> Frame = Recorder->EndFrameAndPublish())
+			{
+				for (const auto& Pair : Frame->NewGeometry)
+				{
+					Geometry.Add(Pair.Key, Pair.Value);
+				}
+				for (const auto& Pair : Frame->NewTextures)
+				{
+					Textures.Add(Pair.Key, Pair.Value);
+				}
+				BadImageRequests = Recorder->BadRequests;
+				GhostBounds.Reset();
+				for (const FVaCuusCommand& Command : Frame->Commands)
+				{
+					const FVaCuusGeometryData* Mesh = Geometry.Find(Command.Geometry);
+					if (Command.Type != EVaCuusCommandType::DrawGeometry || !Mesh || Mesh->Vertices.IsEmpty())
+					{
+						continue;
+					}
+					FBox2D Box(ForceInit);
+					bool bBlue = true;
+					for (const FVaCuusVertex& Vertex : Mesh->Vertices)
+					{
+						// Recorder vertices carry RmlUi RGBA bytes, not FColor's BGRA fields
+						// (VaCuusRecordingRenderInterface.cpp:26-34).
+						uint8 RGBA[4];
+						FMemory::Memcpy(RGBA, &Vertex.Color, sizeof(RGBA));
+						bBlue &= RGBA[0] == 0 && RGBA[1] == 0 && RGBA[2] == 255 && RGBA[3] == 255;
+						Box += FVector2D(Vertex.Position + Command.Translation);
+					}
+					if (bBlue)
+					{
+						GhostBounds.Add(Box);
+					}
+				}
+				ReplayFrame = MakeUnique<FVaCuusCommandBuffer>(*Frame);
+				ReplayFrame->NewGeometry = Geometry;
+				ReplayFrame->ReleasedGeometry.Reset();
+				ReplayFrame->NewTextures = Textures;
+				ReplayFrame->ReleasedTextures.Reset();
+				for (const FVaCuusTextureHandle Handle : Frame->ReleasedTextures)
+				{
+					Textures.Remove(Handle);
+				}
+				for (const FVaCuusGeometryHandle Handle : Frame->ReleasedGeometry)
+				{
+					Geometry.Remove(Handle);
+				}
+			}
+		}
 
 		Status->FramesRecorded.fetch_add(1, std::memory_order_release);
 	}
@@ -81,6 +180,16 @@ public:
 
 		switch (Event.GetId())
 		{
+			case Rml::EventId::Dragstart:
+				if (RemoveOnDragStart.exchange(false, std::memory_order_acq_rel))
+				{
+					Rml::Element* Source = static_cast<Rml::Element*>(Event.GetParameter<void*>("drag_element", nullptr));
+					if (Source && Source->GetParentNode())
+					{
+						Rml::ElementPtr Removed = Source->GetParentNode()->RemoveChild(Source);
+					}
+				}
+				break;
 			case Rml::EventId::Mouseup:
 				++NumMouseUp;
 				break;
@@ -108,12 +217,29 @@ public:
 	FString LastClickId;
 	int32 NumMouseOutOnButton = 0;
 
+	enum class EAction { None, RemoveSecond, Close };
+	std::atomic<EAction> Action{EAction::None};
+	std::atomic<bool> RemoveOnDragStart{false};
+	TArray<FBox2D> GhostBounds;
+	int32 BadImageRequests = 0;
+	TUniquePtr<FVaCuusCommandBuffer> ReplayFrame;
+
 protected:
+	virtual Rml::RenderInterface* CreateRenderInterface() override
+	{
+		if (bRecord)
+		{
+			Recorder = MakeUnique<FRelativeImageRecorder>();
+		}
+		return Recorder.Get();
+	}
+
 	virtual void OnDocumentAdopted() override
 	{
 		check(FVaCuusUIThread::IsInUIThread());
 
 		RmlDocument->AddEventListener(Rml::EventId::Mouseup, this);
+		RmlDocument->AddEventListener(Rml::EventId::Dragstart, this);
 		RmlDocument->AddEventListener(Rml::EventId::Click, this);
 		RmlDocument->AddEventListener(Rml::EventId::Mouseout, this);
 	}
@@ -123,11 +249,16 @@ protected:
 		check(FVaCuusUIThread::IsInUIThread());
 
 		RmlDocument->RemoveEventListener(Rml::EventId::Mouseup, this);
+		RmlDocument->RemoveEventListener(Rml::EventId::Dragstart, this);
 		RmlDocument->RemoveEventListener(Rml::EventId::Click, this);
 		RmlDocument->RemoveEventListener(Rml::EventId::Mouseout, this);
 	}
 
 private:
+	bool bRecord = false;
+	TUniquePtr<FRelativeImageRecorder> Recorder;
+	TMap<FVaCuusTextureHandle, FVaCuusTextureData> Textures;
+	TMap<FVaCuusGeometryHandle, FVaCuusGeometryData> Geometry;
 	uint64 SnapshotGeneration = 0;
 };
 
@@ -221,7 +352,7 @@ struct FRig
  * assertion: every test begins from the same published snapshot. A view handle wired by hand, as in
  * VaCuusTouchInputTest, so there is no PIE world.
  */
-static bool BringUp(FAutomationTestBase& Test, FRig& Rig, bool bTakesKeyboardFocus = true)
+static bool BringUp(FAutomationTestBase& Test, FRig& Rig, bool bTakesKeyboardFocus = true, bool bRecordClones = false, bool bImage = false)
 {
 	if (!Test.TestFalse(TEXT("RmlUi is down before the test"), FVaCuusEngine::Get().IsInitialized()))
 	{
@@ -237,12 +368,21 @@ static bool BringUp(FAutomationTestBase& Test, FRig& Rig, bool bTakesKeyboardFoc
 
 	const TSharedRef<FVaCuusViewStatus> Status = MakeShared<FVaCuusViewStatus>();
 
-	TUniquePtr<FProbeHost> OwnedHost = MakeUnique<FProbeHost>();
+	TUniquePtr<FProbeHost> OwnedHost = MakeUnique<FProbeHost>(bRecordClones);
 	Rig.Host = OwnedHost.Get();
 
 	const uint32 ViewId = Rig.UIThread->AllocateViewId();
 	Rig.UIThread->EnqueueAddView(ViewId, MoveTemp(OwnedHost), GViewSize, Status);
-	Rig.UIThread->EnqueueLoadDocumentFromMemory(ViewId, GDocument, /*LoadSerial=*/1);
+	FString Source = bRecordClones
+		? FString(GDocument).Replace(TEXT("button {"), TEXT("button { background-color: #ff0000; drag: clone;"))
+			.Replace(TEXT("</style>"), TEXT("button:drag { background-color: #0000ff; } </style>"))
+		: FString(GDocument);
+	if (bImage)
+	{
+		Source.ReplaceInline(TEXT("<button id=\"btn2\"/>"),
+			TEXT("<button id=\"btn2\"><img src=\"marker.png\" style=\"display:block;position:absolute;left:40px;top:10px;width:20px;height:20px;\"/></button>"));
+	}
+	Rig.UIThread->EnqueueLoadDocumentFromMemory(ViewId, Source, /*LoadSerial=*/1);
 
 	Rig.GameInstance = TStrongObjectPtr<UGameInstance>(NewObject<UGameInstance>());
 	Rig.Subsystem = TStrongObjectPtr<UVaCuusSubsystem>(NewObject<UVaCuusSubsystem>(Rig.GameInstance.Get()));
@@ -285,6 +425,40 @@ static void TearDown(FRig& Rig)
 		Rig.Widget->DetachView();
 	}
 	FVaCuusModule::Get().StopUIThread();
+}
+static TArray<FColor> ReplayPixels(const FVaCuusCommandBuffer& Frame)
+{
+	TArray<FColor> Pixels;
+	ENQUEUE_RENDER_COMMAND(VaCuusTouchClonesReadback)
+	([&Pixels, &Frame](FRHICommandListImmediate& RHICmdList)
+	{
+		FVaCuusReplayRenderer Replayer;
+		Replayer.Replay(RHICmdList, Frame);
+		if (FRHITexture* Target = Replayer.GetOutputRT())
+		{
+			RHICmdList.Transition(FRHITransitionInfo(Target, ERHIAccess::SRVMask, ERHIAccess::CopySrc));
+			FRHIGPUTextureReadback Readback(TEXT("VaCuusTouchClones"));
+			Readback.EnqueueCopy(RHICmdList, Target);
+			RHICmdList.SubmitAndBlockUntilGPUIdle();
+			int32 Pitch = 0;
+			if (Readback.IsReady())
+			{
+				if (const void* Data = Readback.Lock(Pitch))
+				{
+					Pixels.SetNumUninitialized(Frame.ViewSize.X * Frame.ViewSize.Y);
+					for (int32 Y = 0; Y < Frame.ViewSize.Y; ++Y)
+					{
+						FMemory::Memcpy(Pixels.GetData() + Y * Frame.ViewSize.X,
+							static_cast<const FColor*>(Data) + int64(Y) * Pitch, Frame.ViewSize.X * sizeof(FColor));
+					}
+					Readback.Unlock();
+				}
+			}
+		}
+		Replayer.ReleaseResources();
+	});
+	FlushRenderingCommands();
+	return Pixels;
 }
 }	 // namespace VaCuusMultiTouchRoutingTest
 
@@ -561,6 +735,18 @@ bool FVaCuusMultiTouchFirstEndTest::RunTest(const FString& Parameters)
 		}
 		TestEqual(TEXT("routed: primary still clicks after secondary lifts"), Rig.Host->NumClick, ClicksBeforePrimary + 1);
 		TestEqual(TEXT("routed: that click belongs to the primary's button"), Rig.Host->LastClickId, FString(TEXT("btn")));
+
+		Slate.RoutePointerDownEvent(WidgetPath, MakeTouchEvent(Finger1Screen, Finger1Screen, 1));
+		const TSharedPtr<FSlateUser> User = Slate.GetUser(UserIndex);
+		if (!TestTrue(TEXT("a second widget can hold another pointer for the same user"),
+			User.IsValid() && User->SetPointerCaptor(2, Window, WidgetPath)))
+		{
+			return false;
+		}
+		ON_SCOPE_EXIT { User->ReleaseCapture(2); };
+		Widget->ReleaseOwnPointerCapture(TEXT("per-pointer teardown test"));
+		TestFalse(TEXT("teardown releases this widget's touch"), Widget->HasMouseCaptureByUser(UserIndex, 1));
+		TestTrue(TEXT("teardown preserves another widget's pointer for the same user"), User->DoesWidgetHaveCapture(Window, 2));
 	}
 
 	return true;
@@ -646,9 +832,22 @@ bool FVaCuusMultiTouchCaptureLostTest::RunTest(const FString& Parameters)
 	// The cursor pointer is the other branch of the same callback.
 	Widget->OnTouchStarted(Rig.Geometry, MakeTouchEvent(GButtonPoint, GButtonPoint, /*FingerIndex=*/0));
 	Widget->OnTouchStarted(Rig.Geometry, MakeTouchEvent(GButton2Point, GButton2Point, /*FingerIndex=*/1));
+	Widget->OnMouseButtonDown(Rig.Geometry, MakeMouseEvent(GButton2Point, TSet<FKey>({EKeys::LeftMouseButton}), EKeys::LeftMouseButton));
 	Widget->OnMouseCaptureLost(FCaptureLostEvent(/*InUserIndex=*/0, static_cast<int32>(FSlateApplicationBase::CursorPointerIndex)));
-	TestEqual(TEXT("losing the cursor pointer cancels every finger Slate holds nothing for"), Widget->GetNumActiveTouches_Debug(), 0);
-	TestFalse(TEXT("...and no capture is tracked any more"), Widget->IsTrackingMouseCapture_Debug());
+	TestFalse(TEXT("losing the cursor also clears an unrouted mouse grant"), SVaCuusWidget::GetMouseCaptureHolder_Debug().Get() == Widget);
+	TestEqual(TEXT("losing the cursor pointer leaves both fingers alone"), Widget->GetNumActiveTouches_Debug(), 2);
+	if (FSlateApplication::IsInitialized())
+	{
+		FSlateApplication& Slate = FSlateApplication::Get();
+		const bool bWasActive = Slate.IsActive();
+		ON_SCOPE_EXIT { Slate.OnApplicationActivationChanged(bWasActive); };
+		Slate.OnApplicationActivationChanged(true);
+		const int32 ClicksBeforeCancel = Rig.Host->NumClick;
+		Slate.OnApplicationActivationChanged(false);
+		TestEqual(TEXT("app deactivation cancels all fingers, including unrouted grants"), Widget->GetNumActiveTouches_Debug(), 0);
+		TestTrue(TEXT("deactivation reached RmlUi"), RunFrames(*Rig.UIThread, 1));
+		TestEqual(TEXT("deactivation never turns a held touch into a click"), Rig.Host->NumClick, ClicksBeforeCancel);
+	}
 
 	return true;
 }
@@ -1150,11 +1349,8 @@ bool FVaCuusMultiTouchSurvivesClickTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Slate still holds finger 1's pointer for the widget"), Widget->HasMouseCaptureByUser(UserIndex, 1));
 	TestFalse(TEXT("the cursor pointer is released with the mouse"), Widget->HasMouseCaptureByUser(UserIndex, Cursor));
 
-	// The finger's own release. RmlUi's touch release clicks only while the primary button's active element is
-	// still the one under the finger (ProcessMouseButtonUp, Context.cpp:764-769, reached from ProcessTouchEnd at
-	// Context.cpp:1098). The mouse click above consumed that element, because the primary touch and the mouse
-	// share button 0. So this checks the release as a release: RmlUi gets its mouseup, the finger ends, and Slate
-	// lets go of its pointer. No click is asserted.
+	// The finger keeps its press independently of the intervening mouse click.
+	const int32 ClicksBeforeFinger = Rig.Host->NumClick;
 	const int32 MouseUpsBeforeFinger = Rig.Host->NumMouseUp;
 	Slate.RoutePointerUpEvent(WidgetPath, MakeTouchEvent(Finger1Screen, Finger1Screen, /*FingerIndex=*/1));
 	if (!TestTrue(TEXT("UI frame ran after the finger's release"), RunFrames(*Rig.UIThread, 1)))
@@ -1163,9 +1359,221 @@ bool FVaCuusMultiTouchSurvivesClickTest::RunTest(const FString& Parameters)
 	}
 	TestEqual(TEXT("finger 1's release reaches RmlUi as a mouseup: the finger was still ours to end"),
 		Rig.Host->NumMouseUp, MouseUpsBeforeFinger + 1);
+	TestEqual(TEXT("the held finger still clicks after the mouse click"), Rig.Host->NumClick, ClicksBeforeFinger + 1);
+	TestEqual(TEXT("that click belongs to the finger's button"), Rig.Host->LastClickId, FString(TEXT("btn")));
 	TestFalse(TEXT("Slate lets go of finger 1's pointer with the release"), Widget->HasMouseCaptureByUser(UserIndex, 1));
 	TestEqual(TEXT("...and nothing is left outstanding"), Widget->GetNumActiveTouches_Debug(), 0);
 
+	const FVector2D GapScreen = ToScreen(WidgetGeometry, GGapPoint);
+	Slate.RoutePointerDownEvent(WidgetPath, MakeTouchEvent(GapScreen, GapScreen, 1));
+	Slate.RoutePointerDownEvent(WidgetPath, MakeMouseEvent(Button2Screen, LeftDown, EKeys::LeftMouseButton));
+	Slate.RoutePointerUpEvent(WidgetPath, MakeMouseEvent(Button2Screen, NoButtons, EKeys::LeftMouseButton));
+	TestEqual(TEXT("an orderly mouse click also preserves a pass-through finger"), Widget->GetNumActiveTouches_Debug(), 1);
+	Slate.RoutePointerUpEvent(WidgetPath, MakeTouchEvent(GapScreen, GapScreen, 1));
+	TestEqual(TEXT("the pass-through finger can still finish"), Widget->GetNumActiveTouches_Debug(), 0);
+
+	return true;
+}
+
+/** The frame goes through RmlUi and the production recorder; :drag is blue, sources are red. */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusSecondaryCloneVisualTest, "VaCuus.Input.MultiTouchRouting.SecondaryCloneVisuals",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusSecondaryCloneVisualTest::RunTest(const FString& Parameters)
+{
+	using namespace VaCuusMultiTouchRoutingTest;
+	FRig Rig;
+	ON_SCOPE_EXIT { TearDown(Rig); };
+	if (!BringUp(*this, Rig, true, true))
+	{
+		return false;
+	}
+	const FVector2D P1(250, 160), P2(310, 240);
+	Rig.Widget->OnTouchStarted(Rig.Geometry, MakeTouchEvent(GButtonPoint, GButtonPoint, 0));
+	Rig.Widget->OnTouchStarted(Rig.Geometry, MakeTouchEvent(GButton2Point, GButton2Point, 1));
+	Rig.Widget->OnTouchStarted(Rig.Geometry, MakeTouchEvent(GButton2Point, GButton2Point, 2));
+	Rig.Widget->OnTouchMoved(Rig.Geometry, MakeTouchEvent(P1, GButton2Point, 1));
+	Rig.Widget->OnTouchMoved(Rig.Geometry, MakeTouchEvent(P2, GButton2Point, 2));
+	if (!TestTrue(TEXT("two clone drags were recorded"), RunFrames(*Rig.UIThread, 1)))
+	{
+		return false;
+	}
+	for (const FBox2D& B : Rig.Host->GhostBounds)
+	{
+		AddInfo(FString::Printf(TEXT("ghost bounds %.1f,%.1f .. %.1f,%.1f"), B.Min.X, B.Min.Y, B.Max.X, B.Max.Y));
+	}
+	TestEqual(TEXT("each secondary finger draws its own styled ghost"), Rig.Host->GhostBounds.Num(), 2);
+	for (const FVector2D P : {P1, P2})
+	{
+		TestTrue(TEXT("a ghost keeps the press's grab offset under its own finger"),
+			Rig.Host->GhostBounds.ContainsByPredicate([P](const FBox2D& B)
+			{
+				return B.Min.Equals(P - FVector2D(50, 20), 0.5) && B.Max.Equals(P + FVector2D(50, 20), 0.5);
+			}));
+	}
+	Rig.View->PollStatus();
+	TestFalse(TEXT("a ghost never becomes an interactive snapshot region"), Rig.View->GetSnapshot().Contains(FIntPoint(250, 160)));
+
+	Rig.Widget->OnMouseCaptureLost(FCaptureLostEvent(0, 1));
+	TestTrue(TEXT("cancel was recorded"), RunFrames(*Rig.UIThread, 1));
+	TestEqual(TEXT("cancelling one drag releases only its ghost"), Rig.Host->GhostBounds.Num(), 1);
+	Rig.Widget->OnTouchEnded(Rig.Geometry, MakeTouchEvent(P2, P2, 2));
+	TestTrue(TEXT("release was recorded"), RunFrames(*Rig.UIThread, 1));
+	TestEqual(TEXT("ending the other drag releases its ghost"), Rig.Host->GhostBounds.Num(), 0);
+	Rig.Widget->OnTouchEnded(Rig.Geometry, MakeTouchEvent(GButtonPoint, GButtonPoint, 0));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusSecondaryCloneLifecycleTest, "VaCuus.Input.MultiTouchRouting.SecondaryCloneLifecycle",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusSecondaryCloneLifecycleTest::RunTest(const FString& Parameters)
+{
+	using namespace VaCuusMultiTouchRoutingTest;
+	for (const FProbeHost::EAction Action : {FProbeHost::EAction::RemoveSecond, FProbeHost::EAction::Close})
+	{
+		FRig Rig;
+		ON_SCOPE_EXIT { TearDown(Rig); };
+		if (!BringUp(*this, Rig, true, true))
+		{
+			return false;
+		}
+		const FVector2D P(250, 160);
+		Rig.Widget->OnTouchStarted(Rig.Geometry, MakeTouchEvent(GButtonPoint, GButtonPoint, 0));
+		Rig.Widget->OnTouchStarted(Rig.Geometry, MakeTouchEvent(GButton2Point, GButton2Point, 1));
+		Rig.Widget->OnTouchMoved(Rig.Geometry, MakeTouchEvent(P, GButton2Point, 1));
+		TestTrue(TEXT("clone was recorded before removal"), RunFrames(*Rig.UIThread, 1));
+		TestEqual(TEXT("control: a ghost exists"), Rig.Host->GhostBounds.Num(), 1);
+		Rig.Host->Action.store(Action, std::memory_order_release);
+		TestTrue(TEXT("removal was recorded"), RunFrames(*Rig.UIThread, 1));
+		TestEqual(TEXT("source removal or document close releases its ghost"), Rig.Host->GhostBounds.Num(), 0);
+		Rig.Widget->OnTouchEnded(Rig.Geometry, MakeTouchEvent(P, P, 1));
+		Rig.Widget->OnTouchEnded(Rig.Geometry, MakeTouchEvent(GButtonPoint, GButtonPoint, 0));
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusSecondaryClonePixelsTest, "VaCuus.Render.MultiTouch.SecondaryClonePixels",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusSecondaryClonePixelsTest::RunTest(const FString& Parameters)
+{
+	using namespace VaCuusMultiTouchRoutingTest;
+	if (GUsingNullRHI)
+	{
+		AddInfo(TEXT("SKIPPED under NullRHI: clone pixels need a draw and GPU readback"));
+		return true;
+	}
+	FRig Rig;
+	ON_SCOPE_EXIT { TearDown(Rig); };
+	if (!BringUp(*this, Rig, true, true))
+	{
+		return false;
+	}
+	const FVector2D P1(250, 160), P2(310, 240);
+	Rig.Widget->OnTouchStarted(Rig.Geometry, MakeTouchEvent(GButtonPoint, GButtonPoint, 0));
+	Rig.Widget->OnTouchStarted(Rig.Geometry, MakeTouchEvent(GButton2Point, GButton2Point, 1));
+	Rig.Widget->OnTouchStarted(Rig.Geometry, MakeTouchEvent(GButton2Point, GButton2Point, 2));
+	Rig.Widget->OnTouchMoved(Rig.Geometry, MakeTouchEvent(P1, GButton2Point, 1));
+	Rig.Widget->OnTouchMoved(Rig.Geometry, MakeTouchEvent(P2, GButton2Point, 2));
+	if (!TestTrue(TEXT("clone frame was recorded"), RunFrames(*Rig.UIThread, 1)) ||
+		!TestNotNull(TEXT("clone frame was published"), Rig.Host->ReplayFrame.Get()))
+	{
+		return false;
+	}
+	const TArray<FColor> Before = ReplayPixels(*Rig.Host->ReplayFrame);
+	if (!TestEqual(TEXT("the clone frame read back"), Before.Num(), GViewSize.X * GViewSize.Y))
+	{
+		return false;
+	}
+	for (const FIntPoint P : {FIntPoint(250,160), FIntPoint(310,240)})
+	{
+		const FColor C = Before[P.Y * GViewSize.X + P.X];
+		AddInfo(FString::Printf(TEXT("clone pixel %d,%d = (%d,%d,%d,%d)"), P.X, P.Y, C.R, C.G, C.B, C.A));
+		TestTrue(TEXT("each finger has an opaque blue :drag copy"), C.B > 252 && C.R < 3 && C.G < 3 && C.A > 252);
+	}
+	const FColor Source = Before[120 * GViewSize.X + 70];
+	TestTrue(TEXT("the original source is still red"), Source.R > 252 && Source.G < 3 && Source.B < 3 && Source.A > 252);
+	Rig.Widget->OnMouseCaptureLost(FCaptureLostEvent(0, 1));
+	TestTrue(TEXT("cancel frame was recorded"), RunFrames(*Rig.UIThread, 1));
+	const TArray<FColor> After = ReplayPixels(*Rig.Host->ReplayFrame);
+	if (!TestEqual(TEXT("the cancel frame read back"), After.Num(), GViewSize.X * GViewSize.Y))
+	{
+		return false;
+	}
+	TestEqual(TEXT("the cancelled finger's copy is gone"), int32(After[160 * GViewSize.X + 250].A), 0);
+	TestTrue(TEXT("the other finger's copy is still blue"), After[240 * GViewSize.X + 310].B > 252);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusCloneRemovedDuringStartTest, "VaCuus.Input.MultiTouchRouting.CloneSourceRemovedDuringStart",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusCloneRemovedDuringStartTest::RunTest(const FString& Parameters)
+{
+	using namespace VaCuusMultiTouchRoutingTest;
+	for (const bool bSecondary : {false, true})
+	{
+		FRig Rig;
+		ON_SCOPE_EXIT { TearDown(Rig); };
+		if (!BringUp(*this, Rig, true, true))
+		{
+			return false;
+		}
+		if (bSecondary)
+		{
+			Rig.Widget->OnTouchStarted(Rig.Geometry, MakeTouchEvent(GButtonPoint, GButtonPoint, 0));
+		}
+		Rig.Host->RemoveOnDragStart.store(true, std::memory_order_release);
+		Rig.Widget->OnTouchStarted(Rig.Geometry, MakeTouchEvent(GButton2Point, GButton2Point, 1));
+		Rig.Widget->OnTouchMoved(Rig.Geometry, MakeTouchEvent(FVector2D(250,160), GButton2Point, 1));
+		TestTrue(TEXT("dragstart removal completed on the UI thread"), RunFrames(*Rig.UIThread, 1));
+		TestEqual(TEXT("a removed source never leaves a ghost"), Rig.Host->GhostBounds.Num(), 0);
+		Rig.View->PollStatus();
+		TestFalse(TEXT("the source really was removed by its dragstart handler"), Rig.View->GetSnapshot().Contains(FIntPoint(70,120)));
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusCloneRelativeImagesTest, "VaCuus.Render.MultiTouch.CloneRelativeImages",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusCloneRelativeImagesTest::RunTest(const FString& Parameters)
+{
+	using namespace VaCuusMultiTouchRoutingTest;
+	if (GUsingNullRHI)
+	{
+		AddInfo(TEXT("SKIPPED under NullRHI: image pixels need GPU readback"));
+		return true;
+	}
+	FRig Rig;
+	ON_SCOPE_EXIT { TearDown(Rig); };
+	if (!BringUp(*this, Rig, true, true, true))
+	{
+		return false;
+	}
+	const FVector2D P(250,160);
+	Rig.Widget->OnTouchStarted(Rig.Geometry, MakeTouchEvent(GButtonPoint, GButtonPoint, 0));
+	Rig.Widget->OnTouchStarted(Rig.Geometry, MakeTouchEvent(GButton2Point, GButton2Point, 1));
+	Rig.Widget->OnTouchMoved(Rig.Geometry, MakeTouchEvent(P, GButton2Point, 1));
+	if (!TestTrue(TEXT("image clone frame recorded"), RunFrames(*Rig.UIThread, 1)) ||
+		!TestNotNull(TEXT("image clone frame published"), Rig.Host->ReplayFrame.Get()))
+	{
+		return false;
+	}
+	TestEqual(TEXT("image URLs in the clone retain the source document directory"), Rig.Host->BadImageRequests, 0);
+	TestEqual(TEXT("the image has a visible clone parent"), Rig.Host->GhostBounds.Num(), 1);
+	const TArray<FColor> Pixels = ReplayPixels(*Rig.Host->ReplayFrame);
+	if (!TestEqual(TEXT("image frame read back"), Pixels.Num(), GViewSize.X * GViewSize.Y))
+	{
+		return false;
+	}
+	for (const FIntPoint Point : {FIntPoint(70,120), FIntPoint(250,160)})
+	{
+		const FColor C = Pixels[Point.Y * GViewSize.X + Point.X];
+		AddInfo(FString::Printf(TEXT("image pixel %d,%d = (%d,%d,%d,%d)"), Point.X, Point.Y, C.R, C.G, C.B, C.A));
+		TestTrue(TEXT("source and cloned image both render the green texture"), C.G > 252 && C.R < 3 && C.B < 3 && C.A > 252);
+	}
 	return true;
 }
 

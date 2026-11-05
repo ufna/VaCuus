@@ -10,17 +10,17 @@
 //  - dragstart/drag/dragend fire on the SOURCE item; dragover/dragout/dragdrop
 //    fire on what the cursor is over, and ONLY because .item is `drag: clone`
 //    -- of the five `drag` values just drag-drop and clone enable the verbose
-//    set (Context.cpp:714).
+//    set (Context.cpp:767).
 //  - dragdrop fires on the drop TARGET and bubbles; the source element is NOT
 //    in the event -- RmlUi passes it as the `drag_element` void*, which the JS
 //    bridge deliberately drops (VaCuusJsEvents.cpp:44-49) -- so `dragged`
 //    below, captured at dragstart, is the one reliable handle to it.
 //  - the release sequence over a target is dragdrop -> dragout -> dragend
-//    (Context.cpp:782-797): the target is told twice, the source once, and
+//    (Context.cpp:835-850): the target is told twice, the source once, and
 //    dragend fires EVEN when the drop landed nowhere. That is why dragend is
 //    the single place this file mutates the tree and restores invariants.
 //  - there is NO movement threshold: dragstart fires on the first >= 1px move
-//    with the button held (Context.cpp:1682), so a sloppy click can start a
+//    with the button held (Context.cpp:1759), so a sloppy click can start a
 //    drag. Fine for a demo; a shipping UI that cares should debounce in its
 //    dragstart handler.
 //
@@ -29,7 +29,7 @@
 // (VaCuusJsDom.cpp InsertThunk), and detaching the element RmlUi currently
 // considers dragged runs Element::SetOwnerDocument's OnElementDetach
 // (Element.cpp:2129-2133) -- whose drag branch SILENTLY CANCELS the drag and
-// suppresses dragend (Context.cpp:1535-1544). Reparent inside dragdrop and the
+// suppresses dragend (Context.cpp:1577-1586). Reparent inside dragdrop and the
 // 'dragging' class sticks forever because the cleanup event never comes. In
 // dragend the same cancellation runs but everything it kills has already
 // happened, so the move is safe there -- dragdrop VALIDATES, dragend APPLIES.
@@ -40,7 +40,7 @@
 // handlers accept only ev.target === ev.currentTarget (the slot's own
 // membership change); the dragdrop handler deliberately does NOT filter,
 // because a drop over an occupied slot lands on the ITEM (the deepest element
-// under the cursor, Context.cpp:1739's GetElementAtPoint excludes only the
+// under the cursor, Context.cpp:1817's GetElementAtPoint excludes only the
 // dragged element itself) and reaches the slot by bubbling -- filtering there
 // would make occupied slots drop-dead.
 'use strict';
@@ -147,7 +147,7 @@ function onDragDrop(ev)
 
 function onDragEnd(ev)
 {
-	// Always the last drag event (Context.cpp:794), whatever the drop did or
+	// Always the last drag event (Context.cpp:847), whatever the drop did or
 	// whether there was one -- the one safe place to mutate and clean up.
 	var item = ev.currentTarget;
 	clearHighlights();

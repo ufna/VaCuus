@@ -1651,7 +1651,7 @@ void FVaCuusRecordingRenderInterface::DrainCompletedDecodes()
 	// gave for the record loop pointed at FVaCuusUIThread::Enqueue). The guarantee has two
 	// halves now:
 	//  - DELIVERY is unconditional. FVaCuusUIThread::RunFrame calls DrainAsyncArrivals() for
-	//    every live host BEFORE its HasView() test (VaCuusUIThread.cpp:1214-1216), so a payload
+	//    every live host BEFORE its HasView() test (VaCuusUIThread.cpp:1218-1220), so a payload
 	//    is taken off the queue even for a view that cannot be recorded at all -- one still
 	//    waiting for its first size, or one between its clearing frame and its next load.
 	//  - PUBLICATION follows on the next frame the view does record. Since Task 12 that is a
@@ -1676,8 +1676,8 @@ void FVaCuusRecordingRenderInterface::DrainCompletedDecodes()
 	// "Placeholder in frame N, payload in N+1" is the COMMON CASE, NOT AN INVARIANT.
 	// LoadTexture is reachable out of frame: AdoptDocument -> Document->Show()
 	// (VaCuusRmlDocumentHost.cpp:225) runs inside DrainCommands, which RunFrame calls before
-	// the record loop (VaCuusUIThread.cpp:1143, the load dispatched from the drain's command
-	// switch at :1380-1387), and RmlUi loads file textures lazily from
+	// the record loop (VaCuusUIThread.cpp:1147, the load dispatched from the drain's command
+	// switch at :1384-1391), and RmlUi loads file textures lazily from
 	// FileTextureDatabase::EnsureLoaded (TextureDatabase.cpp:118-130) during the layout
 	// Show() forces (ElementDocument.cpp:367 -> ElementImage::GetIntrinsicDimensions). So a
 	// load can happen with bInFrame == false, GetPending() lazily creates the buffer
@@ -1773,24 +1773,24 @@ TUniquePtr<FVaCuusCommandBuffer> FVaCuusRecordingRenderInterface::EndFrameAndPub
 
 	// THE IDLE SHORT-CIRCUIT (M2 Task 12). RmlUi offers no dirty signal to ask.
 	// Context::Update() and Context::Render() end in an unconditional `return true`
-	// (ThirdParty/RmlUi/Source/Core/Context.cpp:219 and :241). IsLayoutDirty() is not
+	// (ThirdParty/RmlUi/Source/Core/Context.cpp:220 and :238). IsLayoutDirty() is not
 	// callable from here -- protected on Element (Include/RmlUi/Core/Element.h:637,
 	// under the `protected:` at :593) and private on ElementDocument
 	// (Include/RmlUi/Core/ElementDocument.h:146, under the `private:` at :135) -- and
 	// would be useless even if it were public. It returns the layout_dirty flag
 	// (ElementDocument.cpp:546-549), which Context::Update() has already cleared by the
 	// time this code could look at it: Update() calls doc->UpdateLayout() for every
-	// document (Context.cpp:207-214) and UpdateLayout() ends with layout_dirty = false
+	// document (Context.cpp:208-215) and UpdateLayout() ends with layout_dirty = false
 	// (ElementDocument.cpp:476-493). And it is the wrong question regardless -- a colour
 	// change, a hover restyle or a scroll all change what is drawn without dirtying
 	// layout. RenderManager carries no version counter either.
 	//
-	// GetNextUpdateDelay (Include/RmlUi/Core/Context.h:294) deserves more than the
+	// GetNextUpdateDelay (Include/RmlUi/Core/Context.h:296) deserves more than the
 	// brush-off it used to get here -- RmlUi presents it as exactly this kind of
 	// mechanism, "used by elements and the application to implement ON-DEMAND RENDERING
-	// and thus drastically save CPU/GPU" (:284-286, on RequestNextUpdate, which is what
+	// and thus drastically save CPU/GPU" (:286-288, on RequestNextUpdate, which is what
 	// feeds it). It still cannot answer the question this gate asks, for three reasons
-	// its own contract states (:289-293): it is FORWARD-looking (when Update() should next
+	// its own contract states (:291-295): it is FORWARD-looking (when Update() should next
 	// be called, not what the last frame produced); it returns INFINITY when the answer is
 	// "wait for user input", which is the steady state of an idle document and says
 	// nothing about whether that document was already drawn; and it is a schedule, so

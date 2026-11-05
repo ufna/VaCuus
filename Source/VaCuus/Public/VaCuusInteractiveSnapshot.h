@@ -300,7 +300,7 @@ struct FVaCuusMeasuredRect
  * through to the game. The authoritative hit test
  * (`Rml::Context::GetElementAtPoint`) lives on the UI thread and may not be called
  * from the game thread at all -- it rebuilds RmlUi's private stacking-context
- * cache despite being declared const (Context.cpp:1803). So the UI thread
+ * cache despite being declared const (Context.cpp:1892). So the UI thread
  * publishes this instead: the rectangles it *would* have hit, as plain integers,
  * once per frame, and the game thread answers from them.
  *
@@ -370,7 +370,7 @@ struct FVaCuusMeasuredRect
  * so. A CLICK focuses far more than this: Context::ProcessMouseButtonDown resolves
  * its target through FindFocusElement, which walks up from the hovered element to
  * the nearest ancestor-or-self whose computed `focus` != none and does not look at
- * tab-index at all (Context.cpp:629-641, :653-663), and Element::Focus() then
+ * tab-index at all (Context.cpp:682-694, :706-716), and Element::Focus() then
  * accepts on the same one test (Element.cpp:1179-1184). So a click on a plain
  * <div> does take RmlUi focus. Reporting THAT would be useless to the only
  * consumer: SVaCuusWidget takes SLATE keyboard focus from this flag, and taking the
@@ -419,7 +419,7 @@ struct FVaCuusInteractiveSnapshot
 	 * UI-thread-only, see BuildVaCuusInteractiveSnapshot), and the JS DOM has no
 	 * offsetWidth/getBoundingClientRect (GElementProtoEntries in VaCuusJsDom.cpp).
 	 * UVaCuusView::QueryElementBounds does answer, but one element per query, looked up
-	 * by id across every document (VaCuusUIThread.cpp:781-785) and answered after the next
+	 * by id across every document (VaCuusUIThread.cpp:785-789) and answered after the next
 	 * UI frame into a query the asker allocates and polls (FVaCuusElementBoundsQuery) --
 	 * the right shape for aiming one click, and N allocations, searches and polls a frame
 	 * for N labels. The walk that builds this snapshot already reads every visited
@@ -488,7 +488,7 @@ struct FVaCuusInteractiveSnapshot
 	 * EXACTLY RmlUi's OWN PRECONDITIONS, both of them:
 	 *
 	 *  1. A DOCUMENT ELEMENT holds focus. Context::ProcessKeyDown dispatches to `focus`,
-	 *     or to the context ROOT when there is none (Context.cpp:556-559); the root is not
+	 *     or to the context ROOT when there is none (Context.cpp:562-565); the root is not
 	 *     an ElementDocument, so ElementDocument::ProcessDefaultAction -- where every Tab,
 	 *     arrow and Return handler lives -- never runs and no key can move focus at all.
 	 *  2. FindNextTabElement has somewhere to land (ElementDocument.cpp:583 calls it from
@@ -724,7 +724,7 @@ VACUUS_API FVaCuusSnapshotBuildStats BuildVaCuusInteractiveSnapshot(
  *
  * The source of FVaCuusInteractiveSnapshot::Cursor, and it has to be a latch:
  * RmlUi pushes the cursor name through SystemInterface::SetMouseCursor from inside
- * Context::Update, only when the name changed (Context.cpp:1707-1719), and offers
+ * Context::Update, only when the name changed (Context.cpp:1785-1797), and offers
  * nothing to query. There is one system interface for the whole process but a
  * cursor per context, so a host must sample this IMMEDIATELY after its own
  * Update() and adopt the value only when the serial moved -- that is what

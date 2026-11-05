@@ -49,15 +49,10 @@ private:
 /**
  * The fingers this widget has told RmlUi about and has not yet ended (bead VaCuus-ujm).
  *
- * WHY A LEDGER IS NEEDED AT ALL. RmlUi keeps per-touch state in a map keyed by identifier
- * and erases an entry only in ProcessTouchEnd or ProcessTouchCancel (Context.cpp:1092,
- * :1110). Slate has no "cancel" hook to mirror: a gesture can be taken away instead of
- * finished -- capture revoked, the window deactivated, the widget destroyed mid-drag -- and
- * when that happens the only notification is OnMouseCaptureLost, which names the pointer that
- * lost its capture. So the widget has to remember which fingers are outstanding, or a stolen
- * gesture leaves RmlUi holding a touch that will never end AND a button 0 it will never see
- * released.
- *
+ * WHY A LEDGER IS NEEDED AT ALL. Captured fingers can be revoked by pointer index,
+ * but a pass-through finger never acquired capture and receives no capture-lost callback.
+ * App deactivation and view detachment therefore cancel every remaining ledger entry
+ * explicitly. Losing the mouse cursor's capture is independent of every finger.
  * WHAT IT DECIDES: only WHOM TO CANCEL. Which fingers Slate routes to the widget is answered by
  * CapturedTouchIds beside this set. That one records what Slate was asked to capture, this one
  * what RmlUi was told, and the two can differ for a finger that pressed outside every rect.
@@ -222,11 +217,8 @@ public:
 	 * -- vacuus.M1HUD's teardown and UVaCuusWidget::ReleaseSlateResources -- calls this
 	 * first. What the widget owns is only the KNOWLEDGE of how to ask.
 	 *
-	 * PER USER, NOT FSlateApplication::ReleaseAllPointerCapture() (bead VaCuus-akj.6.16):
-	 * that call releases capture for EVERY Slate user, so in split-screen -- one FSlateUser
-	 * per local player, each with its own captor -- tearing this widget down would abort an
-	 * unrelated player's drag on a completely different widget. FSlateUser answers the
-	 * precise question ("is THIS widget YOUR captor") and only those users are released.
+	 * Release only this widget's pointers, per user. Another finger belonging to the
+	 * same user may be captured by another widget; ReleaseAllCapture would cancel it too.
 	 */
 	void ReleaseOwnPointerCapture(const TCHAR* Reason);
 
@@ -713,6 +705,11 @@ private:
 	 */
 	FVaCuusTouchLedger TouchLedger;
 
+	void OnApplicationActivationChanged(bool bActive);
+	void CancelOutstandingTouches();
+	void CancelMouseGesture();
+	FDelegateHandle TouchActivationHandle;
+
 	/**
 	 * The fingers for which this widget asked Slate for capture and has not yet released it.
 	 *
@@ -723,25 +720,11 @@ private:
 	 * to us, wherever it goes. Keyed by the ledger's identifier, so the two cannot disagree about a
 	 * finger.
 	 *
-	 * NOT EVERY PRESS GETS ITS GRANT. ProcessReply applies a reply's captor only when the application is
-	 * active, or bHandleDeviceInputWhenApplicationNotActive is set, or the event's window is virtual
-	 * (SlateApplication.cpp:3494; the flag's accessors are SlateApplication.h:789-790). SetPointerCaptor
-	 * can also refuse (SlateUser.cpp:256-282). A finger whose grant is skipped is still in this set,
-	 * so its moves and its end are Handled here, and Slate routes them to us only by hit test. Its end
-	 * normally removes it. If Slate never routes that end here, the entry stays until the same finger ends
-	 * in this widget, or until the cursor pointer loses capture while Slate does not hold that finger
-	 * (the cursor's loss cancels only the fingers Slate does not hold for us). A repeat press of that
-	 * finger asks for the capture again while Slate holds no captor for its pointer (AnswerPointerDown),
-	 * so a repeat press restores the capture. The handler-level tests
-	 * never route the reply. The routed tests set the handle flag on the application, for the routed block,
-	 * so the grant applies whichever window has focus.
-	 *
-	 * TOUCH ANSWERS FROM THIS SET. Slate's captor map answers two touch questions, both per pointer: the
-	 * repress re-ask (AnswerPointerDown), and whether a finger survives the cursor pointer's loss
-	 * (OnMouseCaptureLost). The mouse's HoldsPointerCapture asks Slate because the macOS activation restore
-	 * can give a mouse capture back without telling us.
-	 * No platform restores a finger's capture that way, and a finger Slate does take away is
-	 * reported through OnMouseCaptureLost, which removes it here.
+	 * A press can be ledgered even when Slate skips its capture grant. A repeated press
+	 * re-asks if Slate holds no captor for that pointer. Its end, app deactivation or
+	 * DetachView retires the entry. Cursor capture loss never cancels a finger.
+	 * The raw set answers touch move/end routing; the Slate captor map is consulted
+	 * for a repeated press and for releasing only our pointers during teardown.
 	 */
 	TSet<uint64> CapturedTouchIds;
 
@@ -750,7 +733,7 @@ private:
 	 *
 	 * TCHAR is char16_t here (PLATFORM_TCHAR_IS_CHAR16 is 1 for Unix), so a code point
 	 * above the BMP arrives as two calls. RmlUi wants one UTF-32 value and its `char`
-	 * overload would silently drop the whole thing anyway (Context.cpp:575-579), so
+	 * overload would silently drop the whole thing anyway (Context.cpp:581-585), so
 	 * the halves are joined here rather than forwarded.
 	 */
 	uint32 PendingHighSurrogate = 0;

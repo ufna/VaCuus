@@ -212,7 +212,7 @@ bool FVaCuusModelRecompileDropTest::RunTest(const FString& Parameters)
 	// BindModel returning TRUE on a taken name is itself the replacement assertion: for a
 	// LIVE duplicate it returns false with an Error (VaCuus.Model.Api asserts that side), so
 	// true here can only be the dead-entry replacement branch. It then passes RmlUi's
-	// CreateDataModel because the drop's RemoveDataModel freed the name (Context.cpp:1468),
+	// CreateDataModel because the drop's RemoveDataModel freed the name (Context.cpp:1537),
 	// and rebuilds the definition set through the stale-mark eviction (the counter below) --
 	// with a NATIVE struct the properties happen to still be alive, which is exactly what
 	// lets this path run to a green screen instead of a crash.

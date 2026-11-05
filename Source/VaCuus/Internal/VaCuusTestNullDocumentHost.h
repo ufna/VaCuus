@@ -46,7 +46,7 @@ enum class EVaCuusTestHostBoot : uint8
 	 * Initialize() returns false. The AddView contract (VaCuusDocumentHost.h:53-55) says such a
 	 * host has rolled itself back and is simply dropped without Shutdown() -- this one has
 	 * nothing to roll back, which is what makes it a clean probe for the failure path
-	 * (VaCuusUIThread.cpp:1542-1553 is the branch it drives).
+	 * (VaCuusUIThread.cpp:1546-1557 is the branch it drives).
 	 */
 	FailsInitialize
 };
@@ -61,7 +61,7 @@ enum class EVaCuusTestHostBoot : uint8
  * RecordAndPublishFrame() on it (the record loop tests HasView first).
  *
  * THREAD AFFINITY: Initialize() asserts the UI thread like every other host, because that is
- * where the UI thread calls it from (VaCuusUIThread.cpp:1542) -- the other methods have no body
+ * where the UI thread calls it from (VaCuusUIThread.cpp:1546) -- the other methods have no body
  * to protect.
  */
 class FVaCuusTestNullDocumentHost final : public IVaCuusDocumentHost

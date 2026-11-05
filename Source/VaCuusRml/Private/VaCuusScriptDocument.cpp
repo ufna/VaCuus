@@ -59,14 +59,12 @@ FVaCuusScriptDocumentInstancer& FVaCuusScriptDocumentInstancer::Get()
 void FVaCuusScriptDocumentInstancer::RegisterWithFactory()
 {
 	// "body" is the documents base tag every context starts with (member
-	// default, Context.h:303; VaCuus never calls SetDocumentsBaseTag).
+	// default, Context.h:305; VaCuus never calls SetDocumentsBaseTag).
 	// RegisterElementInstancer lowercases the key itself (Factory.cpp:295-298),
 	// and re-registering an existing name simply overwrites the map slot --
 	// which is exactly how this replaces the default (Factory.cpp:180) and how
-	// a second registration stays idempotent. A side effect worth knowing: a
-	// context's CURSOR PROXY is instanced through the base tag too
-	// (Context.cpp:69), so every context construction mints one inert
-	// FVaCuusScriptDocument that only ever captures nothing.
+	// a second registration stays idempotent. Drag cursor proxies use this instancer
+	// too (Context.cpp:79), and stay inert: their clones capture no document scripts.
 	Rml::Factory::RegisterElementInstancer("body", &Get());
 }
 

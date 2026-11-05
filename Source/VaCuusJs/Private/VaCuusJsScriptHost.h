@@ -45,7 +45,7 @@ class FVaCuusScriptDocument;
  * custom-RTTI argument in VaCuusScriptDocument.h.
  *
  * NOTE the spec-2(f) NON-hook: OnDocumentLoad is deliberately absent. It fires
- * inside Context::LoadDocument (Context.cpp:299) while a replace's OLD context
+ * inside Context::LoadDocument (Context.cpp:296) while a replace's OLD context
  * is still current -- executing scripts there is v1's recorded bug (spec 12.1).
  * Script execution is host-ordered through IVaCuusScriptHost::OnDocumentReady.
  *

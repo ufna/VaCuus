@@ -301,7 +301,7 @@ div { display: block; position: absolute; }
 			"});"
 			// Key events land on the focus element -- Show(FocusFlag::Document)
 			// focused the document, and keydown/keyup/textinput dispatch there
-			// (Context.cpp:549-567, :590-600); the document wrapper hears them
+			// (Context.cpp:555-573, :596-606); the document wrapper hears them
 			// at target phase.
 			"document.addEventListener('keydown', function(ev){"
 			"  log.push(['kd', ev.keyIdentifier, ev.shiftKey, ev.ctrlKey].join(':'));"
@@ -332,7 +332,7 @@ div { display: block; position: absolute; }
 	// frame later the log is complete. Numeric expectations are RmlUi's own
 	// identifiers: KI_A = 12, KI_DOWN = 93 (Input.h:26, :122); left button = 0;
 	// the click coordinates are the enqueued screen point (mouse_x/mouse_y,
-	// Context.cpp:1934-1935).
+	// Context.cpp:2021-2022).
 	TestEqual(TEXT("mouse, keyboard, textinput and GAMEPAD all reached JS with their parameters"),
 		Rig.Eval(ViewId, "log.join('|')"),
 		FString(TEXT("click:30:30:0:true|kd:12:true:false|ku:12|ti:V|kd:93:false:false|ku:93")));
@@ -348,7 +348,7 @@ div { display: block; position: absolute; }
  *  (1) direct element destruction -- remove() -> destroy-then-detach
  *      (Element.cpp:99 -> :112);
  *  (2) document unload -- Close() + Update() -> detach-then-destroy
- *      (Context.cpp:1953-1963);
+ *      (Context.cpp:2042-2052);
  *  (3) context death first -- EnqueueRemoveView: OnViewRemoved's neuter walk
  *      frees the refs against the still-attached tree, then the SAME command's
  *      host Shutdown destroys tree+context and RmlUi's detach reclaims the
@@ -459,7 +459,7 @@ bool FVaCuusJsEventDeathOrdersTest::RunTest(const FString& Parameters)
 	// --- ORDER (2): document unload, detach-then-destroy. Close() only queues
 	// (ElementDocument.cpp:421-425); the demo teardown's own recipe -- Close()
 	// plus one Context::Update -- runs ReleaseUnloadedDocuments, which detaches
-	// the WHOLE tree before destroying it (Context.cpp:1953-1963). Driven
+	// the WHOLE tree before destroying it (Context.cpp:2042-2052). Driven
 	// explicitly because the rig's record loop skips document-less hosts.
 	Rig.Eval(ViewId,
 		"document.getElementById('a').addEventListener('click', function(){});"

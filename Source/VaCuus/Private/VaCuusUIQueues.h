@@ -202,7 +202,7 @@ enum class EVaCuusCommandKind : uint8
 	/**
 	 * Drops ONE model condemned by a Blueprint struct recompile (VaCuus-akj.16, spec M6
 	 * 2(j)): out of this thread's registry and the write router, its data model out of the
-	 * view's context (Context::RemoveDataModel, Context.cpp:1454-1471 -- which is also what
+	 * view's context (Context::RemoveDataModel, Context.cpp:1523-1540 -- which is also what
 	 * frees the name for a later re-bind), then the UI-side buffers down through the model's
 	 * drop-state machine. Carries ViewId + Model.
 	 *

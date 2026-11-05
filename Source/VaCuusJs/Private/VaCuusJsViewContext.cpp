@@ -82,7 +82,7 @@ FVaCuusJsViewContext::~FVaCuusJsViewContext()
 	// THE NEUTER WALK -- death order (3), the half the demo never had (spec
 	// 2(g)). This context is dying while its listeners' elements may still be
 	// attached to a live tree; RmlUi's OnDetach for them arrives LATER (the old
-	// tree's deferred teardown one frame after a recycle, Context.cpp:1953-1963,
+	// tree's deferred teardown one frame after a recycle, Context.cpp:2042-2052,
 	// or RemoveContext inside the document host's Shutdown -- which RemoveView
 	// runs strictly AFTER this destructor, VaCuusUIThread.cpp RemoveView).
 	// So: free every listener's JS ref NOW, against the still-live JSContext,

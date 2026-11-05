@@ -233,7 +233,7 @@ public:
 	 * compiling at first fire), -1 at the release -- which happens on exactly one
 	 * of the three paths: OnDetach after direct element destruction
 	 * (Element.cpp:99 -> :112), OnDetach after a document unload's tree-wide
-	 * detach sweep (Context.cpp:1961-1963), or the context destructor's neuter
+	 * detach sweep (Context.cpp:2050-2052), or the context destructor's neuter
 	 * walk when the context dies first. Zero after any teardown is the invariant
 	 * the death-order test asserts; a nonzero reading names the leaking path.
 	 * An invariant with no observable cannot be tested -- this is the observable.

@@ -11,7 +11,7 @@
 	     the cursor while the ORIGINAL stays in its slot until a drop is accepted,
 	     so a refused drop needs no undo. The clone is the only element that ever
 	     matches :drag -- RmlUi sets no pseudo-class on the source or on drop
-	     targets (Context.cpp:1900 is the single SetPseudoClass("drag") in the
+	     targets (Context.cpp:1978 is the single SetPseudoClass("drag") in the
 	     library) -- which is why every target highlight below is a JS-managed
 	     class, not a selector.
 

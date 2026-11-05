@@ -1126,3 +1126,52 @@ same host and flags, 2026-11-05:
 NOT yet offered upstream, for the reason #18 gives.
 
 Removal: with #18. Re-run VaCuus.Input.MultiTouch after any re-vendor.
+
+Patch #20 -- independent mouse/primary touch and a clone for every dragging finger.
+
+Applied 2026-11-05, completing the two limitations recorded with patches #18/#19.
+
+Cause: the primary touch called the public mouse verbs, sharing hover, active/drag,
+click history and one cursor proxy with the physical mouse. A mouse click while a
+finger was held replaced that finger's press. Secondary fingers kept their drag
+state but never created or rendered a proxy.
+
+The change (Source/Core/Context.cpp, Include/RmlUi/Core/Context.h):
+- PointerState groups the physical mouse and primary touch state. Each public device
+  entry selects its state through a scoped guard; private pointer algorithms keep
+  touch scrolling/inertia on their original path. Active/hover styling accounts for
+  both devices, and detach/unload clean both records.
+- Every touch event, including the primary's events, carries touch_id. Mouse events
+  omit it. ProcessMouseCancel retires the physical gesture without clicking; primary
+  touch cancellation now suppresses click as secondary cancellation already did.
+- Clone proxies share one creation/render algorithm and each borrow their source
+  document's stylesheet and source URL, so child images retain relative paths.
+  Every secondary clone has its own proxy and press-relative
+  grab offset; proxies are outside root and cannot enter hit tests or snapshots.
+- End, cancel, source detach and document unload release that finger's proxy. A
+  dragstart handler may remove the source before a clone is created; both pointer
+  paths re-check the source after dispatch.
+
+VaCuus's Slate integration cancels only the revoked pointer. App deactivation and
+view detachment explicitly retire every outstanding touch, including pass-through
+fingers. Teardown releases only this widget's pointer captures, preserving another
+widget's finger for the same Slate user.
+
+Verification is recorded on VaCuus-sixf. Regression coverage includes routed mouse
+clicks during a held finger, both orders on one active element, mouse drag/cancel
+while touching, real-window capture ownership, deactivation, two simultaneous
+secondary clone bounds, source removal/close, removal inside dragstart, and a GPU
+readback of both blue :drag copies plus one-finger cancellation.
+
+This supersedes patch #18's "no drag clone" limit and the shared-primary-button
+limit recorded with PR #26. Pinch/gesture recognition remains application policy.
+
+Independent Linux UE 5.8.1 proof for patch #20: 332/332 VaCuus tests under
+NullRHI and 84/84 render tests with real RHI. Restoring shared pointer state,
+cursor-wide cancellation, user-wide capture release and missing secondary
+proxies makes all eight targeted regressions fail. Removing the dragstart
+source re-check crashes CloneSourceRemovedDuringStart at the cleared drag
+pointer; restored, it passes. Removing the proxy source URL makes
+CloneRelativeImages fail its relative-path assertion; restored, source and
+clone both read back green pixels. SecondaryClonePixels reads both blue
+copies, then only the surviving copy after cancellation.

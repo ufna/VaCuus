@@ -19,7 +19,7 @@ namespace
  * the whole process (it is library state, not context state), but `cursor` is
  * resolved per context from its own hover element -- and each Rml::Context keeps
  * its own `cursor_name` and only calls out when *its* value changes
- * (Context.cpp:1716-1719). Since the UI thread updates views strictly one at a
+ * (Context.cpp:1794-1797). Since the UI thread updates views strictly one at a
  * time, a change observed immediately after view V's Update() is by construction
  * view V's. Each host therefore compares the serial right after its own Update()
  * and adopts the name only if it moved, which keeps N views from inheriting each

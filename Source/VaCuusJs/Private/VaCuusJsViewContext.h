@@ -157,7 +157,7 @@ public:
 	 * and BEFORE this context dies, so the callback still sees its DOM.
 	 *
 	 * DELIBERATELY NOT A DOM EVENT: RmlUi dispatches its own `unload` into the
-	 * closing tree inside Context::UnloadDocument (Context.cpp:339-341), so a
+	 * closing tree inside Context::UnloadDocument (Context.cpp:336-338), so a
 	 * JS-visible DOM unload would either duplicate that dispatch or require
 	 * hooking into it mid-teardown -- and on the view-removal path there is no
 	 * Close() at all, only tree destruction inside the host's Shutdown(). One
