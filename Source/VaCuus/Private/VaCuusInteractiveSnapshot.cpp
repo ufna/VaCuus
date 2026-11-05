@@ -33,7 +33,7 @@ namespace VaCuusInteractiveSnapshot
  *
  * Plain attributes rather than `data-*` names on purpose:
  * ElementUtilities::ApplyDataViewsControllers parses any `data-<type>-<modifier>`
- * attribute (ElementUtilities.cpp:407-424) and would quietly hand
+ * attribute (ElementUtilities.cpp:415-432) and would quietly hand
  * type_name="vacuus" to Factory::InstanceDataView. Harmless, but it puts our
  * markers inside someone else's grammar.
  */
@@ -89,7 +89,7 @@ struct FMarkerAttributes
  * The header's reason for a heuristic -- RmlUi cannot say whether an element has a listener --
  * does not reach these two spellings, because both are plain attributes and stay on the
  * element: ApplyDataViewsControllers reads `data-<type>-<modifier>` without removing it
- * (ElementUtilities.cpp:407-455), and Element::OnAttributeChange instances an `on<event>`
+ * (ElementUtilities.cpp:415-463), and Element::OnAttributeChange instances an `on<event>`
  * listener from the attribute it leaves in place (Element.cpp:1724-1750). The field report's
  * buttons were exactly this -- divs with data-event-click -- and every press went to the game.
  *
@@ -98,7 +98,7 @@ struct FMarkerAttributes
  * at the game behind it. Keyboard events need focus, not pointer coverage, so they are out too.
  *
  * Case-SENSITIVE, unlike the two markers: RmlUi itself matches both prefixes byte for byte
- * (ElementUtilities.cpp:416, Element.cpp:1724), so a `Data-Event-Click` does nothing in RmlUi
+ * (ElementUtilities.cpp:424, Element.cpp:1724), so a `Data-Event-Click` does nothing in RmlUi
  * and must not claim the press here either.
  */
 static bool IsPressHandlerAttribute(const Rml::String& Name)
@@ -447,6 +447,40 @@ static FIntRect ToPixelRect(Rml::Vector2f Position, Rml::Vector2f Size)
 }
 
 /**
+ * Inline layout stores subsequent lines as additional boxes (InlineBox.cpp:117-126),
+ * while GetBox() returns only the first (Element.cpp:466-484). Measure their union,
+ * projecting each fragment separately so rotated gaps do not enlarge the result.
+ */
+static bool GetMeasuredRect(Rml::Element& Element, const FIntRect& MainRect, FIntRect& OutRect)
+{
+	OutRect = MainRect;
+	const bool bTransformed = Element.GetTransformState() != nullptr;
+	const Rml::Vector2f Position = Element.GetAbsoluteOffset(Rml::BoxArea::Border);
+	const int32 NumBoxes = Element.GetNumBoxes();
+	for (int32 Index = 1; Index < NumBoxes; ++Index)
+	{
+		FIntRect Fragment;
+		if (bTransformed)
+		{
+			Rml::Rectanglef Bounds;
+			if (!Rml::ElementUtilities::GetBoundingBox(Bounds, &Element, Rml::BoxArea::Border, Index))
+			{
+				return false;
+			}
+			Fragment = ToPixelRect(Bounds.Position(), Bounds.Size());
+		}
+		else
+		{
+			Rml::Vector2f Offset;
+			const Rml::Box& Box = Element.GetBox(Index, Offset);
+			Fragment = ToPixelRect(Position + Offset, Box.GetSize(Rml::BoxArea::Border));
+		}
+		OutRect.Union(Fragment);
+	}
+	return true;
+}
+
+/**
  * One depth-first walk over a context's element tree.
  *
  * The clip rectangle is carried DOWN as a parameter rather than looked up per
@@ -507,7 +541,7 @@ void FSnapshotWalk::Visit(Rml::Element* Element, const FIntRect& Clip, bool bFoc
 	// it reports where the element would have been, and RmlUi's own hit test
 	// compensates by inverse-projecting the query point instead. So a transformed
 	// element has to go the expensive way -- GetBoundingBox projects the four corners
-	// (ElementUtilities.cpp:235-275) -- and the transform state is the gate, because
+	// (ElementUtilities.cpp:240-327) -- and the transform state is the gate, because
 	// the cheap path is a cached field read and this is not.
 	FIntRect Rect;
 	if (Element->GetTransformState() != nullptr)
@@ -539,7 +573,11 @@ void FSnapshotWalk::Visit(Rml::Element* Element, const FIntRect& Clip, bool bFoc
 	int MeasureKey = 0;
 	if (Markers.Measure != nullptr && Markers.Measure->GetInto(MeasureKey))
 	{
-		Out.MeasuredRects.Add(FVaCuusMeasuredRect{MeasureKey, Rect});
+		FIntRect MeasuredRect;
+		if (GetMeasuredRect(*Element, Rect, MeasuredRect))
+		{
+			Out.MeasuredRects.Add(FVaCuusMeasuredRect{MeasureKey, MeasuredRect});
+		}
 	}
 
 	Rect.Clip(Clip);

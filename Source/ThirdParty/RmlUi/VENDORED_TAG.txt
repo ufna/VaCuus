@@ -974,3 +974,15 @@ VaCuus.Vector.SVG and .Lottie check actual premultiplied RGBA pixels, cache/idle
 behavior, bundle-only nested images, changed animation frames and texture retirement
 through the production recorder. .LottieCost measures changed frames at three sizes,
 not cache hits. .BundlePack covers the added .svg/.json cooked-pack formats.
+
+Patch #17 -- Project individual inline border-box fragments (2026-11-05, VaCuus-v9z4).
+
+ElementUtilities::GetBoundingBox gains an overload taking a box index. It includes
+GetBox(index, offset)'s offset and reuses the existing corner projection and depth-clip
+checks. The original overload still selects the main box, so its callers keep their
+existing behavior. This exposes fragment projection without exporting TransformState.
+
+The vacuus-measure publisher unions all fragments before clipping, projecting each one
+separately: rotating an untransformed union would also measure gaps between fragments.
+VaCuus.Input.MeasuredFragments compares the published bounds with native border-box
+corners under identity, scale(2) and rotate(30deg), including padding and borders.

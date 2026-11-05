@@ -428,8 +428,8 @@ struct FVaCuusInteractiveSnapshot
 	 *
 	 * UNCLIPPED, unlike InteractiveRects: this is the box's own size and position, not the
 	 * part of it a click could reach, so a box half off-screen still reports its full size.
-	 * It is the same rect InteractiveRects starts from before the clip, so under a
-	 * `transform` it is the axis-aligned box around the transformed corners.
+	 * An inline element split across lines includes every border-box fragment. Under a
+	 * `transform` it is the axis-aligned union of the individually projected fragments.
 	 *
 	 * WHAT IS NOT MEASURED: an element the walk never visits -- invisible (display:none or
 	 * visibility:hidden, the IsVisible() prune), inside a `vacuus-passthrough` subtree, or

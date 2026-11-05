@@ -31,7 +31,7 @@
  *
  * WHY THE ASSERTIONS READ THE RECORDED SetTransform STREAM rather than the element's own state. The
  * null-ness of `Element::GetTransformState()` IS observable from here -- the accessor is public
- * (Include/RmlUi/Core/Element.h:576) and VaCuusInteractiveSnapshot.cpp:499 null-checks it across the
+ * (Include/RmlUi/Core/Element.h:576) and VaCuusInteractiveSnapshot.cpp:547 null-checks it across the
  * same module boundary -- so a TestNull/TestNotNull pair would prove the RmlUi fix in four lines. The
  * stream is read instead because what VaCuus ships is the command buffer: the recorder is the seam the
  * replayer consumes, so "the matrix reaches the buffer" is the assertion a re-vendor has to keep.
@@ -40,7 +40,7 @@
  * export). The stream gives that back. RmlUi emits a SetTransform command only when the active matrix
  * actually changes (RenderManager::SetTransform, RenderManager.cpp:144-154), and
  * ElementUtilities::ApplyTransform passes nullptr for an element without a state
- * (ElementUtilities.cpp:375-379), so a member stuck without one forces an explicit identity into the
+ * (ElementUtilities.cpp:383-387), so a member stuck without one forces an explicit identity into the
  * recording, which the recorder stores as FVaCuusCommand's default Transform.
  *
  * WHY TARGETS ARE COMPARED AGAINST pane_reference's RECORDED MATRIX rather than a hand-built scale(2).

@@ -34,7 +34,7 @@ namespace VaCuusSnapshotTest
  * updates it, builds the snapshot and publishes it through the same FVaCuusViewStatus
  * the game thread would read.
  */
-class FProbeHost final : public FVaCuusTestDocumentHost
+class FProbeHost : public FVaCuusTestDocumentHost
 {
 public:
 	FProbeHost()
@@ -83,6 +83,37 @@ public:
 
 private:
 	uint64 SnapshotGeneration = 0;
+};
+
+/** Runs the snapshot before Render, as production does; the next frame sees its transforms. */
+class FFragmentProbeHost final : public FProbeHost
+{
+public:
+	virtual void RecordAndPublishFrame() override
+	{
+		FProbeHost::RecordAndPublishFrame();
+		FragmentCorners.Reset();
+		bHasTransform = false;
+		if (Rml::Element* Element = RmlDocument->GetElementById("wrapped"))
+		{
+			bHasTransform = Element->GetTransformState() != nullptr;
+			const Rml::Vector2f Position = Element->GetAbsoluteOffset(Rml::BoxArea::Border);
+			for (int32 Index = 0; Index < Element->GetNumBoxes(); ++Index)
+			{
+				Rml::Vector2f Offset;
+				const Rml::Box& Box = Element->GetBox(Index, Offset);
+				const Rml::Vector2f Min = Position + Offset;
+				const Rml::Vector2f Max = Min + Box.GetSize(Rml::BoxArea::Border);
+				FragmentCorners.Append({FVector2f(Min.x, Min.y), FVector2f(Max.x, Min.y),
+					FVector2f(Max.x, Max.y), FVector2f(Min.x, Max.y)});
+			}
+		}
+		Context->Render();
+	}
+
+	// Read only after RunFrames' acquire of the UI frame counter, like the shared probe base.
+	TArray<FVector2f> FragmentCorners;
+	bool bHasTransform = false;
 };
 
 /**
@@ -150,7 +181,7 @@ static bool RunFrames(FVaCuusUIThread& UIThread, int32 NumFrames)
  *
  * #evclick, #onpress and #evhover are bead VaCuus-w87.2: a press handler the author
  * wrote IN THE MARKUP is visible to the attribute pass -- `data-event-*` attributes stay on
- * the element after ApplyDataViewsControllers parses them (ElementUtilities.cpp:407-455), and
+ * the element after ApplyDataViewsControllers parses them (ElementUtilities.cpp:415-463), and
  * an inline `on*` handler is an attribute by definition -- so the element takes the press
  * without anyone having to know about `vacuus-interactive`. Hover-only handlers do not: an
  * overlay that lights up under the cursor must not eat the click aimed at the game.
@@ -457,6 +488,116 @@ bool FVaCuusSnapshotTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("A hidden document covers nothing"), Hidden.Contains(FIntPoint(70, 40)));
 	TestFalse(TEXT("A hidden document is focusable nowhere"), Hidden.IsFocusableAt(FIntPoint(70, 40)));
 
+	return true;
+}
+
+/**
+ * A wrapped inline has several border boxes, not one (InlineBox.cpp:117-126).
+ * The original measurement published only the first; the fixed-size block fixtures above
+ * cannot see that. Check native fragment corners against known 2D transforms, independently
+ * of the projection helper used by the publisher. The short last line also leaves a gap:
+ * rotating the untransformed union would include space that no fragment occupies.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusMeasuredFragmentsTest, "VaCuus.Input.MeasuredFragments",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusMeasuredFragmentsTest::RunTest(const FString& Parameters)
+{
+	using namespace VaCuusSnapshotTest;
+	if (!FPlatformProcess::SupportsMultithreading())
+	{
+		AddInfo(TEXT("Skipped: no multithreading support"));
+		return true;
+	}
+	if (!TestFalse(TEXT("RmlUi is down before the test"), FVaCuusEngine::Get().IsInitialized()))
+	{
+		return false;
+	}
+	FVaCuusModule& Module = FVaCuusModule::Get();
+	FVaCuusUIThread* UIThread = Module.GetOrStartUIThread();
+	if (!TestNotNull(TEXT("UI thread"), UIThread))
+	{
+		return false;
+	}
+	ON_SCOPE_EXIT
+	{
+		Module.StopUIThread();
+	};
+
+	const TSharedRef<FVaCuusViewStatus> Status = MakeShared<FVaCuusViewStatus>();
+	TUniquePtr<FFragmentProbeHost> OwnedHost = MakeUnique<FFragmentProbeHost>();
+	FFragmentProbeHost* Host = OwnedHost.Get();
+	const uint32 ViewId = UIThread->AllocateViewId();
+	UIThread->EnqueueAddView(ViewId, MoveTemp(OwnedHost), FIntPoint(800, 800), Status);
+
+	struct FCase
+	{
+		const TCHAR* Transform;
+		float XX, XY, YX, YY;
+		bool bTransformed;
+	};
+	const float Cos = FMath::Cos(PI / 6.0f);
+	const float Sin = FMath::Sin(PI / 6.0f);
+	const FCase Cases[] = {
+		{TEXT("none"), 1, 0, 0, 1, false},
+		{TEXT("scale(2)"), 2, 0, 0, 2, true},
+		{TEXT("rotate(30deg)"), Cos, -Sin, Sin, Cos, true},
+	};
+	uint64 Serial = 0;
+	for (const FCase& Case : Cases)
+	{
+		const FString Document = FString::Printf(TEXT(R"(<rml><head><style>
+body { display: block; font-family: LatoLatin; font-size: 16px; }
+#holder { display: block; position: absolute; left: 20.25px; top: 20.25px; width: 60px;
+  transform-origin: 0px 0px; transform: %s; }
+span { display: inline; padding: 2px 3px; border: 1px solid white; }
+</style></head><body><div id="holder"><span id="wrapped" vacuus-measure="11">word word word word word word word word word word word i</span></div></body></rml>)"), Case.Transform);
+		UIThread->EnqueueLoadDocumentFromMemory(ViewId, Document, ++Serial);
+		// Transform state is computed by Render, after the first snapshot, just as in production.
+		if (!TestTrue(TEXT("Wrapped layout and transform frames ran"), RunFrames(*UIThread, 3)))
+		{
+			return false;
+		}
+		if (!TestTrue(TEXT("Wrapped document loaded"), Status->LoadCompletedSerial.load() == Serial
+			&& Status->LoadResult.load() == uint8(EVaCuusLoadResult::Succeeded)))
+		{
+			return false;
+		}
+		if (!TestTrue(TEXT("The inline element has multiple native border boxes"), Host->FragmentCorners.Num() > 4))
+		{
+			return false;
+		}
+		TestEqual(TEXT("The transform branch is exercised"), Host->bHasTransform, Case.bTransformed);
+
+		// Stay off exact pixel boundaries: the orthographic projection rounds in float,
+		// whereas this independent affine oracle does not make that round trip.
+		const FVector2f Origin(20.25f, 20.25f);
+		FVector2f Min(TNumericLimits<float>::Max(), TNumericLimits<float>::Max());
+		FVector2f Max(-TNumericLimits<float>::Max(), -TNumericLimits<float>::Max());
+		for (const FVector2f& Corner : Host->FragmentCorners)
+		{
+			const FVector2f Offset = Corner - Origin;
+			const FVector2f Projected = Origin + FVector2f(
+				Case.XX * Offset.X + Case.XY * Offset.Y, Case.YX * Offset.X + Case.YY * Offset.Y);
+			Min.X = FMath::Min(Min.X, Projected.X);
+			Min.Y = FMath::Min(Min.Y, Projected.Y);
+			Max.X = FMath::Max(Max.X, Projected.X);
+			Max.Y = FMath::Max(Max.Y, Projected.Y);
+		}
+		const FIntRect Expected(FMath::FloorToInt(Min.X), FMath::FloorToInt(Min.Y),
+			FMath::CeilToInt(Max.X), FMath::CeilToInt(Max.Y));
+		const FVaCuusInteractiveSnapshot& Snapshot = Status->AcquireSnapshot();
+		TestEqual(TEXT("Only the marked element is measured"), Snapshot.MeasuredRects.Num(), 1);
+		if (const FIntRect* Measured = Snapshot.FindMeasuredRect(11))
+		{
+			TestTrue(FString::Printf(TEXT("%s: measured %s includes every fragment (%s)"),
+				Case.Transform, *Measured->ToString(), *Expected.ToString()), *Measured == Expected);
+		}
+		else
+		{
+			AddError(TEXT("The wrapped element was not measured"));
+		}
+	}
 	return true;
 }
 

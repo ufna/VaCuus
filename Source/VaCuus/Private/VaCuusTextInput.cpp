@@ -235,7 +235,7 @@ FIntRect GetElementViewRect(Rml::Element& Element)
 	if (Element.GetTransformState() != nullptr)
 	{
 		// GetAbsoluteOffset() is UNTRANSFORMED, so a transformed element has to go the
-		// expensive way and have its corners projected (ElementUtilities.cpp:235-275).
+		// expensive way and have its corners projected (ElementUtilities.cpp:240-327).
 		Rml::Rectanglef Bounds;
 		if (!Rml::ElementUtilities::GetBoundingBox(Bounds, &Element, Rml::BoxArea::Border))
 		{

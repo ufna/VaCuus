@@ -234,6 +234,11 @@ bool ElementUtilities::SetClippingRegion(Element* element, bool force_clip_self)
 
 bool ElementUtilities::GetBoundingBox(Rectanglef& out_rectangle, Element* element, BoxArea box_area)
 {
+	return GetBoundingBox(out_rectangle, element, box_area, 0);
+}
+
+bool ElementUtilities::GetBoundingBox(Rectanglef& out_rectangle, Element* element, BoxArea box_area, int box_index)
+{
 	RMLUI_ASSERT(element);
 
 	Vector2f shadow_extent_top_left, shadow_extent_bottom_right;
@@ -263,7 +268,10 @@ bool ElementUtilities::GetBoundingBox(Rectanglef& out_rectangle, Element* elemen
 	}
 
 	// Element bounds in non-transformed space.
-	Rectanglef bounds = Rectanglef::FromPositionSize(element->GetAbsoluteOffset(box_area), element->GetBox().GetSize(box_area));
+	Vector2f box_offset;
+	const Box& box = element->GetBox(box_index, box_offset);
+	Rectanglef bounds = Rectanglef::FromPositionSize(
+		element->GetAbsoluteOffset(BoxArea::Border) + box_offset + box.GetPosition(box_area), box.GetSize(box_area));
 	bounds = bounds.Extend(shadow_extent_top_left, shadow_extent_bottom_right);
 
 	const TransformState* transform_state = element->GetTransformState();

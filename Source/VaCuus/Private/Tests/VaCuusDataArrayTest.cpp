@@ -363,7 +363,7 @@ private:
  * (DataExpression.cpp:315-331, :333), and Assignment() errors at the '['
  * (DataExpression.cpp:386-417) -- brackets exist only in r-value expressions. So the click
  * controllers live on the data-for templates, are copied onto every generated row
- * (DataViewDefault.cpp:491-496) and instantiate per row (ElementUtilities.cpp:439-448
+ * (DataViewDefault.cpp:491-496) and instantiate per row (ElementUtilities.cpp:447-456
  * cancels them only on the template itself), and the alias resolves to the clicked row's
  * element at event time -- which is also the only spelling a real document would use.
  */

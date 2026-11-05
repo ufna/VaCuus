@@ -360,7 +360,7 @@ void FVaCuusRmlDocumentHost::SetVisible(bool bVisible)
 	// the RT, because nothing would ever emit the empty frame that clears it. A hidden view
 	// therefore still pays a full Update() and a full record every frame; only the publish
 	// stops. It also stops claiming hit coverage without any extra work here, because the
-	// snapshot walk skips invisible elements (VaCuusInteractiveSnapshot.cpp:469-472).
+	// snapshot walk skips invisible elements (VaCuusInteractiveSnapshot.cpp:520-523).
 	if (bVisible)
 	{
 		// FocusFlag::Keep, not Document: Hide() ran UnfocusDocument() but left this
@@ -664,7 +664,7 @@ void FVaCuusRmlDocumentHost::RecordAndPublishFrame()
 	//
 	// REVEAL-FRAME SKEW, since RmlUi Patch #7 (Source/ThirdParty/RmlUi/VENDORED_TAG.txt): an element
 	// shown or created inside a transformed ancestor gets its transform_state in THIS frame's Render(),
-	// below, after this walk has already read it as null (VaCuusInteractiveSnapshot.cpp:499 gates the
+	// below, after this walk has already read it as null (VaCuusInteractiveSnapshot.cpp:547 gates the
 	// projected path on it). So on the reveal frame the snapshot hit-tests the element's untransformed
 	// rect and converges one frame later -- the same one-frame lag every transform property change has
 	// (OnPropertyChange dirties, Element.cpp:1962-1963; Render computes). Before the patch the element

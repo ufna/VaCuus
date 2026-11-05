@@ -502,7 +502,8 @@ element, looked up by `id`, a UI frame later, into a query you allocate and poll
 for aiming one click, not for a layout pass over every label on every frame.
 Do: put `vacuus-measure="<integer>"` on the element (`data-attr-vacuus-measure="row.Key"` in a
 `data-for`) and read `View->GetSnapshot().FindMeasuredRect(Key)` on the game thread. You get the
-border box in view pixels, NOT clipped, one UI frame late, for every marked element at once and with
+border box in view pixels, including all fragments of a wrapped inline element, NOT clipped,
+one UI frame late, for every marked element at once and with
 no allocation in steady state. Change the key whenever the content changes, and a rect under the old
 key can't be mistaken for the new one. An invisible element and anything under `vacuus-passthrough`
 are not measured.

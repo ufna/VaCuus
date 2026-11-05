@@ -77,6 +77,9 @@ public:
 	/// @param[in] area The box area to consider, 'Auto' means the border box in addition to any ink overflow.
 	/// @return True on success, otherwise false.
 	static bool GetBoundingBox(Rectanglef& out_rectangle, Element* element, BoxArea area);
+	/// As above, for one fragment of an element split across lines. Index 0 is the main box.
+	/// The offset returned by Element::GetBox(index, offset) is included before projection.
+	static bool GetBoundingBox(Rectanglef& out_rectangle, Element* element, BoxArea area, int box_index);
 
 	/// Formats the contents of an element. This does not need to be called for ordinary elements, but can be useful
 	/// for non-DOM elements of custom elements.

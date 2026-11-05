@@ -179,7 +179,7 @@ static bool RunFrames(FVaCuusUIThread& UIThread, int32 NumFrames)
  *
  * `vacuus-interactive` ON THE LIST IS LOAD-BEARING AND IS NOT A TEST CONVENIENCE. The snapshot
  * calls an element interactive when its `tab-index` is auto, its tag is one of the known
- * interactive ones, or it carries that attribute (VaCuusInteractiveSnapshot.cpp:527-529); a
+ * interactive ones, or it carries that attribute (VaCuusInteractiveSnapshot.cpp:592-594); a
  * bare `overflow-y: auto` div satisfies none of them. So an unmarked list is PASS-THROUGH by
  * design -- the UI scrolls it and the game also hears the drag -- and marking it is how an
  * author says "this panel owns the finger". Both cases are asserted below, which is why the
