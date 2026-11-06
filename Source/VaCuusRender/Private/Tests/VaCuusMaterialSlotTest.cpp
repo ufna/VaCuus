@@ -64,8 +64,8 @@ namespace VaCuusMaterialSlotTest
 static const FIntPoint GBox(256, 128);
 static const TCHAR* GKey = TEXT("slot-probe");
 
-/** Emissive = TexCoord[3] / 256 on a transient MD_UI Opaque material, compiled synchronously. */
-static UMaterial* MakeProbeMaterial()
+/** Emissive = TexCoord[Slot] * Scale on a transient MD_UI Opaque material, compiled synchronously. */
+static UMaterial* MakeProbeMaterial(int32 Slot = 3, float ScaleBy = 1.0f / 256.0f)
 {
 	UMaterial* Material = NewObject<UMaterial>(GetTransientPackage(), NAME_None, RF_Transient);
 	Material->MaterialDomain = EMaterialDomain::MD_UI;
@@ -73,12 +73,12 @@ static UMaterial* MakeProbeMaterial()
 
 	UMaterialExpressionTextureCoordinate* Slot3 = NewObject<UMaterialExpressionTextureCoordinate>(Material);
 	Slot3->Material = Material;
-	Slot3->CoordinateIndex = 3;
+	Slot3->CoordinateIndex = Slot;
 
 	UMaterialExpressionMultiply* Scale = NewObject<UMaterialExpressionMultiply>(Material);
 	Scale->Material = Material;
 	Scale->A.Connect(0, Slot3);
-	Scale->ConstB = 1.0f / float(GBox.X);
+	Scale->ConstB = ScaleBy;
 
 	Material->GetExpressionCollection().AddExpression(Slot3);
 	Material->GetExpressionCollection().AddExpression(Scale);
@@ -148,8 +148,18 @@ static UMaterial* MakeCustomizedUVMaterial()
  * paint box (VaCuusRecordingRenderInterface.cpp, CompileShader's Material branch).
  * VertexColour is every corner's colour (an element at opacity 1 is white); ClearValue is the target's clear.
  */
+/** An own-mesh decorator's draw (material-box): its mesh, and the paint box its desc carries. */
+struct FOwnMesh
+{
+	TArray<FVaCuusVertex> Vertices;
+	TArray<int32> Indices;
+	FVector2f PaintOffset;
+	FVector2f Dimensions;
+};
+
 static bool RenderProbe(uint64 StableId, const TCHAR* Key, TArray<FColor>& OutPixels, bool& bOutDrawn, bool& bOutRead,
-	const FColor& VertexColour = FColor(255, 255, 255, 255), const FClearValueBinding& ClearValue = FClearValueBinding::Black)
+	const FColor& VertexColour = FColor(255, 255, 255, 255), const FClearValueBinding& ClearValue = FClearValueBinding::Black,
+	const TOptional<FOwnMesh>& OwnMesh = {})
 {
 	bool bDrawn = false;
 	bool bRead = false;
@@ -160,9 +170,15 @@ static bool RenderProbe(uint64 StableId, const TCHAR* Key, TArray<FColor>& OutPi
 	Desc.MaterialId = StableId;
 	Desc.BuiltinKey = Key;
 	Desc.Dimensions = FVector2f(float(GBox.X), float(GBox.Y));
+	if (OwnMesh.IsSet())
+	{
+		Desc.Dimensions = OwnMesh->Dimensions;
+		Desc.PaintOffset = OwnMesh->PaintOffset;
+		Desc.bHasPaintOffset = 1;
+	}
 
 	ENQUEUE_RENDER_COMMAND(VaCuusMaterialSlotProbe)
-	([Desc, VertexColour, ClearValue, &OutPixels, &bDrawn, &bRead](FRHICommandListImmediate& RHICmdList)
+	([Desc, VertexColour, ClearValue, OwnMesh, &OutPixels, &bDrawn, &bRead](FRHICommandListImmediate& RHICmdList)
 		{
 			const FIntPoint Extent = GBox;
 			const FRHITextureCreateDesc RTDesc = FRHITextureCreateDesc::Create2D(TEXT("VaCuusMaterialSlotRT"), Extent, PF_B8G8R8A8)
@@ -176,7 +192,12 @@ static bool RenderProbe(uint64 StableId, const TCHAR* Key, TArray<FColor>& OutPi
 			Vertices.Add({FVector2f(float(Extent.X), 0.0f), VertexColour, FVector2f(1.0f, 0.0f)});
 			Vertices.Add({FVector2f(float(Extent.X), float(Extent.Y)), VertexColour, FVector2f(1.0f, 1.0f)});
 			Vertices.Add({FVector2f(0.0f, float(Extent.Y)), VertexColour, FVector2f(0.0f, 1.0f)});
-			const TArray<int32> Indices = {0, 1, 2, 0, 2, 3};
+			TArray<int32> Indices = {0, 1, 2, 0, 2, 3};
+			if (OwnMesh.IsSet())
+			{
+				Vertices = OwnMesh->Vertices;
+				Indices = OwnMesh->Indices;
+			}
 
 			FBufferRHIRef VB = UE::RHIResourceUtils::CreateVertexBufferFromArray<FVaCuusVertex>(
 				RHICmdList, TEXT("VaCuusMaterialSlotVB"), EBufferUsageFlags::Static, MakeConstArrayView(Vertices));
@@ -497,5 +518,89 @@ bool FVaCuusMaterialVertexColourTest::RunTest(const FString& Parameters)
 
 	return true;
 }
+
+/**
+ * THE SLOT-4 PROBE. An own-mesh decorator (material-box) puts the SLICED UV in tex_coord and
+ * sends paint_offset, so slot 4 ("Normalized UV") must come from position, not from tex_coord.
+ * Fixture: Emissive = TexCoord[4]; every vertex's UV is (0.5, 0.5); the paint box starts 256 px
+ * left of the target and is 512 x 128, so slot 4 is ((x + 256) / 512, y / 128) -- a ramp from
+ * 0.5 to 1 in R. tex_coord in the slot would fill a flat (0.5, 0.5). Without paint_offset the
+ * same material must keep the stock contract: slot 4 = tex_coord.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusMaterialNormalizedSlotTest, "VaCuus.Render.Decorator.MaterialNormalizedSlot",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusMaterialNormalizedSlotTest::RunTest(const FString& Parameters)
+{
+	using namespace VaCuusMaterialSlotTest;
+
+	if (GUsingNullRHI)
+	{
+		UE_LOG(LogVaCuus, Display, TEXT("VaCuus.Render.Decorator.MaterialNormalizedSlot: SKIPPED under NullRHI (no draw, no readback)"));
+		return true;
+	}
+
+	static const TCHAR* Key = TEXT("normalized-probe");
+	UMaterial* Probe = MakeProbeMaterial(4, 1.0f);
+	TStrongObjectPtr<UMaterial> ProbeRoot(Probe);
+
+	UVaCuusStyleSet* StyleSet = NewObject<UVaCuusStyleSet>(GetTransientPackage());
+	StyleSet->Materials.Add(Key, Probe);
+	TStrongObjectPtr<UVaCuusStyleSet> StyleSetRoot(StyleSet);
+	ON_SCOPE_EXIT
+	{
+		FVaCuusStyleRegistry::UnregisterStyleSet(StyleSetRoot.Get());
+		FlushRenderingCommands();
+		FVaCuusStyleRegistry::TickDeferredReleases_GameThread();
+	};
+	if (!TestEqual(TEXT("the slot-4 material registers"), FVaCuusStyleRegistry::RegisterStyleSet(StyleSet), 1))
+	{
+		return false;
+	}
+	const uint64* StableId = FVaCuusStyleRegistry::GetSnapshot_GameThread()->KeyToId.Find(Key);
+	if (!TestNotNull(TEXT("the snapshot carries the probe's id"), StableId))
+	{
+		return false;
+	}
+	FlushRenderingCommands();
+
+	FOwnMesh OwnMesh;
+	const FColor White(255, 255, 255, 255);
+	OwnMesh.Vertices = {{FVector2f(0.0f, 0.0f), White, FVector2f(0.5f)}, {FVector2f(float(GBox.X), 0.0f), White, FVector2f(0.5f)},
+		{FVector2f(float(GBox.X), float(GBox.Y)), White, FVector2f(0.5f)}, {FVector2f(0.0f, float(GBox.Y)), White, FVector2f(0.5f)}};
+	OwnMesh.Indices = {0, 1, 2, 0, 2, 3};
+	OwnMesh.PaintOffset = FVector2f(-256.0f, 0.0f);
+	OwnMesh.Dimensions = FVector2f(512.0f, 128.0f);
+	TArray<FColor> OwnPixels, StockPixels;
+	bool bDrawn = false, bRead = false;
+	if (!TestTrue(TEXT("the own-mesh draw went through DrawMaterial_RenderThread and read back"),
+			RenderProbe(*StableId, Key, OwnPixels, bDrawn, bRead, FColor(255, 255, 255, 255), FClearValueBinding::Black, OwnMesh)))
+	{
+		return false;
+	}
+	if (!TestTrue(TEXT("the stock draw went through DrawMaterial_RenderThread and read back"),
+			RenderProbe(*StableId, Key, StockPixels, bDrawn, bRead)))
+	{
+		return false;
+	}
+
+	const FIntPoint Samples[] = {FIntPoint(16, 16), FIntPoint(128, 64), FIntPoint(240, 112)};
+	for (const FIntPoint& P : Samples)
+	{
+		const FColor& Own = OwnPixels[P.Y * GBox.X + P.X];
+		const FColor& Stock = StockPixels[P.Y * GBox.X + P.X];
+		const FColor ExpectedOwn = FLinearColor((P.X + 0.5f + 256.0f) / 512.0f, (P.Y + 0.5f) / 128.0f, 0.0f).ToFColorSRGB();
+		const FColor ExpectedStock = FLinearColor((P.X + 0.5f) / 256.0f, (P.Y + 0.5f) / 128.0f, 0.0f).ToFColorSRGB();
+		AddInfo(FString::Printf(TEXT("(%d,%d): own-mesh (%d, %d, %d) expected (%d, %d, %d); stock (%d, %d, %d) expected (%d, %d, %d)"),
+			P.X, P.Y, Own.R, Own.G, Own.B, ExpectedOwn.R, ExpectedOwn.G, ExpectedOwn.B, Stock.R, Stock.G, Stock.B, ExpectedStock.R, ExpectedStock.G, ExpectedStock.B));
+		TestTrue(*FString::Printf(TEXT("own-mesh slot 4 comes from position at (%d,%d)"), P.X, P.Y),
+			FMath::Abs(int32(Own.R) - int32(ExpectedOwn.R)) <= 3 && FMath::Abs(int32(Own.G) - int32(ExpectedOwn.G)) <= 3);
+		TestTrue(*FString::Printf(TEXT("stock slot 4 stays tex_coord at (%d,%d)"), P.X, P.Y),
+			FMath::Abs(int32(Stock.R) - int32(ExpectedStock.R)) <= 3 && FMath::Abs(int32(Stock.G) - int32(ExpectedStock.G)) <= 3);
+	}
+
+	return true;
+}
+
 
 #endif // WITH_DEV_AUTOMATION_TESTS && WITH_EDITOR

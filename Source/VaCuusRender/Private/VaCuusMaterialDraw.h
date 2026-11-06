@@ -53,6 +53,7 @@ public:
 	{
 		ProjectionParameter.Bind(Initializer.ParameterMap, TEXT("VaCuusProjection"));
 		DimensionsParameter.Bind(Initializer.ParameterMap, TEXT("VaCuusDimensions"));
+		PaintBoxParameter.Bind(Initializer.ParameterMap, TEXT("VaCuusPaintBox"));
 	}
 
 	/**
@@ -85,21 +86,26 @@ public:
 	 * :38-40). So a mistyped name here fails nothing on this side — the contract's only
 	 * observables are the two probes, VaCuus.Render.Decorator.MaterialPixelSizeSlot and
 	 * .MaterialCustomizedUVs.
+	 *
+	 * PaintBox is slot 4's source: xy = paint-box origin, zw = its size, px; zw = 0 keeps slot 4
+	 * = tex_coord (stock shader()). Same SPF_Optional bind; probe .MaterialNormalizedSlot.
 	 */
 	void SetParameters(FRHIBatchedShaderParameters& BatchedParameters,
 		const TUniformBufferRef<FViewUniformShaderParameters>& ViewUniformBuffer, const FMatrix44f& Projection,
-		const FVector2f& PaintBoxPx)
+		const FVector2f& PaintBoxPx, const FVector4f& PaintBox)
 	{
 		// The synthetic view UB (the Slate recipe, SlateRHIRenderingPolicy.cpp:706-756):
 		// bound if the compiled VS half references View at all; harmless no-op otherwise.
 		SetUniformBufferParameter(BatchedParameters, GetUniformBufferParameter<FViewUniformShaderParameters>(), ViewUniformBuffer);
 		SetShaderValue(BatchedParameters, ProjectionParameter, Projection);
 		SetShaderValue(BatchedParameters, DimensionsParameter, PaintBoxPx);
+		SetShaderValue(BatchedParameters, PaintBoxParameter, PaintBox);
 	}
 
 private:
 	LAYOUT_FIELD(FShaderParameter, ProjectionParameter);
 	LAYOUT_FIELD(FShaderParameter, DimensionsParameter);
+	LAYOUT_FIELD(FShaderParameter, PaintBoxParameter);
 };
 
 /** The production PS: evaluates the material and premultiplies per blend mode (see the .usf). */

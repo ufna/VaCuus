@@ -372,6 +372,12 @@ struct FVaCuusShaderDesc
 	/** Builtin + Material: paint-box size in px ("dimensions") — the tex_coord normalization factor. */
 	FVector2f Dimensions = FVector2f::ZeroVector;
 
+	/** Material: paint-box origin, px ("paint_offset"); own-mesh decorators only. Slot 4 then comes from position. */
+	FVector2f PaintOffset = FVector2f::ZeroVector;
+
+	/** Material: 1 = PaintOffset is set. 0 = stock shader(), slot 4 stays tex_coord. */
+	uint8 bHasPaintOffset = 0;
+
 	/**
 	 * Material: the style registry's stable id, resolved from the UI-thread snapshot at
 	 * compile time and resolved again to an FMaterialRenderProxy on the render thread

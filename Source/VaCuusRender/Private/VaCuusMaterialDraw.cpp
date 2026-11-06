@@ -283,8 +283,14 @@ bool DrawMaterial_RenderThread(FRHICommandList& RHICmdList, FPassState& PassStat
 		const FVector2f PaintBoxPx = FVector2f::Max(
 			FVector2f(FMath::RoundToFloat(Desc.Dimensions.X), FMath::RoundToFloat(Desc.Dimensions.Y)),
 			FVector2f::UnitVector);
+		// Slot 4's source. Unrounded on purpose: it reproduces DecoratorShader's own
+		// (pos - offset) / dims, where dims is the fill size as recorded.
+		const FVector4f PaintBox = Desc.bHasPaintOffset
+			? FVector4f(Desc.PaintOffset.X, Desc.PaintOffset.Y,
+				FMath::Max(Desc.Dimensions.X, 1.0f), FMath::Max(Desc.Dimensions.Y, 1.0f))
+			: FVector4f(0.0f, 0.0f, 0.0f, 0.0f);
 		FRHIBatchedShaderParameters& BatchedParameters = RHICmdList.GetScratchShaderParameters();
-		VertexShader->SetParameters(BatchedParameters, PassState.ViewUB, DrawMatrix, PaintBoxPx);
+		VertexShader->SetParameters(BatchedParameters, PassState.ViewUB, DrawMatrix, PaintBoxPx, PaintBox);
 		RHICmdList.SetBatchedShaderParameters(VertexShader.GetVertexShader(), BatchedParameters);
 	}
 	{

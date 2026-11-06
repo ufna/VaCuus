@@ -45,6 +45,12 @@ float4x4 VaCuusProjection;
 float2 VaCuusDimensions;
 
 /**
+ * Paint box, px: xy = origin, zw = size; zw == 0 for stock shader(), where slot 4 = InUV. An
+ * own-mesh decorator slices tex_coord, so slot 4 is rebuilt from position (RenderingCommon.h:295).
+ */
+float4 VaCuusPaintBox;
+
+/**
  * THE TEXTURE-COORDINATE INTERPOLANTS, packed two per float4 exactly as Slate packs its own
  * (SlateShaderCommon.ush:41-52, TEXCOORD1..4). How many exist is the translator's decision,
  * not ours: NUM_TEX_COORD_INTERPOLATORS is the highest texture-coordinate index the material
@@ -85,11 +91,11 @@ struct FVaCuusInterpolants
  * and the vertex table below is built on that fact.
  *
  * THE VERTEX TABLE IS SLATE'S, channel for channel (SlateVertexShader.usf:51-63, UVArrays):
- *   [0] brush UV            -> InUV: a decorator has no brush and no nine-slice
+ *   [0] brush UV            -> InUV: sliced if the decorator built a nine-slice mesh
  *   [1] tiling              -> (1,1), what an untiled brush carries (ElementBatcher.cpp:788-791)
  *   [2] (0,0)               -> the non-instanced InstanceParam.xy (:51)
  *   [3] element size in px  -> VaCuusDimensions (:51 <- RenderingCommon.h:298-301)
- *   [4] 0..1 over the element -> InUV (:60 <- RenderingCommon.h:294)
+ *   [4] 0..1 over the element -> InUV, or rebuilt from position (VaCuusPaintBox)
  *   [5..7] zero             (:61-63)
  * Eight entries is the translator's own cap on a TextureCoordinate index
  * (HLSLMaterialTranslator.cpp:6686-6690), so neither unrolled loop reads past the end.
@@ -109,13 +115,17 @@ void MainVS(
 	Out.Color = InColor;
 	Out.UV = InUV;
 
+	const float2 NormalizedUV = VaCuusPaintBox.z > 0.0f
+		? (InPosition - VaCuusPaintBox.xy) / VaCuusPaintBox.zw
+		: InUV;
+
 	const float2 VertexSlots[8] =
 	{
 		InUV,                // [0]
 		float2(1.0f, 1.0f),  // [1]
 		float2(0.0f, 0.0f),  // [2]
 		VaCuusDimensions,    // [3]
-		InUV,                // [4]
+		NormalizedUV,        // [4]
 		float2(0.0f, 0.0f),  // [5]
 		float2(0.0f, 0.0f),  // [6]
 		float2(0.0f, 0.0f)   // [7]

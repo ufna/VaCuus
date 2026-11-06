@@ -1251,6 +1251,15 @@ Rml::CompiledShaderHandle FVaCuusRecordingRenderInterface::CompileShader(const R
 
 		Desc.BuiltinKey = MoveTemp(Key);
 		Desc.Dimensions = FVector2f(Dimensions.x, Dimensions.y);
+
+		// Own-mesh decorators only (material-box): DecoratorShader never sends it.
+		const auto OffsetIt = Parameters.find("paint_offset");
+		if (OffsetIt != Parameters.end() && OffsetIt->second.GetType() == Rml::Variant::VECTOR2)
+		{
+			const Rml::Vector2f Offset = OffsetIt->second.Get<Rml::Vector2f>();
+			Desc.PaintOffset = FVector2f(Offset.x, Offset.y);
+			Desc.bHasPaintOffset = 1;
+		}
 	}
 	else
 	{
