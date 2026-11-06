@@ -85,6 +85,32 @@ interface VaCuusElement {
 	/** Fresh Proxy per access; camelCase maps to kebab-case; see VaCuusStyle. */
 	readonly style: VaCuusStyle;
 	/**
+	 * Gives this element RmlUi's focus, which is what lights `:focus` and what
+	 * the `nav` graph steps from. Use it to put the highlight where a game's
+	 * own navigation says it belongs — the input queue can only blur.
+	 * Focusable means what RmlUi's own navigation means by it — visible,
+	 * computed `focus` not `none`, computed `tab-index: auto` — so a script
+	 * and the player's arrow keys agree on which elements exist. Anything else
+	 * is refused and the current focus stays where it is. (RmlUi's raw
+	 * `Element::Focus` has no tab-index gate and would take a plain `<div>`;
+	 * this does not.)
+	 * Deviation from DOM, and a superset of it: this RETURNS whether the focus
+	 * was taken. Neither `tab-index` nor `focus` is readable from script, so
+	 * the answer is the only way to find the element a highlight belongs on
+	 * when you were handed one that may be a label inside it:
+	 * `while (el && !el.focus()) el = el.parentNode;`. Ignore it and the call
+	 * behaves exactly as the DOM's does.
+	 * `{focusVisible: true}` also sets `:focus-visible`, for a highlight the
+	 * player drove from a key or a pad; the default is false, as for a press.
+	 * It applies only when the focus MOVES — RmlUi dispatches no focus event
+	 * when you re-focus the element that already holds focus, so the options
+	 * of such a call change nothing.
+	 * There is no `blur()`: RmlUi's hands focus to the immediate parent, where
+	 * the same missing gate bites. Releasing focus is the host's verb — the
+	 * input queue's NavigateBack.
+	 */
+	focus(options?: VaCuusFocusOptions): boolean;
+	/**
 	 * Scrolls every ancestor scroll container so this element is visible, DOM
 	 * defaults included: no argument means `{block: "start", inline: "nearest",
 	 * behavior: "auto"}`, and `scrollIntoView(false)` aligns with the bottom edge.
@@ -202,6 +228,15 @@ interface VaCuusScrollIntoViewOptions {
 	block?: 'start' | 'center' | 'end' | 'nearest';
 	inline?: 'start' | 'center' | 'end' | 'nearest';
 	behavior?: 'auto' | 'instant' | 'smooth';
+}
+
+/**
+ * focus() options. `focusVisible` sets `:focus-visible` alongside `:focus`,
+ * for a highlight the player drove from a key or a pad rather than a press.
+ * An argument type, not a facade object: NOT part of the conformance walk.
+ */
+interface VaCuusFocusOptions {
+	focusVisible?: boolean;
 }
 
 /** console.* — each argument stringified, joined by spaces, to LogVaCuusJS. */
