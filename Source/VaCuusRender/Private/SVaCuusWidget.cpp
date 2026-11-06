@@ -868,7 +868,30 @@ FReply SVaCuusWidget::OnMouseMove(const FGeometry& MyGeometry, const FPointerEve
 	VACUUS_PERF_SCOPE(Input);
 
 	const FIntPoint Position = ToViewPixels(MyGeometry, MouseEvent.GetScreenSpacePosition());
-	SendMouseInput(MouseEvent, FVaCuusInputEvent::MouseMove(Position, ToModifierState(MouseEvent)));
+
+	// A MOVE THAT DID NOT MOVE IS NOT QUEUED, and the one that produces it is Slate's own: every
+	// tick it is awake, Slate queues a synthetic cursor move for each user
+	// (SlateApplication.cpp:1800-1805) and routes it through this handler with the current and
+	// previous positions equal -- its documented purpose being "the UI can change even if the mouse
+	// doesn't move" (SlateUser.cpp:741-744). ProcessPointerMove takes any move as proof the mouse is
+	// live: it sets `mouse_active` and rebuilds the hover chain (Context.cpp:659-665). So a game that
+	// sends MouseLeave to put `:hover` out -- a screen handing the player a keyboard highlight
+	// instead of a pointer, say -- had it restored a frame later, every frame, with no way to keep
+	// it out short of disabling Slate's synthesis process-wide.
+	//
+	// Nothing is lost by dropping these: RmlUi re-runs the hover chain from its stored position on
+	// every Update while the mouse is active (Context.cpp:192-193), so a document that reflows under
+	// a still pointer updates `:hover` without any event at all. The second case the synthetic move
+	// exists for -- the OS withholding a move the pointer really made -- carries a real delta and
+	// goes through.
+	//
+	// The reply below is unchanged: whether this widget covers the point is a fact about the
+	// geometry, not about the event, and a pass-through region must keep answering Unhandled so the
+	// game underneath still hears the move.
+	if (!MouseEvent.GetCursorDelta().IsNearlyZero())
+	{
+		SendMouseInput(MouseEvent, FVaCuusInputEvent::MouseMove(Position, ToModifierState(MouseEvent)));
+	}
 
 	// The mouse fallback of a touch its touch handler passed on. Answering from the snapshot here would
 	// swallow that finger again: a finger's moves are answered by OnTouchMoved alone.
