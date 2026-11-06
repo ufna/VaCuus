@@ -364,6 +364,23 @@ void FVaCuusStyleRegistry::TickDeferredReleases_GameThread()
 	}
 }
 
+void FVaCuusStyleRegistry::FlushPendingReleases_GameThread()
+{
+	check(IsInGameThread());
+
+	if (GPendingReleases.Num() == 0)
+	{
+		return;
+	}
+
+	// Wait, not poll: teardown gets no later turn.
+	for (FVaCuusPendingRelease& Pending : GPendingReleases)
+	{
+		Pending.Fence.Wait();
+	}
+	GPendingReleases.Empty();
+}
+
 void FVaCuusStyleRegistry::PublishToUIThread(FVaCuusUIThread& UIThread)
 {
 	check(IsInGameThread());
@@ -432,6 +449,5 @@ void FVaCuusStyleRegistry::Shutdown_GameThread()
 		GProxyMirror_RenderThread.Empty();
 	}
 
-	// The flush above completed every fence too.
-	GPendingReleases.Empty();
+	FlushPendingReleases_GameThread();
 }

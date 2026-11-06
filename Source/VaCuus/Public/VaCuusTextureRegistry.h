@@ -236,6 +236,9 @@ public:
 	/** GAME THREAD, once per subsystem tick: drops roots whose fence completed. */
 	static void TickDeferredReleases_GameThread();
 
+	/** GAME THREAD, world cleanup: see FVaCuusStyleRegistry::FlushPendingReleases_GameThread. */
+	static void FlushPendingReleases_GameThread();
+
 	/** GAME THREAD. Re-enqueues the current state to a (re)started UI thread. */
 	static void PublishToUIThread(FVaCuusUIThread& UIThread);
 

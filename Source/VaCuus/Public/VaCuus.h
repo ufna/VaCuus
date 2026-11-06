@@ -109,4 +109,7 @@ private:
 	 * constructor comment on why Engine is a reference).
 	 */
 	FVaCuusScriptHostFactory ScriptHostFactory;
+
+	/** FWorldDelegates::OnWorldCleanup -> registries' teardown flush (StartupModule). */
+	FDelegateHandle WorldCleanupHandle;
 };

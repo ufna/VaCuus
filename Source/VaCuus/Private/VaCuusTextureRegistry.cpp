@@ -450,6 +450,22 @@ void FVaCuusTextureRegistry::TickDeferredReleases_GameThread()
 	}
 }
 
+void FVaCuusTextureRegistry::FlushPendingReleases_GameThread()
+{
+	check(IsInGameThread());
+
+	if (VcTexReg::GPendingReleases.Num() == 0)
+	{
+		return;
+	}
+
+	for (VcTexReg::FVaCuusTexturePendingRelease& Pending : VcTexReg::GPendingReleases)
+	{
+		Pending.Fence.Wait();
+	}
+	VcTexReg::GPendingReleases.Empty();
+}
+
 void FVaCuusTextureRegistry::PublishToUIThread(FVaCuusUIThread& UIThread)
 {
 	check(IsInGameThread());
@@ -525,8 +541,7 @@ void FVaCuusTextureRegistry::Shutdown_GameThread()
 		VcTexReg::GMirror_RenderThread.Empty();
 	}
 
-	// The flush above completed every fence too.
-	VcTexReg::GPendingReleases.Empty();
+	FlushPendingReleases_GameThread();
 }
 
 void FVaCuusTextureRegistry::DescribeEntries_GameThread(TArray<FString>& OutLines)

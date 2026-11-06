@@ -676,4 +676,41 @@ bool FVaCuusMaterialMaskIdleTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+/** FlushPendingReleases_GameThread drops a parked root with no rendering flush and no tick. */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusStyleSetTeardownFlushTest, "VaCuus.Render.Decorator.StyleSetTeardownFlush",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusStyleSetTeardownFlushTest::RunTest(const FString& Parameters)
+{
+	using namespace VaCuusMaterialTest;
+
+	UVaCuusStyleSet* StyleSet = MakeStyleSet(TEXT("styleset-teardown-flush"), GTranslucentPath);
+	if (!TestNotNull(TEXT("committed MD_UI spike material loads"), StyleSet))
+	{
+		return false;
+	}
+	TStrongObjectPtr<UVaCuusStyleSet> StyleSetRoot(StyleSet);
+
+	FlushRenderingCommands();
+	FVaCuusStyleRegistry::TickDeferredReleases_GameThread();
+	TestEqual(TEXT("nothing is parked before the test"),
+		FVaCuusStyleRegistry::GetNumPendingReleases_GameThread(), 0);
+
+	TestEqual(TEXT("the one entry registers"), FVaCuusStyleRegistry::RegisterStyleSet(StyleSet), 1);
+	FVaCuusStyleRegistry::UnregisterStyleSet(StyleSet);
+	TestEqual(TEXT("the unregistered root is fence-parked, not dropped"),
+		FVaCuusStyleRegistry::GetNumPendingReleases_GameThread(), 1);
+
+	// NO FlushRenderingCommands AND NO TICK HERE: that is the whole claim.
+	FVaCuusStyleRegistry::FlushPendingReleases_GameThread();
+	TestEqual(TEXT("the teardown flush waited the fence and dropped the root"),
+		FVaCuusStyleRegistry::GetNumPendingReleases_GameThread(), 0);
+
+	FVaCuusStyleRegistry::FlushPendingReleases_GameThread();
+	TestEqual(TEXT("flushing an empty park list is a no-op"),
+		FVaCuusStyleRegistry::GetNumPendingReleases_GameThread(), 0);
+
+	return true;
+}
+
 #endif // WITH_DEV_AUTOMATION_TESTS

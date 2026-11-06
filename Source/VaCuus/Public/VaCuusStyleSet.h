@@ -138,6 +138,13 @@ public:
 	static void TickDeferredReleases_GameThread();
 
 	/**
+	 * GAME THREAD, world cleanup: waits every parked fence and drops the roots now. The tick
+	 * above never runs between EndPlay and the stale-reference check, so a parked root would
+	 * keep a PIE world alive (check(false) in EndPlayMap). Free when nothing is parked.
+	 */
+	static void FlushPendingReleases_GameThread();
+
+	/**
 	 * GAME THREAD. Re-enqueues the current snapshot to a (re)started UI thread — the
 	 * register-before-boot half: a style set registered before the first view must be
 	 * visible to the first document's CompileShader, and the queue is FIFO from this one

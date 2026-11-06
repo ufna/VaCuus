@@ -12,6 +12,7 @@
 #include "VaCuusTranslation.h"
 #include "VaCuusUIThread.h"
 
+#include "Engine/World.h"
 #include "HAL/PlatformProcess.h"
 
 #define LOCTEXT_NAMESPACE "FVaCuusModule"
@@ -55,11 +56,23 @@ void FVaCuusModule::StartupModule()
 	VaCuusContentPaths::ScanShadowedDocuments(VaCuusContentPaths::GetDocumentRoots());
 #endif
 
+	// Roots parked on EndPlay are outered to the dying world, and no subsystem tick drains
+	// them before the stale-reference check -- in PIE that is check(false) in EndPlayMap.
+	WorldCleanupHandle = FWorldDelegates::OnWorldCleanup.AddLambda(
+		[](UWorld*, bool /*bSessionEnded*/, bool /*bCleanupResources*/)
+		{
+			FVaCuusStyleRegistry::FlushPendingReleases_GameThread();
+			FVaCuusTextureRegistry::FlushPendingReleases_GameThread();
+		});
+
 	UE_LOG(LogVaCuus, Log, TEXT("VaCuus runtime module started"));
 }
 
 void FVaCuusModule::ShutdownModule()
 {
+	FWorldDelegates::OnWorldCleanup.Remove(WorldCleanupHandle);
+	WorldCleanupHandle.Reset();
+
 	// Ordered teardown, and the reason ForceShutdownAll() below is only ever a
 	// diagnostic now: the thread we own is the one that booted RmlUi, so stopping
 	// it runs the paired Shutdown() on the owner thread while VaCuusRml is still
