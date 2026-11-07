@@ -182,6 +182,8 @@ def main():
     decorators = [(name, f"Factory.cpp:{line}") for name, line in parse_instancers(factory, "Decorator")]
     svg_plugin = ROOT / "Source/ThirdParty/RmlUi/Source/SVG/SVGPlugin.cpp"
     decorators += [(name, f"SVGPlugin.cpp:{line}") for name, line in parse_instancers(svg_plugin.read_text(), "Decorator")]
+    material_box = ROOT / "Source/VaCuus/Private/VaCuusMaterialBoxDecorator.cpp"
+    decorators += [(name, f"VaCuusMaterialBoxDecorator.cpp:{line}") for name, line in parse_instancers(material_box.read_text(), "Decorator")]
     filters = parse_instancers(factory, "Filter")
     font_effects = parse_instancers(factory, "FontEffect")
     fstart, fend = func_lines(spec, "void StyleSheetSpecification::RegisterDefaultProperties()")
@@ -226,7 +228,8 @@ def main():
     w.append("")
     w.append(f"## Decorators ({len(decorators)} registered names)")
     w.append("")
-    w.append("Registered in Factory.cpp (line numbers in this vendored tree). All render")
+    w.append("Registered in Factory.cpp (line numbers in this vendored tree; `svg` in its plugin,")
+    w.append("`material-box` by VaCuus itself). All render")
     w.append("through the record/replay path. `shader(<name-or-key>)` resolves builtin")
     w.append("names first (`glass-panel` ships), then UMaterial style keys registered by the")
     w.append("game (`UVaCuusStyleSet` -- the M5 material-decorator tier; unknown keys are")
@@ -239,6 +242,22 @@ def main():
     w.append("box's own 0..1 (VaCuusMaterial.usf). Customized UVs run in the material's vertex")
     w.append("stage here as they do under Slate, and a material that declares any reads the")
     w.append("raw channels at the pixel stage, exactly as Slate's own UI shader hands them.")
+    w.append("")
+    w.append("`material-box(<key>, <image-size>, <margin> [, box | border])` is the same style")
+    w.append("key drawn as Slate's `DrawAs=Box` / `Border`: `<image-size>` is the brush's")
+    w.append("ImageSize (one or two lengths; `dp` follows the context's dp ratio), `<margin>`")
+    w.append("its Margin as fractions 0..1 in CSS order. The decorator builds Slate's 4x4 grid")
+    w.append("on the CPU, so TexCoord[0] arrives sliced exactly as FSlateElementBatcher slices")
+    w.append("it -- corners keep `image-size x margin` px while the middle stretches -- and")
+    w.append("slot 4 (Normalized UV) stays the paint box's continuous 0..1 for fills and")
+    w.append("gradients. A box smaller than two corners squishes them, as Slate does;")
+    w.append("`border` leaves the centre cell undrawn; margin 0 is `DrawAs=Image`, the same")
+    w.append("quad `shader(<key>)` draws. Margins outside 0..1 are clamped with one Warning;")
+    w.append("an unknown last keyword is dropped by RmlUi's shorthand parser and draws as")
+    w.append("`box`. `vacuus.MaterialBox 0` is a kill switch: new decorator data draws the")
+    w.append("plain quad. A `dp` image-size follows the dp ratio, so size the element in `dp` too;")
+    w.append("an element laid out in `px` holds still while its corners scale. For corners fixed")
+    w.append("in screen pixels, give the image-size in `px`.")
     w.append("")
     w.append("The six gradient decorators are **antialiased in screen space**, which is a")
     w.append("deliberate deviation from RmlUi's reference backend. A hard colour break --")

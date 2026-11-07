@@ -5,6 +5,7 @@
 #include "VaCuusCommandBuffer.h"
 #include "VaCuusCoreCompat.h"
 #include "VaCuusDefines.h"
+#include "VaCuusMaterialBoxDecorator.h"
 #include "VaCuusMaterialDraw.h"
 #include "VaCuusReplayRenderer.h"
 #include "VaCuusStyleSet.h"
@@ -602,5 +603,211 @@ bool FVaCuusMaterialNormalizedSlotTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+namespace VaCuusMaterialSlotTest
+{
+/**
+ * The material-box mesh for Params (64 px image) over the whole GBox, drawn with Probe (default:
+ * Emissive = TexCoord[0]) on a black clear and read back. False (with an error) if it did not draw.
+ */
+static bool RenderMaterialBox(FAutomationTestBase& Test, const VaCuusMaterialBox::FParams& Params, TArray<FColor>& OutPixels,
+	UMaterial* Probe = nullptr)
+{
+	static const TCHAR* Key = TEXT("box-probe");
+	if (!Probe)
+	{
+		Probe = MakeProbeMaterial(0, 1.0f);
+	}
+	TStrongObjectPtr<UMaterial> ProbeRoot(Probe);
+
+	UVaCuusStyleSet* StyleSet = NewObject<UVaCuusStyleSet>(GetTransientPackage());
+	StyleSet->Materials.Add(Key, Probe);
+	TStrongObjectPtr<UVaCuusStyleSet> StyleSetRoot(StyleSet);
+	ON_SCOPE_EXIT
+	{
+		FVaCuusStyleRegistry::UnregisterStyleSet(StyleSetRoot.Get());
+		FlushRenderingCommands();
+		FVaCuusStyleRegistry::TickDeferredReleases_GameThread();
+	};
+	if (!Test.TestEqual(TEXT("the box material registers"), FVaCuusStyleRegistry::RegisterStyleSet(StyleSet), 1))
+	{
+		return false;
+	}
+	const uint64* StableId = FVaCuusStyleRegistry::GetSnapshot_GameThread()->KeyToId.Find(Key);
+	if (!Test.TestNotNull(TEXT("the snapshot carries the probe's id"), StableId))
+	{
+		return false;
+	}
+	FlushRenderingCommands();
+
+	Rml::Mesh Mesh;
+	VaCuusMaterialBox::BuildMesh(Params, Rml::Vector2f(0.f), Rml::Vector2f(float(GBox.X), float(GBox.Y)), 64.f, 64.f,
+		Rml::ColourbPremultiplied(255, 255), Mesh);
+
+	FOwnMesh OwnMesh;
+	for (const Rml::Vertex& V : Mesh.vertices)
+	{
+		OwnMesh.Vertices.Add({FVector2f(V.position.x, V.position.y), FColor(255, 255, 255, 255), FVector2f(V.tex_coord.x, V.tex_coord.y)});
+	}
+	OwnMesh.Indices = TArray<int32>(Mesh.indices.data(), int32(Mesh.indices.size()));
+	OwnMesh.PaintOffset = FVector2f::ZeroVector;
+	OwnMesh.Dimensions = FVector2f(float(GBox.X), float(GBox.Y));
+
+	bool bDrawn = false, bRead = false;
+	return Test.TestTrue(TEXT("the box draw went through DrawMaterial_RenderThread and read back"),
+		RenderProbe(*StableId, Key, OutPixels, bDrawn, bRead, FColor(255, 255, 255, 255), FClearValueBinding::Black, OwnMesh));
+}
+
+/** Channel 0 = U, 1 = V at P, within 3 of the sRGB encoding (black clear when bCleared). */
+static void ExpectUV(FAutomationTestBase& Test, const TArray<FColor>& Pixels, FIntPoint P, float U, float V, bool bCleared = false)
+{
+	const FColor& Seen = Pixels[P.Y * GBox.X + P.X];
+	const FColor Expected = bCleared ? FColor(0, 0, 0) : FLinearColor(U, V, 0.0f).ToFColorSRGB();
+	Test.AddInfo(FString::Printf(TEXT("(%d, %d): seen (%d, %d, %d), expected (%d, %d, %d)"), P.X, P.Y, Seen.R, Seen.G, Seen.B,
+		Expected.R, Expected.G, Expected.B));
+	Test.TestTrue(*FString::Printf(TEXT("channel 0/1 at (%d, %d)"), P.X, P.Y),
+		FMath::Abs(int32(Seen.R) - int32(Expected.R)) <= 3 && FMath::Abs(int32(Seen.G) - int32(Expected.G)) <= 3);
+}
+
+static VaCuusMaterialBox::FParams HalfMargins()
+{
+	VaCuusMaterialBox::FParams Params;
+	for (float& Margin : Params.Margin)
+	{
+		Margin = 0.5f;
+	}
+	return Params;
+}
+
+// u at x for a 256 px wide box, 64 px image, margin 0.5 (32 px corners): Slate's slice.
+static float SliceU(float X)
+{
+	return X < 32.f ? X / 32.f * 0.5f : (X > 224.f ? 1.f - (256.f - X) / 32.f * 0.5f : 0.5f);
+}
+} // namespace VaCuusMaterialSlotTest
+
+/**
+ * MATERIAL-BOX AGAINST SLATE'S SLICE, at the pixel. Emissive = TexCoord[0] over a 256 x 128 box
+ * drawn with the material-box mesh, 64 px image, margin 0.5: the 32 px corners carry u 0..0.5,
+ * the middle a flat 0.5, so u at x is Slate's (x / 32) * 0.5 in the corner. The unsliced quad
+ * would give x / 256 -- a fifth of that at x = 16.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusMaterialBoxSlotsTest, "VaCuus.Render.MaterialBox.Slots",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusMaterialBoxSlotsTest::RunTest(const FString& Parameters)
+{
+	using namespace VaCuusMaterialSlotTest;
+
+	if (GUsingNullRHI)
+	{
+		UE_LOG(LogVaCuus, Display, TEXT("VaCuus.Render.MaterialBox.Slots: SKIPPED under NullRHI (no draw, no readback)"));
+		return true;
+	}
+
+	TArray<FColor> Pixels;
+	if (!RenderMaterialBox(*this, HalfMargins(), Pixels))
+	{
+		return false;
+	}
+	// u in the left corner, the flat middle, the right corner; v at mid-height is the flat 0.5.
+	for (const int32 X : {16, 128, 240})
+	{
+		ExpectUV(*this, Pixels, FIntPoint(X, 64), SliceU(X + 0.5f), 0.5f);
+	}
+	return true;
+}
+
+/**
+ * DRAW-AS IMAGE: all margins zero is Slate's DrawAs=Image -- one quad, u = x / 256 and
+ * v = y / 128 across the whole box, corners stretched. The sliced mesh would hold u at 0.5 in
+ * the middle and reach it by x = 32.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusMaterialBoxImageSlotsTest, "VaCuus.Render.MaterialBox.ImageSlots",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusMaterialBoxImageSlotsTest::RunTest(const FString& Parameters)
+{
+	using namespace VaCuusMaterialSlotTest;
+
+	if (GUsingNullRHI)
+	{
+		UE_LOG(LogVaCuus, Display, TEXT("VaCuus.Render.MaterialBox.ImageSlots: SKIPPED under NullRHI (no draw, no readback)"));
+		return true;
+	}
+
+	TArray<FColor> Pixels;
+	if (!RenderMaterialBox(*this, VaCuusMaterialBox::FParams(), Pixels))
+	{
+		return false;
+	}
+	for (const FIntPoint P : {FIntPoint(16, 64), FIntPoint(80, 64), FIntPoint(240, 64), FIntPoint(128, 16), FIntPoint(128, 112)})
+	{
+		ExpectUV(*this, Pixels, P, (P.X + 0.5f) / GBox.X, (P.Y + 0.5f) / GBox.Y);
+	}
+	return true;
+}
+
+/**
+ * DRAW-AS BORDER: the eight outer cells draw exactly as Box, the centre cell is not drawn at
+ * all -- the black clear shows through where Box would give (0.5, 0.5).
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusMaterialBoxBorderSlotsTest, "VaCuus.Render.MaterialBox.BorderSlots",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusMaterialBoxBorderSlotsTest::RunTest(const FString& Parameters)
+{
+	using namespace VaCuusMaterialSlotTest;
+
+	if (GUsingNullRHI)
+	{
+		UE_LOG(LogVaCuus, Display, TEXT("VaCuus.Render.MaterialBox.BorderSlots: SKIPPED under NullRHI (no draw, no readback)"));
+		return true;
+	}
+
+	VaCuusMaterialBox::FParams Params = HalfMargins();
+	Params.bBorder = true;
+	TArray<FColor> Pixels;
+	if (!RenderMaterialBox(*this, Params, Pixels))
+	{
+		return false;
+	}
+	ExpectUV(*this, Pixels, FIntPoint(16, 64), SliceU(16.5f), 0.5f);   // left edge cell
+	ExpectUV(*this, Pixels, FIntPoint(240, 64), SliceU(240.5f), 0.5f); // right edge cell
+	ExpectUV(*this, Pixels, FIntPoint(128, 16), 0.5f, 16.5f / 32.f * 0.5f); // top edge cell
+	ExpectUV(*this, Pixels, FIntPoint(128, 64), 0.f, 0.f, /*bCleared=*/true); // centre: not drawn
+	return true;
+}
+
+/**
+ * CUSTOMIZED UVS ON THE SLICED MESH: Customized UV 2 = TexCoord[0] * 2, Emissive = TexCoord[2]
+ * (MakeCustomizedUVMaterial). The vertex stage evaluates it per grid vertex, so a UMG material
+ * that remaps UV0 in Customized UVs sees Slate's slice: 2 x the sliced u in the corner, not
+ * 2 x x / 256 as the unsliced quad would give.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusMaterialBoxCustomizedUVsTest, "VaCuus.Render.MaterialBox.CustomizedUVs",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusMaterialBoxCustomizedUVsTest::RunTest(const FString& Parameters)
+{
+	using namespace VaCuusMaterialSlotTest;
+
+	if (GUsingNullRHI)
+	{
+		UE_LOG(LogVaCuus, Display, TEXT("VaCuus.Render.MaterialBox.CustomizedUVs: SKIPPED under NullRHI (no draw, no readback)"));
+		return true;
+	}
+
+	TArray<FColor> Pixels;
+	if (!RenderMaterialBox(*this, HalfMargins(), Pixels, MakeCustomizedUVMaterial()))
+	{
+		return false;
+	}
+	// Left corner only: past u = 0.5 the doubled value saturates.
+	for (const int32 X : {4, 8, 16})
+	{
+		ExpectUV(*this, Pixels, FIntPoint(X, 64), 2.f * SliceU(X + 0.5f), 1.f);
+	}
+	return true;
+}
 
 #endif // WITH_DEV_AUTOMATION_TESTS && WITH_EDITOR

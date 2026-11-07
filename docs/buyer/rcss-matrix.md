@@ -145,9 +145,10 @@ A property with multiple parsers accepts any of them, tried in order.
 | `flex` | flex-grow, flex-shrink, flex-basis | Flex |  |
 | `flex-flow` | flex-direction, flex-wrap | FallThrough |  |
 
-## Decorators (17 registered names)
+## Decorators (18 registered names)
 
-Registered in Factory.cpp (line numbers in this vendored tree). All render
+Registered in Factory.cpp (line numbers in this vendored tree; `svg` in its plugin,
+`material-box` by VaCuus itself). All render
 through the record/replay path. `shader(<name-or-key>)` resolves builtin
 names first (`glass-panel` ships), then UMaterial style keys registered by the
 game (`UVaCuusStyleSet` -- the M5 material-decorator tier; unknown keys are
@@ -160,6 +161,22 @@ decorator's paint box in whole pixels -- and its three UV outputs are the paint
 box's own 0..1 (VaCuusMaterial.usf). Customized UVs run in the material's vertex
 stage here as they do under Slate, and a material that declares any reads the
 raw channels at the pixel stage, exactly as Slate's own UI shader hands them.
+
+`material-box(<key>, <image-size>, <margin> [, box | border])` is the same style
+key drawn as Slate's `DrawAs=Box` / `Border`: `<image-size>` is the brush's
+ImageSize (one or two lengths; `dp` follows the context's dp ratio), `<margin>`
+its Margin as fractions 0..1 in CSS order. The decorator builds Slate's 4x4 grid
+on the CPU, so TexCoord[0] arrives sliced exactly as FSlateElementBatcher slices
+it -- corners keep `image-size x margin` px while the middle stretches -- and
+slot 4 (Normalized UV) stays the paint box's continuous 0..1 for fills and
+gradients. A box smaller than two corners squishes them, as Slate does;
+`border` leaves the centre cell undrawn; margin 0 is `DrawAs=Image`, the same
+quad `shader(<key>)` draws. Margins outside 0..1 are clamped with one Warning;
+an unknown last keyword is dropped by RmlUi's shorthand parser and draws as
+`box`. `vacuus.MaterialBox 0` is a kill switch: new decorator data draws the
+plain quad. A `dp` image-size follows the dp ratio, so size the element in `dp` too;
+an element laid out in `px` holds still while its corners scale. For corners fixed
+in screen pixels, give the image-size in `px`.
 
 The six gradient decorators are **antialiased in screen space**, which is a
 deliberate deviation from RmlUi's reference backend. A hard colour break --
@@ -209,6 +226,7 @@ and the corner stays square. Spell a circle as half its own side
 | `conic-gradient` | Factory.cpp:212 |
 | `repeating-conic-gradient` | Factory.cpp:213 |
 | `svg` | SVGPlugin.cpp:26 |
+| `material-box` | VaCuusMaterialBoxDecorator.cpp:239 |
 
 ## Filters (10 registered names) -- blur-only in v1
 

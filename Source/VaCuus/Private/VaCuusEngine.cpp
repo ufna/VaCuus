@@ -6,6 +6,7 @@
 #include "VaCuusContentPaths.h"
 #include "VaCuusDefines.h"
 #include "VaCuusFileInterface.h"
+#include "VaCuusMaterialBoxDecorator.h"
 #include "VaCuusSystemInterface.h"
 #include "VaCuusTextInput.h"
 
@@ -133,6 +134,8 @@ bool FVaCuusEngine::Initialize()
 		return false;
 	}
 
+	VaCuusMaterialBox::Register();
+
 	// Default font face; missing font is a warning, not a boot failure. The existence
 	// check goes through the same ordered roots the file interface uses (D19), so it
 	// cannot disagree with the LoadFontFace() below about which copy exists.
@@ -211,6 +214,7 @@ void FVaCuusEngine::ForceShutdownAll()
 void FVaCuusEngine::TearDownLibrary()
 {
 	Rml::Shutdown();
+	VaCuusMaterialBox::Unregister();
 
 	// Interfaces must outlive Rml::Shutdown(); safe to drop them now.
 	if (RenderInterface == NullRenderInterface.Get())
