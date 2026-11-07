@@ -1,0 +1,5 @@
+.box      { decorator: material-box(card, 24dp, 0.5); }
+.two      { decorator: material-box(card, 64dp 32dp, 0.25 0.5); }
+.four     { decorator: material-box(card, 24dp, 0 0.5 1 0.25, border); }
+.layered  { decorator: material-box(frame, 24dp, 0.5), material-box(fill, 12dp, 0.5, box); }
+.kept     { decorator: material-box(card, 24dp, 2); } /* vacuus-lint-allow material-box-args */

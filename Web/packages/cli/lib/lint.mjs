@@ -145,6 +145,38 @@ function lintLayoutThrash(file, text, findings) {
 	}
 }
 
+/**
+ * RULE material-box-args (.rcss): `material-box(<key>, <image-size>, <margin> [, box | border])`
+ * written so that it misbehaves without an error. The margins are FSlateBrush fractions: a
+ * unit (`12px`) fails the "number" parser and drops the whole declaration, a value outside
+ * 0..1 is clamped at runtime. An unknown last keyword (`frame`) is dropped by RmlUi's
+ * RecursiveCommaSeparated shorthand without a warning and the element draws as `box`.
+ */
+function lintMaterialBoxArgs(file, text, findings) {
+	for (const m of text.matchAll(/material-box\s*\(([^()]*)\)/g)) {
+		if (allowed(text, m.index, 'material-box-args')) continue;
+		const args = m[1].split(',').map((a) => a.trim());
+		const problems = [];
+		if (args.length < 3 || args.length > 4) {
+			problems.push(`expects 3 or 4 comma-separated arguments, got ${args.length}`);
+		} else {
+			for (const margin of args[2].split(/\s+/).filter(Boolean)) {
+				if (!/^[+-]?(\d+\.?\d*|\.\d+)$/.test(margin)) {
+					problems.push(`margin '${margin}' must be a plain fraction 0..1 (FSlateBrush Margin), not a length: the declaration is dropped`);
+				} else if (Number(margin) < 0 || Number(margin) > 1) {
+					problems.push(`margin '${margin}' is outside 0..1 and will be clamped`);
+				}
+			}
+			if (args.length === 4 && !/^(box|border)$/.test(args[3])) {
+				problems.push(`'${args[3]}' is not box or border: RmlUi drops it silently and the element draws as box`);
+			}
+		}
+		for (const message of problems) {
+			findings.push({ rule: 'material-box-args', file, line: lineOf(text, m.index), message });
+		}
+	}
+}
+
 /** Lints one file by extension; returns findings. */
 export function lintFile(file) {
 	const text = readFileSync(file, 'utf8');
@@ -152,6 +184,7 @@ export function lintFile(file) {
 	if (file.endsWith('.rcss') || file.endsWith('.css')) {
 		lintBareAttributeSelector(file, text, findings);
 		lintBoxShadowAnimation(file, text, findings);
+		lintMaterialBoxArgs(file, text, findings);
 	} else if (/\.(tsx|ts|jsx|js|mjs)$/.test(file)) {
 		lintLayoutThrash(file, text, findings);
 	}

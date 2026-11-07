@@ -43,12 +43,13 @@ for (const [file, rule] of [
 	['bad-attribute-selector.rcss', 'bare-attribute-selector'],
 	['bad-box-shadow-anim.rcss', 'box-shadow-animation'],
 	['bad-layout-thrash.tsx', 'layout-thrash'],
+	['bad-material-box.rcss', 'material-box-args'],
 ]) {
 	const findings = lintFile(join(FIXTURES, file));
 	check(`lint: ${file} fires ${rule}`, findings.length > 0 && findings.every((f) => f.rule === rule),
 		`got ${JSON.stringify(findings.map((f) => f.rule))}`);
 }
-for (const file of ['clean-attribute-selector.rcss', 'clean-box-shadow-anim.rcss', 'clean-layout-thrash.tsx']) {
+for (const file of ['clean-attribute-selector.rcss', 'clean-box-shadow-anim.rcss', 'clean-layout-thrash.tsx', 'clean-material-box.rcss']) {
 	const findings = lintFile(join(FIXTURES, file));
 	check(`lint: ${file} is silent`, findings.length === 0, `got ${JSON.stringify(findings)}`);
 }

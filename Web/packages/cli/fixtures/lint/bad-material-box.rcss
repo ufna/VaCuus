@@ -1,0 +1,5 @@
+/* Each declaration misbehaves without an error at runtime. */
+.unit     { decorator: material-box(card, 24dp, 12px); }
+.range    { decorator: material-box(card, 24dp, 1.5); }
+.keyword  { decorator: material-box(card, 24dp, 0.5, frame); }
+.count    { decorator: material-box(card, 24dp); }
