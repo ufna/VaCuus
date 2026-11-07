@@ -1180,7 +1180,8 @@ static void Toggle(const TCHAR* DocumentVfsPath)
 			{TEXT("spike-additive"), TEXT("/VaCuus/Spike/M_VaCuusSpike_Additive.M_VaCuusSpike_Additive")},
 			{TEXT("spike-opaque"), TEXT("/VaCuus/Spike/M_VaCuusSpike_Opaque.M_VaCuusSpike_Opaque")},
 			{TEXT("spike-mid"), TEXT("/VaCuus/Spike/M_VaCuusSpike_MID.M_VaCuusSpike_MID")},
-			{TEXT("spike-anim"), TEXT("/VaCuus/Spike/M_VaCuusSpike_Anim.M_VaCuusSpike_Anim")}};
+			{TEXT("spike-anim"), TEXT("/VaCuus/Spike/M_VaCuusSpike_Anim.M_VaCuusSpike_Anim")},
+			{TEXT("demo-box"), TEXT("/VaCuus/Demo/M_VaCuusDemo_RoundedBox.M_VaCuusDemo_RoundedBox")}};
 
 		UVaCuusStyleSet* StyleSet = NewObject<UVaCuusStyleSet>(GetTransientPackage(), TEXT("VaCuusM5MatDemoStyleSet"));
 		for (const TPair<const TCHAR*, const TCHAR*>& Pair : DemoMaterials)
@@ -2571,7 +2572,8 @@ static FAutoConsoleCommand GM5MatSpikeCommand(
 	TEXT("Toggle the M5 material-decorator demo (DevUI/m5_matspike.rml): registers a style set over the committed ")
 	TEXT("spike materials and shows text cells carrying `decorator: shader(spike-*)` — the production tier end to ")
 	TEXT("end (registry -> recorder -> replay), incl. the Time-driven cell the forced-republish remedy keeps ")
-	TEXT("animating. Shares every vacuus.M1HUD.* sub-command."),
+	TEXT("animating — and the demo rounded box drawn by shader() and by material-box(...) side by side. ")
+	TEXT("Shares every vacuus.M1HUD.* sub-command."),
 	FConsoleCommandDelegate::CreateLambda([] { Toggle(GM5MatSpikeVfsPath); }));
 
 static FAutoConsoleCommand GM5DemoCommand(

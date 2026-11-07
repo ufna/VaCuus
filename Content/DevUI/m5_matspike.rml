@@ -26,6 +26,11 @@
 		#opaque      { decorator: shader( spike-opaque ); }
 		#mid         { decorator: shader( spike-mid ); }
 		#anim        { decorator: shader( spike-anim ); }
+		.box  { box-sizing: border-box; color: #FFFFFF; padding: 12dp 16dp; line-height: 24dp; font-size: 18dp; }
+		.tag  { font-size: 16dp; color: #B8C4D0; }
+		.shader { decorator: shader( demo-box ); }
+		.mbox   { decorator: material-box( demo-box, 48dp, 0.5 ); }
+		.mbord  { decorator: material-box( demo-box, 48dp, 0.5, border ); }
 	</style>
 </head>
 
@@ -75,6 +80,31 @@
 		The quick brown fox jumps over the lazy dog 0123456789.
 		The quick brown fox jumps over the lazy dog 0123456789.
 	</div>
+
+	<!-- THE SAME demo-box material (Content/Demo, saved with 5.6) on rectangles and squares.
+	     shader() stretches its corners with the cell (a square turns into a circle-ish blob, a
+	     rectangle into an ellipse); material-box keeps them at 48dp x 0.5 = 24dp at every size,
+	     as Slate's DrawAs=Box does. The fill gradient reads slot 4, continuous across the slice.
+	     Everything here is in dp, like the corners, so the cells scale with them (a px layout
+	     would hold still while the corners follow the dp ratio). The 30dp square is smaller
+	     than two corners, so they squish (Slate does too). -->
+	<div style="left: 880dp; top: 426dp;">SAME MATERIAL: shader(demo-box) vs material-box(demo-box, 48dp, 0.5)</div>
+
+	<div style="left: 880dp; top: 462dp;" class="tag">RECTANGLES</div>
+	<div style="left: 880dp; top: 490dp; width: 260dp; height: 120dp;" class="box shader">shader()</div>
+	<div style="left: 1170dp; top: 490dp; width: 260dp; height: 120dp;" class="box mbox">material-box</div>
+	<div style="left: 1460dp; top: 490dp; width: 260dp; height: 120dp;" class="box mbord">..., border</div>
+	<div style="left: 1750dp; top: 490dp; width: 90dp; height: 240dp;" class="box mbox">tall</div>
+	<div style="left: 880dp; top: 640dp; width: 840dp; height: 90dp;" class="box mbox">material-box, wide: the same 24dp corners</div>
+
+	<div style="left: 880dp; top: 752dp;" class="tag">SQUARES</div>
+	<div style="left: 880dp; top: 780dp; width: 160dp; height: 160dp;" class="box shader">shader()</div>
+	<div style="left: 1070dp; top: 780dp; width: 160dp; height: 160dp;" class="box mbox">160</div>
+	<div style="left: 1260dp; top: 780dp; width: 96dp; height: 96dp;" class="box mbox">96</div>
+	<div style="left: 1386dp; top: 780dp; width: 48dp; height: 48dp;" class="mbox"></div>
+	<div style="left: 1464dp; top: 780dp; width: 160dp; height: 160dp;" class="box mbord">border</div>
+	<div style="left: 1654dp; top: 780dp; width: 30dp; height: 30dp;" class="mbox"></div>
+	<div style="left: 1654dp; top: 820dp; width: 220dp;" class="tag">30dp: smaller than two corners, they squish</div>
 
 	<div style="left: 60px; top: 760px; width: 740px;" class="cell" id="control">
 		CONTROL CELL - no material is ever drawn here; if this text changes between
