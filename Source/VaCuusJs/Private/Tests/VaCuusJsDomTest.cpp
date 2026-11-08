@@ -5,6 +5,7 @@
 #if WITH_DEV_AUTOMATION_TESTS
 
 #include "VaCuusJsDomTestRig.h"
+#include "Misc/ScopeExit.h"
 
 #include <RmlUi/Core/Factory.h>
 
@@ -567,7 +568,7 @@ button { display: block; tab-index: auto; width: 100px; height: 40px; }
 #plain { width: 100px; height: 40px; }
 #row { tab-index: auto; width: 100px; height: 40px; }
 </style></head>
-<body><button id="btn"/><div id="wrap"><span id="label"/></div><div id="plain"/><div id="row"><span id="row-label"/></div></body>
+<body><button id="btn"/><div id="wrap"><span id="label"/></div><div id="plain"/><div id="row"><span id="row-label"/></div><div style="display: none;"><button id="hidden-btn"/></div></body>
 </rml>)");
 
 	FDomProbeHost* Probe = nullptr;
@@ -607,9 +608,9 @@ button { display: block; tab-index: auto; width: 100px; height: 40px; }
 	//
 	// ON A DIFFERENT ELEMENT THAN STEP 1, and that is a property of RmlUi rather than tidiness:
 	// OnFocusChange dispatches Blur and Focus over the SET DIFFERENCE of the old and new focus
-	// chains (Context.cpp:1228-1235), so re-focusing the element that already holds focus dispatches
+	// chains (Context.cpp:1706-1718), so re-focusing the element that already holds focus dispatches
 	// nothing at all -- and the pseudo classes are set from the Focus event's target phase
-	// (Element.cpp:2032-2039). Options therefore only land on a focus that actually moves.
+	// (Element.cpp:2036-2047). Options therefore only land on a focus that actually moves.
 	Rig.Eval(ViewId, "document.getElementById('row').focus({focusVisible: true})");
 	bool bFocusVisible = false;
 	Rig.RunOnUI([&bFocusVisible, Probe]()
@@ -664,7 +665,45 @@ button { display: block; tab-index: auto; width: 100px; height: 40px; }
 	const FString Thrown = Rig.Eval(ViewId,
 		"document.getElementById('btn').focus({get focusVisible() { throw new Error('nope'); }})");
 	TestTrue(TEXT("a throwing getter propagates"), Thrown.Contains(TEXT("nope")));
+	TestTrue(TEXT("a throwing getter is read before refusing an unfocusable receiver"),
+		Rig.Eval(ViewId, "document.getElementById('plain').focus({get focusVisible() { throw new Error('plain-nope'); }})")
+			.Contains(TEXT("plain-nope")));
 
+	TestEqual(TEXT("a button under a hidden panel cannot take script focus"),
+		Rig.Eval(ViewId, "String(document.getElementById('hidden-btn').focus())"), FString(TEXT("false")));
+	TestEqual(TEXT("hidden panel refusal leaves focus on the row"), ReadFocusId(), FString(TEXT("row")));
+	Rig.Eval(ViewId, "document.getElementById('row').focus()");
+
+	// The pool can reuse the removed button's slot for another button. Resolve its styles
+	// synchronously inside the getter so this does not rely on a later frame or stale properties.
+	static Rml::Context* FocusTestContext = nullptr;
+	ON_SCOPE_EXIT { FocusTestContext = nullptr; };
+	Rig.RunOnUI([Probe, ViewId]()
+		{
+			FocusTestContext = Probe->GetContext();
+			JSContext* Js = FWrappedDomHost::Inner->FindViewContext(ViewId)->GetContext();
+			JSValue Global = JS_GetGlobalObject(Js);
+			JS_SetPropertyStr(Js, Global, "flushFocusTestStyles", JS_NewCFunction(Js,
+				[](JSContext*, JSValueConst, int, JSValueConst*) -> JSValue
+				{
+					check(FVaCuusUIThread::IsInUIThread());
+					check(FocusTestContext != nullptr);
+					FocusTestContext->Update();
+					return JS_UNDEFINED;
+				}, "flushFocusTestStyles", 0));
+			JS_FreeValue(Js, Global);
+		});
+	TestEqual(TEXT("a getter removing its receiver cannot focus the replacement button"),
+		Rig.Eval(ViewId,
+			"globalThis.focusVictim = document.getElementById('btn');"
+			"globalThis.focusCanary = null;"
+			"const focusResult = focusVictim.focus({get focusVisible() {"
+			" focusVictim.remove(); focusCanary = document.createElement('button');"
+			" focusCanary.id = 'replacement'; document.getElementById('wrap').appendChild(focusCanary);"
+			" flushFocusTestStyles(); return true; }});"
+			"[String(focusResult), String(focusVictim.id), focusCanary.id].join('|')"),
+		FString(TEXT("false|null|replacement")));
+	TestEqual(TEXT("removal in the getter leaves focus on the original row"), ReadFocusId(), FString(TEXT("row")));
 	TestEqual(TEXT("no JS error anywhere in the run"), FWrappedDomHost::Inner->GetRuntime()->GetNumErrors(), uint64(0));
 	return true;
 }
