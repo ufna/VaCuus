@@ -421,6 +421,9 @@ private:
 	static JSValue RemoveChildThunk(JSContext* Ctx, JSValueConst This, int Argc, JSValueConst* Argv);
 	static JSValue RemoveThunk(JSContext* Ctx, JSValueConst This, int Argc, JSValueConst* Argv);
 
+	//~ Element prototype: focus. No blur() beside it -- see the thunk.
+	static JSValue FocusThunk(JSContext* Ctx, JSValueConst This, int Argc, JSValueConst* Argv);
+
 	//~ Element prototype: scrolling. One thunk, because the DOM gives
 	//~ scrollIntoView a union argument (boolean or options dictionary) rather
 	//~ than a family of methods.

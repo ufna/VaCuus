@@ -26,6 +26,7 @@
 #include "VaCuusJsDomHandle.h"
 #include "VaCuusJsRuntime.h"
 
+#include <RmlUi/Core/ComputedValues.h>
 #include <RmlUi/Core/Element.h>
 #include <RmlUi/Core/ElementDocument.h>
 #include <RmlUi/Core/ElementText.h>
@@ -108,6 +109,7 @@ enum EScrollAxis : int32
 	ScrollAxisTop = 0,	  // `scrollTop`: Element::Get/SetScrollTop
 	ScrollAxisLeft		  // `scrollLeft`: Element::Get/SetScrollLeft
 };
+
 
 /** DOM nodeType values (the only three this facade can produce). */
 enum ENodeType : int32
@@ -214,6 +216,25 @@ bool ApplyAlignment(JSContext* Ctx, JSValueConst Options, const char* Key, Rml::
 }
 
 /** The "behavior" key, by the same rules as ApplyAlignment. */
+/**
+ * Whether RmlUi's own navigation would be willing to focus this element, which is the gate
+ * FocusThunk applies. CanFocusElement (ElementDocument.cpp:30-44) is the only statement of this
+ * rule in the library and it is file-local there, so this is a copy -- the three conditions and
+ * their order, nothing added. Element::Focus itself tests only the first two, which is why calling
+ * it unguarded focuses any wrapper div.
+ */
+bool CanScriptFocus(const Rml::Element& Element)
+{
+	if (!Element.IsVisible())
+	{
+		return false;
+	}
+
+	const Rml::ComputedValues& Computed = Element.GetComputedValues();
+
+	return Computed.focus() != Rml::Style::Focus::None && Computed.tab_index() == Rml::Style::TabIndex::Auto;
+}
+
 bool ApplyBehavior(JSContext* Ctx, JSValueConst Options, Rml::ScrollBehavior& Out)
 {
 	Rml::String Keyword;
@@ -505,6 +526,7 @@ void FVaCuusJsViewContext::InstallDomPrototypes()
 		JS_CFUNC_MAGIC_DEF("insertBefore", 2, FVaCuusJsViewContext::InsertThunk, InsertBeforeRef),
 		JS_CFUNC_DEF("removeChild", 1, FVaCuusJsViewContext::RemoveChildThunk),
 		JS_CFUNC_DEF("remove", 0, FVaCuusJsViewContext::RemoveThunk),
+		JS_CFUNC_DEF("focus", 0, FVaCuusJsViewContext::FocusThunk),
 		JS_CFUNC_DEF("scrollIntoView", 0, FVaCuusJsViewContext::ScrollIntoViewThunk),
 		JS_CGETSET_MAGIC_DEF("scrollTop", FVaCuusJsViewContext::ScrollOffsetGetterThunk,
 			FVaCuusJsViewContext::ScrollOffsetSetterThunk, ScrollAxisTop),
@@ -922,6 +944,103 @@ JSValue FVaCuusJsViewContext::RemoveThunk(JSContext* Ctx, JSValueConst This, int
 	// destroy; no-op by the same never-throw rule.
 
 	return JS_UNDEFINED;
+}
+
+// ---------------------------------------------------------------------------
+// Element prototype: focus
+// ---------------------------------------------------------------------------
+
+/**
+ * focus([{focusVisible}]) -- RmlUi's Element::Focus, and the only way a script can move the
+ * highlight.
+ *
+ * WHAT HAD NO ROUTE BEFORE THIS. A game driving the UI from a gamepad or a keyboard owns which
+ * element is lit, and nothing in the facade could say so: the input queue's only focus verb is
+ * NavigateBack, which blurs, and the spatial `nav` graph can only step from wherever focus already
+ * is. A screen that wanted the highlight to start where the player's pointer had been resting had
+ * exactly one lever -- ProcessMouseButtonDown, which focuses the hovered element (Context.cpp:631-641)
+ * and arms a click on the way through. Pressing a button to move a highlight is not a trade anyone
+ * should have to make.
+ *
+ * IT IS GATED, AND NOT ON Element::Focus's OWN RULE. Element::Focus refuses only a computed `focus`
+ * of None (Element.cpp:1179-1184) -- there is no tab-index test in it -- so calling it directly
+ * succeeds on any plain wrapper div, which is the trap the NavigateBack handler documents and works
+ * around (VaCuusUIThread.cpp, the NavigateBack case: Blur() pushed focus onto a `<div>` and the
+ * player needed one Back press per level of nesting). A facade that passed that through would be
+ * handing every script the same trap and calling it DOM parity, which it is not: the DOM focuses
+ * only a focusable element.
+ *
+ * So the gate is CanFocusElement's, copied from the one place RmlUi states it
+ * (ElementDocument.cpp:30-44): visible, computed `focus` not None, computed `tab-index: auto`. That
+ * is exactly the set the arrow keys and Tab can reach, so a script and a player's keyboard now
+ * agree on what "focusable" means.
+ *
+ * IT RETURNS A BOOLEAN, where the DOM returns void, and that answer is the reason the gate is worth
+ * having: neither `tab-index` nor `focus` is readable from script -- RCSS exposes no reflection for
+ * either -- so a caller handed an arbitrary element (whatever the pointer was over, say, which is
+ * as likely to be a label inside a row as the row) has no other way to find the element the
+ * highlight belongs on:
+ *
+ *     let el = hovered;
+ *     while (el && !el.focus()) { el = el.parentNode; }
+ *
+ * Ignoring the result leaves DOM behaviour intact, so this is a superset and not a divergence.
+ *
+ * NO blur() BESIDE IT. Element::Blur hands focus to the IMMEDIATE PARENT (Element.cpp:2008-2031),
+ * where the missing tab-index gate bites again. Releasing focus is the host's verb -- the input
+ * queue's NavigateBack, which focuses the owner document after weighing exactly this -- and a
+ * script-side blur() would be a second, worse spelling of it.
+ *
+ * focusVisible is honoured because this exists for keyboard and pad navigation, which is precisely
+ * the case `:focus-visible` is for; RmlUi defaults it to false, as a pointer press should. It only
+ * lands on a focus that MOVES: OnFocusChange dispatches Blur and Focus over the set difference of
+ * the old and new focus chains (Context.cpp:1228-1235), so re-focusing the element that already
+ * holds focus dispatches nothing, and the pseudo classes are set from the Focus event's target
+ * phase (Element.cpp:2032-2039). Passed through rather than worked around: a facade that forced the
+ * event would be inventing a focus change RmlUi did not make.
+ */
+JSValue FVaCuusJsViewContext::FocusThunk(JSContext* Ctx, JSValueConst This, int Argc, JSValueConst* Argv)
+{
+	using namespace VaCuusJsDomInternal;
+
+	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	if (Self == nullptr)
+	{
+		return JS_FALSE;	// dead context: there is no tree left to focus in
+	}
+
+	Rml::Element* Element = Self->GetLiveElement(This);
+	if (Element == nullptr)
+	{
+		return JS_FALSE;	// dead handle: a no-op, like every other member
+	}
+
+	bool bFocusVisible = false;
+
+	if (Argc >= 1 && JS_IsObject(Argv[0]))
+	{
+		const JSValue Requested = JS_GetPropertyStr(Ctx, Argv[0], "focusVisible");
+		if (JS_IsException(Requested))
+		{
+			// A getter on the options object threw. That is the SCRIPT's throw, not a facade
+			// throw, so it propagates -- the same carve-out ToRmlString documents.
+			return JS_EXCEPTION;
+		}
+
+		// Absent reads as undefined, whose ToBool is false, which is the DOM's own default.
+		bFocusVisible = JS_ToBool(Ctx, Requested) == 1;
+		JS_FreeValue(Ctx, Requested);
+	}
+
+	// The gate runs AFTER the dictionary is read, which is the order WebIDL gives: arguments are
+	// converted before the algorithm runs, so a throwing getter throws even on an element that was
+	// never going to take the focus.
+	if (!CanScriptFocus(*Element))
+	{
+		return JS_FALSE;
+	}
+
+	return JS_NewBool(Ctx, Element->Focus(bFocusVisible));
 }
 
 // ---------------------------------------------------------------------------
