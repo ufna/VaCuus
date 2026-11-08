@@ -267,6 +267,27 @@ static FPointerEvent MakePointerEvent(const FVector2D& Position, const TSet<FKey
 }
 
 /**
+ * A move FROM one point TO another, which is the only kind of move that carries a cursor delta.
+ *
+ * MakePointerEvent above passes one position as both the current and the last, which is faithful
+ * for a press, a release and a wheel -- none of them asks what the delta was -- but makes a MOVE
+ * built from it indistinguishable from one Slate synthesised on a still mouse. OnMouseMove tells
+ * the two apart by the delta, so a test that means "the player moved the pointer" has to say where
+ * it moved from.
+ */
+static FPointerEvent MakeMoveEvent(const FVector2D& From, const FVector2D& To, const TSet<FKey>& PressedButtons)
+{
+	return FPointerEvent(
+		FSlateApplicationBase::CursorPointerIndex,
+		To,
+		From,
+		PressedButtons,
+		FKey(),
+		/*InWheelDelta=*/0.0f,
+		FModifierKeysState());
+}
+
+/**
  * A touch event as FSlateApplication would build one.
  *
  * bIsTouchEvent is the whole point: it is what makes FSlateApplication offer the press to OnTouchStarted
@@ -597,7 +618,10 @@ bool FVaCuusSlateRoutingTest::RunTest(const FString& Parameters)
 		// a genuine captor-map entry. What THIS venue must pin is the asymmetry
 		// that keeps the drag's bookkeeping alive: Slate's "no" must NOT tear
 		// down the widget's own mid-gesture mirror.
-		Widget->OnMouseMove(Geometry, MakePointerEvent(GEmptyPoint, LeftOnly, FKey()));
+		// MakeMoveEvent, because this move has to REACH the queue for the count below: a drag that
+		// crosses from the button to empty space has moved by definition, and a zero-delta move is
+		// now dropped as Slate's synthesis rather than queued.
+		Widget->OnMouseMove(Geometry, MakeMoveEvent(GButtonPoint, GEmptyPoint, LeftOnly));
 		TestTrue(TEXT("An out-of-rect move mid-drag does not tear down the widget's capture mirror"),
 			Widget->IsTrackingMouseCapture_Debug());
 
@@ -2131,6 +2155,108 @@ bool FVaCuusPressFocusCaptureTest::RunTest(const FString& Parameters)
 		static_cast<const SWidget*>(&Widget.Get()));
 
 	Slate.RoutePointerUpEvent(WidgetPath, MakePointerEvent(ScreenPosition, NoButtons, EKeys::LeftMouseButton));
+
+	UIThread->EnqueueRemoveView(ViewId);
+	TestTrue(TEXT("UI frames survive the removal"), RunFrames(*UIThread, 2));
+
+	return true;
+}
+
+/**
+ * A MOUSE THAT DID NOT MOVE MUST NOT REVIVE `:hover`, and Slate hands the widget one such move per
+ * tick for as long as it is awake (SlateApplication.cpp:1800-1805, SlateUser.cpp:741-744). RmlUi
+ * takes any move as proof the mouse is live -- ProcessPointerMove sets `mouse_active` and rebuilds
+ * the hover chain (Context.cpp:659-665) -- so before the delta test in OnMouseMove, a game that
+ * sent MouseLeave got the hover back a frame later, every frame, for as long as the pointer rested
+ * over an element.
+ *
+ * Both halves are asserted, because the cheap fix for the first breaks the second: a synthetic move
+ * is dropped, and a real one at the SAME destination still arrives.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusSyntheticMoveHoverTest, "VaCuus.Input.SyntheticMoveHover",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusSyntheticMoveHoverTest::RunTest(const FString& Parameters)
+{
+	using namespace VaCuusSlateRoutingTest;
+
+	AddExpectedMessagePlain(TEXT("Activating a context failed when its window"), ELogVerbosity::Error,
+		EAutomationExpectedMessageFlags::Contains, /*Occurrences=*/-1);
+
+	FVaCuusModule& Module = FVaCuusModule::Get();
+	FVaCuusUIThread* UIThread = Module.GetOrStartUIThread();
+	if (!TestNotNull(TEXT("UI thread"), UIThread))
+	{
+		return false;
+	}
+
+	ON_SCOPE_EXIT
+	{
+		Module.StopUIThread();
+	};
+
+	const FIntPoint ViewSize(400, 300);
+	const TSharedRef<FVaCuusViewStatus> Status = MakeShared<FVaCuusViewStatus>();
+
+	TUniquePtr<FProbeHost> OwnedHost = MakeUnique<FProbeHost>();
+	FProbeHost* Host = OwnedHost.Get();
+
+	const uint32 ViewId = UIThread->AllocateViewId();
+	UIThread->EnqueueAddView(ViewId, MoveTemp(OwnedHost), ViewSize, Status);
+	UIThread->EnqueueLoadDocumentFromMemory(ViewId, GDocument, /*LoadSerial=*/1);
+
+	TStrongObjectPtr<UGameInstance> GameInstance(NewObject<UGameInstance>());
+	TStrongObjectPtr<UVaCuusSubsystem> Subsystem(NewObject<UVaCuusSubsystem>(GameInstance.Get()));
+	TStrongObjectPtr<UVaCuusView> View(NewObject<UVaCuusView>(Subsystem.Get()));
+	View->InitializeView(Subsystem.Get(), ViewId, Status, ViewSize);
+
+	const TSharedRef<FVaCuusSlateElement> Element = MakeShared<FVaCuusSlateElement>();
+	TSharedRef<SVaCuusWidget> Widget = SNew(SVaCuusWidget, View.Get(), Element);
+
+	const FGeometry Geometry = FGeometry::MakeRoot(FVector2f(ViewSize.X, ViewSize.Y), FSlateLayoutTransform());
+
+	if (!TestTrue(TEXT("UI frames ran"), RunFrames(*UIThread, 2)))
+	{
+		return false;
+	}
+
+	const TSet<FKey> NoButtons;
+
+	// 1. A real move onto the button hovers it. The baseline the rest of the test is read against:
+	// without this the "still empty" assertions below would pass on a document nothing ever hovered.
+	Widget->OnMouseMove(Geometry, MakeMoveEvent(GEmptyPoint, GButtonPoint, NoButtons));
+	if (!TestTrue(TEXT("UI frame ran after the real move"), RunFrames(*UIThread, 1)))
+	{
+		return false;
+	}
+	TestEqual(TEXT("A real move hovers the button"), Host->HoverId, FString(TEXT("btn")));
+
+	// 2. The game takes the hover out, which is what a screen driving its own highlight does.
+	UIThread->EnqueueInput(ViewId, FVaCuusInputEvent::MouseLeave());
+	if (!TestTrue(TEXT("UI frame ran after the leave"), RunFrames(*UIThread, 1)))
+	{
+		return false;
+	}
+	TestEqual(TEXT("MouseLeave clears the hover"), Host->HoverId, FString());
+
+	// 3. THE REGRESSION. Slate's synthetic move, which is this and nothing else: the same position
+	// twice, no button, no wheel. Restore the unconditional SendMouseInput in OnMouseMove and this
+	// is the assertion that fails -- the hover comes back as "btn".
+	Widget->OnMouseMove(Geometry, MakeMoveEvent(GButtonPoint, GButtonPoint, NoButtons));
+	if (!TestTrue(TEXT("UI frame ran after the synthetic move"), RunFrames(*UIThread, 1)))
+	{
+		return false;
+	}
+	TestEqual(TEXT("A move with no delta leaves the hover out"), Host->HoverId, FString());
+
+	// 4. And the player's own move still works, to the very same pixel the synthetic one named.
+	// The fix must drop the event, not the destination.
+	Widget->OnMouseMove(Geometry, MakeMoveEvent(GEmptyPoint, GButtonPoint, NoButtons));
+	if (!TestTrue(TEXT("UI frame ran after the second real move"), RunFrames(*UIThread, 1)))
+	{
+		return false;
+	}
+	TestEqual(TEXT("A real move to the same point hovers it again"), Host->HoverId, FString(TEXT("btn")));
 
 	UIThread->EnqueueRemoveView(ViewId);
 	TestTrue(TEXT("UI frames survive the removal"), RunFrames(*UIThread, 2));
