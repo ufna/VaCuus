@@ -4,7 +4,7 @@
 #     bash Tools/gen_readme_shots.sh                          # needs TINYPNG_API_KEY in .env
 #     ENV_FILE=/path/to/.env bash Tools/gen_readme_shots.sh   # from a worktree, which has none
 #
-# Writes docs/marketing/readme/{refhud,m2demo,world,glass,deco,vectors}.webp.
+# Writes docs/marketing/readme/{refhud,m2demo,world,glass,deco,vectors,material-box}.webp.
 #
 # WHY WEBP. README.md links its images by relative path, so they are fetched out of the
 # repository on every view. *.png is a Git LFS pattern (.gitattributes) and LFS objects are
@@ -55,3 +55,4 @@ shot glass  1560x690+90+200    # the three glass panels, x 120..1622, y 320..655
 shot deco   1780x790+90+130    # the six decorator panels, x 120..1842, y 160..893
 
 shot vectors 1600x650+0+0    # vector demo header and all four panels
+shot material-box 1100x620+820+410  # shader/material-box comparison, all nine-slice sizes

@@ -49,9 +49,9 @@ Optional JavaScript (QuickJS) and a TypeScript/Preact workflow sit on top. Rende
 through the engine's RHI into a persistent render target that Slate composites, so a
 document can be a full-screen HUD or a panel on a quad in the world.
 
-> **Status: released, 1.3.1. Engines: UE 5.6, 5.7 and 5.8.** The 5.6 and 5.8
+> **Status: released, 1.4.0. Engines: UE 5.6, 5.7 and 5.8.** The 5.6 and 5.8
 > packages compile from this one source tree; the 5.7 package is derived from the 5.6
-> build with its provenance stated in the release notes. The 296-test automation suite
+> build with its provenance stated in the release notes. The 349-test automation suite
 > ships with the plugin and can be run locally (below). Supported platforms are Windows,
 > macOS, Linux, Android and iOS; consoles on request. Packages are published on
 > [GitHub Releases](https://github.com/ufna/VaCuus/releases), one archive per engine
@@ -61,6 +61,12 @@ document can be a full-screen HUD or a panel on a quad in the world.
 > release notes.
 
 ## Features
+
+**New in 1.4:** keep material-frame corners at a fixed size with `material-box`,
+move the keyboard or gamepad highlight with `element.focus()`, and read wrapped label
+sizes from the game thread with `vacuus-measure`. Fingers and a connected mouse now
+operate independently, including simultaneous drag clones.
+[Recipes and examples](docs/buyer/ui-recipes.md).
 
 SVG files, inline SVG, SVG decorators and Lottie animations are built in. See
 [vector assets](docs/buyer/vector-assets.md) for markup, resource paths and cost,
@@ -107,11 +113,12 @@ or run `vacuus.VectorDemo` in the editor.
   </tr>
   <tr>
     <td valign="middle">
-      <h3>Gradients, decorators, engine materials</h3>
-      <p>Linear, repeating, radial and conic gradients render through the same recorder as everything else. <code>shader(…)</code> decorators resolve built-in names first, then <code>UMaterial</code> style keys your game registers — engine materials as CSS backgrounds.</p>
+      <h3>Scalable frames from Unreal materials</h3>
+      <p><code>material-box(…)</code> draws your UI material with nine-slice corners that keep their size as a panel grows. Repeat the border around an open centre, fade it with the element, or use a continuous material gradient across the whole frame.</p>
+      <p><a href="docs/buyer/ui-recipes.md">Material, focus and layout recipes</a>. Linear, radial and conic gradients and <code>shader(…)</code> backgrounds remain available too.</p>
     </td>
     <td>
-      <a href="site/public/shots/deco.png"><img src="docs/marketing/readme/deco.webp" alt="Six decorator panels: linear gradient, hazard stripes, radial gradient, conic hue wheel, a glass-panel shader and a plain control" width="640" /></a>
+      <a href="site/public/shots/material-box.png"><img src="docs/marketing/readme/material-box.webp" alt="The same Unreal UI material stretched with shader and nine-sliced with material-box, on wide, tall and small panels" width="640" /></a>
     </td>
   </tr>
 </table>
@@ -157,6 +164,7 @@ The reference-HUD baseline above was measured before vector support. See
 | [`docs/buyer/gotchas.md`](docs/buyer/gotchas.md) | Every recorded surprise, numbered. Read before your first authoring day — most of them cost someone a debugging session already. |
 | [`docs/buyer/rcss-matrix.md`](docs/buyer/rcss-matrix.md) | The exact supported RCSS surface, generated from the vendored RmlUi this plugin ships. RCSS is not CSS; this page is the difference. |
 | [`docs/buyer/vector-assets.md`](docs/buyer/vector-assets.md) | SVG files, inline SVG, SVG decorators and Lottie animation, with resource paths and cost. |
+| [`docs/buyer/ui-recipes.md`](docs/buyer/ui-recipes.md) | Scalable Unreal material frames, script focus, measured label sizes and independent touch gestures. |
 | [`docs/buyer/perf-guide.md`](docs/buyer/perf-guide.md) | The budgets, the measured numbers, and the idioms that keep a HUD inside them. |
 | [`docs/buyer/ai-guide.md`](docs/buyer/ai-guide.md) | **If an AI agent writes your UI.** The whole interface is plain text, which suits agents well — but most mistakes here produce no error and a screen that renders, and an agent cannot see the screen. This page is what to brief it with. `AGENTS.md` beside this file is the short version an agent finds on its own. |
 
@@ -220,7 +228,7 @@ Source/VaCuusRender/        Record -> RHI replay -> Slate composite, UMG widget 
 Source/VaCuusJs/            The JavaScript host and the DOM facade (Runtime, Default)
 Source/VaCuusEditor/        Live reload and the bundle factory (Editor, PostEngineInit)
 Web/                        Optional TypeScript/Preact workflow, source-only (npm-install it yourself)
-docs/buyer/                 The five pages above, plus localization.md
+docs/buyer/                 Setup, authoring guides, API recipes and localization
 ```
 
 There is no `Binaries/` directory in the package and that is Fab's rule for sellers of
@@ -235,12 +243,15 @@ declared in `Source/VaCuus/Public/VaCuusDefines.h` — that is the category to r
 
 ## Third-party components
 
-Both are vendored in-tree with their licenses beside them, and both are MIT:
+The runtime libraries are vendored in-tree with their licenses beside them:
 
 - **RmlUi 6.x** — `Source/ThirdParty/RmlUi/LICENSE.txt`. The document, layout and styling
   engine. Patches applied to it are recorded rather than silent; see `VENDORED_TAG.txt`.
 - **QuickJS-ng** — `Source/ThirdParty/quickjs-ng/LICENSE`. The JavaScript runtime, with its
   symbols deliberately kept out of the module's export table.
+- **LunaSVG / PlutoVG** — SVG rendering; **rlottie** — Lottie animation. Their licenses
+  and the FreeType, libpng and zlib notices are collected in
+  [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md).
 
 The plugin's own source is licensed under the **Business Source License 1.1**
 ([`LICENSE.md`](LICENSE.md)): free to read, modify and use outside production, free in

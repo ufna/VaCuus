@@ -60,7 +60,7 @@ onUnmounted(() => {
              because it is the whole offer in nine words: a visitor who never scrolls still
              leaves knowing they may take this today. "Pre-release" used to lead this row and
              was wrong on both counts — VaCuus.uplugin has IsBetaVersion false and
-             VersionName 1.3.0, and the status block below already says released. -->
+             VersionName 1.4.0, and the status block below already says released. -->
         <div class="vc-hero-top vc-anim vc-anim-1">
           <span class="vc-eyebrow"
             >Unreal Engine 5.6 &ndash; 5.8, full source included</span
@@ -224,14 +224,14 @@ onUnmounted(() => {
         <div class="vc-status-hazard" aria-hidden="true" />
         <div class="vc-status-body">
           <div class="vc-status-head">
-            <strong>Status &mdash; released (1.3.0)</strong>
+            <strong>Status &mdash; released (1.4.0)</strong>
             <a class="vc-cite" href="https://github.com/ufna/VaCuus#readme">README.md</a>
           </div>
           <p>
             <strong>UE 5.6, 5.7 and 5.8</strong> are supported from this one source tree.
             The 5.6 and 5.8 packages are compiled on their respective engines; the 5.7
             package is derived from 5.6, as recorded in its manifest and release notes.
-            The <strong>295-test automation suite</strong> ships with the plugin and can
+            The <strong>349-test automation suite</strong> ships with the plugin and can
             be run locally. Take the download that matches your engine from
             <a href="https://github.com/ufna/VaCuus/releases" target="_blank" rel="noreferrer"
               >GitHub Releases</a
@@ -241,6 +241,12 @@ onUnmounted(() => {
             <strong>Windows, macOS, Linux, Android and iOS</strong> are supported;
             consoles on request. The API is <strong>stable</strong> &mdash; breaking
             changes are reserved for major versions and carry release notes.
+          </p>
+          <p>
+            <strong>New in 1.4:</strong> scalable material frames with
+            <code>material-box</code>, script-controlled focus, measured label sizes,
+            and independent fingers and mouse gestures.
+            <a href="/docs/ui-recipes">See the recipes and examples</a>.
           </p>
         </div>
       </aside>
@@ -436,7 +442,7 @@ onUnmounted(() => {
           <div class="vc-ship">
             <h3>rcss-matrix.md</h3>
             <p>
-              99 properties, 20 shorthands, 16 decorators &mdash; parsed out of the exact
+              99 properties, 20 shorthands, 18 decorators &mdash; parsed out of the exact
               RmlUi vendored in the package, not out of a model's training data. If a property
               is not in that file, it does not exist.
             </p>
@@ -446,7 +452,7 @@ onUnmounted(() => {
             <p>
               A declaration RmlUi cannot parse logs a warning naming <code>file:line</code>,
               in every configuration <strong>including Shipping</strong>. Plus a headless
-              1920&times;1080 render recipe and the 295-test suite, so an agent can check its
+              1920&times;1080 render recipe and the 349-test suite, so an agent can check its
               own work.
             </p>
           </div>
@@ -515,6 +521,29 @@ onUnmounted(() => {
         </header>
 
         <div class="vc-gallery">
+          <figure class="vc-shot vc-shot-wide vc-rise">
+            <span class="vc-ticks" aria-hidden="true"><i /><i /><i /><i /></span>
+            <span class="vc-shot-frame">
+              <img
+                src="/shots/material-box.png"
+                width="1920"
+                height="1080"
+                loading="lazy"
+                decoding="async"
+                alt="One Unreal UI material stretched with shader and nine-sliced with
+                     material-box: wide and tall frames keep their corners, with border-only
+                     and small-square examples beside them."
+              />
+            </span>
+            <figcaption class="vc-shot-bar">
+              <span class="vc-tag">vacuus.M5MatSpike</span>
+              <span>
+                <a href="/docs/ui-recipes">material-box</a>: the same material on wide,
+                tall and small panels &mdash; fixed-size corners and repeating borders
+              </span>
+            </figcaption>
+          </figure>
+
           <figure class="vc-shot vc-rise">
             <span class="vc-ticks" aria-hidden="true"><i /><i /><i /><i /></span>
             <span class="vc-shot-frame">
@@ -730,7 +759,7 @@ onUnmounted(() => {
             <p>
               An agent can only build a UI it can hold in its head. The supported language
               here is small, closed and <strong>generated</strong> &mdash; 99 properties, 20
-              shorthands, 16 decorators, parsed out of the exact RmlUi vendored in your
+              shorthands, 18 decorators, parsed out of the exact RmlUi vendored in your
               package &mdash; so the whole surface fits in an agent's context as ground
               truth. A mistake surfaces as a log warning naming <code>file:line</code>, in
               every configuration including Shipping, instead of a devtools session nobody is
@@ -759,12 +788,12 @@ onUnmounted(() => {
     <!-- ====================================================== numbers == -->
     <section class="vc-numbers vc-rise">
       <div class="vc-num">
-        <b>295</b>
+        <b>349</b>
         <em>automation tests, shipped with the plugin</em>
         <small>Automation RunTests VaCuus</small>
       </div>
       <div class="vc-num">
-        <b>99<i> / 20 / 16</i></b>
+        <b>99<i> / 20 / 18</i></b>
         <em>RCSS properties, shorthands, decorators</em>
         <small>generated from the vendored RmlUi</small>
       </div>
@@ -775,8 +804,8 @@ onUnmounted(() => {
       </div>
       <div class="vc-num">
         <b>5.6<i>&ndash;</i>5.8</b>
-        <em>engines, built and tested from one tree</em>
-        <small>5.6, 5.7, 5.8, verified on Linux</small>
+        <em>engine versions, one source tree</em>
+        <small>5.6 and 5.8 compiled; 5.7 derived from 5.6</small>
       </div>
     </section>
 

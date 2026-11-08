@@ -538,6 +538,8 @@ reproduce the pipeline cannot check any claim in `perf-guide.md` against their o
 
 ## 5. What to read next
 
+- [Materials, focus and measured layout](ui-recipes.md) — scalable material frames,
+  script focus, wrapped label sizes and independent touch gestures, introduced in 1.4.
 - `gotchas.md` — before your first authoring day; every entry is a recorded finding.
 - `rcss-matrix.md` — the exact supported RCSS surface, generated from the vendored
   RmlUi this plugin ships.

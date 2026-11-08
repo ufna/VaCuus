@@ -27,7 +27,8 @@ const PAGES = [
   'perf-guide.md',
   'ai-guide.md',
   'localization.md',
-  'vector-assets.md'
+  'vector-assets.md',
+  'ui-recipes.md'
 ]
 
 const GITHUB_BLOB = 'https://github.com/ufna/VaCuus/blob/master'

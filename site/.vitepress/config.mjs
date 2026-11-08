@@ -147,7 +147,8 @@ export default defineConfig({
             { text: 'Performance Guide', link: '/docs/perf-guide' },
             { text: 'AI Guide', link: '/docs/ai-guide' },
             { text: 'Localization', link: '/docs/localization' },
-            { text: 'SVG and Lottie', link: '/docs/vector-assets' }
+            { text: 'SVG and Lottie', link: '/docs/vector-assets' },
+            { text: 'Materials, Focus and Layout', link: '/docs/ui-recipes' }
           ]
         }
       ]

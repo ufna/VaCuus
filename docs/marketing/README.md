@@ -57,6 +57,7 @@ badge in the rendered DOM, so the Fab listing's source retains its own published
 | `threads.svg` | one UI frame across the three threads | hand-written; restates CLAUDE.md "Architecture Overview" |
 | `refhud.webp` | the hero, full frame | `Tools/gen_readme_shots.sh` |
 | `m2demo.webp`, `world.webp`, `glass.webp`, `deco.webp`, `vectors.webp` | feature-row crops | `Tools/gen_readme_shots.sh` |
+| `material-box.webp` | material-box comparison, lower-right group of the material demo | `Tools/gen_readme_shots.sh` |
 
 Sources are the site's 1920×1080 headless captures in `site/public/shots/`; the feature rows
 link to those full frames. The crops exist because a README table cell is ~445 px wide: the
@@ -112,3 +113,8 @@ uses `vacuus.M5World 0 1024 1024 0.25, vacuus.WorldDemo.Shot 2`.
 Stop each editor normally before building again. Compress the captured PNGs with
 TinyPNG before copying them to `site/public/shots`; regenerate the README crops
 from those captures. The SVG/Lottie demo is `vectors.png` / `vectors.webp`.
+
+The material-frame comparison is `vacuus.M5MatSpike` followed by
+`vacuus.M1HUD.AutoShot 2000`, captured as `material-box.png`. Allow its materials to
+finish shader compilation before taking the shot; an early frame has labels but
+no material frames. The README crop keeps the lower-right comparison group.
