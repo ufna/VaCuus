@@ -170,13 +170,16 @@ on the CPU, so TexCoord[0] arrives sliced exactly as FSlateElementBatcher slices
 it -- corners keep `image-size x margin` px while the middle stretches -- and
 slot 4 (Normalized UV) stays the paint box's continuous 0..1 for fills and
 gradients. A box smaller than two corners squishes them, as Slate does;
-`border` leaves the centre cell undrawn; margin 0 is `DrawAs=Image`, the same
+`border` repeats the edge strips and leaves the centre cell undrawn. The sliced
+or repeated UV0 is supplied before Customized UVs run. `border-radius` follows
+the paint area, including elliptical inner corners. Margin 0 is `DrawAs=Image`, the same
 quad `shader(<key>)` draws. Margins outside 0..1 are clamped with one Warning;
 an unknown last keyword is dropped by RmlUi's shorthand parser and draws as
 `box`. `vacuus.MaterialBox 0` is a kill switch: new decorator data draws the
 plain quad. A `dp` image-size follows the dp ratio, so size the element in `dp` too;
 an element laid out in `px` holds still while its corners scale. For corners fixed
-in screen pixels, give the image-size in `px`.
+in screen pixels, give the image-size in `px`. Declarations requiring more than
+4096 edge tiles are refused with a Warning; increase the image-size in that case.
 
 The six gradient decorators are **antialiased in screen space**, which is a
 deliberate deviation from RmlUi's reference backend. A hard colour break --
@@ -226,7 +229,7 @@ and the corner stays square. Spell a circle as half its own side
 | `conic-gradient` | Factory.cpp:212 |
 | `repeating-conic-gradient` | Factory.cpp:213 |
 | `svg` | SVGPlugin.cpp:26 |
-| `material-box` | VaCuusMaterialBoxDecorator.cpp:239 |
+| `material-box` | VaCuusMaterialBoxDecorator.cpp:387 |
 
 ## Filters (10 registered names) -- blur-only in v1
 

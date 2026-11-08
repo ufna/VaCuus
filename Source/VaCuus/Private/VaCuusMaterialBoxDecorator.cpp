@@ -32,13 +32,114 @@ bool IsEnabled()
 	return CVarVaCuusMaterialBox.GetValueOnAnyThread() != 0;
 }
 
-void BuildMesh(const FParams& Params, Rml::Vector2f Offset, Rml::Vector2f Size, float W, float H,
-	Rml::ColourbPremultiplied Colour, Rml::Mesh& OutMesh)
+namespace
 {
+// GenerateBackground owns RmlUi's radius clamping and elliptical inner corners
+// (MeshUtilities.cpp:118-139, GeometryBackgroundBorder.cpp:11-93). Intersecting each
+// sliced triangle with that convex outline preserves its UV interpolation and avoids
+// a separate stencil operation that could disturb an enclosing overflow clip.
+void ClipToPaintBox(const Rml::RenderBox* PaintBox, Rml::ColourbPremultiplied Colour, Rml::Mesh& Mesh)
+{
+	if (!PaintBox)
+	{
+		return;
+	}
+	Rml::Mesh Outline;
+	Rml::MeshUtilities::GenerateBackground(Outline, *PaintBox, Colour);
+	if (Outline.vertices.size() <= 4)
+	{
+		return;
+	}
+	auto Cross = [](Rml::Vector2f A, Rml::Vector2f B, Rml::Vector2f C)
+	{
+		return (B.x - A.x) * (C.y - A.y) - (B.y - A.y) * (C.x - A.x);
+	};
+	float Area = 0.f;
+	for (size_t I = 0; I < Outline.vertices.size(); ++I)
+	{
+		const Rml::Vector2f A = Outline.vertices[I].position;
+		const Rml::Vector2f B = Outline.vertices[(I + 1) % Outline.vertices.size()].position;
+		Area += A.x * B.y - A.y * B.x;
+	}
+	const float Winding = Area >= 0.f ? 1.f : -1.f;
+	Rml::Mesh Clipped;
+	TArray<Rml::Vertex, TInlineAllocator<32>> Polygon, Next;
+	for (size_t I = 0; I + 2 < Mesh.indices.size(); I += 3)
+	{
+		Polygon.Reset();
+		for (int32 Corner = 0; Corner < 3; ++Corner)
+		{
+			Polygon.Add(Mesh.vertices[Mesh.indices[I + Corner]]);
+		}
+		for (size_t Edge = 0; Edge < Outline.vertices.size() && !Polygon.IsEmpty(); ++Edge)
+		{
+			const Rml::Vector2f A = Outline.vertices[Edge].position;
+			const Rml::Vector2f B = Outline.vertices[(Edge + 1) % Outline.vertices.size()].position;
+			Next.Reset();
+			Rml::Vertex Previous = Polygon.Last();
+			float PreviousDistance = Winding * Cross(A, B, Previous.position);
+			for (const Rml::Vertex& Current : Polygon)
+			{
+				const float Distance = Winding * Cross(A, B, Current.position);
+				if ((Distance >= 0.f) != (PreviousDistance >= 0.f))
+				{
+					const float T = PreviousDistance / (PreviousDistance - Distance);
+					Rml::Vertex Intersection;
+					Intersection.position = Previous.position + (Current.position - Previous.position) * T;
+					Intersection.tex_coord = Previous.tex_coord + (Current.tex_coord - Previous.tex_coord) * T;
+					Intersection.colour = Colour;
+					Next.Add(Intersection);
+				}
+				if (Distance >= 0.f)
+				{
+					Next.Add(Current);
+				}
+				Previous = Current;
+				PreviousDistance = Distance;
+			}
+			Swap(Polygon, Next);
+		}
+		if (Polygon.Num() < 3)
+		{
+			continue;
+		}
+		const int32 First = int32(Clipped.vertices.size());
+		for (const Rml::Vertex& Vertex : Polygon)
+		{
+			Clipped.vertices.push_back(Vertex);
+		}
+		for (int32 Corner = 1; Corner + 1 < Polygon.Num(); ++Corner)
+		{
+			if (FMath::Abs(Cross(Polygon[0].position, Polygon[Corner].position, Polygon[Corner + 1].position)) > UE_SMALL_NUMBER)
+			{
+				Clipped.indices.insert(Clipped.indices.end(), {First, First + Corner, First + Corner + 1});
+			}
+		}
+	}
+	Mesh = MoveTemp(Clipped);
+}
+} // namespace
+
+void BuildMesh(const FParams& Params, Rml::Vector2f Offset, Rml::Vector2f Size, float W, float H,
+	Rml::ColourbPremultiplied Colour, Rml::Mesh& OutMesh, const Rml::RenderBox* PaintBox)
+{
+	OutMesh.vertices.clear();
+	OutMesh.indices.clear();
 	const float mT = Params.Margin[0], mR = Params.Margin[1], mB = Params.Margin[2], mL = Params.Margin[3];
 	if (mT + mR + mB + mL <= 0.f)
 	{
-		Rml::MeshUtilities::GenerateQuad(OutMesh, Offset, Size, Colour, Rml::Vector2f(0.f), Rml::Vector2f(1.f));
+		if (PaintBox)
+		{
+			Rml::MeshUtilities::GenerateBackground(OutMesh, *PaintBox, Colour);
+			for (Rml::Vertex& Vertex : OutMesh.vertices)
+			{
+				Vertex.tex_coord = (Vertex.position - Offset) / Size;
+			}
+		}
+		else
+		{
+			Rml::MeshUtilities::GenerateQuad(OutMesh, Offset, Size, Colour, Rml::Vector2f(0.f), Rml::Vector2f(1.f));
+		}
 		return;
 	}
 
@@ -63,10 +164,10 @@ void BuildMesh(const FParams& Params, Rml::Vector2f Offset, Rml::Vector2f Size, 
 		Y[i] += Offset.y;
 	}
 	// Inner cuts on whole pixels, outer edges as laid out (DecoratorNinePatch.cpp:101-103).
-	X[1] = Rml::Math::Round(X[1]);
-	X[2] = Rml::Math::Round(X[2]);
-	Y[1] = Rml::Math::Round(Y[1]);
-	Y[2] = Rml::Math::Round(Y[2]);
+	X[1] = FMath::Clamp(Rml::Math::Round(X[1]), X[0], X[3]);
+	X[2] = FMath::Clamp(Rml::Math::Round(X[2]), X[1], X[3]);
+	Y[1] = FMath::Clamp(Rml::Math::Round(Y[1]), Y[0], Y[3]);
+	Y[2] = FMath::Clamp(Rml::Math::Round(Y[2]), Y[1], Y[3]);
 
 	OutMesh.vertices.resize(16);
 	for (int32 j = 0; j < 4; ++j)
@@ -80,6 +181,22 @@ void BuildMesh(const FParams& Params, Rml::Vector2f Offset, Rml::Vector2f Size, 
 		}
 	}
 
+	// Slate Border repeats the middle strip, with at least one full strip when the
+	// element is small (ElementBatcher.cpp:2888-2916). Separate tile quads retain UV
+	// discontinuities before material vertex evaluation, including Customized UVs.
+	const float RepeatX = W * (U[2] - U[1]);
+	const float RepeatY = H * (V[2] - V[1]);
+	const double TilesX = Params.bBorder && RepeatX > UE_SMALL_NUMBER ? FMath::Max(1.0, double(X[2] - X[1]) / RepeatX) : 1.0;
+	const double TilesY = Params.bBorder && RepeatY > UE_SMALL_NUMBER ? FMath::Max(1.0, double(Y[2] - Y[1]) / RepeatY) : 1.0;
+	// An arbitrarily small image-size must not turn a CSS declaration into an unbounded
+	// UI-thread allocation. Refuse before converting the counts or appending tile geometry.
+	if (!FMath::IsFinite(TilesX) || !FMath::IsFinite(TilesY) || 2.0 * (FMath::CeilToDouble(TilesX) + FMath::CeilToDouble(TilesY)) > 4096.0)
+	{
+		OutMesh.vertices.clear();
+		UE_LOG(LogVaCuus, Warning, TEXT("material-box: border exceeds 4096 edge tiles; decorator ignored"));
+		return;
+	}
+
 	// DecoratorNinePatch.cpp:124-138; cell 4 is the centre, which Border leaves out.
 	static const int32 TopLeft[9] = {0, 1, 2, 4, 5, 6, 8, 9, 10};
 	OutMesh.indices.reserve(9 * 6);
@@ -89,9 +206,36 @@ void BuildMesh(const FParams& Params, Rml::Vector2f Offset, Rml::Vector2f Size, 
 		{
 			continue;
 		}
-		const int32 I = TopLeft[Cell];
-		OutMesh.indices.insert(OutMesh.indices.end(), {I, I + 4, I + 1, I + 1, I + 4, I + 5});
+		const int32 Row = Cell / 3, Column = Cell % 3;
+		const bool bHorizontal = Params.bBorder && Column == 1 && TilesX > 1.0;
+		const bool bVertical = Params.bBorder && Row == 1 && TilesY > 1.0;
+		if (bHorizontal || bVertical)
+		{
+			const int32 Count = FMath::CeilToInt(bHorizontal ? TilesX : TilesY);
+			for (int32 Tile = 0; Tile < Count; ++Tile)
+			{
+				const float Start = bHorizontal ? X[1] : Y[1];
+				const float End = bHorizontal ? X[2] : Y[2];
+				const float Period = bHorizontal ? RepeatX : RepeatY;
+				const float P0 = Start + float(Tile) * Period;
+				const float P1 = FMath::Min(P0 + Period, End);
+				const float Fraction = (P1 - P0) / Period;
+				const Rml::Vector2f Origin(bHorizontal ? P0 : X[Column], bVertical ? P0 : Y[Row]);
+				const Rml::Vector2f Extent(bHorizontal ? P1 - P0 : X[Column + 1] - X[Column],
+					bVertical ? P1 - P0 : Y[Row + 1] - Y[Row]);
+				const Rml::Vector2f UV0(U[Column], V[Row]);
+				const Rml::Vector2f UV1(bHorizontal ? U[1] + Fraction * (U[2] - U[1]) : U[Column + 1],
+					bVertical ? V[1] + Fraction * (V[2] - V[1]) : V[Row + 1]);
+				Rml::MeshUtilities::GenerateQuad(OutMesh, Origin, Extent, Colour, UV0, UV1);
+			}
+		}
+		else
+		{
+			const int32 I = TopLeft[Cell];
+			OutMesh.indices.insert(OutMesh.indices.end(), {I, I + 4, I + 1, I + 1, I + 4, I + 5});
+		}
 	}
+	ClipToPaintBox(PaintBox, Colour, OutMesh);
 }
 
 namespace
@@ -145,7 +289,11 @@ public:
 
 		Rml::Mesh Mesh;
 		BuildMesh(Effective, Offset, Size, Element->ResolveNumericValue(Params.ImageWidth, Size.x),
-			Element->ResolveNumericValue(Params.ImageHeight, Size.y), Tint, Mesh);
+			Element->ResolveNumericValue(Params.ImageHeight, Size.y), Tint, Mesh, &Box);
+		if (Mesh.indices.empty())
+		{
+			return INVALID_DECORATORDATAHANDLE;
+		}
 
 		FElementData* Data = new FElementData{RenderManager->MakeGeometry(MoveTemp(Mesh)), MoveTemp(Shader)};
 		return reinterpret_cast<Rml::DecoratorDataHandle>(Data);

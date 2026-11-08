@@ -132,6 +132,17 @@ bool FVaCuusMaterialBoxGeometryTest::RunTest(const FString& Parameters)
 		TestFalse(TEXT("border: no triangle covers the centre"), bCentreUsed);
 	}
 
+	{
+		const Rml::Mesh Mesh = Build(MakeParams(0.25f, 0.f, 0.25f, 0.f), {0.4f, 0.4f}, {100.2f, 50.2f}, 24.f, 24.f);
+		TestEqual(TEXT("zero left margin stays at the fractional outer edge"), At(Mesh, 1, 0).position.x, At(Mesh, 0, 0).position.x);
+		TestEqual(TEXT("zero right margin stays at the fractional outer edge"), At(Mesh, 2, 0).position.x, At(Mesh, 3, 0).position.x);
+	}
+	{
+		AddExpectedMessagePlain(TEXT("border exceeds 4096 edge tiles"), ELogVerbosity::Warning, EAutomationExpectedMessageFlags::Contains, 1);
+		const Rml::Mesh Mesh = Build(MakeParams(0.25f, 0.25f, 0.25f, 0.25f, true), {0.f, 0.f}, {256.f, 128.f}, 0.1f, 0.1f);
+		TestTrue(TEXT("excessive border tiles leave no partial mesh"), Mesh.vertices.empty() && Mesh.indices.empty());
+	}
+
 	return true;
 }
 
@@ -550,6 +561,69 @@ bool FVaCuusMaterialBoxRegisteredTest::RunTest(const FString& Parameters)
 			Log.Count(TEXT("Syntax error parsing property declaration 'decorator")), 0);
 
 		UIThread->EnqueueRemoveView(ViewId);
+	}
+	return true;
+}
+
+
+// Stock shader() uses the render-box outline (DecoratorShader.cpp:43, MeshUtilities.cpp:125-126).
+// Keep that coverage for both sliced meshes and the documented zero-margin equivalent.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusMaterialBoxRoundedCornersTest, "VaCuus.Render.MaterialBox.RoundedCorners",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusMaterialBoxRoundedCornersTest::RunTest(const FString& Parameters)
+{
+	using namespace VaCuusMaterialBoxDocTest;
+	FHarness Harness(*this);
+	if (!Harness.Start())
+	{
+		return false;
+	}
+	auto Covers = [](const FVaCuusGeometryData& Mesh, FVector2f P)
+	{
+		auto Cross = [](FVector2f A, FVector2f B, FVector2f C)
+		{
+			return (B.X - A.X) * (C.Y - A.Y) - (B.Y - A.Y) * (C.X - A.X);
+		};
+		for (int32 I = 0; I + 2 < Mesh.Indices.Num(); I += 3)
+		{
+			const FVector2f A = Mesh.Vertices[Mesh.Indices[I]].Position;
+			const FVector2f B = Mesh.Vertices[Mesh.Indices[I + 1]].Position;
+			const FVector2f C = Mesh.Vertices[Mesh.Indices[I + 2]].Position;
+			if (FMath::Abs(Cross(A, B, C)) < UE_SMALL_NUMBER)
+			{
+				continue;
+			}
+			const float AB = Cross(A, B, P), BC = Cross(B, C, P), CA = Cross(C, A, P);
+			if ((AB >= 0 && BC >= 0 && CA >= 0) || (AB <= 0 && BC <= 0 && CA <= 0))
+			{
+				return true;
+			}
+		}
+		return false;
+	};
+	for (const TCHAR* Css : {
+		TEXT("decorator: shader(test-mat); border-radius: 24px;"),
+		TEXT("decorator: material-box(test-mat, 24px, 0); border-radius: 24px;"),
+		TEXT("decorator: material-box(test-mat, 24px, 0.5); border-radius: 24px;"),
+		TEXT("decorator: material-box(test-mat, 24px, 0.5); border-radius: 24px 18px 12px 6px;")})
+	{
+		const FRecorded R = Harness.Record(Css);
+		if (!TestEqual(Css, R.Geometry.Num(), 1))
+		{
+			continue;
+		}
+		TestTrue(*FString::Printf(TEXT("interior drawn: %s"), Css), Covers(R.Geometry[0], FVector2f(50, 50)));
+		for (const FVector2f Corner : {FVector2f(1, 1), FVector2f(211, 1), FVector2f(211, 111), FVector2f(1, 111)})
+		{
+			TestFalse(*FString::Printf(TEXT("rounded corner (%g,%g) excluded: %s"), Corner.X, Corner.Y, Css), Covers(R.Geometry[0], Corner));
+		}
+	}
+	const FRecorded Content = Harness.Record(TEXT("decorator: material-box(test-mat, 24px, 0.5) content-box; border-radius: 24px;"));
+	if (TestEqual(TEXT("rounded content-box produces one mesh"), Content.Geometry.Num(), 1))
+	{
+		TestFalse(TEXT("inset rounded corner excluded"), Covers(Content.Geometry[0], FVector2f(7, 7)));
+		TestTrue(TEXT("inset interior drawn"), Covers(Content.Geometry[0], FVector2f(50, 50)));
 	}
 	return true;
 }

@@ -610,7 +610,7 @@ namespace VaCuusMaterialSlotTest
  * Emissive = TexCoord[0]) on a black clear and read back. False (with an error) if it did not draw.
  */
 static bool RenderMaterialBox(FAutomationTestBase& Test, const VaCuusMaterialBox::FParams& Params, TArray<FColor>& OutPixels,
-	UMaterial* Probe = nullptr)
+	UMaterial* Probe = nullptr, const Rml::RenderBox* PaintBox = nullptr)
 {
 	static const TCHAR* Key = TEXT("box-probe");
 	if (!Probe)
@@ -641,7 +641,7 @@ static bool RenderMaterialBox(FAutomationTestBase& Test, const VaCuusMaterialBox
 
 	Rml::Mesh Mesh;
 	VaCuusMaterialBox::BuildMesh(Params, Rml::Vector2f(0.f), Rml::Vector2f(float(GBox.X), float(GBox.Y)), 64.f, 64.f,
-		Rml::ColourbPremultiplied(255, 255), Mesh);
+		Rml::ColourbPremultiplied(255, 255), Mesh, PaintBox);
 
 	FOwnMesh OwnMesh;
 	for (const Rml::Vertex& V : Mesh.vertices)
@@ -807,6 +807,80 @@ bool FVaCuusMaterialBoxCustomizedUVsTest::RunTest(const FString& Parameters)
 	{
 		ExpectUV(*this, Pixels, FIntPoint(X, 64), 2.f * SliceU(X + 0.5f), 1.f);
 	}
+	return true;
+}
+
+
+// The half-margin probe has no varying centre strip, so it cannot observe edge tiling.
+// These samples exercise all four edges (ElementBatcher.cpp:2888-2911).
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusMaterialBoxBorderTilingTest, "VaCuus.Render.MaterialBox.BorderTiling",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusMaterialBoxBorderTilingTest::RunTest(const FString& Parameters)
+{
+	using namespace VaCuusMaterialSlotTest;
+	if (GUsingNullRHI)
+	{
+		AddInfo(TEXT("Skipped: border tiling needs a real RHI readback"));
+		return true;
+	}
+	VaCuusMaterialBox::FParams Params;
+	for (float& Margin : Params.Margin)
+	{
+		Margin = 0.25f;
+	}
+	Params.bBorder = true;
+	TArray<FColor> Pixels;
+	if (!RenderMaterialBox(*this, Params, Pixels))
+	{
+		return false;
+	}
+	ExpectUV(*this, Pixels, FIntPoint(8, 8), 8.5f / 64.f, 8.5f / 64.f);
+	for (const int32 X : {40, 72, 104, 232})
+	{
+		const float U = 0.25f + FMath::Frac((float(X) + 0.5f - 16.f) / 32.f) * 0.5f;
+		ExpectUV(*this, Pixels, FIntPoint(X, 8), U, 8.5f / 64.f);
+		ExpectUV(*this, Pixels, FIntPoint(X, 120), U, 56.5f / 64.f);
+	}
+	for (const int32 Y : {40, 72, 104})
+	{
+		const float V = 0.25f + FMath::Frac((float(Y) + 0.5f - 16.f) / 32.f) * 0.5f;
+		ExpectUV(*this, Pixels, FIntPoint(8, Y), 8.5f / 64.f, V);
+		ExpectUV(*this, Pixels, FIntPoint(248, Y), 56.5f / 64.f, V);
+	}
+	ExpectUV(*this, Pixels, FIntPoint(128, 64), 0.f, 0.f, true);
+	// An asymmetric right corner leaves a final partial repeat on the top edge.
+	Params.Margin[1] = 0.125f;
+	if (!RenderMaterialBox(*this, Params, Pixels))
+	{
+		return false;
+	}
+	ExpectUV(*this, Pixels, FIntPoint(245, 8), 0.25f + 29.5f / 40.f * 0.625f, 8.5f / 64.f);
+	ExpectUV(*this, Pixels, FIntPoint(252, 8), 1.f - 3.5f / 64.f, 8.5f / 64.f);
+	return true;
+}
+
+// Clipping must retain the material UVs, not merely remove the square corner.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusMaterialBoxRoundedSlotsTest, "VaCuus.Render.MaterialBox.RoundedSlots",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusMaterialBoxRoundedSlotsTest::RunTest(const FString& Parameters)
+{
+	using namespace VaCuusMaterialSlotTest;
+	if (GUsingNullRHI)
+	{
+		AddInfo(TEXT("Skipped: rounded material UVs need a real RHI readback"));
+		return true;
+	}
+	const Rml::RenderBox Box({float(GBox.X), float(GBox.Y)}, {}, {}, {24.f, 24.f, 24.f, 24.f});
+	TArray<FColor> Pixels;
+	if (!RenderMaterialBox(*this, HalfMargins(), Pixels, nullptr, &Box))
+	{
+		return false;
+	}
+	ExpectUV(*this, Pixels, FIntPoint(1, 1), 0.f, 0.f, true);
+	ExpectUV(*this, Pixels, FIntPoint(4, 32), 4.5f / 64.f, 0.5f);
+	ExpectUV(*this, Pixels, FIntPoint(128, 64), 0.5f, 0.5f);
 	return true;
 }
 
