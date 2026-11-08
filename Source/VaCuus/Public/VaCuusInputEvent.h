@@ -142,6 +142,9 @@ enum class EVaCuusInputEventKind : uint8
 	VirtualKeyboardValue,
 	/** No payload. Physical mouse capture was revoked; cancel its gesture without a click. */
 	MouseCancel,
+
+	/** Position + Modifiers. Updates an active physical mouse without undoing MouseLeave. */
+	MouseMoveIfActive,
 };
 
 /**
@@ -277,6 +280,13 @@ struct FVaCuusInputEvent
 		Event.Kind = EVaCuusInputEventKind::MouseMove;
 		Event.Position = InPosition;
 		Event.Modifiers = InModifiers;
+		return Event;
+	}
+
+	static FVaCuusInputEvent MouseMoveIfActive(FIntPoint InPosition, const FVaCuusModifierState& InModifiers)
+	{
+		FVaCuusInputEvent Event = MouseMove(InPosition, InModifiers);
+		Event.Kind = EVaCuusInputEventKind::MouseMoveIfActive;
 		return Event;
 	}
 

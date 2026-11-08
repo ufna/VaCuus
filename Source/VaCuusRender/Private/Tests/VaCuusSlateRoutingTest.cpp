@@ -81,6 +81,7 @@ public:
 		Rml::Element* const Hover = Context->GetHoverElement();
 		HoverId = Hover ? FString(UTF8_TO_TCHAR(Hover->GetId().c_str())) : FString();
 		bHoverIsActive = Hover != nullptr && Hover->IsPseudoClassSet("active");
+		bMouseInteracting = Context->IsMouseInteracting();
 
 		Rml::Element* const Focus = Context->GetFocusElement();
 		FocusId = Focus ? FString(UTF8_TO_TCHAR(Focus->GetId().c_str())) : FString();
@@ -112,6 +113,7 @@ public:
 	FString FocusId;
 	FString FieldValueUtf8Hex;
 	bool bHoverIsActive = false;
+	bool bMouseInteracting = false;
 
 private:
 	uint64 SnapshotGeneration = 0;
@@ -618,9 +620,8 @@ bool FVaCuusSlateRoutingTest::RunTest(const FString& Parameters)
 		// a genuine captor-map entry. What THIS venue must pin is the asymmetry
 		// that keeps the drag's bookkeeping alive: Slate's "no" must NOT tear
 		// down the widget's own mid-gesture mirror.
-		// MakeMoveEvent, because this move has to REACH the queue for the count below: a drag that
-		// crosses from the button to empty space has moved by definition, and a zero-delta move is
-		// now dropped as Slate's synthesis rather than queued.
+		// Model physical motion across the view: a stationary sample may update host geometry,
+		// but must not reactivate a mouse that has received MouseLeave.
 		Widget->OnMouseMove(Geometry, MakeMoveEvent(GButtonPoint, GEmptyPoint, LeftOnly));
 		TestTrue(TEXT("An out-of-rect move mid-drag does not tear down the widget's capture mirror"),
 			Widget->IsTrackingMouseCapture_Debug());
@@ -2166,12 +2167,12 @@ bool FVaCuusPressFocusCaptureTest::RunTest(const FString& Parameters)
  * A MOUSE THAT DID NOT MOVE MUST NOT REVIVE `:hover`, and Slate hands the widget one such move per
  * tick for as long as it is awake (SlateApplication.cpp:1800-1805, SlateUser.cpp:741-744). RmlUi
  * takes any move as proof the mouse is live -- ProcessPointerMove sets `mouse_active` and rebuilds
- * the hover chain (Context.cpp:659-665) -- so before the delta test in OnMouseMove, a game that
- * sent MouseLeave got the hover back a frame later, every frame, for as long as the pointer rested
- * over an element.
+ * the hover chain (Context.cpp:667-673). Before stationary moves were distinguished in OnMouseMove,
+ * a game that sent MouseLeave got the hover back a frame later, every frame, for as long as the
+ * pointer rested over an element.
  *
- * Both halves are asserted, because the cheap fix for the first breaks the second: a synthetic move
- * is dropped, and a real one at the SAME destination still arrives.
+ * Stationary samples must preserve MouseLeave while still updating the view position when the
+ * Slate host moves. Only physical motion may reactivate the mouse through this handler.
  */
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusSyntheticMoveHoverTest, "VaCuus.Input.SyntheticMoveHover",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -2179,6 +2180,14 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusSyntheticMoveHoverTest, "VaCuus.Input.Sy
 bool FVaCuusSyntheticMoveHoverTest::RunTest(const FString& Parameters)
 {
 	using namespace VaCuusSlateRoutingTest;
+
+	// The background must not itself count as mouse interaction: the test distinguishes an
+	// active mouse over empty space from an inactive mouse, not merely one unlabelled hover.
+	const TCHAR* HoverDocument = TEXT(R"(<rml><head><style>
+body { display: block; width: 100%; height: 100%; pointer-events: none; }
+button { display: block; position: absolute; left: 20px; top: 20px;
+         width: 100px; height: 40px; pointer-events: auto; }
+</style></head><body><button id="btn"/></body></rml>)");
 
 	AddExpectedMessagePlain(TEXT("Activating a context failed when its window"), ELogVerbosity::Error,
 		EAutomationExpectedMessageFlags::Contains, /*Occurrences=*/-1);
@@ -2203,7 +2212,7 @@ bool FVaCuusSyntheticMoveHoverTest::RunTest(const FString& Parameters)
 
 	const uint32 ViewId = UIThread->AllocateViewId();
 	UIThread->EnqueueAddView(ViewId, MoveTemp(OwnedHost), ViewSize, Status);
-	UIThread->EnqueueLoadDocumentFromMemory(ViewId, GDocument, /*LoadSerial=*/1);
+	UIThread->EnqueueLoadDocumentFromMemory(ViewId, HoverDocument, /*LoadSerial=*/1);
 
 	TStrongObjectPtr<UGameInstance> GameInstance(NewObject<UGameInstance>());
 	TStrongObjectPtr<UVaCuusSubsystem> Subsystem(NewObject<UVaCuusSubsystem>(GameInstance.Get()));
@@ -2250,13 +2259,62 @@ bool FVaCuusSyntheticMoveHoverTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("A move with no delta leaves the hover out"), Host->HoverId, FString());
 
 	// 4. And the player's own move still works, to the very same pixel the synthetic one named.
-	// The fix must drop the event, not the destination.
+	// Physical motion must still arrive even when its destination matches a stationary sample.
 	Widget->OnMouseMove(Geometry, MakeMoveEvent(GEmptyPoint, GButtonPoint, NoButtons));
 	if (!TestTrue(TEXT("UI frame ran after the second real move"), RunFrames(*UIThread, 1)))
 	{
 		return false;
 	}
 	TestEqual(TEXT("A real move to the same point hovers it again"), Host->HoverId, FString(TEXT("btn")));
+
+	// The screen-space cursor is still, but the host moves its local position off the button.
+	const FGeometry ShiftedGeometry = FGeometry::MakeRoot(FVector2f(ViewSize.X, ViewSize.Y),
+		FSlateLayoutTransform(FVector2f(-200.f, 0.f)));
+	Widget->OnMouseMove(ShiftedGeometry, MakeMoveEvent(GButtonPoint, GButtonPoint, NoButtons));
+	TestTrue(TEXT("UI frame ran after the host moved"), RunFrames(*UIThread, 1));
+	TestFalse(TEXT("moving the widget under a stationary cursor removes interaction"), Host->bMouseInteracting);
+
+	// The active mouse over empty space has no interaction, but must still find a button moved under it.
+	Widget->OnMouseMove(Geometry, MakeMoveEvent(GButtonPoint, GButtonPoint, NoButtons));
+	TestTrue(TEXT("UI frame ran after the host returned"), RunFrames(*UIThread, 1));
+	TestEqual(TEXT("active mouse over empty space can acquire hover without moving"), Host->HoverId, FString(TEXT("btn")));
+
+	const FGeometry ScaledGeometry = Geometry.MakeChild(
+		FSlateRenderTransform(FScale2D(0.5f)), FVector2f::ZeroVector);
+	Widget->OnMouseMove(ScaledGeometry, MakeMoveEvent(GButtonPoint, GButtonPoint, NoButtons));
+	TestTrue(TEXT("UI frame ran after render scaling"), RunFrames(*UIThread, 1));
+	TestFalse(TEXT("render scaling changes the local hover position"), Host->bMouseInteracting);
+	Widget->OnMouseMove(Geometry, MakeMoveEvent(GButtonPoint, GButtonPoint, NoButtons));
+	TestTrue(TEXT("UI frame ran after restoring render scale"), RunFrames(*UIThread, 1));
+	TestEqual(TEXT("restoring scale returns hover without physical motion"), Host->HoverId, FString(TEXT("btn")));
+
+	// A direct leave can come from the game, bypassing every widget handler. Keep it ahead
+	// of the stationary sample in the same input batch; no game-thread state mirror can decide it.
+	UIThread->EnqueueInput(ViewId, FVaCuusInputEvent::MouseLeave());
+	const FGeometry SlightlyShiftedGeometry = FGeometry::MakeRoot(FVector2f(ViewSize.X, ViewSize.Y),
+		FSlateLayoutTransform(FVector2f(-20.f, 0.f)));
+	Widget->OnMouseMove(SlightlyShiftedGeometry, MakeMoveEvent(GButtonPoint, GButtonPoint, NoButtons));
+	TestTrue(TEXT("UI frame ran after direct leave and host movement"), RunFrames(*UIThread, 1));
+	TestEqual(TEXT("moving the host keeps a directly suppressed hover inactive"), Host->HoverId, FString());
+	Widget->OnMouseMove(Geometry, MakeMoveEvent(GEmptyPoint, GButtonPoint, NoButtons));
+	TestTrue(TEXT("UI frame ran after physical movement"), RunFrames(*UIThread, 1));
+	TestEqual(TEXT("physical motion reactivates hover after a moved host"), Host->HoverId, FString(TEXT("btn")));
+
+	// Touch owns a separate PointerState. Its activity must not open the physical-mouse gate.
+	UIThread->EnqueueInput(ViewId, FVaCuusInputEvent::MouseLeave());
+	const uint64 TouchId = FVaCuusInputEvent::MakeTouchId(0, 5);
+	UIThread->EnqueueInput(ViewId, FVaCuusInputEvent::Touch(EVaCuusInputEventKind::TouchStart,
+		TouchId, FIntPoint(70, 40), FVaCuusModifierState()));
+	Widget->OnMouseMove(Geometry, MakeMoveEvent(GButtonPoint, GButtonPoint, NoButtons));
+	const uint64 BeforeFallback = View->GetNumInputEventsQueued();
+	Widget->OnMouseMove(Geometry, MakeTouchEvent(GButtonPoint, 0, 5));
+	TestEqual(TEXT("touch mouse fallback does not enqueue a physical update"), View->GetNumInputEventsQueued(), BeforeFallback);
+	TestTrue(TEXT("UI frame ran with active touch and inactive mouse"), RunFrames(*UIThread, 1));
+	// GetHoverElement intentionally falls back to primary touch while the mouse is inactive
+	// (Context.cpp:481-483). Retire touch before observing whether physical hover was revived.
+	UIThread->EnqueueInput(ViewId, FVaCuusInputEvent::TouchCancel(TouchId));
+	TestTrue(TEXT("UI frame ran after touch cleanup"), RunFrames(*UIThread, 1));
+	TestEqual(TEXT("touch activity cannot reactivate physical mouse hover"), Host->HoverId, FString());
 
 	UIThread->EnqueueRemoveView(ViewId);
 	TestTrue(TEXT("UI frames survive the removal"), RunFrames(*UIThread, 2));

@@ -1175,3 +1175,27 @@ pointer; restored, it passes. Removing the proxy source URL makes
 CloneRelativeImages fail its relative-path assertion; restored, source and
 clone both read back green pixels. SecondaryClonePixels reads both blue
 copies, then only the surviving copy after cancellation.
+
+Patch #21 -- stationary cursor updates preserve physical mouse activation.
+
+Applied 2026-11-08 as the PR #27 integration follow-up.
+
+Context::ProcessMouseMoveIfActive uses the physical mouse PointerState and updates
+its position and hover only while mouse_active is true. Unlike ProcessMouseMove,
+it cannot undo ProcessMouseLeave. Slate still queues stationary cursor samples
+because moving or scaling the host changes the coordinate mapping into RmlUi.
+The active check runs on the UI thread in input queue order, including a leave
+sent directly by a game. Primary and secondary touch cannot activate this path.
+
+No new source file or relay is needed: relay_Core_Context.cpp includes Context.cpp.
+Keep the three-argument ProcessMouseMove API and its activating semantics intact.
+VaCuus.Input.SyntheticMoveHover covers geometry translation, render scaling,
+active empty-space entry, direct leave plus geometry change, and touch-only
+activity. Its background disables pointer events so empty space is observably
+not interacting, even though the physical mouse remains active.
+
+Linux UE 5.8.1: the complete VaCuus suite passes 348/348. Restore checks reproduce
+both sides: discarding stationary samples leaves hover at the old host position;
+activating them revives hover after MouseLeave, direct leave plus host movement,
+and touch cleanup. Replacing the physical activity gate with IsMouseInteracting
+fails both host-return and scale-return checks over the transparent background.

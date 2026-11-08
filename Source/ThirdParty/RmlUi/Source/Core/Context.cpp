@@ -611,6 +611,14 @@ bool Context::ProcessMouseMove(int x, int y, int key_modifier_state)
 	return ProcessPointerMove(x, y, key_modifier_state);
 }
 
+bool Context::ProcessMouseMoveIfActive(int x, int y, int key_modifier_state)
+{
+	PointerScope scope(*this, mouse_pointer);
+	if (!pointer->mouse_active)
+		return !IsPointerInteracting();
+	return ProcessPointerMove(x, y, key_modifier_state);
+}
+
 bool Context::ProcessMouseButtonDown(int button_index, int key_modifier_state)
 {
 	PointerScope scope(*this, mouse_pointer);

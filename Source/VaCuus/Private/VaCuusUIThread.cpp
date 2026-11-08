@@ -156,6 +156,10 @@ void DispatchInputEvent(Rml::Context& Context, const FVaCuusInputEvent& Event)
 			Context.ProcessMouseMove(Event.Position.X, Event.Position.Y, Modifiers);
 			break;
 
+		case EVaCuusInputEventKind::MouseMoveIfActive:
+			Context.ProcessMouseMoveIfActive(Event.Position.X, Event.Position.Y, Modifiers);
+			break;
+
 		case EVaCuusInputEventKind::MouseDown:
 		case EVaCuusInputEventKind::MouseUp:
 		{
@@ -175,7 +179,7 @@ void DispatchInputEvent(Rml::Context& Context, const FVaCuusInputEvent& Event)
 			// appeared under the cursor, a window that just took focus, or a
 			// synthesized event. Redundant when a move did precede it, and cheap:
 			// ProcessMouseMove guards its mousemove dispatch on the position actually
-			// having changed (Context.cpp:661-676), so this costs one hit test and
+			// having changed (Context.cpp:667-683), so this costs one hit test and
 			// emits no spurious events.
 			Context.ProcessMouseMove(Event.Position.X, Event.Position.Y, Modifiers);
 
@@ -217,7 +221,7 @@ void DispatchInputEvent(Rml::Context& Context, const FVaCuusInputEvent& Event)
 
 		case EVaCuusInputEventKind::MouseLeave:
 			// Not optional: without it `mouse_active` stays set, the hover chain is never
-			// cleared and `:hover` styling sticks forever (Context.cpp:914-921). The next
+			// cleared and `:hover` styling sticks forever (Context.cpp:922-929). The next
 			// ProcessMouseMove re-arms the context.
 			Context.ProcessMouseLeave();
 			break;
