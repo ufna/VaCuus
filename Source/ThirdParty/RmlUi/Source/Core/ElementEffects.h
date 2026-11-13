@@ -56,6 +56,11 @@ private:
 	FilterEntryList filters;
 	FilterEntryList backdrop_filters;
 
+	// VaCuus patch #22 (VENDORED_TAG.txt): the element's own opacity, applied to its backdrop when the filtered
+	// backdrop is composited back under the element. Compiled with the other filters in ReloadEffectsData, which
+	// an opacity change already reaches (Element::OnPropertyChange dirties the effects data on it, Element.cpp:1951-1958).
+	CompiledFilter backdrop_opacity_filter;
+
 	// If set, a full reload is necessary.
 	bool effects_dirty = false;
 	// If set, element data of all decorators need to be regenerated.

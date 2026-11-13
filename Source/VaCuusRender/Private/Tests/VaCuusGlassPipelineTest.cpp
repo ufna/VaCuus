@@ -252,6 +252,7 @@ bool FVaCuusGlassDistillSequenceTest::RunTest(const FString& Parameters)
 		Entry.SampleRegion == FIntRect(4, 4, 276, 196));
 	TestTrue(TEXT("DrawRegion is the border box (40,40)-(240,160)"), Entry.DrawRegion == FIntRect(40, 40, 240, 160));
 	TestEqual(TEXT("Sigma is FilterBlur's resolved value verbatim"), Entry.Sigma, 12.0f);
+	TestEqual(TEXT("A panel at full opacity draws its glass at full strength"), Entry.Opacity, 1.0f);
 	TestTrue(TEXT("The list stores the buffer's ViewSize (the mapping's denominator)"), Distiller.GetViewSize() == GViewSize);
 
 	if (TestTrue(TEXT("The rounded panel carries its clip-mask geometry"), Entry.MaskGeometry.IsValid()))
@@ -756,6 +757,88 @@ bool FVaCuusGlassCrossBufferSigmaTest::RunTest(const FString& Parameters)
 }
 
 /**
+ * A WRITE-BACK THAT NAMES A RETIRED OPACITY drops its entry, the grab's rule for a retired
+ * sigma: the opacity is unknown, and full strength would be the very silhouette RmlUi patch
+ * #22 removes. Direct recorder drive in the patched ElementEffects' shape -- the blur on the
+ * grab, the opacity on the write-back.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusGlassRetiredOpacityTest, "VaCuus.Render.Glass.RetiredOpacityDropsEntry",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusGlassRetiredOpacityTest::RunTest(const FString& Parameters)
+{
+	using namespace VaCuusGlassPipelineTest;
+
+	FVaCuusRecordingRenderInterface Recorder;
+	FVaCuusGlassDistiller Distiller;
+
+	const auto RecordFadingGlass = [&Recorder](Rml::CompiledFilterHandle Blur, Rml::CompiledFilterHandle Opacity)
+	{
+		const Rml::LayerHandle Layer = Recorder.PushLayer();
+		Recorder.CompositeLayers(Rml::LayerHandle(0), Layer, Rml::BlendMode::Blend,
+			Rml::Span<const Rml::CompiledFilterHandle>(&Blur, 1));
+		Recorder.CompositeLayers(Layer, Rml::LayerHandle(0), Rml::BlendMode::Blend,
+			Rml::Span<const Rml::CompiledFilterHandle>(&Opacity, 1));
+		Recorder.PopLayer();
+	};
+
+	// Frame 1: both filters live -> one entry at the recorded opacity.
+	Recorder.BeginFrame(GViewSize);
+	const Rml::CompiledFilterHandle Blur12 =
+		Recorder.CompileFilter("blur", Rml::Dictionary{{"sigma", Rml::Variant(12.0f)}});
+	const Rml::CompiledFilterHandle Half =
+		Recorder.CompileFilter("backdrop-opacity", Rml::Dictionary{{"value", Rml::Variant(0.5f)}});
+	TestTrue(TEXT("Both filters compiled"), Blur12 != 0 && Half != 0);
+	RecordFadingGlass(Blur12, Half);
+	{
+		const TUniquePtr<FVaCuusCommandBuffer> Buffer = Recorder.EndFrameAndPublish();
+		if (!TestNotNull(TEXT("Frame 1 publishes"), Buffer.Get()))
+		{
+			return false;
+		}
+		Distiller.Distill(*Buffer);
+	}
+	if (TestEqual(TEXT("Frame 1: one entry"), Distiller.GetEntries().Num(), 1))
+	{
+		TestEqual(TEXT("...at the recorded opacity 0.5"), Distiller.GetEntries()[0].Opacity, 0.5f);
+	}
+
+	// Frame 2: the opacity is released in the buffer that still names it -- it resolves,
+	// retirement follows the parse.
+	Recorder.BeginFrame(GViewSize);
+	Recorder.ReleaseFilter(Half);
+	Recorder.SetScissorRegion(Rml::Rectanglei::FromCorners({10, 10}, {200, 200}));
+	RecordFadingGlass(Blur12, Half);
+	{
+		const TUniquePtr<FVaCuusCommandBuffer> Buffer = Recorder.EndFrameAndPublish();
+		if (!TestNotNull(TEXT("Frame 2 publishes (release traffic)"), Buffer.Get()))
+		{
+			return false;
+		}
+		Distiller.Distill(*Buffer);
+	}
+	TestEqual(TEXT("Frame 2: a same-buffer release still resolves"), Distiller.GetEntries().Num(), 1);
+
+	// Frame 3: the blur is live, the opacity is retired -- the warning once, and no entry.
+	AddExpectedMessagePlain(TEXT("no recorded sigma or opacity"), ELogVerbosity::Warning, EAutomationExpectedMessageFlags::Contains, 1);
+	Recorder.BeginFrame(GViewSize);
+	Recorder.SetScissorRegion(Rml::Rectanglei::FromCorners({20, 20}, {180, 180}));
+	RecordFadingGlass(Blur12, Half);
+	{
+		const TUniquePtr<FVaCuusCommandBuffer> Buffer = Recorder.EndFrameAndPublish();
+		if (!TestNotNull(TEXT("Frame 3 publishes (the scissor changed)"), Buffer.Get()))
+		{
+			return false;
+		}
+		Distiller.Distill(*Buffer);
+	}
+	TestEqual(TEXT("Frame 3: a write-back naming a retired opacity produces NO glass entry"),
+		Distiller.GetEntries().Num(), 0);
+
+	return true;
+}
+
+/**
  * A filterless layer round-trip (the refused-non-blur shape: the sequence runs, the
  * lists arrive empty — CompiledFilterShader.cpp:6-12) produces no glass entry.
  */
@@ -783,6 +866,100 @@ bool FVaCuusGlassNoBlurNoEntryTest::RunTest(const FString& Parameters)
 	Distiller.Distill(*Buffer);
 
 	TestEqual(TEXT("A composite with no blur produces no glass entry"), Distiller.GetEntries().Num(), 0);
+	return true;
+}
+
+/**
+ * THE GLASS FADES WITH ITS PANEL, end to end (RmlUi patch #22): a real panel at opacity
+ * 0.5 distills to an entry at Opacity 0.5 -- which the glass draw multiplies into its
+ * coverage -- then to 1 at full opacity and to NO entry at 0. Before the patch every one of
+ * those frames distilled at full strength, which is the blurred silhouette that stood in a
+ * window's place while the window faded in over it.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusGlassDistillOpacityTest, "VaCuus.Render.Glass.DistillOpacity",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusGlassDistillOpacityTest::RunTest(const FString& Parameters)
+{
+	using namespace VaCuusGlassPipelineTest;
+
+	if (!TestFalse(TEXT("RmlUi is down before the test"), FVaCuusEngine::Get().IsInitialized()))
+	{
+		return false;
+	}
+
+	FVaCuusEngine& Engine = FVaCuusEngine::Get();
+	if (!TestTrue(TEXT("Initialized"), Engine.Initialize()))
+	{
+		return false;
+	}
+	ON_SCOPE_EXIT
+	{
+		Engine.Shutdown();
+	};
+
+	FVaCuusRecordingRenderInterface Recorder;
+	const Rml::String ContextName("vacuus_glass_distill_opacity_test");
+	Rml::Context* Context = Rml::CreateContext(ContextName, Rml::Vector2i(GViewSize.X, GViewSize.Y), &Recorder);
+	if (!TestNotNull(TEXT("Context"), Context))
+	{
+		return false;
+	}
+	ON_SCOPE_EXIT
+	{
+		Rml::RemoveContext(ContextName);
+	};
+
+	// The panel's opacity is INHERITED from its window, as in a game document: the window
+	// fades, the glass plate inside it sets no opacity of its own.
+	static const TCHAR* Source =
+		TEXT("<rml><head><style>")
+		TEXT("body{display:block;width:100%;height:100%;}")
+		TEXT("#window{display:block;position:absolute;left:40px;top:40px;width:200px;height:120px;opacity:0.5;}")
+		TEXT("#window.full{opacity:1;}")
+		TEXT("#window.clear{opacity:0;}")
+		TEXT("#glass{display:block;position:absolute;left:0px;top:0px;width:200px;height:120px;")
+		TEXT("background-color:#30405080;backdrop-filter:blur(12px);}")
+		TEXT("</style></head><body><div id=\"window\"><div id=\"glass\"/></div></body></rml>");
+
+	Rml::ElementDocument* Document =
+		Context->LoadDocumentFromMemory(Rml::String(TCHAR_TO_UTF8(Source)), "vacuus://glass_distill_opacity.rml");
+	if (!TestNotNull(TEXT("Document"), Document))
+	{
+		return false;
+	}
+	Document->Show();
+
+	Rml::Element* Window = Document->GetElementById("window");
+	if (!TestNotNull(TEXT("Window element"), Window))
+	{
+		return false;
+	}
+
+	FVaCuusGlassDistiller Distiller;
+	for (int32 Settle = 0; Settle < 4 && RecordAndDistill(Recorder, Context, Distiller); ++Settle)
+	{
+	}
+	if (TestEqual(TEXT("The half-transparent window's glass distills to one entry"), Distiller.GetEntries().Num(), 1))
+	{
+		TestEqual(TEXT("...at the window's opacity 0.5"), Distiller.GetEntries()[0].Opacity, 0.5f);
+		TestEqual(TEXT("...with its blur intact"), Distiller.GetEntries()[0].Sigma, 12.0f);
+		TestTrue(TEXT("...over the plate's border box"), Distiller.GetEntries()[0].DrawRegion == FIntRect(40, 40, 240, 160));
+	}
+
+	Window->SetClassNames("full");
+	if (TestTrue(TEXT("The full-opacity frame publishes"), RecordAndDistill(Recorder, Context, Distiller)) &&
+		TestEqual(TEXT("At full opacity there is one entry"), Distiller.GetEntries().Num(), 1))
+	{
+		TestEqual(TEXT("...at opacity 1"), Distiller.GetEntries()[0].Opacity, 1.0f);
+	}
+
+	Window->SetClassNames("clear");
+	if (TestTrue(TEXT("The transparent frame publishes"), RecordAndDistill(Recorder, Context, Distiller)))
+	{
+		TestEqual(TEXT("A fully transparent window leaves NO glass behind"), Distiller.GetEntries().Num(), 0);
+	}
+
 	return true;
 }
 

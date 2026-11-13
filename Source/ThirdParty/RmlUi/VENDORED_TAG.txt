@@ -287,7 +287,7 @@ alone and watched to fail:
 
 MASK-IMAGE IS NOT FIXED HERE, only made loud (bead VaCuus-iuv). SaveLayerAsMaskImage needs
 the same layer capture, and there is nothing to make harmless short of implementing it: the
-mask decorators are drawn BEFORE the capture (Source/Core/ElementEffects.cpp:300-305), so
+mask decorators are drawn BEFORE the capture (Source/Core/ElementEffects.cpp:325-330), so
 with layers skipped at replay the mask artwork lands in the frame and paints over the
 element. Verified on screen, not inferred.
 
@@ -1199,3 +1199,52 @@ both sides: discarding stationary samples leaves hover at the old host position;
 activating them revives hover after MouseLeave, direct leave plus host movement,
 and touch cleanup. Replacing the physical activity gate with IsMouseInteracting
 fails both host-return and scale-return checks over the transparent background.
+
+Patch #22 -- a glass panel's blur ignores the panel's opacity, so it shows before the panel fades in.
+
+Written 2026-11-12 in a game's vendored copy; offered here together with the VaCuusRender half
+below.
+
+Files: Source/Core/ElementEffects.h (backdrop_opacity_filter), Source/Core/ElementEffects.cpp (two
+includes, ReloadEffectsData, ReleaseEffects, RenderEffects' Enter stage). Every hunk carries
+"VaCuus patch #22".
+
+Symptom: a window whose glass plate has `backdrop-filter: blur()` opens with an opacity animation
+(0 -> 1 over a fifth of a second). Its full blur appears on the first frame, in the plate's exact
+shape, and the window then fades in on top of it -- a blurred silhouette that stands in the
+window's place before the window. Closing runs it backwards: the window fades, the blur stays to
+the last frame.
+
+THE DEFECT IS UPSTREAM'S. RenderEffects(Enter) composites the filtered backdrop back under the
+element with an empty filter list, whatever the element's opacity, while the element's background,
+borders and text are premultiplied by that opacity (ElementBackgroundBorder.cpp:166-172,
+ElementText.cpp:384-387). CSS fades a backdrop-filter with its element.
+
+The fix: ReloadEffectsData -- which an opacity change already reaches, Element::OnPropertyChange
+dirties the effects data on it (Element.cpp:1951-1958) -- compiles the element's computed opacity,
+when strictly between 0 and 1 and the element has backdrop filters, as a filter named
+"backdrop-opacity" {"value": opacity}; RenderEffects puts it on the write-back composite
+(temp -> destination). At opacity 0 the backdrop sequence is skipped outright; at 1 no filter is
+compiled and the write-back is upstream's `{}`. Opacity is inherited
+(StyleSheetSpecification.cpp:351), so a window's fade reaches the glass plates inside it.
+OWN NAME, NOT "opacity": no filter instancer produces it, so a render interface can tell the
+backdrop's opacity from a stylesheet's `filter: opacity()`, which VaCuus still refuses. A render
+interface that does not know the name returns 0, AddHandleTo skips it (CompiledFilterShader.cpp:6-12),
+and the backdrop renders exactly as before the patch.
+
+The VaCuusRender half (not RmlUi, listed so a re-vendor knows what reads the filter): the recorder
+compiles "backdrop-opacity" as EVaCuusFilterKind::BackdropOpacity (VaCuusRecordingRenderInterface.cpp
+CompileFilter), the glass distiller reads it off the write-back into FVaCuusGlassEntry::Opacity -- a
+handle it cannot resolve drops the entry, as an unresolved sigma does -- and MainGlassPS multiplies
+the mask's coverage by it (Shaders/Private/VaCuusBlur.usf, GlassOpacity).
+
+Cost: one filter compile per opacity change of a glass element -- the frames upstream already
+recompiles the element's blur on (ElementEffects.cpp:155-164); nothing on a steady panel.
+
+Tests: VaCuus.Render.Glass.BackdropOpacity (VaCuusGlassRecorderTest.cpp) -- a 0.5 panel's
+write-back carries one BackdropOpacity 0.5 and the grab the blur alone; a steady translucent panel
+goes idle at the gate; opacity 1 releases the filter and the write-back is empty; opacity 0 records
+no layer at all; "opacity" is still refused. VaCuus.Render.Glass.DistillOpacity
+(VaCuusGlassPipelineTest.cpp) -- a window at 0.5 whose glass plate inherits the opacity distills to
+an entry at 0.5, at 1 to 1, at 0 to no entry. VaCuus.Render.Glass.RetiredOpacityDropsEntry -- a
+write-back naming a released opacity drops its entry instead of drawing it at full strength.

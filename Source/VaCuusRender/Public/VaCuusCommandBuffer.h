@@ -30,7 +30,7 @@ using FVaCuusFilterHandle = uint64;
  * resources — RmlUi holds a compiled shader until ReleaseShader
  * (RenderInterface.h:131-140), and re-parameterising a gradient has no mutate call:
  * the decorator releases and compiles a fresh handle (DecoratorShader.cpp:27-53 via
- * ElementEffects::ReloadEffectsData, ElementEffects.cpp:133-148). That is what makes
+ * ElementEffects::ReloadEffectsData, ElementEffects.cpp:135-150). That is what makes
  * the idle-gate story below complete: a changed gradient is ALWAYS new-handle
  * resource traffic AND a changed Shader field in its draw command.
  */
@@ -233,19 +233,35 @@ struct FVaCuusTextureData
 };
 
 /**
- * Payload of one compiled filter. Blur-only in v1 by policy (M5 spec §2(d)): the
- * recorder's CompileFilter returns handle 0 for every other filter type, so an entry
- * in NewFilters is always a blur and Sigma is its whole payload.
+ * What a compiled filter is. Blur is the only filter a stylesheet can reach (M5 spec
+ * §2(d)); BackdropOpacity is not a style at all but the element's own opacity, which
+ * RmlUi hands the recorder for the write-back composite of a backdrop-filter
+ * (ThirdParty/RmlUi VENDORED_TAG.txt patch #22) so the glass fades with its panel.
+ */
+enum class EVaCuusFilterKind : uint8
+{
+	Blur,
+	BackdropOpacity,
+};
+
+/**
+ * Payload of one compiled filter. The recorder's CompileFilter returns handle 0 for
+ * every filter type but these two, so an entry in NewFilters is always one of them.
  *
- * Sigma is RmlUi's resolved value verbatim: FilterBlur::CompileFilter passes
+ * Sigma (Blur) is RmlUi's resolved value verbatim: FilterBlur::CompileFilter passes
  * ResolveLength(sigma_value) — the blur() length itself, no 0.5 factor — under the
  * key "sigma" (RmlUi Source/Core/FilterBlur.cpp:16-20). So `blur(12px)` at dp-ratio
- * 1.0 records Sigma == 12.0. A struct rather than a bare float so the shader tier
- * (M5 Track S) and any future filter payload have a place to grow.
+ * 1.0 records Sigma == 12.0.
+ *
+ * Opacity (BackdropOpacity) is the element's computed opacity, strictly between 0 and
+ * 1: RmlUi compiles no filter at full opacity and skips the backdrop altogether at
+ * zero (ElementEffects.cpp, RenderStage::Enter).
  */
 struct FVaCuusFilterData
 {
+	EVaCuusFilterKind Kind = EVaCuusFilterKind::Blur;
 	float Sigma = 0.0f;
+	float Opacity = 1.0f;
 };
 
 /**
@@ -278,7 +294,7 @@ struct FVaCuusExternalTextureDesc
  * recorder refuses any other name — and any "shader" whose value is neither a builtin
  * nor a registered style-set key — with handle 0, which suppresses exactly ONE
  * decorator on ONE element (Decorator.h:42-44; the per-entry guard in
- * ElementEffects.cpp:196-200), so there is no Unknown kind here: an unknown key never
+ * ElementEffects.cpp:217-221), so there is no Unknown kind here: an unknown key never
  * mints a desc at all.
  */
 enum class EVaCuusShaderKind : uint8
@@ -436,8 +452,8 @@ struct FVaCuusCommandBuffer
 	TMap<FVaCuusTextureHandle, FVaCuusTextureData> NewTextures;
 
 	/**
-	 * Filters first seen this frame, keyed by handle. Blur-only in v1: every entry is a
-	 * blur and carries its sigma — see FVaCuusFilterData. Resource traffic exactly like
+	 * Filters first seen this frame, keyed by handle. A blur with its sigma, or a glass
+	 * panel's opacity — see FVaCuusFilterData. Resource traffic exactly like
 	 * NewGeometry: a sigma change releases the old filter and compiles a new handle
 	 * (RmlUi has no mutate-a-compiled-filter API, RenderInterface.h:118-125), so it is
 	 * double-covered at the idle gate — new handle in the command's filter list (hash)
@@ -510,7 +526,7 @@ struct FVaCuusCommandBuffer
 	 * mask-image", which was wrong about the first half and is corrected here (bead
 	 * VaCuus-u0q): SaveLayerAsTexture's only caller in the whole tree is the box-shadow texture
 	 * callback (ThirdParty/RmlUi/Source/Core/GeometryBoxShadow.cpp:235). Element `filter:` goes
-	 * through CompositeLayers (ElementEffects.cpp:283-315), which IS implemented. Naming the
+	 * through CompositeLayers (ElementEffects.cpp:308-340), which IS implemented. Naming the
 	 * wrong property is how box-shadow's white-rectangle failure stayed invisible for two
 	 * milestones — nothing under Source/VaCuus* mentioned it at all.
 	 *

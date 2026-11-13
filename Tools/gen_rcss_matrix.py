@@ -54,6 +54,8 @@ ANNOTATIONS = {
     "consumer is backdrop-filter.",
     "backdrop-filter": "`backdrop-filter: blur(...)` is the shipped glass path -- distilled at record "
     "time and re-blurred every engine frame at composite time (arch spec 5, M5 amendment). "
+    "The glass fades with the element's opacity, so a panel fading in takes its blur with it; "
+    "at opacity 0 there is no glass (RmlUi patch #22). "
     "Non-blur backdrop filters are refused like element filters.",
     "box-shadow": "DOES NOT RENDER in v1 -- the shadow needs the current layer captured to a "
     "texture (GeometryBoxShadow.cpp:241 -> RenderInterface::SaveLayerAsTexture) and the replayer "
@@ -67,7 +69,7 @@ ANNOTATIONS = {
     "at animation start with a Warning (ElementAnimation.cpp:640-648); `vacuus lint` flags it at "
     "authoring time (Web/packages/cli/lib/lint.mjs:68-99).",
     "mask-image": "PARSES BUT DOES NOT MASK in v1 -- masking needs the mask layer captured as a "
-    "filter (ElementEffects.cpp:306 -> RenderInterface::SaveLayerAsMaskImage) and the replayer has "
+    "filter (ElementEffects.cpp:331 -> RenderInterface::SaveLayerAsMaskImage) and the replayer has "
     "no layer render targets. It is REFUSED, once per view, with a Warning (bead VaCuus-iuv). The "
     "element renders UNMASKED, and the mask artwork RmlUi drew for the capture is discarded with the "
     "refusal -- before that, it was drawn over the element. "
@@ -306,7 +308,7 @@ def main():
     w.append("ONE -- `blur`. Every other type is refused with one Warning per type and the")
     w.append("effect dropped per element (VaCuusRecordingRenderInterface.cpp:866-907;")
     w.append("returning handle 0 is RmlUi's own safe-refusal contract, and RmlUi then warns")
-    w.append("per element, ElementEffects.cpp:161-165). The shipped, verified blur consumer")
+    w.append("per element, ElementEffects.cpp:163-167). The shipped, verified blur consumer")
     w.append("is `backdrop-filter` (glass); per-element `filter:` blur is a v1.x item (arch")
     w.append("spec 5, M5 amendment).")
     w.append("")

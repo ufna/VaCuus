@@ -78,8 +78,24 @@ void FVaCuusGlassDistiller::Distill(const FVaCuusCommandBuffer& Buffer)
 	// (same rule as the replayer's resources-before-commands ordering).
 	for (const TPair<FVaCuusFilterHandle, FVaCuusFilterData>& Pair : Buffer.NewFilters)
 	{
-		FilterSigmas.Add(Pair.Key, Pair.Value.Sigma);
+		Filters.Add(Pair.Key, Pair.Value);
 	}
+
+	// Resolves a composite's filter slice through the cross-buffer map. One line, once, for
+	// a handle with no recorded payload: RmlUi cannot produce one (a composite only names
+	// live handles), so it is either a recorder bug or a buffer distilled out of publish order.
+	const auto ResolveFilter = [this, &Buffer](const FVaCuusCommand& Command, int32 Index) -> const FVaCuusFilterData*
+	{
+		const FVaCuusFilterHandle Handle = Buffer.CompositeFilters[Command.FilterOffset + Index];
+		const FVaCuusFilterData* Data = Filters.Find(Handle);
+		if (!Data && !bWarnedUnresolvedFilter)
+		{
+			bWarnedUnresolvedFilter = true;
+			UE_LOG(LogVaCuus, Warning,
+				TEXT("Glass distiller: composite references filter %llu with no recorded sigma or opacity; entry dropped"), Handle);
+		}
+		return Data;
+	};
 
 	// The parse state: scissor, transform, clip-mask list and layer stack, tracked
 	// exactly as the replayer would apply them. CurrentTransform starts at identity —
@@ -157,19 +173,10 @@ void FVaCuusGlassDistiller::Distill(const FVaCuusCommandBuffer& Buffer)
 					float SigmaSquared = 0.0f;
 					for (int32 Index = 0; Index < Command.FilterCount; ++Index)
 					{
-						const FVaCuusFilterHandle Handle = Buffer.CompositeFilters[Command.FilterOffset + Index];
-						if (const float* Sigma = FilterSigmas.Find(Handle))
+						const FVaCuusFilterData* Filter = ResolveFilter(Command, Index);
+						if (Filter && Filter->Kind == EVaCuusFilterKind::Blur)
 						{
-							SigmaSquared += (*Sigma) * (*Sigma);
-						}
-						else if (!bWarnedUnresolvedFilter)
-						{
-							// One line, once: RmlUi cannot produce this (a composite only
-							// names live handles), so it is either a recorder bug or a
-							// buffer distilled out of publish order.
-							bWarnedUnresolvedFilter = true;
-							UE_LOG(LogVaCuus, Warning,
-								TEXT("Glass distiller: composite references filter %llu with no recorded sigma; entry dropped"), Handle);
+							SigmaSquared += Filter->Sigma * Filter->Sigma;
 						}
 					}
 
@@ -183,14 +190,42 @@ void FVaCuusGlassDistiller::Distill(const FVaCuusCommandBuffer& Buffer)
 				else if (Command.DestLayer == 0 && Command.SourceLayer != 0)
 				{
 					// The WRITE-BACK: temp -> base. Only a grab that carried a blur makes
-					// this a glass entry.
+					// this a glass entry. Its filter list is empty at full opacity and
+					// carries the panel's opacity otherwise (RmlUi patch #22); several
+					// would multiply, as successive opacity filters do. Resolved only for a
+					// write-back that closes a grab: an Exit-stage element-filter composite
+					// lands on this branch too, and its filters are none of the glass's. A
+					// handle that does not resolve drops the entry, as ResolveFilter's warning
+					// says: its opacity is unknown, and full strength is exactly the blurred
+					// silhouette patch #22 exists to remove.
+					const auto WriteBackOpacity = [&ResolveFilter](const FVaCuusCommand& WriteBack)
+					{
+						float Opacity = 1.0f;
+						for (int32 Index = 0; Index < WriteBack.FilterCount; ++Index)
+						{
+							const FVaCuusFilterData* Filter = ResolveFilter(WriteBack, Index);
+							if (!Filter)
+							{
+								return 0.0f;
+							}
+							if (Filter->Kind == EVaCuusFilterKind::BackdropOpacity)
+							{
+								Opacity *= Filter->Opacity;
+							}
+						}
+						return Opacity;
+					};
+
 					FPendingGrab Grab;
-					if (PendingGrabs.RemoveAndCopyValue(Command.SourceLayer, Grab))
+					const bool bClosesGrab = PendingGrabs.RemoveAndCopyValue(Command.SourceLayer, Grab);
+					const float Opacity = bClosesGrab ? WriteBackOpacity(Command) : 0.0f;
+					if (bClosesGrab && Opacity > 0.0f)
 					{
 						FVaCuusGlassEntry& Entry = Entries.AddDefaulted_GetRef();
 						Entry.SampleRegion = Grab.SampleRegion;
 						Entry.DrawRegion = Scissor.Get(FullView);
 						Entry.Sigma = Grab.Sigma;
+						Entry.Opacity = Opacity;
 
 						// The rounded mask: the Set draw of the active list (first —
 						// ElementUtilities.cpp:163-169 makes the first Set and ancestors
@@ -262,7 +297,7 @@ void FVaCuusGlassDistiller::Distill(const FVaCuusCommandBuffer& Buffer)
 	// Entries keep their shared geometry refs alive past retirement by design.
 	for (const FVaCuusFilterHandle Handle : Buffer.ReleasedFilters)
 	{
-		FilterSigmas.Remove(Handle);
+		Filters.Remove(Handle);
 	}
 	for (const FVaCuusGeometryHandle Handle : Buffer.ReleasedGeometry)
 	{
@@ -273,7 +308,7 @@ void FVaCuusGlassDistiller::Distill(const FVaCuusCommandBuffer& Buffer)
 void FVaCuusGlassDistiller::Reset()
 {
 	Entries.Reset();
-	FilterSigmas.Empty();
+	Filters.Empty();
 	MaskGeometry.Empty();
 	ViewSize = FIntPoint::ZeroValue;
 	++ListGeneration;

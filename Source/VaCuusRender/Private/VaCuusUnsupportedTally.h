@@ -7,7 +7,7 @@
 /**
  * Tally of the two Rml::RenderInterface virtuals VaCuus answers with a REFUSAL rather than a
  * recording — SaveLayerAsTexture (reached only by `box-shadow`, GeometryBoxShadow.cpp:235) and
- * SaveLayerAsMaskImage (reached only by `mask-image`, ElementEffects.cpp:306). Both are optional
+ * SaveLayerAsMaskImage (reached only by `mask-image`, ElementEffects.cpp:331). Both are optional
  * virtuals whose base returns zero (RenderInterface.cpp:37-45); leaving them there is what made
  * both properties fail silently through M5 (beads VaCuus-u0q, VaCuus-iuv).
  *

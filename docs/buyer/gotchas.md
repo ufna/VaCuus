@@ -45,7 +45,7 @@ Symptom: the element renders unmasked, as if you had not written the property. O
 per view.
 Cause: the same wall as #2, one door along. RmlUi draws the mask decorators into a pushed
 layer and asks for that layer back as a filter — `SaveLayerAsMaskImage`
-(`Source/ThirdParty/RmlUi/Source/Core/ElementEffects.cpp:306`). With no real layer there is
+(`Source/ThirdParty/RmlUi/Source/Core/ElementEffects.cpp:331`). With no real layer there is
 nothing to hand back, so the composite runs with no mask filter (bead `VaCuus-iuv`); the
 refusal discards the mask artwork's draws.
 Do: bake the alpha into the image asset and use `decorator: image` or `ninepatch`, or clip

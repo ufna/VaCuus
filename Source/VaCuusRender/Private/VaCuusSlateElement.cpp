@@ -654,6 +654,10 @@ void FVaCuusSlateElement::AddGlassPasses(FRDGBuilder& GraphBuilder, const FVaCuu
 			PSParameters->GlassUVBounds = FVector4f(0.5f * RTExtentInv.X, 0.5f * RTExtentInv.Y,
 				(float(Mapped.Plan.TargetSize.X) - 0.5f) * RTExtentInv.X, (float(Mapped.Plan.TargetSize.Y) - 0.5f) * RTExtentInv.Y);
 
+			// The panel's own opacity scales the coverage: a panel fading in or out takes its
+			// blur with it instead of standing at full strength in its place (RmlUi patch #22).
+			PSParameters->GlassOpacity = FMath::Clamp(Entry.Opacity, 0.0f, 1.0f);
+
 			const FGlassDraw Draw = GlassDraws[Mapped.EntryIndex]; // ref-counted copies for the lambda
 			const FIntRect DrawRect = Mapped.DrawRect;
 

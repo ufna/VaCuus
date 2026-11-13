@@ -22,7 +22,7 @@
  *
  * `box-shadow` and `mask-image` are the only two callers in the whole tree of the only two
  * Rml::RenderInterface virtuals VaCuus does not implement — SaveLayerAsTexture
- * (GeometryBoxShadow.cpp:241) and SaveLayerAsMaskImage (ElementEffects.cpp:306). Leaving both at
+ * (GeometryBoxShadow.cpp:241) and SaveLayerAsMaskImage (ElementEffects.cpp:331). Leaving both at
  * their optional zero-returning defaults (RenderInterface.cpp:37-45) is legal by RmlUi's contract
  * and was silent, and for box-shadow it was also destructive in two separate ways:
  *

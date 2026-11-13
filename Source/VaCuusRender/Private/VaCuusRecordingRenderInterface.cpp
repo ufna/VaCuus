@@ -1046,8 +1046,28 @@ Rml::CompiledFilterHandle FVaCuusRecordingRenderInterface::CompileFilter(const R
 	// CompiledFilterShader.cpp:14-21) and never lands in a composite's filter list
 	// (AddHandleTo skips the invalid handle, CompiledFilterShader.cpp:6-12). RmlUi then
 	// warns per element ("Could not compile filter on element",
-	// ElementEffects.cpp:153-165) and renders the element with the filter dropped — the
+	// ElementEffects.cpp:155-167) and renders the element with the filter dropped — the
 	// same discipline as an unknown decorator key.
+	//
+	// "backdrop-opacity" is the one other name, and it is not a filter a stylesheet can
+	// write: the vendored ElementEffects (RmlUi patch #22) compiles it from the element's
+	// own opacity for the write-back composite of a backdrop-filter, under a name no RmlUi
+	// filter instancer produces — so `filter: opacity()` still arrives as "opacity" and is
+	// still refused here. The glass distiller reads it off that composite and the glass
+	// draw scales its coverage by it, so a panel fading in no longer shows its full blur
+	// first. Value is in (0,1) by construction; clamped anyway, it is a blend weight.
+	if (Name == "backdrop-opacity")
+	{
+		const FVaCuusFilterHandle Handle = NextFilterHandle++;
+		ensureMsgf(Handle != 0, TEXT("Filter handle counter wrapped to the invalid sentinel"));
+
+		FVaCuusFilterData& Data = GetPending().NewFilters.Add(Handle);
+		Data.Kind = EVaCuusFilterKind::BackdropOpacity;
+		Data.Opacity = FMath::Clamp(Rml::Get(Parameters, "value", 1.0f), 0.0f, 1.0f);
+
+		return Rml::CompiledFilterHandle(Handle);
+	}
+
 	if (Name != "blur")
 	{
 		// Latched per TYPE, not per element: RmlUi's warning already names each element;
@@ -1072,6 +1092,7 @@ Rml::CompiledFilterHandle FVaCuusRecordingRenderInterface::CompileFilter(const R
 	ensureMsgf(Handle != 0, TEXT("Filter handle counter wrapped to the invalid sentinel"));
 
 	FVaCuusFilterData& Data = GetPending().NewFilters.Add(Handle);
+	Data.Kind = EVaCuusFilterKind::Blur;
 	Data.Sigma = Sigma;
 
 	return Rml::CompiledFilterHandle(Handle);
@@ -1082,7 +1103,7 @@ void FVaCuusRecordingRenderInterface::ReleaseFilter(Rml::CompiledFilterHandle Fi
 	CheckOwnerThread();
 
 	// Resource call, legal out of frame: ElementEffects::ReleaseEffects destroys compiled
-	// filters at document teardown (ElementEffects.cpp:169-183), which runs from
+	// filters at document teardown (ElementEffects.cpp:187-204), which runs from
 	// Document->Close() outside any Begin/End pair. Same-frame compile+release keeps both
 	// entries, exactly like geometry.
 	GetPending().ReleasedFilters.Add(FVaCuusFilterHandle(Filter));
@@ -1098,7 +1119,7 @@ Rml::CompiledShaderHandle FVaCuusRecordingRenderInterface::CompileShader(const R
 	// zero into nothing (RenderManager.cpp:285-294), the decorator's GenerateElementData
 	// returns INVALID_DECORATORDATAHANDLE (DecoratorShader.cpp:36-37), and that suppresses
 	// rendering of exactly ONE decorator on exactly ONE element — RenderEffects guards each
-	// entry separately (ElementEffects.cpp:196-200) and only the failed entry's data is
+	// entry separately (ElementEffects.cpp:217-221) and only the failed entry's data is
 	// null (:138-142). The rest of the comma-list, the element and the document all render;
 	// the claim that a zero "kills the whole declaration" is true only at PARSE time for an
 	// unknown decorator TYPE (PropertyParserDecorator.cpp:101-106), which a registered
@@ -1106,7 +1127,7 @@ Rml::CompiledShaderHandle FVaCuusRecordingRenderInterface::CompileShader(const R
 	// refusal, identical in shape to the blur-only filter policy above — and unlike a
 	// minted-but-inert handle it records no desc, no draw and no resource traffic for a key
 	// that can never draw. RmlUi's own per-element warning ("Could not generate decorator
-	// element data", ElementEffects.cpp:150-151) names the element; the latched line below
+	// element data", ElementEffects.cpp:152-153) names the element; the latched line below
 	// names the key and what would have worked.
 	const auto RefuseKey = [this](const TCHAR* What, const FString& Key) -> Rml::CompiledShaderHandle
 	{
@@ -1362,7 +1383,7 @@ void FVaCuusRecordingRenderInterface::CompositeLayers(Rml::LayerHandle Source, R
 	// The filter list is recorded verbatim into the buffer-level side array — the
 	// variable-length record. Zero handles cannot arrive here: every list RmlUi builds
 	// goes through CompiledFilter::AddHandleTo, which skips the invalid handle
-	// (CompiledFilterShader.cpp:6-12; list assembly at ElementEffects.cpp:269-271), so a
+	// (CompiledFilterShader.cpp:6-12; list assembly at ElementEffects.cpp:292-294), so a
 	// refused non-blur filter reaches this composite as an ABSENCE, not a zero.
 	//
 	// Appending to CompositeFilters cannot invalidate the Commands ref: two different
@@ -1484,7 +1505,7 @@ Rml::TextureHandle FVaCuusRecordingRenderInterface::SaveLayerAsTexture()
 	// THE ONLY CALLER IN THE TREE is the box-shadow texture callback (GeometryBoxShadow.cpp:241),
 	// reached from ElementBackgroundBorder::GenerateGeometry -> BoxShadowCache::GetHandle. Element
 	// `filter:` does NOT come through here — it composites through CompositeLayers
-	// (ElementEffects.cpp:283-315), which is implemented.
+	// (ElementEffects.cpp:308-340), which is implemented.
 	//
 	// WHY v1 CANNOT HONOUR IT, and why implementing this one virtual alone would be worse than
 	// refusing. "Save the current layer as a texture" presupposes that the layer IS something. In
@@ -1543,7 +1564,7 @@ Rml::CompiledFilterHandle FVaCuusRecordingRenderInterface::SaveLayerAsMaskImage(
 	CheckOwnerThread();
 
 	// THE ONLY CALLER IN THE TREE is the `mask-image` leg of the element effects Exit stage
-	// (ElementEffects.cpp:296-311, through RenderManager::SaveLayerAsMaskImage,
+	// (ElementEffects.cpp:321-336, through RenderManager::SaveLayerAsMaskImage,
 	// RenderManager.cpp:328-334). Same architectural wall as SaveLayerAsTexture above — the mask
 	// is a captured LAYER, and this replayer has none — plus a second one: the captured mask is
 	// consumed as a FILTER in the composite's filter list, and the only filter v1 compiles is
@@ -1556,7 +1577,7 @@ Rml::CompiledFilterHandle FVaCuusRecordingRenderInterface::SaveLayerAsMaskImage(
 	// double-releases.
 	//
 	// THE ARTWORK IS TAKEN BACK TOO. The mask decorators are RENDERED into the pushed layer before
-	// the capture (ElementEffects.cpp:298-306), and because the replayer skips the layer, those
+	// the capture (ElementEffects.cpp:323-331), and because the replayer skips the layer, those
 	// draws would land in the base render target like any other geometry — the mask ARTWORK
 	// painted over the element, which is what a screenshot showed before this refusal discarded
 	// them (DiscardDrawsInTopLayer; see OpenLayerCommandStarts). What remains is the element,

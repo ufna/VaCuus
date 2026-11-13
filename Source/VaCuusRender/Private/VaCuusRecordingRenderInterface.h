@@ -153,7 +153,7 @@ public:
 	virtual void SetTransform(const Rml::Matrix4f* Transform) override;
 
 	// The M5 glass seven (spec §2(d)): the vocabulary `backdrop-filter` arrives in
-	// (ElementEffects.cpp:247-282). Filters are resources (legal out of frame — document
+	// (ElementEffects.cpp:268-307). Filters are resources (legal out of frame — document
 	// teardown releases them); layer and clip-mask calls are draw state (in-frame only).
 	virtual Rml::CompiledFilterHandle CompileFilter(const Rml::String& Name, const Rml::Dictionary& Parameters) override;
 	virtual void ReleaseFilter(Rml::CompiledFilterHandle Filter) override;
@@ -359,7 +359,7 @@ private:
 	 * content, drawn unfiltered. A layer RmlUi pushes only to CAPTURE it is different: its
 	 * draws are the capture's input, never meant for the screen — the box-shadow texture
 	 * (GeometryBoxShadow.cpp:157-233, captured at :241) and the mask artwork
-	 * (ElementEffects.cpp:298-306). When SaveLayerAsTexture/SaveLayerAsMaskImage refuse, those
+	 * (ElementEffects.cpp:323-331). When SaveLayerAsTexture/SaveLayerAsMaskImage refuse, those
 	 * draws have to go too, or they are painted as they stand. The shadow's would land at the
 	 * view's top-left corner, because its callback resets the transform and draws at texture
 	 * coordinates (GeometryBoxShadow.cpp:137-138).
@@ -373,7 +373,7 @@ private:
 	 * Filter types already refused with a log line, so the refusal is loud ONCE PER TYPE
 	 * per recorder rather than once per element per recompile (a hover restyle re-runs
 	 * CompileFilter for every filter on the element). RmlUi's own per-element warning
-	 * ("Could not compile filter on element", ElementEffects.cpp:164-165) still fires
+	 * ("Could not compile filter on element", ElementEffects.cpp:166-167) still fires
 	 * each time and carries the element address; this latch carries the why.
 	 */
 	TSet<FString> RefusedFilterTypes;
@@ -384,7 +384,7 @@ private:
 	 * One set for both unknown builtin keys and unknown CompileShader names: either way
 	 * the entry is "the string RmlUi sent that this recorder returned 0 for", and RmlUi's
 	 * own per-element warning ("Could not generate decorator element data",
-	 * ElementEffects.cpp:150-151) carries the element; this latch carries the why and the
+	 * ElementEffects.cpp:152-153) carries the element; this latch carries the why and the
 	 * known keys.
 	 */
 	TSet<FString> RefusedShaderKeys;

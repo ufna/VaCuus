@@ -206,7 +206,9 @@ void AddBlurTargetPasses(FRDGBuilder& GraphBuilder, FGlobalShaderMap* ShaderMap,
  * The glass draw (spec §2(a)): renders the clip-mask geometry (or a generated quad)
  * through FVaCuusUIVS's Projection into the Slate elements texture, sampling the blurred
  * blur target at the output pixel's position. Bound with SrcAlpha/InvSrcAlpha so the
- * mask's vertex alpha lerps blurred-over-sharp at the edge.
+ * mask's vertex alpha lerps blurred-over-sharp at the edge; GlassOpacity (the panel's
+ * own opacity, FVaCuusGlassEntry::Opacity) scales that alpha, so the blur fades with
+ * the panel.
  */
 class FVaCuusGlassPS : public FGlobalShader
 {
@@ -219,6 +221,7 @@ public:
 		SHADER_PARAMETER_SAMPLER(SamplerState, GlassSampler)
 		SHADER_PARAMETER(FVector4f, GlassUVTransform)
 		SHADER_PARAMETER(FVector4f, GlassUVBounds)
+		SHADER_PARAMETER(float, GlassOpacity)
 		RENDER_TARGET_BINDING_SLOTS()
 	END_SHADER_PARAMETER_STRUCT()
 };
@@ -269,7 +272,7 @@ static_assert(VaCuusMaxGradientStops == 16,
  * (M5 spec §3.3: the gated UVaCuusStyleSet asset tier is Task 5's business; stage 1
  * ships exactly this). The recorder consults it to refuse unknown keys at CompileShader
  * (handle 0 — suppresses that one decorator on that one element, Decorator.h:42-44 +
- * ElementEffects.cpp:196-200); the replayer consults it to pick the PS mode. One map so
+ * ElementEffects.cpp:217-221); the replayer consults it to pick the PS mode. One map so
  * the two cannot disagree about what exists.
  */
 namespace VaCuusBuiltinShaders

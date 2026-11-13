@@ -1424,8 +1424,8 @@ void FVaCuusReplayRenderer::ReplayCommands(FRHICommandList& RHICmdList, const FV
 					//
 					// Skipping cannot misplace any draw: a backdrop-only sequence issues no
 					// geometry between its PushLayer and PopLayer — only the two composites
-					// (ElementEffects.cpp:256-281). For element `filter:`/`mask-image:`
-					// content (the Exit-stage stack, ElementEffects.cpp:283-315), draws
+					// (ElementEffects.cpp:277-306). For element `filter:`/`mask-image:`
+					// content (the Exit-stage stack, ElementEffects.cpp:308-340), draws
 					// recorded "into" the pushed layer land directly in the base RT and the
 					// filtered composite is skipped, i.e. the element renders unfiltered —
 					// the pre-M5 behavior for those properties, kept for v1.

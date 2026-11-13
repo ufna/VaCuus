@@ -274,7 +274,7 @@ bool FVaCuusDecoratorDictionariesTest::RunTest(const FString& Parameters)
  *
  * The swap IS the "animated gradients are resource traffic by construction" note in
  * spec §2(e)/plan Task 4: every parameter change re-runs GenerateElementData — release
- * + fresh CompileShader (ElementEffects::ReloadEffectsData, ElementEffects.cpp:133-148)
+ * + fresh CompileShader (ElementEffects::ReloadEffectsData, ElementEffects.cpp:135-150)
  * — so an every-frame animation would carry shader traffic every frame and never idle.
  * That is correct behavior, not a gap: the pixels change every frame too.
  */
@@ -526,11 +526,11 @@ bool FVaCuusDecoratorShaderHashTest::RunTest(const FString& Parameters)
  * "decide which behavior is more honest"): an unregistered `shader(<key>)` returns
  * handle 0 rather than minting an inert handle, because a zero suppresses exactly ONE
  * decorator on ONE element (Decorator.h:42-44; the per-entry guard in
- * ElementEffects.cpp:196-200) — not the declaration, not the element, not the document
+ * ElementEffects.cpp:217-221) — not the declaration, not the element, not the document
  * — making it the same per-effect refusal shape as the blur-only filter policy, with
  * zero dead state recorded. Observed here: ONE latched VaCuus line naming the known
  * keys (two elements, one line), RmlUi's own per-element warning
- * (ElementEffects.cpp:150-151) twice, NO desc and NO DrawShader for the unknown key —
+ * (ElementEffects.cpp:152-153) twice, NO desc and NO DrawShader for the unknown key —
  * while the sibling glass-panel decorator and the plain background in the same document
  * record and draw normally.
  */

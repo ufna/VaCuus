@@ -21,7 +21,7 @@
  * `backdrop-filter` records, what a non-blur filter refuses, and what the idle gate sees.
  *
  * The real-context tests drive documents through a real Rml::Context because the property
- * under test is RmlUi's call sequence (ElementEffects.cpp:247-282), which cannot be
+ * under test is RmlUi's call sequence (ElementEffects.cpp:268-307), which cannot be
  * synthesised without becoming a tautology. FilterListHash drives the recorder directly,
  * following the idle-gate file's stated pattern, because it isolates the HASH leg of the
  * gate: through a real context a sigma change is double-covered — the recompile is
@@ -68,7 +68,7 @@ int32 CountOf(const FVaCuusCommandBuffer& Buffer, EVaCuusCommandType Type)
 
 /**
  * The reference glass panel records the exact ElementEffects Enter-stage sequence the
- * Task 3 distiller will parse (ElementEffects.cpp:256-281; backdrop-glass.md §4):
+ * Task 3 distiller will parse (ElementEffects.cpp:277-306; backdrop-glass.md §4):
  * scissor(border box + 3σ ink overflow) → PushLayer → CompositeLayers(0 → temp, [blur])
  * → scissor(border box) + clip-mask(Set, radius geometry) → CompositeLayers(temp → 0, {})
  * → PopLayer — with the sigma recorded in NewFilters exactly as FilterBlur resolved it.
@@ -305,7 +305,7 @@ bool FVaCuusGlassNonBlurRefusalTest::RunTest(const FString& Parameters)
 	};
 
 	// TWO elements with the same refused type: the VaCuus line must appear ONCE (latched
-	// per type), while RmlUi's own warning names each element (ElementEffects.cpp:153-165,
+	// per type), while RmlUi's own warning names each element (ElementEffects.cpp:155-167,
 	// routed through FVaCuusSystemInterface as a LogVaCuus warning).
 	AddExpectedMessagePlain(TEXT("filter type 'brightness' is not supported"), ELogVerbosity::Warning,
 		EAutomationExpectedMessageFlags::Contains, 1);
@@ -337,7 +337,7 @@ bool FVaCuusGlassNonBlurRefusalTest::RunTest(const FString& Parameters)
 
 	// The zero handle suppressed the filter, not the sequence: RmlUi still runs the full
 	// backdrop pipeline per element (the FilterEntry exists even when its compile failed,
-	// ElementEffects.cpp:109-122) — only the filter list is empty, because
+	// ElementEffects.cpp:111-124) — only the filter list is empty, because
 	// RenderManager::CompileFilter wraps nothing for a zero handle
 	// (RenderManager.cpp:274-283) and AddHandleTo skips the invalid handle.
 	TestEqual(TEXT("No filter compiled"), Buffer->NewFilters.Num(), 0);
@@ -705,6 +705,193 @@ bool FVaCuusGlassPlainDocumentTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("No filters compiled"), Buffer->NewFilters.Num(), 0);
 	TestEqual(TEXT("No filters released"), Buffer->ReleasedFilters.Num(), 0);
 	TestEqual(TEXT("No filter slices"), Buffer->CompositeFilters.Num(), 0);
+
+	return true;
+}
+
+/**
+ * THE GLASS FADES WITH ITS PANEL (RmlUi patch #22). A translucent glass panel hands its
+ * own opacity to the WRITE-BACK composite as a BackdropOpacity filter; the grab still
+ * carries the blur alone. Then the three edges of that filter's life:
+ *  - steady: an unchanged translucent panel recompiles nothing, so it goes idle at the
+ *    gate like any other panel (a per-frame recompile would republish forever);
+ *  - back to full opacity: the filter is released and the write-back is `{}` again,
+ *    upstream's exact sequence;
+ *  - fully transparent: no backdrop sequence at all -- nothing of a blur can show.
+ * And `filter: opacity()` is NOT what opened this door: "opacity" is still refused.
+ *
+ * Restore-the-bug: without the patch, the 0.5 panel's write-back arrives with no filter
+ * and the 0 panel still records its full backdrop -- the blurred silhouette that showed
+ * before a fading-in window.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusGlassBackdropOpacityTest, "VaCuus.Render.Glass.BackdropOpacity",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVaCuusGlassBackdropOpacityTest::RunTest(const FString& Parameters)
+{
+	using namespace VaCuusGlassTest;
+
+	if (!TestFalse(TEXT("RmlUi is down before the test"), FVaCuusEngine::Get().IsInitialized()))
+	{
+		return false;
+	}
+
+	FVaCuusEngine& Engine = FVaCuusEngine::Get();
+	if (!TestTrue(TEXT("Initialized"), Engine.Initialize()))
+	{
+		return false;
+	}
+	ON_SCOPE_EXIT
+	{
+		Engine.Shutdown();
+	};
+
+	FVaCuusRecordingRenderInterface Recorder;
+	const Rml::String ContextName("vacuus_glass_opacity_test");
+	Rml::Context* Context = Rml::CreateContext(ContextName, Rml::Vector2i(GViewSize.X, GViewSize.Y), &Recorder);
+	if (!TestNotNull(TEXT("Context"), Context))
+	{
+		return false;
+	}
+	ON_SCOPE_EXIT
+	{
+		Rml::RemoveContext(ContextName);
+	};
+
+	// BackdropSequence's reference panel, at half opacity. #panel.full / #panel.clear rather
+	// than bare classes: the #panel rule's opacity is ID-specific and would beat them.
+	static const TCHAR* Source =
+		TEXT("<rml><head><style>")
+		TEXT("body{display:block;width:100%;height:100%;}")
+		TEXT("#panel{display:block;position:absolute;left:40px;top:40px;width:200px;height:120px;")
+		TEXT("border-radius:16px;background-color:#30405080;backdrop-filter:blur(12px);opacity:0.5;}")
+		TEXT("#panel.full{opacity:1;}")
+		TEXT("#panel.clear{opacity:0;}")
+		TEXT("</style></head><body><div id=\"panel\"/></body></rml>");
+
+	Rml::ElementDocument* Document =
+		Context->LoadDocumentFromMemory(Rml::String(TCHAR_TO_UTF8(Source)), "vacuus://glass_opacity.rml");
+	if (!TestNotNull(TEXT("Document"), Document))
+	{
+		return false;
+	}
+	Document->Show();
+
+	Rml::Element* Panel = Document->GetElementById("panel");
+	if (!TestNotNull(TEXT("Panel element"), Panel))
+	{
+		return false;
+	}
+
+	const TUniquePtr<FVaCuusCommandBuffer> Buffer = RecordContextFrame(Recorder, Context);
+	if (!TestNotNull(TEXT("The translucent glass frame publishes"), Buffer.Get()))
+	{
+		return false;
+	}
+
+	// Two filters: the blur, and the panel's opacity under its own kind.
+	FVaCuusFilterHandle BlurHandle = 0;
+	FVaCuusFilterHandle OpacityHandle = 0;
+	for (const TPair<FVaCuusFilterHandle, FVaCuusFilterData>& Pair : Buffer->NewFilters)
+	{
+		if (Pair.Value.Kind == EVaCuusFilterKind::Blur)
+		{
+			BlurHandle = Pair.Key;
+			TestEqual(TEXT("The blur keeps its sigma 12"), Pair.Value.Sigma, 12.0f);
+		}
+		else if (Pair.Value.Kind == EVaCuusFilterKind::BackdropOpacity)
+		{
+			OpacityHandle = Pair.Key;
+			TestEqual(TEXT("The backdrop opacity is the panel's computed opacity 0.5"), Pair.Value.Opacity, 0.5f);
+		}
+	}
+	TestEqual(TEXT("Exactly two filters compiled"), Buffer->NewFilters.Num(), 2);
+	if (!TestTrue(TEXT("A blur and a backdrop opacity were compiled"), BlurHandle != 0 && OpacityHandle != 0))
+	{
+		return false;
+	}
+
+	const int32 PushIndex = FindNext(*Buffer, EVaCuusCommandType::PushLayer, 0);
+	const int32 GrabIndex = PushIndex == INDEX_NONE ? INDEX_NONE : FindNext(*Buffer, EVaCuusCommandType::CompositeLayers, PushIndex + 1);
+	const int32 WriteBackIndex = GrabIndex == INDEX_NONE ? INDEX_NONE : FindNext(*Buffer, EVaCuusCommandType::CompositeLayers, GrabIndex + 1);
+	if (!TestTrue(TEXT("The backdrop sequence is recorded: push, grab, write-back"), WriteBackIndex != INDEX_NONE))
+	{
+		return false;
+	}
+	{
+		const FVaCuusCommand& Grab = Buffer->Commands[GrabIndex];
+		if (TestEqual(TEXT("The grab carries one filter"), Grab.FilterCount, 1))
+		{
+			TestTrue(TEXT("...the blur, not the opacity"), Buffer->CompositeFilters[Grab.FilterOffset] == BlurHandle);
+		}
+		const FVaCuusCommand& WriteBack = Buffer->Commands[WriteBackIndex];
+		TestTrue(TEXT("The write-back runs temp -> base"), WriteBack.SourceLayer != 0 && WriteBack.DestLayer == 0);
+		if (TestEqual(TEXT("The write-back carries one filter"), WriteBack.FilterCount, 1))
+		{
+			TestTrue(TEXT("...the backdrop opacity"), Buffer->CompositeFilters[WriteBack.FilterOffset] == OpacityHandle);
+		}
+	}
+
+	// Steady: the rounded panel's clip-geometry settle may publish once more, after which
+	// an unchanged translucent panel must go idle -- no recompile, no new handle.
+	const auto CompilesBackdropOpacity = [](const FVaCuusCommandBuffer& Frame)
+	{
+		for (const TPair<FVaCuusFilterHandle, FVaCuusFilterData>& Pair : Frame.NewFilters)
+		{
+			if (Pair.Value.Kind == EVaCuusFilterKind::BackdropOpacity)
+			{
+				return true;
+			}
+		}
+		return false;
+	};
+	for (int32 Frame = 0; Frame < 4; ++Frame)
+	{
+		const TUniquePtr<FVaCuusCommandBuffer> Next = RecordContextFrame(Recorder, Context);
+		if (!Next)
+		{
+			break;
+		}
+		TestFalse(TEXT("A steady translucent panel compiles no new backdrop opacity"), CompilesBackdropOpacity(*Next));
+		TestFalse(TEXT("...and keeps the one it has"), Next->ReleasedFilters.Contains(OpacityHandle));
+	}
+	TestNull(TEXT("A steady translucent glass panel goes idle"), RecordContextFrame(Recorder, Context).Get());
+
+	// Back to full opacity: the filter is released, the write-back is upstream's {} again.
+	// (The blur IS recompiled: an opacity change dirties the element's effects data,
+	// Element::OnPropertyChange -- upstream's behaviour, untouched.)
+	Panel->SetClassNames("full");
+	{
+		const TUniquePtr<FVaCuusCommandBuffer> Full = RecordContextFrame(Recorder, Context);
+		if (TestNotNull(TEXT("The full-opacity frame publishes"), Full.Get()))
+		{
+			TestTrue(TEXT("The backdrop opacity is released"), Full->ReleasedFilters.Contains(OpacityHandle));
+			TestFalse(TEXT("No backdrop opacity compiled for full opacity"), CompilesBackdropOpacity(*Full));
+			const int32 FullPush = FindNext(*Full, EVaCuusCommandType::PushLayer, 0);
+			const int32 FullGrab = FullPush == INDEX_NONE ? INDEX_NONE : FindNext(*Full, EVaCuusCommandType::CompositeLayers, FullPush + 1);
+			const int32 FullWriteBack = FullGrab == INDEX_NONE ? INDEX_NONE : FindNext(*Full, EVaCuusCommandType::CompositeLayers, FullGrab + 1);
+			if (TestTrue(TEXT("The full-opacity backdrop sequence is recorded"), FullWriteBack != INDEX_NONE))
+			{
+				TestEqual(TEXT("...with an empty write-back filter list"), Full->Commands[FullWriteBack].FilterCount, 0);
+			}
+		}
+	}
+
+	// Fully transparent: no backdrop at all.
+	Panel->SetClassNames("clear");
+	{
+		const TUniquePtr<FVaCuusCommandBuffer> Clear = RecordContextFrame(Recorder, Context);
+		if (TestNotNull(TEXT("The transparent frame publishes"), Clear.Get()))
+		{
+			TestEqual(TEXT("No PushLayer for a transparent glass panel"), CountOf(*Clear, EVaCuusCommandType::PushLayer), 0);
+			TestEqual(TEXT("No CompositeLayers for a transparent glass panel"), CountOf(*Clear, EVaCuusCommandType::CompositeLayers), 0);
+		}
+	}
+
+	// `filter: opacity()` still comes through as "opacity" and is still refused.
+	AddExpectedMessagePlain(TEXT("filter type 'opacity' is not supported"), ELogVerbosity::Warning, EAutomationExpectedMessageFlags::Contains, 1);
+	TestTrue(TEXT("\"opacity\" (a stylesheet filter) is still refused"),
+		Recorder.CompileFilter("opacity", Rml::Dictionary{{"value", Rml::Variant(0.5f)}}) == Rml::CompiledFilterHandle(0));
 
 	return true;
 }

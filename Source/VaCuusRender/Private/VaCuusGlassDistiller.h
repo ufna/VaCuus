@@ -21,7 +21,7 @@ struct FVaCuusGlassEntry
 	/**
 	 * The backdrop READ region: the scissor active at the grab composite, i.e. the border
 	 * box extended by the blur's ink overflow (3*max(sigma,1) per side —
-	 * ThirdParty/RmlUi/Source/Core/ElementEffects.cpp:236-245, FilterBlur.cpp:22-27).
+	 * ThirdParty/RmlUi/Source/Core/ElementEffects.cpp:257-266, FilterBlur.cpp:22-27).
 	 * The downsample samples the scene here so the blur has real neighbours at the edge.
 	 */
 	FIntRect SampleRegion;
@@ -40,6 +40,16 @@ struct FVaCuusGlassEntry
 	 * blur per entry instead of a chain.
 	 */
 	float Sigma = 0.0f;
+
+	/**
+	 * The panel's own opacity: the glass draw scales its coverage by it, so the blur
+	 * fades with the panel instead of standing at full strength while the panel fades in
+	 * over it. Read off the WRITE-BACK composite's BackdropOpacity filter (RmlUi patch #22,
+	 * ElementEffects.cpp RenderStage::Enter); 1 when that composite carries none, which is
+	 * every panel at full opacity. Never 0: RmlUi records no backdrop sequence at all for a
+	 * fully transparent element, and the distiller drops one that says 0 regardless.
+	 */
+	float Opacity = 1.0f;
 
 	/**
 	 * The rounded mask: a COPY of the clip-mask geometry (the recorded
@@ -96,10 +106,10 @@ struct FVaCuusGlassEntry
  * glass list the Slate element composites from every engine frame (M5 spec §2(a),
  * backdrop-glass.md §5 design A).
  *
- * The signature (verified against ElementEffects.cpp:247-282 by
+ * The signature (verified against ElementEffects.cpp:268-307 by
  * VaCuus.Render.Glass.BackdropSequence): scissor(border box + ink overflow) → PushLayer →
  * CompositeLayers(0 → temp, [blur...]) → scissor(border box) [+ clip-mask geometry for
- * border-radius] → CompositeLayers(temp → 0, []) → PopLayer.
+ * border-radius] → CompositeLayers(temp → 0, [] or [backdrop-opacity]) → PopLayer.
  *
  * WHERE THIS RUNS, AND WHY (the Task 3 placement decision): on the Slate element, called
  * once per ARRIVING published buffer from SetPendingBuffer_RenderThread — never from
@@ -121,7 +131,7 @@ struct FVaCuusGlassEntry
  * MEANS the glass is gone.
  *
  * The two cross-buffer maps live here because their feed and retirement ride the same
- * per-published-buffer call: filter handle → sigma (compiled in one buffer, referenced by
+ * per-published-buffer call: filter handle → sigma or opacity (compiled in one buffer, referenced by
  * composites in later ones; filters are cross-frame resources) and mask geometry handle →
  * payload copy (the clip geometry is compiled once and referenced by every subsequent
  * glass frame — cross-buffer exactly like draws). Both retire on the buffer's Released*
@@ -155,8 +165,11 @@ private:
 	FIntPoint ViewSize = FIntPoint::ZeroValue;
 	uint64 ListGeneration = 0;
 
-	/** Compiled blur sigmas by filter handle; fed from NewFilters, retired on ReleasedFilters. */
-	TMap<FVaCuusFilterHandle, float> FilterSigmas;
+	/**
+	 * Compiled filters by handle — blur sigmas for the grab, panel opacities for the
+	 * write-back; fed from NewFilters, retired on ReleasedFilters.
+	 */
+	TMap<FVaCuusFilterHandle, FVaCuusFilterData> Filters;
 
 	/**
 	 * Clip-mask geometry payload copies by handle, fed lazily: the first RenderToClipMask

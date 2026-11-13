@@ -1,12 +1,14 @@
 #include "ElementEffects.h"
 #include "../../Include/RmlUi/Core/ComputedValues.h"
 #include "../../Include/RmlUi/Core/Decorator.h"
+#include "../../Include/RmlUi/Core/Dictionary.h" // VaCuus patch #22: the backdrop-opacity filter's parameters
 #include "../../Include/RmlUi/Core/Element.h"
 #include "../../Include/RmlUi/Core/ElementDocument.h"
 #include "../../Include/RmlUi/Core/ElementUtilities.h"
 #include "../../Include/RmlUi/Core/Filter.h"
 #include "../../Include/RmlUi/Core/Profiling.h"
 #include "../../Include/RmlUi/Core/StyleSheet.h"
+#include "../../Include/RmlUi/Core/Variant.h" // VaCuus patch #22
 #include "ElementStyle.h"
 
 namespace Rml {
@@ -163,6 +165,22 @@ void ElementEffects::ReloadEffectsData()
 
 		if (filter_compile_failed)
 			Log::Message(Log::LT_WARNING, "Could not compile filter on element: %s", element->GetAddress().c_str());
+
+		// VaCuus patch #22 (VENDORED_TAG.txt): the backdrop fades with the element. Upstream composites the
+		// filtered backdrop at full strength whatever the element's opacity, while its background, borders and
+		// text are all premultiplied by that opacity (ElementBackgroundBorder.cpp:166-172, ElementText.cpp:384-387)
+		// -- so a glass panel fading in shows its full blur, in the panel's exact shape, before anything else of it,
+		// and one fading out leaves the blur behind until it is gone. CSS fades the backdrop with the element. The
+		// opacity rides the write-back composite in RenderEffects as a filter of its own name, which no RmlUi filter
+		// instancer produces, so a render interface can tell it from `filter: opacity()`; one that does not know the
+		// name returns 0, AddHandleTo skips it (CompiledFilterShader.cpp:6-12), the backdrop renders as upstream's.
+		// None at full opacity (the write-back stays upstream's `{}`), none at zero (RenderEffects skips the backdrop).
+		const float opacity = element->GetComputedValues().opacity();
+		RenderManager* render_manager = element->GetRenderManager();
+		if (render_manager && !backdrop_filters.empty() && opacity > 0.f && opacity < 1.f)
+			backdrop_opacity_filter = render_manager->CompileFilter("backdrop-opacity", Dictionary{{"value", Variant(opacity)}});
+		else
+			backdrop_opacity_filter.Release();
 	}
 }
 
@@ -180,6 +198,9 @@ void ElementEffects::ReleaseEffects()
 
 	filters.clear();
 	backdrop_filters.clear();
+
+	// VaCuus patch #22: released with the backdrop filters it belongs to.
+	backdrop_opacity_filter.Release();
 }
 
 void ElementEffects::RenderEffects(RenderStage render_stage)
@@ -253,7 +274,9 @@ void ElementEffects::RenderEffects(RenderStage render_stage)
 			render_manager->PushLayer();
 		}
 
-		if (!backdrop_filters.empty())
+		// VaCuus patch #22 (VENDORED_TAG.txt): a fully transparent element shows nothing of its backdrop, so the
+		// whole sequence is skipped; a translucent one carries its opacity on the write-back (ReloadEffectsData).
+		if (!backdrop_filters.empty() && element->GetComputedValues().opacity() > 0.f)
 		{
 			const LayerHandle backdrop_destination_layer = render_manager->GetTopLayer();
 
@@ -275,7 +298,9 @@ void ElementEffects::RenderEffects(RenderStage render_stage)
 
 			// Then composite the filter output to our destination while applying our clipping region, including any border-radius.
 			ApplyClippingRegion(PropertyId::BackdropFilter);
-			render_manager->CompositeLayers(backdrop_temp_layer, backdrop_destination_layer, BlendMode::Blend, {});
+			FilterHandleList backdrop_opacity_handles; // VaCuus patch #22: empty at full opacity, as upstream's {}.
+			backdrop_opacity_filter.AddHandleTo(backdrop_opacity_handles);
+			render_manager->CompositeLayers(backdrop_temp_layer, backdrop_destination_layer, BlendMode::Blend, backdrop_opacity_handles);
 			render_manager->PopLayer();
 			render_manager->SetScissorRegion(initial_scissor_region);
 		}

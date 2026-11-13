@@ -83,6 +83,14 @@ float4 GlassUVTransform;
 float4 GlassUVBounds;
 
 /**
+ * The panel's own opacity (FVaCuusGlassEntry::Opacity), in (0,1]. Multiplies the mask's
+ * coverage, so a panel fading in or out takes its blur with it: blurred-over-sharp at
+ * coverage * opacity, i.e. the sharp scene at 0 and the full glass at 1 -- what CSS does
+ * to a backdrop-filter under an element's opacity.
+ */
+float GlassOpacity;
+
+/**
  * The glass draw: runs over the clip-mask geometry (rounded panels) or a generated quad
  * (square ones), both arriving through the standard VaCuus vertex layout and MainVS's
  * Projection. Samples the blurred low-res scene at the OUTPUT pixel's position, so the
@@ -103,5 +111,5 @@ void MainGlassPS(
 	const float4 SvPosition = In.Position;
 	const float4 Color = In.Color;
 	const float2 UV = clamp(SvPosition.xy * GlassUVTransform.xy + GlassUVTransform.zw, GlassUVBounds.xy, GlassUVBounds.zw);
-	OutColor = float4(GlassTexture.Sample(GlassSampler, UV).rgb, Color.a);
+	OutColor = float4(GlassTexture.Sample(GlassSampler, UV).rgb, Color.a * GlassOpacity);
 }
