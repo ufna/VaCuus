@@ -22,6 +22,11 @@ Local patches:
 - lottieparser.cpp loads external images through VaCuusVectorResources::LoadChildFile,
   preserving directory-relative confinement without requiring host realpath for a
   bundle entry. Embedded data images use the upstream decoder.
+- src/vector/freetype/v_ft_stroker.cpp zero-initializes sigma in ft_stroker_inside
+  and ft_stroker_outside. MSVC /W4 reports C4701 at the reads on lines 881 and 975,
+  but each read is reached only through the branch that writes sigma first. The
+  zero is never read; plutovg's copy of the same stroker declares sigma = {0, 0}
+  in both functions (plutovg-ft-stroker.c:785, 853).
 
 Keep every in-file notice and licenses/ with the source. The imported vector,
 FreeType, stb, RapidJSON and zip sources retain their respective licenses.

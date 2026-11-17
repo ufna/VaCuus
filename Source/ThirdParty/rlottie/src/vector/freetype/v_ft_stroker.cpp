@@ -840,7 +840,7 @@ static SW_FT_Error ft_stroker_inside(SW_FT_Stroker stroker, SW_FT_Int side,
     SW_FT_StrokeBorder border = stroker->borders + side;
     SW_FT_Angle        phi, theta, rotate;
     SW_FT_Fixed        length;
-    SW_FT_Vector       sigma, delta;
+    SW_FT_Vector       sigma = {0, 0}, delta;
     SW_FT_Error        error = 0;
     SW_FT_Bool         intersect; /* use intersection of lines? */
 
@@ -907,7 +907,7 @@ ft_stroker_outside( SW_FT_Stroker  stroker,
     {
       /* this is a mitered (pointed) or beveled (truncated) corner */
       SW_FT_Fixed   radius = stroker->radius;
-      SW_FT_Vector  sigma;
+      SW_FT_Vector  sigma = {0, 0};
       SW_FT_Angle   theta = 0, phi = 0;
       SW_FT_Bool    bevel, fixed_bevel;
 
