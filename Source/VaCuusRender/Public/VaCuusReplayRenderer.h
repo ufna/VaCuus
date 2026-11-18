@@ -298,7 +298,7 @@ public:
 	 * reason the MSAA knob (bead VaCuus-3tg) needed no consumer to change. When the knob is on,
 	 * the draws land in a multisampled companion and the render pass's own store action resolves
 	 * it into THIS texture at EndRenderPass -- so the Slate composite
-	 * (VaCuusSlateElement.cpp:200), the world sink's CopyTexture + mip chain
+	 * (VaCuusSlateElement.cpp:211), the world sink's CopyTexture + mip chain
 	 * (VaCuusWorldSink.cpp:84-120, which SKIPS on any extent mismatch) and every readback still
 	 * see the same format, the same extent and the same SRVMask state they always did.
 	 */

@@ -144,9 +144,10 @@ void FVaCuusSlateElement::Draw_RenderThread(FRDGBuilder& GraphBuilder, const FVa
 		// overload implies SkipRenderPass, so the replayer's own
 		// BeginRenderPass/Transitions are legal inside the lambda (engine
 		// precedent: LandscapeUtils' RDGRecordedRenderCommand). The RT is
-		// deliberately NOT declared to this pass; the replayer's class
-		// invariant — SRVMask outside Replay() — means RDG's view of the
-		// external texture stays truthful for the composite pass below.
+		// deliberately NOT declared to this pass, which holds only while RDG
+		// leaves the RT alone until this pass has run: the replayer's class
+		// invariant is SRVMask outside Replay(), and the composite's
+		// registration (step 4) keeps RDG's first barrier after this pass.
 		GraphBuilder.AddPass(RDG_EVENT_NAME("VaCuusReplay"), ERDGPassFlags::NeverCull,
 			[this, Buffers = MoveTemp(PendingBuffers)](FRHICommandListImmediate& RHICmdList)
 			{
@@ -194,10 +195,21 @@ void FVaCuusSlateElement::Draw_RenderThread(FRDGBuilder& GraphBuilder, const FVa
 	// the RDG event VaCuusComposite.
 	VACUUS_PERF_SCOPE(Composite);
 
-	// 4. Composite. Registration is consistent by construction: RDG assumes
-	// external textures sit in SRVMask (kDefaultAccess), which is exactly the
-	// replayer's out-of-Replay invariant.
-	FRDGTextureRef UITexture = RegisterExternalTexture(GraphBuilder, OutputRT, TEXT("VaCuusUIRT"));
+	// 4. Composite. ForceImmediateFirstBarrier is what makes the undeclared replay
+	// pass above legal. Without it RDG begins the RT's first barrier in the graph
+	// prologue and ends it at the composite (RenderGraphBuilder.cpp:4081-4084, the
+	// split at :4479-4485). Replay's explicit SRVMask -> RTV then begins while RDG's
+	// Unknown -> SRVGraphics is still pending, the composite ends a transition that is
+	// no longer open, and the graph's closing SRVGraphics -> SRVMask
+	// (RenderGraphResources.h:361, RenderGraphBuilder.cpp:4163) follows Replay's own
+	// return to SRVMask; RHI validation reports each step (RHIValidation.cpp:2469,
+	// :2508-2510, :2583, :2588). With the flag the whole first barrier sits in the
+	// composite's prologue, after Replay, and its Unknown before-state
+	// (RenderGraphResources.h:110) resolves to the SRVMask that Replay's last Transition
+	// tracked (RHICommandList.cpp:2128-2132). Registered here and nowhere else in the
+	// graph, so the early return that would drop the flag never fires (RenderGraphUtils.h:273-276).
+	FRDGTextureRef UITexture = RegisterExternalTexture(GraphBuilder, OutputRT, TEXT("VaCuusUIRT"),
+		ERDGTextureFlags::ForceImmediateFirstBarrier);
 
 	// DestRect is window-space; the elements texture may host the window at an
 	// offset (same convention as the Slate post-process blur pass).
