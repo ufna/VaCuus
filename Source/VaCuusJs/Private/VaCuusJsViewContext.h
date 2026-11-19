@@ -406,6 +406,14 @@ private:
 	 */
 	Rml::Element* GetLiveElement(JSValueConst Value) const;
 
+	/**
+	 * GetLiveElement for a geometry read: lays the element's document out first (UpdateDocument),
+	 * then acquires the element AGAIN, since the flush dispatches `transitionend` and `animationend`
+	 * (Element::AdvanceAnimations) to script that can destroy it. Null when the handle is dead before
+	 * or after.
+	 */
+	Rml::Element* GetLiveElementAfterLayout(JSValueConst Value) const;
+
 	//~ Document prototype (createElement / createElementNS / createTextNode /
 	//~ getElementById / body). createElement and createElementNS share one
 	//~ magic-dispatched thunk: the NS spelling is the SAME operation with the tag
@@ -432,6 +440,13 @@ private:
 	//~ scrollTop / scrollLeft: one getter/setter pair, magic-dispatched on the axis.
 	static JSValue ScrollOffsetGetterThunk(JSContext* Ctx, JSValueConst This, int Magic);
 	static JSValue ScrollOffsetSetterThunk(JSContext* Ctx, JSValueConst This, JSValueConst Value, int Magic);
+
+	//~ Geometry, read-only (CSSOM View): the offset* and client* metrics in one
+	//~ magic family, offsetParent, and getBoundingClientRect. Each read flushes
+	//~ the document's layout first (VaCuusJsDom.cpp, "Element prototype: geometry").
+	static JSValue BoxMetricGetterThunk(JSContext* Ctx, JSValueConst This, int Magic);
+	static JSValue OffsetParentGetterThunk(JSContext* Ctx, JSValueConst This);
+	static JSValue BoundingClientRectThunk(JSContext* Ctx, JSValueConst This, int Argc, JSValueConst* Argv);
 
 	//~ Element prototype: queries and attributes (magic-dispatched families).
 	static JSValue QueryThunk(JSContext* Ctx, JSValueConst This, int Argc, JSValueConst* Argv, int Magic);

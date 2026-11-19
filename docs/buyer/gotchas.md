@@ -494,9 +494,11 @@ Symptom: labels the host positions — nameplates, speech bubbles — have to be
 and that takes their laid-out height, which only RmlUi knows once a line wraps.
 Cause: layout lives on the UI thread. Every RmlUi read asserts it is on that thread
 (`check(FVaCuusUIThread::IsInUIThread())` in `BuildVaCuusInteractiveSnapshot`,
-`Source/VaCuus/Private/VaCuusInteractiveSnapshot.cpp`), and the JS DOM has no `offsetWidth`,
-`clientWidth` or `getBoundingClientRect` (the element prototype in
-`Source/VaCuusJs/Private/VaCuusJsDom.cpp`). `UVaCuusView::QueryElementBounds` does answer — for one
+`Source/VaCuus/Private/VaCuusInteractiveSnapshot.cpp`). A SCRIPT in the document can measure: the JS
+DOM has `getBoundingClientRect`, `offsetParent`, `offset*` and `client*` (since 2026-11-19, the element
+prototype in `Source/VaCuusJs/Private/VaCuusJsDom.cpp`), and each read lays the document out first, so a
+box changed in the same event is measured as it now is. Game-thread code cannot reach those.
+`UVaCuusView::QueryElementBounds` does answer — for one
 element, looked up by `id`, a UI frame later, into a query you allocate and poll. That is the shape
 for aiming one click, not for a layout pass over every label on every frame.
 Do: put `vacuus-measure="<integer>"` on the element (`data-attr-vacuus-measure="row.Key"` in a

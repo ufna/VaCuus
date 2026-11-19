@@ -36,6 +36,8 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusJsDomReceiverDestroyedTest, "VaCuus.Js.D
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusJsDomCacheHygieneTest, "VaCuus.Js.Dom.CacheHygiene",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusJsDomGeometryTest, "VaCuus.Js.Dom.Geometry",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 /**
  * The facade surface on one real document: identity (`===` across lookups),
@@ -449,7 +451,7 @@ span.col { display: inline-block; width: 50px; height: 50px; }
 	TestEqual(TEXT("an unknown keyword falls back to start"), ReadScrollTop(), 100.0f);
 
 	// THE OTHER TWO KEYWORDS. 'center' and 'end' never appeared above, so the middle two rows of
-	// the alignment table (VaCuusJsDom.cpp:193-196) could be deleted or swapped with nothing
+	// the alignment table (VaCuusJsDom.cpp:248-249) could be deleted or swapped with nothing
 	// failing. From scrollTop 100 the four keywords are all distinct on r2 (100..150 in a 100-tall
 	// box): start 100, center 75, end 50 -- and nearest 100, because from there r2 is already
 	// fully visible. That last pair is the point: the 'nearest' assertion above sits at an offset
@@ -499,7 +501,7 @@ span.col { display: inline-block; width: 50px; height: 50px; }
 	// visible from scrollLeft 0, where Nearest does not move and Start aligns it with the left
 	// edge. So this one assertion fails if "inline" is mapped to Options.vertical, if its key is
 	// misspelled, or if the line is deleted -- each of which leaves horizontal at its Nearest
-	// default (VaCuusJsDom.cpp:939) and the offset at 0.
+	// default (VaCuusJsDom.cpp:1099) and the offset at 0.
 	Rig.Eval(ViewId, "document.getElementById('c1').scrollIntoView({inline: 'start'})");
 	TestEqual(TEXT("inline start moves a column that inline nearest would have left alone"), ReadScrollLeft(), 50.0f);
 	TestEqual(TEXT("and the vertical box is where the block leg left it"), ReadScrollTop(), 100.0f);
@@ -1206,6 +1208,113 @@ bool FVaCuusJsDomReceiverDestroyedTest::RunTest(const FString& Parameters)
 		"finally { delete Object.prototype.name; }"
 		"return [fired, out].join('|'); })()",
 		TEXT("true|yes"));
+
+	TestEqual(TEXT("no JS error anywhere in the run"), FWrappedDomHost::Inner->GetRuntime()->GetNumErrors(), uint64(0));
+	return true;
+}
+
+/**
+ * GEOMETRY (CSSOM View): getBoundingClientRect, offsetParent, offset* and client*, each RmlUi's own
+ * getter, read after a layout flush. Written for a game's tooltips, which stand off the pointer and so
+ * have to turn the pointer's context pixels into their containing block's: an absolute box inside an
+ * absolute box, with borders and padding on the outer one so border box, padding box and client size
+ * all differ. #late is display: none until the script shows it, and is measured in the SAME script --
+ * the flush is what makes that read anything but zeros.
+ *
+ * OUT OF THE TREE: RmlUi never clears an element's offset parent, so #kid, taken out of #host before
+ * #host is destroyed, still points at #host -- offsetParent wrapped freed memory and the rect walked
+ * through it. A handle keeps a removed element alive, so #kid and #leaf (inside the removed #box) read
+ * as a browser's detached elements: offsetParent null, rect and metrics zeros. All three have lost their
+ * owner document; the last case has not. #kid, put back under the body with `display: none` so that no
+ * layout places it again, is in a document and still points at the destroyed #host -- only the walk up
+ * its ancestors (IsPlaced) finds that its offset parent is not one of them.
+ */
+bool FVaCuusJsDomGeometryTest::RunTest(const FString& Parameters)
+{
+	using namespace VaCuusJsDomTest;
+
+	FDomTestRig Rig;
+	const FDomTestRig::EBoot Boot = Rig.Boot(*this);
+	if (Boot != FDomTestRig::EBoot::Ok)
+	{
+		return Boot == FDomTestRig::EBoot::Skip;
+	}
+
+	// #outer: border box 40,30 214x114 (200 + 2*5 padding + 2*2 border), padding box 42,32 210x110.
+	// #inner: 52x22 border box, 10 off the padding box's right and 7 off its bottom: 190,113.
+	static const TCHAR* GDocument = TEXT(R"(<rml>
+<head><style>
+body { display: block; margin: 0px; padding: 0px; }
+#outer { display: block; position: absolute; left: 40px; top: 30px; width: 200px; height: 100px; padding: 5px; border: 2px #ffffff; }
+#inner { display: block; position: absolute; right: 10px; bottom: 7px; width: 50px; height: 20px; border: 1px #ffffff; }
+#late { display: none; position: absolute; left: 3px; top: 4px; width: 10px; height: 12px; }
+#late.shown { display: block; }
+#host, #box { display: block; position: absolute; left: 300px; top: 10px; width: 40px; height: 40px; }
+#kid, #leaf { display: block; position: absolute; left: 1px; top: 2px; width: 5px; height: 6px; }
+</style></head>
+<body><div id="outer"><div id="inner"/></div><div id="late"/><div id="host"><div id="kid"/></div><div id="shelf"><div id="box"><div id="leaf"/></div></div></body>
+</rml>)");
+
+	FDomProbeHost* Probe = nullptr;
+	const uint32 ViewId = Rig.AddViewWithDocument(Probe, TEXT("vacuus_jsdom_geometry"), GDocument);
+
+	bool bBound = false;
+	Rig.RunOnUI([&bBound, Probe, ViewId]()
+		{
+			Rml::ElementDocument* Document = Probe->GetDocument();
+			bBound = Document != nullptr;
+			FWrappedDomHost::Inner->BindDocumentForTest(ViewId, Document);
+		});
+	if (!TestTrue(TEXT("the document loaded and bound"), bBound))
+	{
+		return false;
+	}
+
+	Rig.Eval(ViewId,
+		"globalThis.outer = document.getElementById('outer');"
+		"globalThis.inner = document.getElementById('inner');"
+		"globalThis.late = document.getElementById('late');"
+		"globalThis.rect = (e) => { const r = e.getBoundingClientRect(); return [r.left, r.top, r.width, r.height, r.right, r.bottom, r.x, r.y].join(','); };"
+		"'ok'");
+
+	TestEqual(TEXT("the outer border box against the context"), Rig.Eval(ViewId, "rect(outer)"),
+		FString(TEXT("40,30,214,114,254,144,40,30")));
+	TestEqual(TEXT("its client box: border widths, then the padding box"),
+		Rig.Eval(ViewId, "[outer.clientLeft, outer.clientTop, outer.clientWidth, outer.clientHeight].join(',')"),
+		FString(TEXT("2,2,210,110")));
+	TestEqual(TEXT("the inner box, placed off the outer one's padding box"), Rig.Eval(ViewId, "rect(inner)"),
+		FString(TEXT("190,113,52,22,242,135,190,113")));
+	TestEqual(TEXT("an absolute box's offsetParent is its containing block"), Rig.Eval(ViewId, "String(inner.offsetParent === outer)"),
+		FString(TEXT("true")));
+	TestEqual(TEXT("offset* are border box against border box"),
+		Rig.Eval(ViewId, "[inner.offsetLeft, inner.offsetTop, inner.offsetWidth, inner.offsetHeight].join(',')"),
+		FString(TEXT("150,83,52,22")));
+
+	TestEqual(TEXT("a box no layout has placed has no offsetParent"), Rig.Eval(ViewId, "String(late.offsetParent)"),
+		FString(TEXT("null")));
+	TestEqual(TEXT("shown and measured in the same script: the read lays the document out first"),
+		Rig.Eval(ViewId, "late.classList.add('shown'); rect(late)"), FString(TEXT("3,4,10,12,13,16,3,4")));
+	TestEqual(TEXT("hidden again in the tree, it keeps the parent of its last layout (a deviation)"),
+		Rig.Eval(ViewId, "late.classList.remove('shown'); String(late.offsetParent !== null)"), FString(TEXT("true")));
+
+	Rig.Eval(ViewId,
+		"globalThis.host = document.getElementById('host');"
+		"globalThis.kid = document.getElementById('kid');"
+		"globalThis.shelf = document.getElementById('shelf');"
+		"globalThis.box = document.getElementById('box');"
+		"globalThis.leaf = document.getElementById('leaf');"
+		"globalThis.detached = (e) => [String(e.offsetParent), rect(e), e.offsetLeft, e.offsetWidth, e.clientTop, e.clientHeight].join('|');"
+		"'ok'");
+	TestEqual(TEXT("laid out, #kid measures from #host"), Rig.Eval(ViewId, "String(kid.offsetParent === host)"), FString(TEXT("true")));
+	TestEqual(TEXT("taken out and its old offset parent destroyed: a detached element, not freed memory"),
+		Rig.Eval(ViewId, "host.removeChild(kid); host.remove(); detached(kid)"), FString(TEXT("null|0,0,0,0,0,0,0,0|0|0|0|0")));
+	TestEqual(TEXT("the root of a removed subtree is detached"), Rig.Eval(ViewId, "shelf.removeChild(box); detached(box)"),
+		FString(TEXT("null|0,0,0,0,0,0,0,0|0|0|0|0")));
+	TestEqual(TEXT("and so is everything inside it, though its offset parent is alive and above it"), Rig.Eval(ViewId, "detached(leaf)"),
+		FString(TEXT("null|0,0,0,0,0,0,0,0|0|0|0|0")));
+	TestEqual(TEXT("back in the document but never laid out again: its offset parent is the destroyed #host, no ancestor of it"),
+		Rig.Eval(ViewId, "kid.style.setProperty('display', 'none'); document.body.appendChild(kid); detached(kid)"),
+		FString(TEXT("null|0,0,0,0,0,0,0,0|0|0|0|0")));
 
 	TestEqual(TEXT("no JS error anywhere in the run"), FWrappedDomHost::Inner->GetRuntime()->GetNumErrors(), uint64(0));
 	return true;
