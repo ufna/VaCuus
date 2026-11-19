@@ -18,11 +18,11 @@
  * because the failure mode is "the element simply snaps".
  *
  * THE MECHANISM, both halves opened. A value containing var() is stored UNPARSED as
- * Property{value, Unit::VAR_EXPRESSION} (PropertySpecification.cpp:260-267) and resolved at
+ * Property{value, Unit::VAR_EXPRESSION} (PropertySpecification.cpp:265-272) and resolved at
  * compute time. Every other property therefore works with var() precisely BECAUSE it is read
  * late — but ElementStyle::TransitionPropertyChanges reads `transition` EARLY and on purpose
  * ("to intercept property changes even before the computed values are ready",
- * ElementStyle.cpp:388), so it saw a String variant, failed its `!= Variant::TRANSITIONLIST`
+ * ElementStyle.cpp:411), so it saw a String variant, failed its `!= Variant::TRANSITIONLIST`
  * test and returned. Silently. That asymmetry is invisible from outside a debugger.
  *
  * `animation` IS NOT AFFECTED, which is why this test asserts it as loudly as the broken half.

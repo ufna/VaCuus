@@ -16,7 +16,7 @@
  * that is rarely whole once it comes from anything but px: `dp` is the number times the context's ratio
  * (ComputeProperty.cpp:62), which VaCuus sets per view from the widget's DPI scale (VaCuusUIThread.cpp:1720-1724), and
  * em, rem, vw and vh scale the same way. Upstream asked for the face at `(int)font_size` (ElementStyle::ComputeValues, the
- * call at ElementStyle.cpp:1037-1038 now), so 10.95px drew at 10 and 13dp at a ratio of 1.5 drew at 19 -- always down,
+ * call at ElementStyle.cpp:1060-1061 now), so 10.95px drew at 10 and 13dp at a ratio of 1.5 drew at 19 -- always down,
  * by up to a whole pixel, while the line height kept the float.
  *
  * WHAT IS READ BACK is the size of the face each element's computed values hold, through the public

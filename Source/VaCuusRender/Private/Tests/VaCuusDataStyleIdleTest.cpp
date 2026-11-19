@@ -30,7 +30,7 @@
  * the unit — that is a separate member (Property.h:50-51). The property parsed out of "4px"
  * therefore reads back as "4", never equals the string that produced it, and SetProperty fires
  * on every dirty of the bound variable. Nothing downstream absorbs the write itself:
- * ElementStyle::SetProperty does not compare, it just dirties (ElementStyle.cpp:606-618), and
+ * ElementStyle::SetProperty does not compare, it just dirties (ElementStyle.cpp:629-641), and
  * ElementStyle::ComputeValues returns the DIRTY set, not a changed-value set (:1022-1026), so
  * Element::OnPropertyChange runs as if the value had really moved.
  *

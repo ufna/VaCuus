@@ -99,7 +99,7 @@ A property with multiple parsers accepts any of them, tried in order.
 | `transform-origin-x` | `50%` | no | no | keyword: left, center, right; length_percent |  |
 | `transform-origin-y` | `50%` | no | no | keyword: top, center, bottom; length_percent |  |
 | `transform-origin-z` | `0` | no | no | length |  |
-| `transition` | `none` | no | no | transition | THERE IS NO `ease` FAMILY. The complete tween table is eleven families -- back bounce circular cubic elastic exponential linear quadratic quartic quintic sine -- each with -in/-out/-in-out (PropertyParserAnimation.cpp:27-77). `ease-in-out` is not in it, and an unrecognized token drops the WHOLE declaration with one generic "Syntax error parsing property declaration" (:240 misses the map, :267 fails the duration sscanf, :301-315 returns false). Use `cubic-in-out` for CSS's `ease-in-out`. Keywords must be LOWERCASE here: `transition` does not lowercase its token (:240) while `animation` does (:133). gotchas.md #3. Timing tokens MAY come from `var()`, but only because the vendored tree is patched for it (VENDORED_TAG.txt patch #4, bead VaCuus-6gj): upstream reads this property before computed values exist (ElementStyle.cpp:388) and drops the whole declaration with no diagnostic at all. gotchas.md #3b. |
+| `transition` | `none` | no | no | transition | THERE IS NO `ease` FAMILY. The complete tween table is eleven families -- back bounce circular cubic elastic exponential linear quadratic quartic quintic sine -- each with -in/-out/-in-out (PropertyParserAnimation.cpp:27-77). `ease-in-out` is not in it, and an unrecognized token drops the WHOLE declaration with one generic "Syntax error parsing property declaration" (:240 misses the map, :267 fails the duration sscanf, :301-315 returns false). Use `cubic-in-out` for CSS's `ease-in-out`. Keywords must be LOWERCASE here: `transition` does not lowercase its token (:240) while `animation` does (:133). gotchas.md #3. Timing tokens MAY come from `var()`, but only because the vendored tree is patched for it (VENDORED_TAG.txt patch #4, bead VaCuus-6gj): upstream reads this property before computed values exist (ElementStyle.cpp:411) and drops the whole declaration with no diagnostic at all. gotchas.md #3b. |
 | `animation` | `none` | no | no | animation | Same tween table as `transition` (PropertyParserAnimation.cpp:27-77), but this parser LOWERCASES each token before the lookup (:133), so `Cubic-Out` works here and silently kills a `transition`. Keyframe values may contain `var()` (Element.cpp:2784-2798), and so may this property's own value -- it is read through ComputedValues::animation(), which resolves variables (ComputedValues.cpp:8-16), so unlike `transition` it never needed a patch. |
 | `decorator` | `` (empty) | no | no | decorator | Renders through the recorder; `shader(...)` values resolve builtin names then registered UMaterial style keys (see the decorators section below). |
 | `mask-image` | `` (empty) | no | no | decorator | PARSES BUT DOES NOT MASK in v1 -- masking needs the mask layer captured as a filter (ElementEffects.cpp:331 -> RenderInterface::SaveLayerAsMaskImage) and the replayer has no layer render targets. It is REFUSED, once per view, with a Warning (bead VaCuus-iuv). The element renders UNMASKED, and the mask artwork RmlUi drew for the capture is discarded with the refusal -- before that, it was drawn over the element. Substitute: bake the alpha into the image asset and use `decorator: image`/`ninepatch`, or clip with `overflow: hidden` plus `border-radius`. |
@@ -352,7 +352,7 @@ body { --accent: #38BDF8; --pad: 12px; }
 
 - **Declared** like any property whose name starts with `--`; the value is stored
   unparsed as `Unit::STRING`, or as `Unit::VAR_EXPRESSION` when it itself contains
-  a `var()` (PropertySpecification.cpp:233-248). A normal property whose value
+  a `var()` (PropertySpecification.cpp:238-253). A normal property whose value
   contains `var()` is likewise stored as VAR_EXPRESSION and resolved at compute
   time, not parse time (:260-300).
 - **Substituted** with fallbacks (`var(--x, <fallback>)`, nested parens counted)
@@ -368,7 +368,7 @@ body { --accent: #38BDF8; --pad: 12px; }
 - **Works in `transition` and `animation` timing** -- `transition` only because the
   vendored tree is patched for it. Resolution happens at COMPUTE time, and those two
   are the only properties read before that: upstream's `transition` read
-  (ElementStyle.cpp:388) saw the unresolved string and dropped the entire declaration
+  (ElementStyle.cpp:411) saw the unresolved string and dropped the entire declaration
   with no warning, no error and no log line, so a theme that put its durations in
   custom properties -- the obvious thing to do, and what this section recommends --
   simply never animated. `animation` was never affected (ComputedValues.cpp:8-16).

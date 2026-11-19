@@ -53,7 +53,8 @@ enum class Unit {
 
 	// Custom properties.
 	VAR_EXPRESSION = 1 << 28,        // substituted and resolved at compute time; fetch as <String>
-	SHORTHAND_PLACEHOLDER = 1 << 29, // dependent on a shorthand that must be substituted and resolved at compute time; always empty
+	SHORTHAND_PLACEHOLDER = 1 << 29, // dependent on a shorthand that must be substituted and resolved at compute time; holds the
+	                                 // top-level ShorthandId that wrote it as <int> (VaCuus patch #23)
 
 	LENGTH = PX | DP | VW | VH | EM | REM | PPI_UNIT,
 	LENGTH_PERCENT = LENGTH | PERCENT,
