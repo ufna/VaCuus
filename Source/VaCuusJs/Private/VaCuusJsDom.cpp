@@ -110,6 +110,52 @@ enum EScrollAxis : int32
 	ScrollAxisLeft		  // `scrollLeft`: Element::Get/SetScrollLeft
 };
 
+/** The CSSOM View box metrics, each one RmlUi getter of the same name (Element.h, "offset" and "client"). */
+enum EBoxMetric : int32
+{
+	MetricOffsetLeft = 0,
+	MetricOffsetTop,
+	MetricOffsetWidth,
+	MetricOffsetHeight,
+	MetricClientLeft,
+	MetricClientTop,
+	MetricClientWidth,
+	MetricClientHeight
+};
+
+/**
+ * Whether the element's boxes can be read: it is in a document, and every box its offsets are measured through -- its
+ * offset parent, that one's, and on up -- is still above it in the tree. RmlUi writes offset_parent only in a layout
+ * pass (Element::SetOffset, Element.cpp:337) and clears it neither when the element leaves the tree
+ * (Element::SetParent, :2178-2223) nor under `display: none`, while a handle keeps a removed element alive
+ * (removeChild detaches, VaCuusJsDomHandle.h): after `parent.removeChild(el); parent.remove();` el's offset parent
+ * is a destroyed element, and GetAbsoluteOffset walks through it (:376). A pointer is compared here, never followed,
+ * until it is found among the ancestors.
+ */
+static bool IsPlaced(Rml::Element* Element)
+{
+	if (Element->GetOwnerDocument() == nullptr)
+	{
+		return false;
+	}
+
+	Rml::Element* Box = Element;
+	while (Rml::Element* OffsetParent = Box->GetOffsetParent())
+	{
+		Rml::Element* Ancestor = Box->GetParentNode();
+		while (Ancestor != nullptr && Ancestor != OffsetParent)
+		{
+			Ancestor = Ancestor->GetParentNode();
+		}
+		if (Ancestor == nullptr)
+		{
+			return false;
+		}
+		Box = OffsetParent;
+	}
+	return true;
+}
+
 
 /** DOM nodeType values (the only three this facade can produce). */
 enum ENodeType : int32
@@ -531,6 +577,16 @@ void FVaCuusJsViewContext::InstallDomPrototypes()
 			FVaCuusJsViewContext::ScrollOffsetSetterThunk, ScrollAxisTop),
 		JS_CGETSET_MAGIC_DEF("scrollLeft", FVaCuusJsViewContext::ScrollOffsetGetterThunk,
 			FVaCuusJsViewContext::ScrollOffsetSetterThunk, ScrollAxisLeft),
+		JS_CFUNC_DEF("getBoundingClientRect", 0, FVaCuusJsViewContext::BoundingClientRectThunk),
+		JS_CGETSET_DEF("offsetParent", FVaCuusJsViewContext::OffsetParentGetterThunk, nullptr),
+		JS_CGETSET_MAGIC_DEF("offsetLeft", FVaCuusJsViewContext::BoxMetricGetterThunk, nullptr, MetricOffsetLeft),
+		JS_CGETSET_MAGIC_DEF("offsetTop", FVaCuusJsViewContext::BoxMetricGetterThunk, nullptr, MetricOffsetTop),
+		JS_CGETSET_MAGIC_DEF("offsetWidth", FVaCuusJsViewContext::BoxMetricGetterThunk, nullptr, MetricOffsetWidth),
+		JS_CGETSET_MAGIC_DEF("offsetHeight", FVaCuusJsViewContext::BoxMetricGetterThunk, nullptr, MetricOffsetHeight),
+		JS_CGETSET_MAGIC_DEF("clientLeft", FVaCuusJsViewContext::BoxMetricGetterThunk, nullptr, MetricClientLeft),
+		JS_CGETSET_MAGIC_DEF("clientTop", FVaCuusJsViewContext::BoxMetricGetterThunk, nullptr, MetricClientTop),
+		JS_CGETSET_MAGIC_DEF("clientWidth", FVaCuusJsViewContext::BoxMetricGetterThunk, nullptr, MetricClientWidth),
+		JS_CGETSET_MAGIC_DEF("clientHeight", FVaCuusJsViewContext::BoxMetricGetterThunk, nullptr, MetricClientHeight),
 		JS_CFUNC_MAGIC_DEF("querySelector", 1, FVaCuusJsViewContext::QueryThunk, QuerySelector),
 		JS_CFUNC_MAGIC_DEF("querySelectorAll", 1, FVaCuusJsViewContext::QueryThunk, QuerySelectorAll),
 		JS_CFUNC_MAGIC_DEF("closest", 1, FVaCuusJsViewContext::QueryThunk, Closest),
@@ -1158,6 +1214,170 @@ JSValue FVaCuusJsViewContext::ScrollOffsetSetterThunk(JSContext* Ctx, JSValueCon
 		Element->SetScrollTop(Clamped);
 	}
 	return JS_UNDEFINED;
+}
+
+// ---------------------------------------------------------------------------
+// Element prototype: geometry (CSSOM View), read-only
+// ---------------------------------------------------------------------------
+//
+// A READ FLUSHES THE LAYOUT FIRST, as a browser's does. RmlUi lays a document out once a frame, in
+// Context::Update, and keeps every box from that pass; a class toggled or a :hover gained since --
+// the pointer coming onto a control turns its tooltip on in the same event that a script places it
+// from -- is not in those boxes yet. ElementDocument::UpdateDocument is RmlUi's own answer, and its
+// header says when to call it: before asking for an element's size or position after a change, unless
+// Context::Update has run since. Its layout and position passes run only when dirty (ElementDocument.cpp:480,
+// :499), but the update walk before them visits every element of the document on each call (Element.cpp:148-149),
+// so every read costs one walk of the document even when nothing has changed.
+//
+// RE-ACQUIRED AFTER THE FLUSH: the flush runs Element::Update over the document, and its AdvanceAnimations
+// dispatches `transitionend` and `animationend` for whatever finished (Element.cpp:132, :2886-2887); script
+// reached that way can destroy this element -- see GetLiveElement. The layout pass itself dispatches nothing:
+// a scroll offset it clamps is written without a `scroll` event (Element.cpp:3088-3105), and `resize` comes
+// only from Context::SetDimensions (Context.cpp:144).
+//
+// AN ELEMENT OUT OF THE TREE IS NOT LAID OUT: one with no owner document, or whose offset parents are no longer
+// its ancestors (IsPlaced), reads as a browser's detached element does -- offsetParent null, the rect and every
+// metric zeros -- because the boxes RmlUi kept for it point at elements that may be gone. One hidden with
+// `display: none` while in the tree keeps the boxes and the offset parent of the last layout that placed it.
+
+Rml::Element* FVaCuusJsViewContext::GetLiveElementAfterLayout(JSValueConst Value) const
+{
+	Rml::Element* Element = GetLiveElement(Value);
+	if (Element == nullptr)
+	{
+		return nullptr;
+	}
+
+	if (Rml::ElementDocument* Document = Element->GetOwnerDocument())
+	{
+		Document->UpdateDocument();
+	}
+
+	return GetLiveElement(Value);
+}
+
+JSValue FVaCuusJsViewContext::BoxMetricGetterThunk(JSContext* Ctx, JSValueConst This, int Magic)
+{
+	using namespace VaCuusJsDomInternal;
+
+	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	if (Self == nullptr)
+	{
+		return JS_NULL;	   // dead context: same shape as a dead handle
+	}
+
+	Rml::Element* Element = Self->GetLiveElementAfterLayout(This);
+	if (Element == nullptr)
+	{
+		return JS_NULL;	   // dead: null, the house rule (scrollTop reads the same way)
+	}
+	if (!IsPlaced(Element))
+	{
+		return JS_NewFloat64(Ctx, 0.0);	   // alive but out of the tree: a browser's detached element
+	}
+
+	// Each is RmlUi's own getter of the same name, in the context's pixels: offset* is the border box
+	// against the offset parent's border box, client* the padding box less any scrollbar, and
+	// clientLeft/Top the border widths that separate the two.
+	float Value = 0.0f;
+	switch (Magic)
+	{
+		case MetricOffsetLeft:
+			Value = Element->GetOffsetLeft();
+			break;
+		case MetricOffsetTop:
+			Value = Element->GetOffsetTop();
+			break;
+		case MetricOffsetWidth:
+			Value = Element->GetOffsetWidth();
+			break;
+		case MetricOffsetHeight:
+			Value = Element->GetOffsetHeight();
+			break;
+		case MetricClientLeft:
+			Value = Element->GetClientLeft();
+			break;
+		case MetricClientTop:
+			Value = Element->GetClientTop();
+			break;
+		case MetricClientWidth:
+			Value = Element->GetClientWidth();
+			break;
+		case MetricClientHeight:
+			Value = Element->GetClientHeight();
+			break;
+		default:
+			return JS_NULL;
+	}
+	return JS_NewFloat64(Ctx, Value);
+}
+
+JSValue FVaCuusJsViewContext::OffsetParentGetterThunk(JSContext* Ctx, JSValueConst This)
+{
+	using namespace VaCuusJsDomInternal;
+
+	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	if (Self == nullptr)
+	{
+		return JS_NULL;
+	}
+
+	Rml::Element* Element = Self->GetLiveElementAfterLayout(This);
+	if (Element == nullptr || !IsPlaced(Element))
+	{
+		return JS_NULL;
+	}
+
+	// The element positioned offsets are measured from: for an absolute box, its containing block. Null for
+	// an element no layout has placed yet and for one out of the tree, whose last offset parent may be
+	// destroyed; IsPlaced has seen it among the ancestors, so it is alive. An element hidden with
+	// `display: none` in the tree answers the parent of the last layout that placed it, where a browser
+	// answers null.
+	return Self->WrapElement(Element->GetOffsetParent());
+}
+
+JSValue FVaCuusJsViewContext::BoundingClientRectThunk(JSContext* Ctx, JSValueConst This, int Argc, JSValueConst* Argv)
+{
+	using namespace VaCuusJsDomInternal;
+
+	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	if (Self == nullptr)
+	{
+		return JS_NULL;
+	}
+
+	// A dead handle measures as an empty rect at the origin, which is what a browser answers for a
+	// detached element -- and a detached element measures so too (IsPlaced) -- so a caller doing
+	// arithmetic on it gets zeros rather than a TypeError.
+	float Left = 0.0f;
+	float Top = 0.0f;
+	float Width = 0.0f;
+	float Height = 0.0f;
+	Rml::Element* Element = Self->GetLiveElementAfterLayout(This);
+	if (Element != nullptr && IsPlaced(Element))
+	{
+		// The border box against the context's top-left, as laid out; a `transform` is not applied, so for a
+		// transformed element this is its untransformed box (RmlUi keeps no transformed rect to report).
+		Left = Element->GetAbsoluteLeft();
+		Top = Element->GetAbsoluteTop();
+		Width = Element->GetOffsetWidth();
+		Height = Element->GetOffsetHeight();
+	}
+
+	JSValue Rect = JS_NewObject(Ctx);
+	if (JS_IsException(Rect))
+	{
+		return Rect;
+	}
+	JS_SetPropertyStr(Ctx, Rect, "x", JS_NewFloat64(Ctx, Left));
+	JS_SetPropertyStr(Ctx, Rect, "y", JS_NewFloat64(Ctx, Top));
+	JS_SetPropertyStr(Ctx, Rect, "left", JS_NewFloat64(Ctx, Left));
+	JS_SetPropertyStr(Ctx, Rect, "top", JS_NewFloat64(Ctx, Top));
+	JS_SetPropertyStr(Ctx, Rect, "right", JS_NewFloat64(Ctx, Left + Width));
+	JS_SetPropertyStr(Ctx, Rect, "bottom", JS_NewFloat64(Ctx, Top + Height));
+	JS_SetPropertyStr(Ctx, Rect, "width", JS_NewFloat64(Ctx, Width));
+	JS_SetPropertyStr(Ctx, Rect, "height", JS_NewFloat64(Ctx, Height));
+	return Rect;
 }
 
 // ---------------------------------------------------------------------------
