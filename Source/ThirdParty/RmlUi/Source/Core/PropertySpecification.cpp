@@ -12,19 +12,24 @@
 
 namespace Rml {
 
-static void SetShorthandPropertiesToPendingSubstitution(PropertyDictionary& dictionary, const ShorthandDefinition* shorthand_definition)
+// VaCuus patch #23 (VENDORED_TAG.txt): the placeholder names the top-level shorthand that wrote it -- `border` for
+// border-top-color, not the `border-top` it is nested in -- so that ElementStyle::ExpandVarShorthands can give each
+// longhand the value of the declaration the cascade picked for it.
+static void SetShorthandPropertiesToPendingSubstitution(PropertyDictionary& dictionary, const ShorthandDefinition* shorthand_definition,
+	ShorthandId top_level_shorthand_id)
 {
 	for (const ShorthandItem& shorthand_item : shorthand_definition->items)
 	{
 		if (shorthand_item.type == ShorthandItemType::Property)
 		{
 			Property property;
+			property.value = static_cast<int>(top_level_shorthand_id);
 			property.unit = Unit::SHORTHAND_PLACEHOLDER;
 			dictionary.SetProperty(shorthand_item.property_id, property);
 		}
 		else if (shorthand_item.type == ShorthandItemType::Shorthand)
 		{
-			SetShorthandPropertiesToPendingSubstitution(dictionary, shorthand_item.shorthand_definition);
+			SetShorthandPropertiesToPendingSubstitution(dictionary, shorthand_item.shorthand_definition, top_level_shorthand_id);
 		}
 	}
 }
@@ -297,7 +302,7 @@ bool PropertySpecification::ParseShorthandDeclaration(PropertyDictionary& dictio
 	case ParsePropertyResult::ContainsVariable:
 	{
 		dictionary.SetVarShorthand(shorthand_id, Property{property_value, Unit::VAR_EXPRESSION});
-		SetShorthandPropertiesToPendingSubstitution(dictionary, shorthand_definition);
+		SetShorthandPropertiesToPendingSubstitution(dictionary, shorthand_definition, shorthand_id);
 		return true;
 	}
 	case ParsePropertyResult::Error:

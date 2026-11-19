@@ -87,11 +87,11 @@ Symptom: identical to #3 — the element snaps — but with **no warning at all*
 generic syntax-error line #3 gives you. Nothing in the log, at any level, in a debug build.
 Cause: a value containing `var()` is stored **unparsed**, as
 `Property{value, Unit::VAR_EXPRESSION}`
-(`Source/ThirdParty/RmlUi/Source/Core/PropertySpecification.cpp:260-267`), and resolved at
+(`Source/ThirdParty/RmlUi/Source/Core/PropertySpecification.cpp:265-272`), and resolved at
 **compute** time. That late resolution is exactly why `var()` works for every other
 property — and `transition` is the one property read *before* it, deliberately:
 `ElementStyle::TransitionPropertyChanges` takes the local property "to intercept property
-changes even before the computed values are ready" (`ElementStyle.cpp:388`) and then dropped
+changes even before the computed values are ready" (`ElementStyle.cpp:411`) and then dropped
 anything that was not already a parsed transition list. A raw string is not, so the whole
 declaration vanished.
 
@@ -270,7 +270,7 @@ background and borders at `ElementBackgroundBorder.cpp:166-173`, text at
 `:265`, `:434`, `:631` and `DecoratorShader.cpp:42`. Inheritance means *copy*, not
 *compose*: `ComputeValues` copies the parent's inherited block wholesale
 (`ComputedValues.h:394`, `inherited = parent.inherited`) and a local declaration then
-**overwrites** it (`ElementStyle.cpp:1250`, `values.opacity(p->Get<float>())`). Nothing
+**overwrites** it (`ElementStyle.cpp:1273`, `values.opacity(p->Get<float>())`). Nothing
 anywhere multiplies the two together.
 Do, and the right answer differs by what the child is:
 - **Do not redeclare `opacity` on a descendant** if any ancestor animates or toggles its
