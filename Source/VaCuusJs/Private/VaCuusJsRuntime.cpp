@@ -470,6 +470,10 @@ FVaCuusJsEntryGuard::FVaCuusJsEntryGuard(FVaCuusJsRuntime& InRuntime, JSContext*
 	, Ctx(InCtx)
 	, SourceName(InSourceName)
 {
+	// EVERY entry, nested ones too: whatever changed the tree since the last script call did it outside script, and
+	// a geometry read in this turn must not trust a flush from before it (GetDomTouchSerial).
+	Runtime.NoteDomTouch();
+
 	// Outermost entry only (see the struct comment): nested guards must not extend
 	// the deadline the first boundary armed. WatchdogSeconds == 0 is the disabled
 	// (deliberately-broken, test-red) state -- nothing arms, nothing ever trips.

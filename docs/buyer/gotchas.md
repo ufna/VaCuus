@@ -497,7 +497,14 @@ Cause: layout lives on the UI thread. Every RmlUi read asserts it is on that thr
 `Source/VaCuus/Private/VaCuusInteractiveSnapshot.cpp`). A SCRIPT in the document can measure: the JS
 DOM has `getBoundingClientRect`, `offsetParent`, `offset*` and `client*` (since 2026-11-19, the element
 prototype in `Source/VaCuusJs/Private/VaCuusJsDom.cpp`), and each read lays the document out first, so a
-box changed in the same event is measured as it now is. Game-thread code cannot reach those.
+box changed in the same event is measured as it now is. That flush walks the WHOLE tree whether anything is
+dirty or not (`Element::Update` recurses into every child,
+`Source/ThirdParty/RmlUi/Source/Core/Element.cpp:148-149`), so a run of reads with no other DOM call between
+them shares the first one's flush (`FVaCuusJsRuntime::GetDomTouchSerial`), while any DOM call or a new script
+turn starts a fresh one. Measure once and keep the numbers -- in a pointer handler, per hover rather than per
+`mousemove`, and placed from one `requestAnimationFrame` -- because the UI thread dispatches every queued move
+to its listeners one by one, coalescing none (`Source/VaCuus/Private/VaCuusUIThread.cpp:1791`). Game-thread
+code cannot reach those.
 `UVaCuusView::QueryElementBounds` does answer — for one
 element, looked up by `id`, a UI frame later, into a query you allocate and poll. That is the shape
 for aiming one click, not for a layout pass over every label on every frame.

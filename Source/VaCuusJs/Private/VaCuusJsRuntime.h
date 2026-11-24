@@ -227,6 +227,30 @@ public:
 	void NoteLanguageCallbackRun() { NumLanguageCallbacksRun.fetch_add(1, std::memory_order_relaxed); }
 
 	/**
+	 * THE DOM-TOUCH SERIAL: moved by every host -> JS entry (FVaCuusJsEntryGuard) and by every script call into
+	 * the facade (FVaCuusJsViewContext::GetSelfOrNull) -- the geometry reads alone excepted, which come in through
+	 * GetSelfForGeometryReadOrNull. While it stands still, nothing but geometry reads has run since the last
+	 * layout flush, so the document is as that flush left it and the next read can skip the flush.
+	 *
+	 * WHY A SKIP IS WORTH A SERIAL: ElementDocument::UpdateDocument (ElementDocument.cpp:467-474) is not free
+	 * when nothing is dirty. Element::Update recurses into every child (Element.cpp:148-149) and runs the
+	 * per-element transition, animation, scroll and property passes on the way (Element.cpp:128-146), so each
+	 * read was a walk of the whole tree. A tooltip that measured its containing block and itself took eight of
+	 * them per placement.
+	 *
+	 * WHY THE ENTRY MOVES IT TOO: between two script turns the UI frame changes the tree with no facade call to
+	 * say so -- input dispatch sets :hover (VaCuusUIThread.cpp:1339), the data apply rewrites bound values (:1349),
+	 * and Context::Update advances animations (VaCuusRmlDocumentHost.cpp:640). All of it runs outside a JS entry,
+	 * and every entry opens through the guard, so a turn never trusts a flush the previous turn ran. Owning thread.
+	 */
+	uint64 GetDomTouchSerial() const { return DomTouchSerial; }
+	void NoteDomTouch() { ++DomTouchSerial; }
+
+	/** Layout flushes the geometry reads actually ran -- the skip's observable, a fired-count. */
+	uint64 GetNumLayoutFlushes() const { return NumLayoutFlushes.load(std::memory_order_relaxed); }
+	void NoteLayoutFlush() { NumLayoutFlushes.fetch_add(1, std::memory_order_relaxed); }
+
+	/**
 	 * THE THREE-DEATH-ORDERS OBSERVABLE (M4 Task 5, spec 2(g)): the number of
 	 * listener-held JS function refs currently alive, a GAUGE, not a fired-count.
 	 * +1 when a listener dups its callback (addEventListener, or an on* snippet
@@ -337,6 +361,7 @@ private:
 	std::atomic<uint64> NumWatchdogTrips{0};
 	std::atomic<uint64> NumUnloadCallbacksRun{0};
 	std::atomic<uint64> NumLanguageCallbacksRun{0};
+	std::atomic<uint64> NumLayoutFlushes{0};
 
 	//~ Owning-thread-only bookkeeping; plain members on purpose (see the class
 	//~ comment's counter-pattern note -- these have no cross-thread readers).
@@ -345,6 +370,9 @@ private:
 	bool bOomFallbackPending = false;
 	double LastCollectionPauseMs = 0.0;
 	uint64 LastCollectionHeapBytes = 0;
+
+	/** See GetDomTouchSerial(). */
+	uint64 DomTouchSerial = 0;
 
 	//~ Watchdog state, written by FVaCuusJsEntryGuard on the owning thread and
 	//~ read by InterruptThunk ON THE SAME THREAD (the handler runs inside JS

@@ -288,8 +288,30 @@ private:
 	 * surviving view's drain segment. Each caller answers null with its own
 	 * dead shape (undefined/null/false/empty), the dead-handle house rule; a
 	 * check(non-null) here would pass on the DANGLING pointer, not catch it.
+	 *
+	 * EVERY CALL IS A DOM TOUCH: a thunk that may write the tree comes in here,
+	 * so this door moves the runtime's DOM-touch serial
+	 * (FVaCuusJsRuntime::GetDomTouchSerial) and the next geometry read flushes the
+	 * layout again. It moves for the reads too -- a getter is not told from a
+	 * setter here, and a flush too many costs time where one too few would
+	 * measure a stale tree.
 	 */
 	static FVaCuusJsViewContext* GetSelfOrNull(JSContext* InCtx)
+	{
+		FVaCuusJsViewContext* Self = static_cast<FVaCuusJsViewContext*>(JS_GetContextOpaque(InCtx));
+		if (Self != nullptr)
+		{
+			Self->Runtime.NoteDomTouch();
+		}
+		return Self;
+	}
+
+	/**
+	 * GetSelfOrNull for the geometry reads alone (offset*, client*, offsetParent, getBoundingClientRect): the
+	 * same door without the DOM touch. A read writes nothing, so a run of them -- a tooltip measuring its
+	 * containing block and then itself -- shares the one flush the first of them ran (GetLiveElementAfterLayout).
+	 */
+	static FVaCuusJsViewContext* GetSelfForGeometryReadOrNull(JSContext* InCtx)
 	{
 		return static_cast<FVaCuusJsViewContext*>(JS_GetContextOpaque(InCtx));
 	}
@@ -410,9 +432,10 @@ private:
 	 * GetLiveElement for a geometry read: lays the element's document out first (UpdateDocument),
 	 * then acquires the element AGAIN, since the flush dispatches `transitionend` and `animationend`
 	 * (Element::AdvanceAnimations) to script that can destroy it. Null when the handle is dead before
-	 * or after.
+	 * or after. The flush is skipped when this context flushed the same document and nothing has
+	 * touched the DOM since (FVaCuusJsRuntime::GetDomTouchSerial).
 	 */
-	Rml::Element* GetLiveElementAfterLayout(JSValueConst Value) const;
+	Rml::Element* GetLiveElementAfterLayout(JSValueConst Value);
 
 	//~ Document prototype (createElement / createElementNS / createTextNode /
 	//~ getElementById / body). createElement and createElementNS share one
@@ -495,6 +518,14 @@ private:
 
 	/** See GetCurrentDocument(). Written only by BindDocument; the pointer's liveness is BindDocument's caller contract. */
 	Rml::ElementDocument* CurrentDocument = nullptr;
+
+	/**
+	 * The document the last geometry read laid out and the DOM-touch serial it read before doing it -- what
+	 * GetLiveElementAfterLayout skips the next flush by. COMPARED, NEVER FOLLOWED: the document may be gone, but
+	 * not without a script call or a host entry moving the serial first. Null while no flush stands.
+	 */
+	const Rml::ElementDocument* LayoutFlushDocument = nullptr;
+	uint64 LayoutFlushSerial = 0;
 
 	/**
 	 * THE IDENTITY CACHE (spec 3.9): raw Element* -> wrapper JSValue, the value

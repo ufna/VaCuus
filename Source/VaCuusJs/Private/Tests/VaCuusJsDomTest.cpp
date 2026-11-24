@@ -38,6 +38,8 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusJsDomCacheHygieneTest, "VaCuus.Js.Dom.Ca
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusJsDomGeometryTest, "VaCuus.Js.Dom.Geometry",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVaCuusJsDomGeometryFlushTest, "VaCuus.Js.Dom.GeometryFlush",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 /**
  * The facade surface on one real document: identity (`===` across lookups),
@@ -1317,6 +1319,135 @@ body { display: block; margin: 0px; padding: 0px; }
 		FString(TEXT("null|0,0,0,0,0,0,0,0|0|0|0|0")));
 
 	TestEqual(TEXT("no JS error anywhere in the run"), FWrappedDomHost::Inner->GetRuntime()->GetNumErrors(), uint64(0));
+	return true;
+}
+
+namespace VaCuusJsDomTest
+{
+/**
+ * EvalString entered the way the host enters script, through FVaCuusJsEntryGuard -- EvalString itself is a bare
+ * JS_Eval, and the guard is what moves the DOM-touch serial at a turn's start. The guard closes before the result is
+ * read, as its usage contract asks. UI thread.
+ */
+static FString GuardedEvalString(uint32 ViewId, const char* Source)
+{
+	FVaCuusJsScriptHost& Host = *FWrappedDomHost::Inner;
+	FVaCuusJsViewContext* View = Host.FindViewContext(ViewId);
+	if (View == nullptr || !View->IsValid())
+	{
+		return TEXT("<no context>");
+	}
+	JSContext* Ctx = View->GetContext();
+
+	JSValue Ret;
+	{
+		FVaCuusJsEntryGuard Guard(*Host.GetRuntime(), Ctx, TEXT("<dom-test-probe>"));
+		Ret = JS_Eval(Ctx, Source, std::strlen(Source), "<dom-test-probe>", JS_EVAL_TYPE_GLOBAL);
+	}
+
+	FString Result(TEXT("<exception>"));
+	if (JS_IsException(Ret))
+	{
+		JS_FreeValue(Ctx, JS_GetException(Ctx));
+	}
+	else if (const char* Utf8 = JS_ToCString(Ctx, Ret))
+	{
+		Result = UTF8_TO_TCHAR(Utf8);
+		JS_FreeCString(Ctx, Utf8);
+	}
+	JS_FreeValue(Ctx, Ret);
+	return Result;
+}
+}	 // namespace VaCuusJsDomTest
+
+/**
+ * ONE FLUSH FOR A RUN OF READS (FVaCuusJsRuntime::GetDomTouchSerial). A flush is ElementDocument::UpdateDocument, a walk
+ * of the whole tree whether anything is dirty or not, and a tooltip placing itself reads eight metrics in a row: they
+ * share the flush the first of them ran. What may NOT share it, each its own way to measure a stale tree:
+ *  - a read after a script write in the same turn: the write's facade call moves the serial;
+ *  - a read in the next turn after the tree changed with no script at all -- here a property set from C++, standing for
+ *    :hover, the data apply and the animations -- in the SAME UI frame, so no Context::Update lays it out in between:
+ *    the host's entry guard moves the serial.
+ */
+bool FVaCuusJsDomGeometryFlushTest::RunTest(const FString& Parameters)
+{
+	using namespace VaCuusJsDomTest;
+
+	FDomTestRig Rig;
+	const FDomTestRig::EBoot Boot = Rig.Boot(*this);
+	if (Boot != FDomTestRig::EBoot::Ok)
+	{
+		return Boot == FDomTestRig::EBoot::Skip;
+	}
+
+	// #outer: border box 40,30 214x114, padding box 42,32 210x110. #inner: 52x22 border box (50x20 and a 1px border).
+	static const TCHAR* GDocument = TEXT(R"(<rml>
+<head><style>
+body { display: block; margin: 0px; padding: 0px; }
+#outer { display: block; position: absolute; left: 40px; top: 30px; width: 200px; height: 100px; padding: 5px; border: 2px #ffffff; }
+#inner { display: block; position: absolute; right: 10px; bottom: 7px; width: 50px; height: 20px; border: 1px #ffffff; }
+</style></head>
+<body><div id="outer"><div id="inner"/></div></body>
+</rml>)");
+
+	FDomProbeHost* Probe = nullptr;
+	const uint32 ViewId = Rig.AddViewWithDocument(Probe, TEXT("vacuus_jsdom_geometry_flush"), GDocument);
+
+	bool bBound = false;
+	Rig.RunOnUI([&bBound, Probe, ViewId]()
+		{
+			Rml::ElementDocument* Document = Probe->GetDocument();
+			bBound = Document != nullptr;
+			FWrappedDomHost::Inner->BindDocumentForTest(ViewId, Document);
+		});
+	if (!TestTrue(TEXT("the document loaded and bound"), bBound))
+	{
+		return false;
+	}
+
+	const FVaCuusJsRuntime& Runtime = *FWrappedDomHost::Inner->GetRuntime();
+	FString Read;
+	uint64 Flushes = 0;
+	const auto RunGuarded = [&Rig, &Read, &Flushes, &Runtime, ViewId](const char* Source)
+	{
+		Rig.RunOnUI([&Read, &Flushes, &Runtime, ViewId, Source]()
+			{
+				const uint64 Before = Runtime.GetNumLayoutFlushes();
+				Read = GuardedEvalString(ViewId, Source);
+				Flushes = Runtime.GetNumLayoutFlushes() - Before;
+			});
+	};
+
+	RunGuarded("globalThis.outer = document.getElementById('outer'); globalThis.inner = document.getElementById('inner'); 'ok'");
+
+	RunGuarded("(() => { const r = outer.getBoundingClientRect(); return [r.left, r.top, outer.clientLeft, outer.clientTop, "
+		"outer.clientWidth, outer.clientHeight, inner.offsetWidth, inner.offsetHeight, String(inner.offsetParent === outer)].join(','); })()");
+	TestEqual(TEXT("a tooltip's run of reads measures the tree"), Read, FString(TEXT("40,30,2,2,210,110,52,22,true")));
+	TestEqual(TEXT("eight reads in a row lay the document out once"), Flushes, uint64(1));
+
+	RunGuarded("(() => { const before = inner.offsetWidth; inner.style.setProperty('width', '60px'); return [before, inner.offsetWidth].join(','); })()");
+	TestEqual(TEXT("a script write between two reads is measured"), Read, FString(TEXT("52,62")));
+	TestEqual(TEXT("by a second flush: the write moved the serial"), Flushes, uint64(2));
+
+	FString BeforeHostWrite;
+	FString AfterHostWrite;
+	uint64 HostWriteFlushes = 0;
+	Rig.RunOnUI([&BeforeHostWrite, &AfterHostWrite, &HostWriteFlushes, &Runtime, Probe, ViewId]()
+		{
+			const uint64 Before = Runtime.GetNumLayoutFlushes();
+			BeforeHostWrite = GuardedEvalString(ViewId, "String(inner.offsetWidth)");
+			if (Rml::Element* Inner = Probe->GetDocument()->GetElementById("inner"))
+			{
+				Inner->SetProperty("width", "70px");
+			}
+			AfterHostWrite = GuardedEvalString(ViewId, "String(inner.offsetWidth)");
+			HostWriteFlushes = Runtime.GetNumLayoutFlushes() - Before;
+		});
+	TestEqual(TEXT("read in one turn"), BeforeHostWrite, FString(TEXT("62")));
+	TestEqual(TEXT("changed from C++ in the same UI frame and read in the next turn: the new box"), AfterHostWrite, FString(TEXT("72")));
+	TestEqual(TEXT("each turn laid the document out: the entry moved the serial"), HostWriteFlushes, uint64(2));
+
+	TestEqual(TEXT("no JS error anywhere in the run"), Runtime.GetNumErrors(), uint64(0));
 	return true;
 }
 

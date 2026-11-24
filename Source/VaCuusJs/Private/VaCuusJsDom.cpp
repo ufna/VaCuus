@@ -1227,7 +1227,8 @@ JSValue FVaCuusJsViewContext::ScrollOffsetSetterThunk(JSContext* Ctx, JSValueCon
 // header says when to call it: before asking for an element's size or position after a change, unless
 // Context::Update has run since. Its layout and position passes run only when dirty (ElementDocument.cpp:480,
 // :499), but the update walk before them visits every element of the document on each call (Element.cpp:148-149),
-// so every read costs one walk of the document even when nothing has changed.
+// so a flush costs one walk of the document even when nothing has changed. A run of reads with nothing else
+// between them therefore shares the first one's flush (GetLiveElementAfterLayout, FVaCuusJsRuntime::GetDomTouchSerial).
 //
 // RE-ACQUIRED AFTER THE FLUSH: the flush runs Element::Update over the document, and its AdvanceAnimations
 // dispatches `transitionend` and `animationend` for whatever finished (Element.cpp:132, :2886-2887); script
@@ -1240,7 +1241,7 @@ JSValue FVaCuusJsViewContext::ScrollOffsetSetterThunk(JSContext* Ctx, JSValueCon
 // metric zeros -- because the boxes RmlUi kept for it point at elements that may be gone. One hidden with
 // `display: none` while in the tree keeps the boxes and the offset parent of the last layout that placed it.
 
-Rml::Element* FVaCuusJsViewContext::GetLiveElementAfterLayout(JSValueConst Value) const
+Rml::Element* FVaCuusJsViewContext::GetLiveElementAfterLayout(JSValueConst Value)
 {
 	Rml::Element* Element = GetLiveElement(Value);
 	if (Element == nullptr)
@@ -1248,10 +1249,29 @@ Rml::Element* FVaCuusJsViewContext::GetLiveElementAfterLayout(JSValueConst Value
 		return nullptr;
 	}
 
-	if (Rml::ElementDocument* Document = Element->GetOwnerDocument())
+	Rml::ElementDocument* Document = Element->GetOwnerDocument();
+	if (Document == nullptr)
 	{
-		Document->UpdateDocument();
+		return Element;
 	}
+
+	// ONE FLUSH FOR A RUN OF READS. Nothing but geometry reads since this context laid this document out -- the
+	// serial has not moved (FVaCuusJsRuntime::GetDomTouchSerial) -- so the boxes are the ones that flush left, and
+	// the element is as live as GetLiveElement just found it: no script ran in between to destroy it.
+	const uint64 Serial = Runtime.GetDomTouchSerial();
+	if (Document == LayoutFlushDocument && Serial == LayoutFlushSerial)
+	{
+		return Element;
+	}
+
+	Document->UpdateDocument();
+	Runtime.NoteLayoutFlush();
+
+	// Kept only when the flush ran no script: a `transitionend` or `animationend` listener it dispatched (see RE-ACQUIRED
+	// above) enters through the guard, moves the serial, and may have written the tree after the walk went past it.
+	const bool bQuietFlush = Runtime.GetDomTouchSerial() == Serial;
+	LayoutFlushDocument = bQuietFlush ? Document : nullptr;
+	LayoutFlushSerial = Serial;
 
 	return GetLiveElement(Value);
 }
@@ -1260,7 +1280,7 @@ JSValue FVaCuusJsViewContext::BoxMetricGetterThunk(JSContext* Ctx, JSValueConst 
 {
 	using namespace VaCuusJsDomInternal;
 
-	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	FVaCuusJsViewContext* Self = GetSelfForGeometryReadOrNull(Ctx);
 	if (Self == nullptr)
 	{
 		return JS_NULL;	   // dead context: same shape as a dead handle
@@ -1316,7 +1336,7 @@ JSValue FVaCuusJsViewContext::OffsetParentGetterThunk(JSContext* Ctx, JSValueCon
 {
 	using namespace VaCuusJsDomInternal;
 
-	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	FVaCuusJsViewContext* Self = GetSelfForGeometryReadOrNull(Ctx);
 	if (Self == nullptr)
 	{
 		return JS_NULL;
@@ -1340,7 +1360,7 @@ JSValue FVaCuusJsViewContext::BoundingClientRectThunk(JSContext* Ctx, JSValueCon
 {
 	using namespace VaCuusJsDomInternal;
 
-	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	FVaCuusJsViewContext* Self = GetSelfForGeometryReadOrNull(Ctx);
 	if (Self == nullptr)
 	{
 		return JS_NULL;
