@@ -1303,3 +1303,16 @@ or one style attribute, the declaration written later wins whichever is the wide
 #same-mirror, #inline and #inline-mirror). Every case has its mirror, so the test fails under either
 hash order with the placeholder check dropped, and the mirrored pairs fail under any fixed order.
 Controls: one var() border alone, a literal state over a var() border.
+
+Patch #24 -- allow a synchronous geometry read to defer a nested tree update.
+
+VaCuus JS uses ElementDocument::TryUpdateDocument to flush layout. Both Context::Update
+and ElementDocument::UpdateDocument hold a thread-local TreeUpdateScope until they
+return. Callbacks fired while either scope is active read the existing boxes. A select
+widget can dispatch change while choosing its first option (WidgetDropDown.cpp:59-89,
+257-283, 311-316), alongside the animation events dispatched by Element::Update
+(Element.cpp:132, 2886-2887). Re-entering the traversal from those callbacks runs
+element updates while the original traversal is still on the stack.
+
+Tests: VaCuus.Js.Dom.GeometryFlush checks both entry points using an animation finished
+by a document update and a select change dispatched during a context update.

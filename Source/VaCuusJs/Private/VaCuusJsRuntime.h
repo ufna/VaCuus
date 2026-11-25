@@ -227,10 +227,9 @@ public:
 	void NoteLanguageCallbackRun() { NumLanguageCallbacksRun.fetch_add(1, std::memory_order_relaxed); }
 
 	/**
-	 * THE DOM-TOUCH SERIAL: moved by every host -> JS entry (FVaCuusJsEntryGuard) and by every script call into
-	 * the facade (FVaCuusJsViewContext::GetSelfOrNull) -- the geometry reads alone excepted, which come in through
-	 * GetSelfForGeometryReadOrNull. While it stands still, nothing but geometry reads has run since the last
-	 * layout flush, so the document is as that flush left it and the next read can skip the flush.
+	 * THE DOM-TOUCH SERIAL: moved by every guarded host -> JS entry and by every script call into
+	 * the facade (FVaCuusJsViewContext::FFacadeCallScope). Consecutive geometry reads can share a flush while
+	 * the serial is stable and CanReuseGeometryLayout() is true.
 	 *
 	 * WHY A SKIP IS WORTH A SERIAL: ElementDocument::UpdateDocument (ElementDocument.cpp:467-474) is not free
 	 * when nothing is dirty. Element::Update recurses into every child (Element.cpp:148-149) and runs the
@@ -241,10 +240,21 @@ public:
 	 * WHY THE ENTRY MOVES IT TOO: between two script turns the UI frame changes the tree with no facade call to
 	 * say so -- input dispatch sets :hover (VaCuusUIThread.cpp:1339), the data apply rewrites bound values (:1349),
 	 * and Context::Update advances animations (VaCuusRmlDocumentHost.cpp:640). All of it runs outside a JS entry,
-	 * and every entry opens through the guard, so a turn never trusts a flush the previous turn ran. Owning thread.
+	 * and a guarded turn always gets a fresh serial. Owning thread.
 	 */
 	uint64 GetDomTouchSerial() const { return DomTouchSerial; }
 	void NoteDomTouch() { ++DomTouchSerial; }
+
+	void EnterFacadeCall()
+	{
+		++FacadeCallDepth;
+		NoteDomTouch();
+	}
+	void LeaveFacadeCall() { --FacadeCallDepth; }
+
+	// A facade call can resume and change the tree after running script during coercion or event dispatch.
+	// Host-side property access can also run script before a guard (CallFunction's path lookup).
+	bool CanReuseGeometryLayout() const { return WatchdogEntryDepth > 0 && FacadeCallDepth == 0; }
 
 	/** Layout flushes the geometry reads actually ran -- the skip's observable, a fired-count. */
 	uint64 GetNumLayoutFlushes() const { return NumLayoutFlushes.load(std::memory_order_relaxed); }
@@ -373,6 +383,7 @@ private:
 
 	/** See GetDomTouchSerial(). */
 	uint64 DomTouchSerial = 0;
+	int32 FacadeCallDepth = 0;
 
 	//~ Watchdog state, written by FVaCuusJsEntryGuard on the owning thread and
 	//~ read by InterruptThunk ON THE SAME THREAD (the handler runs inside JS

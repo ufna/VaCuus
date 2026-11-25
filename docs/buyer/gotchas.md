@@ -91,7 +91,7 @@ Cause: a value containing `var()` is stored **unparsed**, as
 **compute** time. That late resolution is exactly why `var()` works for every other
 property — and `transition` is the one property read *before* it, deliberately:
 `ElementStyle::TransitionPropertyChanges` takes the local property "to intercept property
-changes even before the computed values are ready" (`ElementStyle.cpp:411`) and then dropped
+changes even before the computed values are ready" (`ElementStyle.cpp:416`) and then dropped
 anything that was not already a parsed transition list. A raw string is not, so the whole
 declaration vanished.
 
@@ -270,7 +270,7 @@ background and borders at `ElementBackgroundBorder.cpp:166-173`, text at
 `:265`, `:434`, `:631` and `DecoratorShader.cpp:42`. Inheritance means *copy*, not
 *compose*: `ComputeValues` copies the parent's inherited block wholesale
 (`ComputedValues.h:394`, `inherited = parent.inherited`) and a local declaration then
-**overwrites** it (`ElementStyle.cpp:1273`, `values.opacity(p->Get<float>())`). Nothing
+**overwrites** it (`ElementStyle.cpp:1284`, `values.opacity(p->Get<float>())`). Nothing
 anywhere multiplies the two together.
 Do, and the right answer differs by what the child is:
 - **Do not redeclare `opacity` on a descendant** if any ancestor animates or toggles its
@@ -495,13 +495,14 @@ and that takes their laid-out height, which only RmlUi knows once a line wraps.
 Cause: layout lives on the UI thread. Every RmlUi read asserts it is on that thread
 (`check(FVaCuusUIThread::IsInUIThread())` in `BuildVaCuusInteractiveSnapshot`,
 `Source/VaCuus/Private/VaCuusInteractiveSnapshot.cpp`). A SCRIPT in the document can measure: the JS
-DOM has `getBoundingClientRect`, `offsetParent`, `offset*` and `client*` (since 2026-11-19, the element
-prototype in `Source/VaCuusJs/Private/VaCuusJsDom.cpp`), and each read lays the document out first, so a
-box changed in the same event is measured as it now is. That flush walks the WHOLE tree whether anything is
-dirty or not (`Element::Update` recurses into every child,
-`Source/ThirdParty/RmlUi/Source/Core/Element.cpp:148-149`), so a run of reads with no other DOM call between
-them shares the first one's flush (`FVaCuusJsRuntime::GetDomTouchSerial`), while any DOM call or a new script
-turn starts a fresh one. Measure once and keep the numbers -- in a pointer handler, per hover rather than per
+DOM has `getBoundingClientRect`, `offsetParent`, `offset*` and `client*` (the element prototype in
+`Source/VaCuusJs/Private/VaCuusJsDom.cpp`). A geometry read can lay out a box changed in the same event.
+Callbacks fired during an active tree update use the last laid-out boxes. These include animation
+completion handlers and a select control's `change` handler when it auto-selects an option.
+Each flush walks the whole tree (`Source/ThirdParty/RmlUi/Source/Core/Element.cpp:148-149`).
+Consecutive reads in a script entry share one flush. A new host entry or a facade call invalidates
+that layout, and callbacks within a facade call measure live while the call is in progress.
+Measure once and keep the numbers -- in a pointer handler, per hover rather than per
 `mousemove`, and placed from one `requestAnimationFrame` -- because the UI thread dispatches every queued move
 to its listeners one by one, coalescing none (`Source/VaCuus/Private/VaCuusUIThread.cpp:1791`). Game-thread
 code cannot reach those.

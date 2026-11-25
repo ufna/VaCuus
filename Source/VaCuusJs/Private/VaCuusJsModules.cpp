@@ -98,7 +98,8 @@ char* FVaCuusJsViewContext::ModuleNormalizeThunk(
 {
 	using namespace VaCuusJsModules;
 
-	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	const FFacadeCallScope FacadeCall(Ctx);
+	FVaCuusJsViewContext* Self = FacadeCall.GetView();
 	if (Self == nullptr)
 	{
 		// The dead-context rule: a removed view's pinned job running a dynamic
@@ -166,7 +167,8 @@ JSModuleDef* FVaCuusJsViewContext::ModuleLoaderThunk(JSContext* Ctx, const char*
 {
 	using namespace VaCuusJsModules;
 
-	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	const FFacadeCallScope FacadeCall(Ctx);
+	FVaCuusJsViewContext* Self = FacadeCall.GetView();
 	if (Self == nullptr)
 	{
 		JS_ThrowReferenceError(Ctx, "module '%s' loaded on a dead view context", ModuleName);

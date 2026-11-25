@@ -549,7 +549,8 @@ JSValue FVaCuusJsViewContext::ConsoleThunk(
 JSValue FVaCuusJsViewContext::SetTimerThunk(
 	JSContext* Ctx, JSValueConst /*This*/, int Argc, JSValueConst* Argv, int Magic)
 {
-	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	const FFacadeCallScope FacadeCall(Ctx);
+	FVaCuusJsViewContext* Self = FacadeCall.GetView();
 	if (Self == nullptr)
 	{
 		return JS_UNDEFINED;	// dead context (a removed view's pinned job): no timer to mint
@@ -589,7 +590,8 @@ JSValue FVaCuusJsViewContext::SetTimerThunk(
 
 JSValue FVaCuusJsViewContext::ClearTimerThunk(JSContext* Ctx, JSValueConst /*This*/, int Argc, JSValueConst* Argv)
 {
-	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	const FFacadeCallScope FacadeCall(Ctx);
+	FVaCuusJsViewContext* Self = FacadeCall.GetView();
 	if (Self == nullptr)
 	{
 		return JS_UNDEFINED;	// dead context: a clear is already a no-op for unknown ids
@@ -621,7 +623,8 @@ JSValue FVaCuusJsViewContext::ClearTimerThunk(JSContext* Ctx, JSValueConst /*Thi
 
 JSValue FVaCuusJsViewContext::RequestRafThunk(JSContext* Ctx, JSValueConst /*This*/, int Argc, JSValueConst* Argv)
 {
-	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	const FFacadeCallScope FacadeCall(Ctx);
+	FVaCuusJsViewContext* Self = FacadeCall.GetView();
 	if (Self == nullptr)
 	{
 		return JS_UNDEFINED;	// dead context: no frame will ever come (the demo's rAF returned undefined too)
@@ -644,7 +647,8 @@ JSValue FVaCuusJsViewContext::RequestRafThunk(JSContext* Ctx, JSValueConst /*Thi
 
 JSValue FVaCuusJsViewContext::CancelRafThunk(JSContext* Ctx, JSValueConst /*This*/, int Argc, JSValueConst* Argv)
 {
-	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	const FFacadeCallScope FacadeCall(Ctx);
+	FVaCuusJsViewContext* Self = FacadeCall.GetView();
 	if (Self == nullptr)
 	{
 		return JS_UNDEFINED;	// dead context: nothing pending to cancel

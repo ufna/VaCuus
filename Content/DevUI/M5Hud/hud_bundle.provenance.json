@@ -1,5 +1,5 @@
 {
   "preactVersion": "11.0.1",
-  "facadeManifestHash": "cad1c5555b9f4b58a970398fe9e61bb620a6c287",
+  "facadeManifestHash": "d0a0c4decf1c126ff3e70c6bdc9332b6987524ef",
   "buildCommand": "node Web/packages/cli/bin/vacuus.mjs build --app Web/apps/demo-hud"
 }

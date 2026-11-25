@@ -117,6 +117,9 @@ public:
 	/// has already been called after the change. This has a performance penalty, only call when necessary.
 	void UpdateDocument();
 
+	/// Updates the document if the thread is outside a tree update. Returns false during an active update.
+	bool TryUpdateDocument();
+
 protected:
 	/// Repositions the document if necessary.
 	void OnPropertyChange(const PropertyIdSet& changed_properties) override;
@@ -171,6 +174,16 @@ private:
 
 	bool layout_dirty;
 	bool position_dirty;
+
+	struct TreeUpdateScope {
+		TreeUpdateScope();
+		~TreeUpdateScope();
+		TreeUpdateScope(const TreeUpdateScope&) = delete;
+		TreeUpdateScope& operator=(const TreeUpdateScope&) = delete;
+
+		static thread_local bool active;
+		const bool previous;
+	};
 
 	friend class Rml::Context;
 	friend class Rml::Factory;

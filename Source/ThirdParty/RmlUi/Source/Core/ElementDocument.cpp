@@ -466,9 +466,9 @@ void ElementDocument::LoadExternalScript(const String& /*source_path*/) {}
 
 void ElementDocument::UpdateDocument()
 {
-	const float dp_ratio = (context ? context->GetDensityIndependentPixelRatio() : 1.0f);
-	const Vector2f vp_dimensions = (context ? Vector2f(context->GetDimensions()) : Vector2f(1.0f));
-	Update(dp_ratio, vp_dimensions);
+	const TreeUpdateScope tree_update;
+	Update(context ? context->GetDensityIndependentPixelRatio() : 1.0f,
+		context ? Vector2f(context->GetDimensions()) : Vector2f(1.0f));
 	UpdateLayout();
 	UpdatePosition();
 }
@@ -821,6 +821,29 @@ Element* ElementDocument::FindNextNavigationElement(Element* current_element, Na
 	default: break;
 	}
 	return nullptr;
+}
+
+// VaCuus patch #24 (VENDORED_TAG.txt). A handler dispatched by the tree walk can query the current boxes.
+// Recursing into Update would iterate the tree and run widget callbacks inside the existing traversal.
+bool ElementDocument::TryUpdateDocument()
+{
+	if (TreeUpdateScope::active)
+		return false;
+
+	UpdateDocument();
+	return true;
+}
+
+thread_local bool ElementDocument::TreeUpdateScope::active = false;
+
+ElementDocument::TreeUpdateScope::TreeUpdateScope() : previous(active)
+{
+	active = true;
+}
+
+ElementDocument::TreeUpdateScope::~TreeUpdateScope()
+{
+	active = previous;
 }
 
 } // namespace Rml

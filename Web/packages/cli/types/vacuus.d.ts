@@ -132,9 +132,9 @@ interface VaCuusElement {
 	/** The horizontal scroll offset in px; scrollTop's rules, on the other axis. */
 	scrollLeft: number;
 	/**
-	 * The border box against the context's top-left, in px. Unlike scrollTop,
-	 * every geometry read lays the document out first, as a browser does, so a
-	 * class toggled or a :hover gained this frame is measured. Deviation: a
+	 * The border box against the context's top-left, in px. Geometry reads
+	 * update layout as needed, so a class toggled or a :hover gained this
+	 * frame can be measured. Deviation: a
 	 * `transform` is not applied -- a transformed element reports its
 	 * untransformed box. A dead handle measures as zeros, and so does an
 	 * element out of the tree (removed, or inside a removed subtree), as a
@@ -142,7 +142,8 @@ interface VaCuusElement {
 	 * `display: none` in the tree keeps the box of its last layout.
 	 * A read can run script: the flush advances animations and dispatches
 	 * any `transitionend` / `animationend` that completed, so a listener may
-	 * change the document before the read returns.
+	 * change the document before the read returns. Inside callbacks during
+	 * an active tree update, geometry uses the last laid-out boxes.
 	 */
 	getBoundingClientRect(): { x: number; y: number; left: number; top: number; right: number; bottom: number; width: number; height: number };
 	/**
@@ -157,17 +158,17 @@ interface VaCuusElement {
 	 * and four client* read the same way. Deviation: all eight are fractional px (RmlUi's own floats), where a browser
 	 * rounds them to integers.
 	 */
-	readonly offsetLeft: number;
-	readonly offsetTop: number;
+	readonly offsetLeft: number | null;
+	readonly offsetTop: number | null;
 	/** The border box's size, in px. */
-	readonly offsetWidth: number;
-	readonly offsetHeight: number;
+	readonly offsetWidth: number | null;
+	readonly offsetHeight: number | null;
 	/** The left and top border widths, in px: the padding box starts this far inside the border box. */
-	readonly clientLeft: number;
-	readonly clientTop: number;
+	readonly clientLeft: number | null;
+	readonly clientTop: number | null;
 	/** The padding box less any scrollbar, in px. */
-	readonly clientWidth: number;
-	readonly clientHeight: number;
+	readonly clientWidth: number | null;
+	readonly clientHeight: number | null;
 	/** DOM duplicate rule; options object honored for `capture` only. Non-function listener throws TypeError. */
 	addEventListener(type: string, listener: (ev: VaCuusEvent) => void, options?: boolean | { capture?: boolean }): void;
 	removeEventListener(type: string, listener: (ev: VaCuusEvent) => void, options?: boolean | { capture?: boolean }): void;

@@ -670,7 +670,8 @@ JSValue FVaCuusJsViewContext::DocCreateElementThunk(JSContext* Ctx, JSValueConst
 {
 	using namespace VaCuusJsDomInternal;
 
-	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	const FFacadeCallScope FacadeCall(Ctx);
+	FVaCuusJsViewContext* Self = FacadeCall.GetView();
 	if (Self == nullptr)
 	{
 		return JS_NULL;	   // dead context (GetSelfOrNull's comment): same shape as a dead handle
@@ -731,7 +732,8 @@ JSValue FVaCuusJsViewContext::DocCreateTextNodeThunk(JSContext* Ctx, JSValueCons
 {
 	using namespace VaCuusJsDomInternal;
 
-	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	const FFacadeCallScope FacadeCall(Ctx);
+	FVaCuusJsViewContext* Self = FacadeCall.GetView();
 	if (Self == nullptr)
 	{
 		return JS_NULL;	   // dead context: same shape as a dead handle
@@ -790,7 +792,8 @@ JSValue FVaCuusJsViewContext::DocGetElementByIdThunk(JSContext* Ctx, JSValueCons
 {
 	using namespace VaCuusJsDomInternal;
 
-	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	const FFacadeCallScope FacadeCall(Ctx);
+	FVaCuusJsViewContext* Self = FacadeCall.GetView();
 	if (Self == nullptr)
 	{
 		return JS_NULL;	   // dead context: same shape as a dead handle
@@ -826,7 +829,8 @@ JSValue FVaCuusJsViewContext::DocGetElementByIdThunk(JSContext* Ctx, JSValueCons
 
 JSValue FVaCuusJsViewContext::DocBodyGetterThunk(JSContext* Ctx, JSValueConst This)
 {
-	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	const FFacadeCallScope FacadeCall(Ctx);
+	FVaCuusJsViewContext* Self = FacadeCall.GetView();
 	if (Self == nullptr)
 	{
 		return JS_NULL;	   // dead context: same shape as a dead handle
@@ -853,7 +857,8 @@ JSValue FVaCuusJsViewContext::InsertThunk(JSContext* Ctx, JSValueConst This, int
 {
 	using namespace VaCuusJsDomInternal;
 
-	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	const FFacadeCallScope FacadeCall(Ctx);
+	FVaCuusJsViewContext* Self = FacadeCall.GetView();
 	if (Self == nullptr)
 	{
 		return JS_NULL;	   // dead context: same shape as a dead handle
@@ -934,7 +939,8 @@ JSValue FVaCuusJsViewContext::InsertThunk(JSContext* Ctx, JSValueConst This, int
 
 JSValue FVaCuusJsViewContext::RemoveChildThunk(JSContext* Ctx, JSValueConst This, int Argc, JSValueConst* Argv)
 {
-	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	const FFacadeCallScope FacadeCall(Ctx);
+	FVaCuusJsViewContext* Self = FacadeCall.GetView();
 	if (Self == nullptr)
 	{
 		return JS_NULL;	   // dead context: same shape as a dead handle
@@ -969,7 +975,8 @@ JSValue FVaCuusJsViewContext::RemoveChildThunk(JSContext* Ctx, JSValueConst This
 
 JSValue FVaCuusJsViewContext::RemoveThunk(JSContext* Ctx, JSValueConst This, int /*Argc*/, JSValueConst* /*Argv*/)
 {
-	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	const FFacadeCallScope FacadeCall(Ctx);
+	FVaCuusJsViewContext* Self = FacadeCall.GetView();
 	if (Self == nullptr)
 	{
 		return JS_UNDEFINED;	// dead context: remove() is a silent no-op, like a second remove()
@@ -1018,7 +1025,8 @@ JSValue FVaCuusJsViewContext::FocusThunk(JSContext* Ctx, JSValueConst This, int 
 {
 	using namespace VaCuusJsDomInternal;
 
-	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	const FFacadeCallScope FacadeCall(Ctx);
+	FVaCuusJsViewContext* Self = FacadeCall.GetView();
 	if (Self == nullptr)
 	{
 		return JS_FALSE;	// dead context: there is no tree left to focus in
@@ -1069,7 +1077,8 @@ JSValue FVaCuusJsViewContext::ScrollIntoViewThunk(JSContext* Ctx, JSValueConst T
 {
 	using namespace VaCuusJsDomInternal;
 
-	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	const FFacadeCallScope FacadeCall(Ctx);
+	FVaCuusJsViewContext* Self = FacadeCall.GetView();
 	if (Self == nullptr)
 	{
 		return JS_UNDEFINED;	// dead context: there is no tree left to scroll
@@ -1145,7 +1154,8 @@ JSValue FVaCuusJsViewContext::ScrollOffsetGetterThunk(JSContext* Ctx, JSValueCon
 {
 	using namespace VaCuusJsDomInternal;
 
-	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	const FFacadeCallScope FacadeCall(Ctx);
+	FVaCuusJsViewContext* Self = FacadeCall.GetView();
 	if (Self == nullptr)
 	{
 		return JS_NULL;	   // dead context: same shape as a dead handle
@@ -1164,7 +1174,8 @@ JSValue FVaCuusJsViewContext::ScrollOffsetSetterThunk(JSContext* Ctx, JSValueCon
 {
 	using namespace VaCuusJsDomInternal;
 
-	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	const FFacadeCallScope FacadeCall(Ctx);
+	FVaCuusJsViewContext* Self = FacadeCall.GetView();
 	if (Self == nullptr)
 	{
 		return JS_UNDEFINED;	// dead context: assignment silently no-ops, like a dead handle
@@ -1227,8 +1238,8 @@ JSValue FVaCuusJsViewContext::ScrollOffsetSetterThunk(JSContext* Ctx, JSValueCon
 // header says when to call it: before asking for an element's size or position after a change, unless
 // Context::Update has run since. Its layout and position passes run only when dirty (ElementDocument.cpp:480,
 // :499), but the update walk before them visits every element of the document on each call (Element.cpp:148-149),
-// so a flush costs one walk of the document even when nothing has changed. A run of reads with nothing else
-// between them therefore shares the first one's flush (GetLiveElementAfterLayout, FVaCuusJsRuntime::GetDomTouchSerial).
+// so a flush costs one walk of the document even when nothing has changed. Consecutive reads in a guarded
+// script entry share a flush when no facade call is active (FVaCuusJsRuntime::CanReuseGeometryLayout).
 //
 // RE-ACQUIRED AFTER THE FLUSH: the flush runs Element::Update over the document, and its AdvanceAnimations
 // dispatches `transitionend` and `animationend` for whatever finished (Element.cpp:132, :2886-2887); script
@@ -1255,21 +1266,23 @@ Rml::Element* FVaCuusJsViewContext::GetLiveElementAfterLayout(JSValueConst Value
 		return Element;
 	}
 
-	// ONE FLUSH FOR A RUN OF READS. Nothing but geometry reads since this context laid this document out -- the
-	// serial has not moved (FVaCuusJsRuntime::GetDomTouchSerial) -- so the boxes are the ones that flush left, and
-	// the element is as live as GetLiveElement just found it: no script ran in between to destroy it.
+	// Reuse the document's boxes while the script entry and facade state permit it and the serial still matches.
 	const uint64 Serial = Runtime.GetDomTouchSerial();
-	if (Document == LayoutFlushDocument && Serial == LayoutFlushSerial)
+	const bool bCanReuseLayout = Runtime.CanReuseGeometryLayout();
+	if (bCanReuseLayout && Document == LayoutFlushDocument && Serial == LayoutFlushSerial)
 	{
 		return Element;
 	}
 
-	Document->UpdateDocument();
+	if (!Document->TryUpdateDocument())
+	{
+		return Element;
+	}
 	Runtime.NoteLayoutFlush();
 
 	// Kept only when the flush ran no script: a `transitionend` or `animationend` listener it dispatched (see RE-ACQUIRED
 	// above) enters through the guard, moves the serial, and may have written the tree after the walk went past it.
-	const bool bQuietFlush = Runtime.GetDomTouchSerial() == Serial;
+	const bool bQuietFlush = bCanReuseLayout && Runtime.GetDomTouchSerial() == Serial;
 	LayoutFlushDocument = bQuietFlush ? Document : nullptr;
 	LayoutFlushSerial = Serial;
 
@@ -1280,7 +1293,7 @@ JSValue FVaCuusJsViewContext::BoxMetricGetterThunk(JSContext* Ctx, JSValueConst 
 {
 	using namespace VaCuusJsDomInternal;
 
-	FVaCuusJsViewContext* Self = GetSelfForGeometryReadOrNull(Ctx);
+	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
 	if (Self == nullptr)
 	{
 		return JS_NULL;	   // dead context: same shape as a dead handle
@@ -1336,7 +1349,7 @@ JSValue FVaCuusJsViewContext::OffsetParentGetterThunk(JSContext* Ctx, JSValueCon
 {
 	using namespace VaCuusJsDomInternal;
 
-	FVaCuusJsViewContext* Self = GetSelfForGeometryReadOrNull(Ctx);
+	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
 	if (Self == nullptr)
 	{
 		return JS_NULL;
@@ -1360,11 +1373,7 @@ JSValue FVaCuusJsViewContext::BoundingClientRectThunk(JSContext* Ctx, JSValueCon
 {
 	using namespace VaCuusJsDomInternal;
 
-	FVaCuusJsViewContext* Self = GetSelfForGeometryReadOrNull(Ctx);
-	if (Self == nullptr)
-	{
-		return JS_NULL;
-	}
+	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
 
 	// A dead handle measures as an empty rect at the origin, which is what a browser answers for a
 	// detached element -- and a detached element measures so too (IsPlaced) -- so a caller doing
@@ -1373,7 +1382,7 @@ JSValue FVaCuusJsViewContext::BoundingClientRectThunk(JSContext* Ctx, JSValueCon
 	float Top = 0.0f;
 	float Width = 0.0f;
 	float Height = 0.0f;
-	Rml::Element* Element = Self->GetLiveElementAfterLayout(This);
+	Rml::Element* Element = Self != nullptr ? Self->GetLiveElementAfterLayout(This) : nullptr;
 	if (Element != nullptr && IsPlaced(Element))
 	{
 		// The border box against the context's top-left, as laid out; a `transform` is not applied, so for a
@@ -1389,14 +1398,23 @@ JSValue FVaCuusJsViewContext::BoundingClientRectThunk(JSContext* Ctx, JSValueCon
 	{
 		return Rect;
 	}
-	JS_SetPropertyStr(Ctx, Rect, "x", JS_NewFloat64(Ctx, Left));
-	JS_SetPropertyStr(Ctx, Rect, "y", JS_NewFloat64(Ctx, Top));
-	JS_SetPropertyStr(Ctx, Rect, "left", JS_NewFloat64(Ctx, Left));
-	JS_SetPropertyStr(Ctx, Rect, "top", JS_NewFloat64(Ctx, Top));
-	JS_SetPropertyStr(Ctx, Rect, "right", JS_NewFloat64(Ctx, Left + Width));
-	JS_SetPropertyStr(Ctx, Rect, "bottom", JS_NewFloat64(Ctx, Top + Height));
-	JS_SetPropertyStr(Ctx, Rect, "width", JS_NewFloat64(Ctx, Width));
-	JS_SetPropertyStr(Ctx, Rect, "height", JS_NewFloat64(Ctx, Height));
+	const struct
+	{
+		const char* Name;
+		float Value;
+	} Fields[] = {
+		{"x", Left}, {"y", Top}, {"left", Left}, {"top", Top}, {"right", Left + Width}, {"bottom", Top + Height},
+		{"width", Width}, {"height", Height},
+	};
+	// Own data properties keep this read free of inherited setters.
+	for (const auto& [Name, Value] : Fields)
+	{
+		if (JS_DefinePropertyValueStr(Ctx, Rect, Name, JS_NewFloat64(Ctx, Value), JS_PROP_C_W_E) < 0)
+		{
+			JS_FreeValue(Ctx, Rect);
+			return JS_EXCEPTION;
+		}
+	}
 	return Rect;
 }
 
@@ -1408,7 +1426,8 @@ JSValue FVaCuusJsViewContext::QueryThunk(JSContext* Ctx, JSValueConst This, int 
 {
 	using namespace VaCuusJsDomInternal;
 
-	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	const FFacadeCallScope FacadeCall(Ctx);
+	FVaCuusJsViewContext* Self = FacadeCall.GetView();
 	if (Self == nullptr)
 	{
 		// Dead context: the dead-handle shapes below, without touching Self.
@@ -1488,7 +1507,8 @@ JSValue FVaCuusJsViewContext::AttributeThunk(JSContext* Ctx, JSValueConst This, 
 {
 	using namespace VaCuusJsDomInternal;
 
-	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	const FFacadeCallScope FacadeCall(Ctx);
+	FVaCuusJsViewContext* Self = FacadeCall.GetView();
 	if (Self == nullptr)
 	{
 		return Magic == AttrGet ? JS_NULL : JS_UNDEFINED;	 // dead context: the dead-handle shapes
@@ -1571,7 +1591,8 @@ JSValue FVaCuusJsViewContext::StringGetterThunk(JSContext* Ctx, JSValueConst Thi
 {
 	using namespace VaCuusJsDomInternal;
 
-	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	const FFacadeCallScope FacadeCall(Ctx);
+	FVaCuusJsViewContext* Self = FacadeCall.GetView();
 	if (Self == nullptr)
 	{
 		return JS_NULL;	   // dead context: same shape as a dead handle
@@ -1606,7 +1627,8 @@ JSValue FVaCuusJsViewContext::StringSetterThunk(JSContext* Ctx, JSValueConst Thi
 {
 	using namespace VaCuusJsDomInternal;
 
-	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	const FFacadeCallScope FacadeCall(Ctx);
+	FVaCuusJsViewContext* Self = FacadeCall.GetView();
 	if (Self == nullptr)
 	{
 		return JS_UNDEFINED;	// dead context: assignment silently no-ops, like a dead handle
@@ -1658,7 +1680,8 @@ JSValue FVaCuusJsViewContext::StringSetterThunk(JSContext* Ctx, JSValueConst Thi
 
 JSValue FVaCuusJsViewContext::ParentNodeGetterThunk(JSContext* Ctx, JSValueConst This)
 {
-	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	const FFacadeCallScope FacadeCall(Ctx);
+	FVaCuusJsViewContext* Self = FacadeCall.GetView();
 	if (Self == nullptr)
 	{
 		return JS_NULL;	   // dead context: same shape as a dead handle
@@ -1680,7 +1703,8 @@ JSValue FVaCuusJsViewContext::ChildListGetterThunk(JSContext* Ctx, JSValueConst 
 {
 	using namespace VaCuusJsDomInternal;
 
-	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	const FFacadeCallScope FacadeCall(Ctx);
+	FVaCuusJsViewContext* Self = FacadeCall.GetView();
 	if (Self == nullptr)
 	{
 		return JS_NewArray(Ctx);	// dead context: the dead-handle empty array
@@ -1730,7 +1754,8 @@ JSValue FVaCuusJsViewContext::NodeStepGetterThunk(JSContext* Ctx, JSValueConst T
 {
 	using namespace VaCuusJsDomInternal;
 
-	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	const FFacadeCallScope FacadeCall(Ctx);
+	FVaCuusJsViewContext* Self = FacadeCall.GetView();
 	if (Self == nullptr)
 	{
 		return JS_NULL;	   // dead context: same shape as a dead handle
@@ -1775,7 +1800,8 @@ JSValue FVaCuusJsViewContext::NodeTypeGetterThunk(JSContext* Ctx, JSValueConst T
 {
 	using namespace VaCuusJsDomInternal;
 
-	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	const FFacadeCallScope FacadeCall(Ctx);
+	FVaCuusJsViewContext* Self = FacadeCall.GetView();
 	if (Self == nullptr)
 	{
 		return JS_NULL;	   // dead context: same shape as a dead handle
@@ -1810,7 +1836,8 @@ JSValue FVaCuusJsViewContext::AttributesGetterThunk(JSContext* Ctx, JSValueConst
 {
 	using namespace VaCuusJsDomInternal;
 
-	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	const FFacadeCallScope FacadeCall(Ctx);
+	FVaCuusJsViewContext* Self = FacadeCall.GetView();
 	if (Self == nullptr)
 	{
 		return JS_NewArray(Ctx);	// dead context: the dead-handle empty array
@@ -1866,7 +1893,8 @@ JSValue FVaCuusJsViewContext::TextDataGetterThunk(JSContext* Ctx, JSValueConst T
 {
 	using namespace VaCuusJsDomInternal;
 
-	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	const FFacadeCallScope FacadeCall(Ctx);
+	FVaCuusJsViewContext* Self = FacadeCall.GetView();
 	if (Self == nullptr)
 	{
 		return JS_NULL;	   // dead context: same shape as a dead handle
@@ -1888,7 +1916,8 @@ JSValue FVaCuusJsViewContext::TextDataSetterThunk(JSContext* Ctx, JSValueConst T
 {
 	using namespace VaCuusJsDomInternal;
 
-	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	const FFacadeCallScope FacadeCall(Ctx);
+	FVaCuusJsViewContext* Self = FacadeCall.GetView();
 	if (Self == nullptr)
 	{
 		return JS_UNDEFINED;	// dead context: assignment silently no-ops
@@ -1970,7 +1999,8 @@ JSValue FVaCuusJsViewContext::ClassListOpThunk(
 {
 	using namespace VaCuusJsDomInternal;
 
-	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	const FFacadeCallScope FacadeCall(Ctx);
+	FVaCuusJsViewContext* Self = FacadeCall.GetView();
 	if (Self == nullptr)
 	{
 		// Dead context: the dead-handle shapes below.
@@ -2037,7 +2067,8 @@ JSValue FVaCuusJsViewContext::StyleGetterThunk(JSContext* Ctx, JSValueConst This
 {
 	using namespace VaCuusJsDomInternal;
 
-	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	const FFacadeCallScope FacadeCall(Ctx);
+	FVaCuusJsViewContext* Self = FacadeCall.GetView();
 	if (Self == nullptr)
 	{
 		return JS_NULL;	   // dead context: the factory-failed shape
@@ -2071,7 +2102,8 @@ JSValue FVaCuusJsViewContext::StyleOpThunk(
 {
 	using namespace VaCuusJsDomInternal;
 
-	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	const FFacadeCallScope FacadeCall(Ctx);
+	FVaCuusJsViewContext* Self = FacadeCall.GetView();
 	if (Self == nullptr)
 	{
 		// Dead context: the dead-handle shapes below.

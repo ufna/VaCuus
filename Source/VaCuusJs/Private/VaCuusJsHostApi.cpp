@@ -226,7 +226,8 @@ JSValue FVaCuusJsViewContext::EmitThunk(JSContext* Ctx, JSValueConst /*This*/, i
 {
 	using namespace VaCuusJsHostApiInternal;
 
-	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	const FFacadeCallScope FacadeCall(Ctx);
+	FVaCuusJsViewContext* Self = FacadeCall.GetView();
 	if (Self == nullptr)
 	{
 		return JS_FALSE;	// dead context (a removed view's pinned job): the bool-shaped no-op
@@ -290,7 +291,8 @@ JSValue FVaCuusJsViewContext::EmitThunk(JSContext* Ctx, JSValueConst /*This*/, i
 
 JSValue FVaCuusJsViewContext::ModelThunk(JSContext* Ctx, JSValueConst /*This*/, int Argc, JSValueConst* Argv)
 {
-	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	const FFacadeCallScope FacadeCall(Ctx);
+	FVaCuusJsViewContext* Self = FacadeCall.GetView();
 	if (Self == nullptr)
 	{
 		return JS_NULL;
@@ -324,7 +326,8 @@ JSValue FVaCuusJsViewContext::ModelGetThunk(
 {
 	using namespace VaCuusJsHostApiInternal;
 
-	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	const FFacadeCallScope FacadeCall(Ctx);
+	FVaCuusJsViewContext* Self = FacadeCall.GetView();
 	if (Self == nullptr)
 	{
 		return JS_NULL;
@@ -354,7 +357,8 @@ JSValue FVaCuusJsViewContext::TranslateThunk(JSContext* Ctx, JSValueConst /*This
 {
 	using namespace VaCuusJsHostApiInternal;
 
-	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	const FFacadeCallScope FacadeCall(Ctx);
+	FVaCuusJsViewContext* Self = FacadeCall.GetView();
 	if (Self == nullptr)
 	{
 		return JS_NULL;	   // dead context: the null-shaped no-op, the house rule
@@ -513,7 +517,8 @@ JSValue FVaCuusJsViewContext::TranslateThunk(JSContext* Ctx, JSValueConst /*This
 
 JSValue FVaCuusJsViewContext::ViewGetterThunk(JSContext* Ctx, JSValueConst /*This*/)
 {
-	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	const FFacadeCallScope FacadeCall(Ctx);
+	FVaCuusJsViewContext* Self = FacadeCall.GetView();
 	if (Self == nullptr)
 	{
 		return JS_NULL;
@@ -545,7 +550,8 @@ JSValue FVaCuusJsViewContext::ViewGetterThunk(JSContext* Ctx, JSValueConst /*Thi
 
 JSValue FVaCuusJsViewContext::StatsThunk(JSContext* Ctx, JSValueConst /*This*/, int /*Argc*/, JSValueConst* /*Argv*/)
 {
-	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	const FFacadeCallScope FacadeCall(Ctx);
+	FVaCuusJsViewContext* Self = FacadeCall.GetView();
 	if (Self == nullptr)
 	{
 		return JS_NULL;
@@ -592,7 +598,8 @@ JSValue FVaCuusJsViewContext::StatsThunk(JSContext* Ctx, JSValueConst /*This*/, 
  */
 JSValue FVaCuusJsViewContext::TextureStatsThunk(JSContext* Ctx, JSValueConst /*This*/, int /*Argc*/, JSValueConst* /*Argv*/)
 {
-	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	const FFacadeCallScope FacadeCall(Ctx);
+	FVaCuusJsViewContext* Self = FacadeCall.GetView();
 	if (Self == nullptr)
 	{
 		return JS_NULL;	   // dead context, the same shape stats() answers with
@@ -648,7 +655,8 @@ JSValue FVaCuusJsViewContext::ReleaseTextureThunk(JSContext* Ctx, JSValueConst /
 {
 	using namespace VaCuusJsHostApiInternal;
 
-	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	const FFacadeCallScope FacadeCall(Ctx);
+	FVaCuusJsViewContext* Self = FacadeCall.GetView();
 	if (Self == nullptr)
 	{
 		return JS_FALSE;	// dead context: the bool-shaped no-op, as vacuus.emit answers
@@ -678,7 +686,8 @@ JSValue FVaCuusJsViewContext::ReleaseTextureThunk(JSContext* Ctx, JSValueConst /
 
 JSValue FVaCuusJsViewContext::ReleaseTexturesThunk(JSContext* Ctx, JSValueConst /*This*/, int /*Argc*/, JSValueConst* /*Argv*/)
 {
-	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	const FFacadeCallScope FacadeCall(Ctx);
+	FVaCuusJsViewContext* Self = FacadeCall.GetView();
 	if (Self == nullptr)
 	{
 		return JS_UNDEFINED;

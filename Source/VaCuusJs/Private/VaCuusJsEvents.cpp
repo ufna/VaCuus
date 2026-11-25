@@ -291,7 +291,8 @@ JSValue FVaCuusJsViewContext::EventOpThunk(
 {
 	using namespace VaCuusJsEventInternal;
 
-	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	const FFacadeCallScope FacadeCall(Ctx);
+	FVaCuusJsViewContext* Self = FacadeCall.GetView();
 	if (Self == nullptr)
 	{
 		return JS_UNDEFINED;	// dead context (GetSelfOrNull's comment): the stop methods no-op
@@ -686,7 +687,8 @@ JSValue FVaCuusJsViewContext::AddEventListenerThunk(JSContext* Ctx, JSValueConst
 	using namespace VaCuusJsDomInternal;
 	using namespace VaCuusJsEventInternal;
 
-	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	const FFacadeCallScope FacadeCall(Ctx);
+	FVaCuusJsViewContext* Self = FacadeCall.GetView();
 	if (Self == nullptr)
 	{
 		return JS_UNDEFINED;	// dead context: nothing to register on, the dead-handle no-op
@@ -757,7 +759,8 @@ JSValue FVaCuusJsViewContext::RemoveEventListenerThunk(JSContext* Ctx, JSValueCo
 	using namespace VaCuusJsDomInternal;
 	using namespace VaCuusJsEventInternal;
 
-	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	const FFacadeCallScope FacadeCall(Ctx);
+	FVaCuusJsViewContext* Self = FacadeCall.GetView();
 	if (Self == nullptr)
 	{
 		return JS_UNDEFINED;	// dead context: nothing registered anywhere to remove
@@ -819,7 +822,8 @@ JSValue FVaCuusJsViewContext::DispatchEventThunk(JSContext* Ctx, JSValueConst Th
 	using namespace VaCuusJsDomInternal;
 	using namespace VaCuusJsEventInternal;
 
-	FVaCuusJsViewContext* Self = GetSelfOrNull(Ctx);
+	const FFacadeCallScope FacadeCall(Ctx);
+	FVaCuusJsViewContext* Self = FacadeCall.GetView();
 	if (Self == nullptr)
 	{
 		return JS_FALSE;	// dead context: the same bool-shaped no-op as a dead handle

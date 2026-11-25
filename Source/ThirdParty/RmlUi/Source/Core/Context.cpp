@@ -179,7 +179,7 @@ bool Context::Update()
 {
 	RMLUI_ZoneScoped;
 	DebugVerifyLocaleSetting();
-
+	const ElementDocument::TreeUpdateScope tree_update;
 	next_update_timeout = std::numeric_limits<double>::infinity();
 
 	if (scroll_controller->Update(pointer->mouse_position, density_independent_pixel_ratio))

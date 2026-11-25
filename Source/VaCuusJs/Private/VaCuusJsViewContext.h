@@ -288,33 +288,43 @@ private:
 	 * surviving view's drain segment. Each caller answers null with its own
 	 * dead shape (undefined/null/false/empty), the dead-handle house rule; a
 	 * check(non-null) here would pass on the DANGLING pointer, not catch it.
-	 *
-	 * EVERY CALL IS A DOM TOUCH: a thunk that may write the tree comes in here,
-	 * so this door moves the runtime's DOM-touch serial
-	 * (FVaCuusJsRuntime::GetDomTouchSerial) and the next geometry read flushes the
-	 * layout again. It moves for the reads too -- a getter is not told from a
-	 * setter here, and a flush too many costs time where one too few would
-	 * measure a stale tree.
 	 */
 	static FVaCuusJsViewContext* GetSelfOrNull(JSContext* InCtx)
 	{
-		FVaCuusJsViewContext* Self = static_cast<FVaCuusJsViewContext*>(JS_GetContextOpaque(InCtx));
-		if (Self != nullptr)
-		{
-			Self->Runtime.NoteDomTouch();
-		}
-		return Self;
+		return static_cast<FVaCuusJsViewContext*>(JS_GetContextOpaque(InCtx));
 	}
 
 	/**
-	 * GetSelfOrNull for the geometry reads alone (offset*, client*, offsetParent, getBoundingClientRect): the
-	 * same door without the DOM touch. A read writes nothing, so a run of them -- a tooltip measuring its
-	 * containing block and then itself -- shares the one flush the first of them ran (GetLiveElementAfterLayout).
+	 * Facade calls invalidate the last geometry flush and keep reuse disabled until they return.
+	 * A native operation can still change the tree after a nested callback returns, such as the
+	 * focus default action after the listeners (RmlUi EventDispatcher.cpp:148-184, Element.cpp:2034-2037).
+	 * Geometry reads themselves take the context directly so consecutive measurements share a flush.
 	 */
-	static FVaCuusJsViewContext* GetSelfForGeometryReadOrNull(JSContext* InCtx)
+	class FFacadeCallScope : private FNoncopyable
 	{
-		return static_cast<FVaCuusJsViewContext*>(JS_GetContextOpaque(InCtx));
-	}
+	public:
+		explicit FFacadeCallScope(JSContext* InCtx)
+			: View(GetSelfOrNull(InCtx))
+		{
+			if (View != nullptr)
+			{
+				View->Runtime.EnterFacadeCall();
+			}
+		}
+
+		~FFacadeCallScope()
+		{
+			if (View != nullptr)
+			{
+				View->Runtime.LeaveFacadeCall();
+			}
+		}
+
+		FVaCuusJsViewContext* GetView() const { return View; }
+
+	private:
+		FVaCuusJsViewContext* const View;
+	};
 
 	//~ The global-function thunks. `this` rides JS_GetContextOpaque
 	//~ (quickjs.h:524-525), set to the owning FVaCuusJsViewContext before any

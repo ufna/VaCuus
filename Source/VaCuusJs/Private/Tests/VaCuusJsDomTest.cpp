@@ -503,7 +503,7 @@ span.col { display: inline-block; width: 50px; height: 50px; }
 	// visible from scrollLeft 0, where Nearest does not move and Start aligns it with the left
 	// edge. So this one assertion fails if "inline" is mapped to Options.vertical, if its key is
 	// misspelled, or if the line is deleted -- each of which leaves horizontal at its Nearest
-	// default (VaCuusJsDom.cpp:1099) and the offset at 0.
+	// default (VaCuusJsDom.cpp:1108) and the offset at 0.
 	Rig.Eval(ViewId, "document.getElementById('c1').scrollIntoView({inline: 'start'})");
 	TestEqual(TEXT("inline start moves a column that inline nearest would have left alone"), ReadScrollLeft(), 50.0f);
 	TestEqual(TEXT("and the vertical box is where the block leg left it"), ReadScrollTop(), 100.0f);
@@ -1281,6 +1281,13 @@ body { display: block; margin: 0px; padding: 0px; }
 
 	TestEqual(TEXT("the outer border box against the context"), Rig.Eval(ViewId, "rect(outer)"),
 		FString(TEXT("40,30,214,114,254,144,40,30")));
+	TestEqual(TEXT("a rect defines its own numeric fields without invoking inherited setters"),
+		Rig.Eval(ViewId,
+			"(() => { let calls = 0;"
+			"Object.defineProperty(Object.prototype, 'x', { configurable: true, set() { ++calls; } });"
+			"try { return [rect(outer), calls].join('|'); }"
+			"finally { delete Object.prototype.x; } })()"),
+		FString(TEXT("40,30,214,114,254,144,40,30|0")));
 	TestEqual(TEXT("its client box: border widths, then the padding box"),
 		Rig.Eval(ViewId, "[outer.clientLeft, outer.clientTop, outer.clientWidth, outer.clientHeight].join(',')"),
 		FString(TEXT("2,2,210,110")));
@@ -1386,8 +1393,10 @@ bool FVaCuusJsDomGeometryFlushTest::RunTest(const FString& Parameters)
 body { display: block; margin: 0px; padding: 0px; }
 #outer { display: block; position: absolute; left: 40px; top: 30px; width: 200px; height: 100px; padding: 5px; border: 2px #ffffff; }
 #inner { display: block; position: absolute; right: 10px; bottom: 7px; width: 50px; height: 20px; border: 1px #ffffff; }
+#focus-probe { display: block; tab-index: auto; width: 20px; height: 10px; }
+#focus-probe:focus { width: 30px; }
 </style></head>
-<body><div id="outer"><div id="inner"/></div></body>
+<body><div id="outer"><div id="inner"/></div><button id="focus-probe"/><select id="measure-select"/></body>
 </rml>)");
 
 	FDomProbeHost* Probe = nullptr;
@@ -1446,6 +1455,81 @@ body { display: block; margin: 0px; padding: 0px; }
 	TestEqual(TEXT("read in one turn"), BeforeHostWrite, FString(TEXT("62")));
 	TestEqual(TEXT("changed from C++ in the same UI frame and read in the next turn: the new box"), AfterHostWrite, FString(TEXT("72")));
 	TestEqual(TEXT("each turn laid the document out: the entry moved the serial"), HostWriteFlushes, uint64(2));
+
+	FString PathGetterRead;
+	Rig.RunOnUI([&PathGetterRead, Probe, ViewId]()
+		{
+			GuardedEvalString(ViewId,
+				"globalThis.pathGetterRead = '';"
+				"Object.defineProperty(globalThis, 'measureWidth', { get() {"
+				"  pathGetterRead = String(inner.offsetWidth); return () => {};"
+				"} }); String(inner.offsetWidth)");
+			Probe->GetDocument()->GetElementById("inner")->SetProperty("width", "74px");
+			FWrappedDomHost::Inner->FindViewContext(ViewId)->CallFunction(TEXT("measureWidth"), {});
+			PathGetterRead = GuardedEvalString(ViewId, "pathGetterRead");
+		});
+	TestEqual(TEXT("a native function-path getter sees fresh geometry before the call guard"), PathGetterRead, FString(TEXT("76")));
+
+	FString AnimationRead;
+	uint64 AnimationFlushes = 0;
+	bool bAnimated = false;
+	Rig.RunOnUI([&AnimationRead, &AnimationFlushes, &bAnimated, &Runtime, Probe, ViewId]()
+		{
+			GuardedEvalString(ViewId,
+				"globalThis.animationRead = '';"
+				"outer.addEventListener('animationend', () => {"
+				"  inner.style.setProperty('width', '80px');"
+				"  animationRead = String(inner.offsetWidth);"
+				"}); 'ok'");
+			Rml::ElementDocument* Document = Probe->GetDocument();
+			Rml::Element* Outer = Document->GetElementById("outer");
+			// Start in the past so the next normal document update completes the animation synchronously.
+			bAnimated = Outer->Animate("width", Rml::Property(201.0f, Rml::Unit::PX), 0.01f, Rml::Tween{}, 1, false, -1.0f);
+			const uint64 Before = Runtime.GetNumLayoutFlushes();
+			Document->UpdateDocument();
+			AnimationFlushes = Runtime.GetNumLayoutFlushes() - Before;
+			AnimationRead = GuardedEvalString(ViewId, "[animationRead, inner.offsetWidth].join(',')");
+		});
+	TestTrue(TEXT("started an animation on the outer element"), bAnimated);
+	TestEqual(TEXT("the animation listener sees the last box and the next turn sees its write"), AnimationRead, FString(TEXT("76,82")));
+	TestEqual(TEXT("an animation listener does not reenter the document update"), AnimationFlushes, uint64(0));
+
+	RunGuarded("(() => {"
+		"let duringConversion;"
+		"inner.style.setProperty('width', { toString() { duringConversion = inner.offsetWidth; return '90px'; } });"
+		"return [duringConversion, inner.offsetWidth].join(','); })()");
+	TestEqual(TEXT("a facade write after argument coercion invalidates the layout read during coercion"), Read, FString(TEXT("82,92")));
+
+	RunGuarded("(() => {"
+		"const button = document.getElementById('focus-probe');"
+		"let inListener;"
+		"button.addEventListener('focus', () => { inListener = button.offsetWidth; });"
+		"return [button.focus(), inListener, button.offsetWidth].join(','); })()");
+	TestEqual(TEXT("focus styling applied after the listener is visible to the next read"), Read, FString(TEXT("true,20,30")));
+
+	FString SelectChangeRead;
+	uint64 SelectChangeFlushes = 0;
+	Rig.RunOnUI([&SelectChangeRead, &SelectChangeFlushes, &Runtime, Probe, ViewId]()
+		{
+			GuardedEvalString(ViewId,
+				"globalThis.selectChangeRead = '';"
+				"document.getElementById('measure-select').addEventListener('change', () => {"
+				"  inner.style.setProperty('width', '100px');"
+				"  selectChangeRead = String(inner.offsetWidth);"
+				"}); 'ok'");
+			Rml::ElementDocument* Document = Probe->GetDocument();
+			Rml::ElementPtr Option = Document->CreateElement("option");
+			Option->SetAttribute("value", "first");
+			Document->GetElementById("measure-select")->AppendChild(std::move(Option));
+			// The widget selects its first option and dispatches change during the tree update
+			// (RmlUi WidgetDropDown.cpp:59-89, 257-283, 311-316).
+			const uint64 Before = Runtime.GetNumLayoutFlushes();
+			Probe->GetContext()->Update();
+			SelectChangeFlushes = Runtime.GetNumLayoutFlushes() - Before;
+			SelectChangeRead = GuardedEvalString(ViewId, "[selectChangeRead, inner.offsetWidth].join(',')");
+		});
+	TestEqual(TEXT("a select change during update reads the last box and its write is visible afterwards"), SelectChangeRead, FString(TEXT("92,102")));
+	TestEqual(TEXT("a select change listener does not reenter the tree update"), SelectChangeFlushes, uint64(0));
 
 	TestEqual(TEXT("no JS error anywhere in the run"), Runtime.GetNumErrors(), uint64(0));
 	return true;
