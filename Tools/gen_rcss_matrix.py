@@ -95,7 +95,7 @@ ANNOTATIONS = {
     "`transition` does not lowercase its token (:240) while `animation` does (:133). gotchas.md #3. "
     "Timing tokens MAY come from `var()`, but only because the vendored tree is patched for it "
     "(VENDORED_TAG.txt patch #4, bead VaCuus-6gj): upstream reads this property before computed "
-    "values exist (ElementStyle.cpp:388) and drops the whole declaration with no diagnostic at all. "
+    "values exist (ElementStyle.cpp:411) and drops the whole declaration with no diagnostic at all. "
     "gotchas.md #3b.",
     "animation": "Same tween table as `transition` (PropertyParserAnimation.cpp:27-77), but this "
     "parser LOWERCASES each token before the lookup (:133), so `Cubic-Out` works here and silently "
@@ -416,7 +416,7 @@ def main():
     w.append("")
     w.append("- **Declared** like any property whose name starts with `--`; the value is stored")
     w.append("  unparsed as `Unit::STRING`, or as `Unit::VAR_EXPRESSION` when it itself contains")
-    w.append("  a `var()` (PropertySpecification.cpp:233-248). A normal property whose value")
+    w.append("  a `var()` (PropertySpecification.cpp:238-253). A normal property whose value")
     w.append("  contains `var()` is likewise stored as VAR_EXPRESSION and resolved at compute")
     w.append("  time, not parse time (:260-300).")
     w.append("- **Substituted** with fallbacks (`var(--x, <fallback>)`, nested parens counted)")
@@ -432,7 +432,7 @@ def main():
     w.append("- **Works in `transition` and `animation` timing** -- `transition` only because the")
     w.append("  vendored tree is patched for it. Resolution happens at COMPUTE time, and those two")
     w.append("  are the only properties read before that: upstream's `transition` read")
-    w.append("  (ElementStyle.cpp:388) saw the unresolved string and dropped the entire declaration")
+    w.append("  (ElementStyle.cpp:411) saw the unresolved string and dropped the entire declaration")
     w.append("  with no warning, no error and no log line, so a theme that put its durations in")
     w.append("  custom properties -- the obvious thing to do, and what this section recommends --")
     w.append("  simply never animated. `animation` was never affected (ComputedValues.cpp:8-16).")

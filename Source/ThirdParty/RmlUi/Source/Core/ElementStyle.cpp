@@ -339,6 +339,20 @@ void ElementStyle::ExpandVarShorthands(PropertyDictionary& out_substituted_short
 	SmallUnorderedSet<String> variable_dependencies;
 	SmallUnorderedSet<String> cycle_chain;
 
+	// VaCuus patch #23 (VENDORED_TAG.txt) -- A LONGHAND TAKES ITS VALUE FROM THE SHORTHAND THE CASCADE GAVE IT TO.
+	//
+	// Where two var() shorthands overlap -- `border` and `border-color`, `border` and `border-left` -- both expand to a
+	// value for the same longhand. Upstream wrote every expansion into the one dictionary below, so the shorthand
+	// expanded LAST won, in the order of an UnorderedMap: `.button { border: var(--w) var(--line); } .button:hover {
+	// border-color: var(--hover); }` lit or not by the luck of the hash, and robin_hood 3.11.5 (1c94a96, first in 1.2.0)
+	// turned every such hover, focus and checked frame off at once. The cascade has already chosen. Each longhand holds
+	// the placeholder of the declaration that won it -- the rule's number is part of every property's specificity, and
+	// within one rule, as in the inline style, a later declaration writes over an earlier one -- and that placeholder
+	// names the top-level shorthand that wrote it (SetShorthandPropertiesToPendingSubstitution). So each shorthand is
+	// expanded on its own, and only the longhands whose placeholder in the same dictionary names it are carried over;
+	// the order of the walk no longer decides anything.
+	PropertyDictionary expanded;
+
 	for (const PropertyDictionary* properties : {sources.definition ? &sources.definition->GetProperties() : nullptr, &sources.inline_properties})
 	{
 		if (!properties)
@@ -354,9 +368,18 @@ void ElementStyle::ExpandVarShorthands(PropertyDictionary& out_substituted_short
 			if (!SubstituteVariables(sources, property.Get<String>(), variable_dependencies, cycle_chain, substitution_result))
 				continue;
 
-			if (!StyleSheetSpecification::GetPropertySpecification().ParseShorthandDeclaration(out_substituted_shorthands, shorthand_id,
-					substitution_result))
+			expanded.Clear();
+			if (!StyleSheetSpecification::GetPropertySpecification().ParseShorthandDeclaration(expanded, shorthand_id, substitution_result))
 				continue;
+
+			for (const auto& [id, longhand] : expanded.GetProperties())
+			{
+				const Property* placeholder = properties->GetProperty(id);
+				const bool won_by_this_shorthand = placeholder && placeholder->unit == Unit::SHORTHAND_PLACEHOLDER &&
+					placeholder->value.Get<int>(-1) == static_cast<int>(shorthand_id);
+				if (won_by_this_shorthand)
+					out_substituted_shorthands.SetProperty(id, longhand);
+			}
 
 			if (dirty_properties.has_value())
 			{
@@ -393,7 +416,7 @@ void ElementStyle::TransitionPropertyChanges(const PropertySources& sources, Pro
 	// VaCuus patch #4 (bead VaCuus-6gj) -- RESOLVE var() IN THE `transition` PROPERTY ITSELF.
 	//
 	// A value containing var() is stored unparsed as Property{value, Unit::VAR_EXPRESSION}
-	// (PropertySpecification.cpp:260-267) and resolved at compute time. Every other property
+	// (PropertySpecification.cpp:265-272) and resolved at compute time. Every other property
 	// therefore works with var() precisely BECAUSE it is read late -- but `transition` is read
 	// HERE, early and deliberately (the comment above), so it arrived as a String variant, the
 	// TRANSITIONLIST test below rejected it, and the whole declaration vanished with no warning,

@@ -60,9 +60,9 @@ Variant (Include/RmlUi/Core/Property.h:41-45), which does not carry the unit -- 
 is a separate member (Property.h:50-51). So the property parsed out of "100px" reads
 back as "100" and never compares equal to the string that produced it. Every dirty of
 the bound variable therefore called Element::SetProperty with an unchanged value, and
-SetProperty does not compare either (ElementStyle.cpp:642-654 -> PropertyDictionary
+SetProperty does not compare either (ElementStyle.cpp:665-677 -> PropertyDictionary
 ::SetProperty + DirtyProperty, unconditional), nor does ComputeValues, which returns
-the DIRTY set rather than a changed-value set (ElementStyle.cpp:1060-1064). So the
+the DIRTY set rather than a changed-value set (ElementStyle.cpp:1083-1087). So the
 element restyles, and a layout property relayouts the whole document, every time.
 
 Whether that also costs a PUBLISHED frame depends on which property is bound, and the
@@ -304,7 +304,7 @@ One file, one hunk: Source/Core/ElementStyle.cpp, ElementStyle::TransitionProper
 THE DEFECT IS UPSTREAM'S and it is silent in the strongest sense -- no warning, no error,
 no log line anywhere, in a debug build, at any log level. A property value containing var()
 is stored UNPARSED as Property{value, Unit::VAR_EXPRESSION} (Source/Core/
-PropertySpecification.cpp:260-267) and resolved at COMPUTE time (ElementStyle.cpp:277-315).
+PropertySpecification.cpp:265-272) and resolved at COMPUTE time (ElementStyle.cpp:277-315).
 That is deliberate and correct, and it is exactly why var() works everywhere else. But
 TransitionPropertyChanges reads `transition` EARLY, on purpose -- "We get the local property
 directly here to intercept property changes even before the computed values are ready"
@@ -757,7 +757,7 @@ This is the only place Source/Core turns a computed font-size into a face size; 
 GetFontFaceHandle in it is Element's accessor for the handle stored here.
 
 Line shifts: ElementStyle.cpp +2 from old :1037. Two in-repo citations moved, each compared with
-the line it named on master (equal): this file's (ElementStyle.cpp:1060-1064, top of the file) and
+the line it named on master (equal): this file's (ElementStyle.cpp:1083-1087, top of the file) and
 docs/buyer/gotchas.md (:1249). Dated design notes under docs/superpowers were left as records.
 
 Test: VaCuus.Font.FractionalSize (Source/VaCuus/Private/Tests/VaCuusFontSizeTest.cpp) -- divs at
@@ -1248,3 +1248,55 @@ no layer at all; "opacity" is still refused. VaCuus.Render.Glass.DistillOpacity
 (VaCuusGlassPipelineTest.cpp) -- a window at 0.5 whose glass plate inherits the opacity distills to
 an entry at 0.5, at 1 to 1, at 0 to no entry. VaCuus.Render.Glass.RetiredOpacityDropsEntry -- a
 write-back naming a released opacity drops its entry instead of drawing it at full strength.
+
+Patch #23 -- two var() shorthands that overlap resolve in the hash's order, not the cascade's.
+
+Written 2026-11-19 in a game's vendored copy, after it moved from c799708 to 1.4.0.
+
+Files: Source/Core/ElementStyle.cpp (ExpandVarShorthands), Source/Core/PropertySpecification.cpp
+(SetShorthandPropertiesToPendingSubstitution), Include/RmlUi/Core/Unit.h (the SHORTHAND_PLACEHOLDER
+comment). Each hunk carries "VaCuus patch #23".
+
+Symptom: `.button { border: var(--w) var(--line); } .button:hover { border-color: var(--hover); }`
+never lights. Every component written that way -- a button's hover, focus and primary frame, a
+checked check box, an open select, a focused field -- shows its resting frame in every state. A
+game's buttons all went dark when its vendored copy moved from c799708 to 1.4.0, with no change
+to a single stylesheet.
+
+THE DEFECT IS UPSTREAM'S, AND OLD; the update only turned it over. A shorthand whose value holds
+var() is kept unparsed in PropertyDictionary::var_shorthands, one entry per ShorthandId with its
+specificity, and its longhands become SHORTHAND_PLACEHOLDERs. ExpandVarShorthands expands every
+entry into ONE dictionary, which the placeholders then read, so where two shorthands overlap --
+`border` and `border-color`, `border` and `border-left`, `border` and `border-width` -- the one
+expanded last wins whatever the selectors say. It walked the UnorderedMap as it lay: robin_hood
+3.9.0 happened to walk `border-color` after `border`, and 3.11.5's new mixer
+(Include/RmlUi/Core/Containers/robin_hood.h, hash_int) walks it before. 3.11.5 came with the
+RmlUi update 1c94a96, first released in 1.2.0.
+
+THE CASCADE HAS ALREADY CHOSEN, so the fix asks it rather than imposing an order. Every longhand of
+the element holds the placeholder of the declaration that won it: the rule's number is part of every
+property's specificity (StyleSheetParser.cpp ImportProperties(..., rule_count) ->
+StyleSheetNode::ImportProperties), so specificity is equal only within one rule or in the inline
+style, and there a later declaration writes over the earlier one's placeholders.
+- SetShorthandPropertiesToPendingSubstitution writes into each placeholder, as <int>, the id of the
+  TOP-LEVEL shorthand being parsed -- `border` for border-top-color, not the nested `border-top`.
+  Upstream left the placeholder empty, and nothing reads its value: every consumer (Element.cpp's
+  style serialisation, PropertiesIterator, ElementStyle's UpdateDefinition diff and ResolveVariables)
+  looks only at the unit.
+- ExpandVarShorthands expands each var shorthand of a dictionary (the definition's, then the inline
+  ones, as before) into a scratch dictionary of its own and carries over into the shared one only the
+  longhands whose placeholder IN THE SAME DICTIONARY names that shorthand. The order of the walk no
+  longer decides anything, so the UnorderedMap is walked as it lies.
+WHY NOT AN ORDER: sorting the shorthands by specificity settles different rules but has to guess
+between equals, since the var-shorthand map keeps no declaration order -- "the wider first" draws
+--a for `{ border-color: var(--a); border: var(--w) var(--c) }`, where the cascade says --c.
+
+Cost: one scratch dictionary per expansion, cleared and refilled; a lookup per expanded longhand.
+
+Test: VaCuus.Core.Style.VarShorthandOrder (VaCuusStyleVarShorthandOrderTest.cpp) -- a narrower
+var() shorthand over a wider one wins when more specific (border-color over border, border-left
+over border, leaving the other sides), a wider one wins when IT is more specific, and in one rule,
+or one style attribute, the declaration written later wins whichever is the wider (#same and
+#same-mirror, #inline and #inline-mirror). Every case has its mirror, so the test fails under either
+hash order with the placeholder check dropped, and the mirrored pairs fail under any fixed order.
+Controls: one var() border alone, a literal state over a var() border.
