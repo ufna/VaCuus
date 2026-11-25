@@ -377,7 +377,12 @@ void ElementStyle::ExpandVarShorthands(PropertyDictionary& out_substituted_short
 				const Property* placeholder = properties->GetProperty(id);
 				const bool won_by_this_shorthand = placeholder && placeholder->unit == Unit::SHORTHAND_PLACEHOLDER &&
 					placeholder->value.Get<int>(-1) == static_cast<int>(shorthand_id);
-				if (won_by_this_shorthand)
+				// An inline placeholder owns the slot even when its shorthand fails to supply a value. Literal
+				// inline properties mask at lookup, so keep the rule's expansion ready for their removal.
+				const Property* inline_property = sources.inline_properties.GetProperty(id);
+				const bool shadowed_by_inline_shorthand =
+					properties != &sources.inline_properties && inline_property && inline_property->unit == Unit::SHORTHAND_PLACEHOLDER;
+				if (won_by_this_shorthand && !shadowed_by_inline_shorthand)
 					out_substituted_shorthands.SetProperty(id, longhand);
 			}
 
@@ -670,6 +675,10 @@ bool ElementStyle::SetProperty(PropertyId id, const Property& property)
 	if (!new_property.definition)
 		return false;
 
+	// Re-expand the rule's shorthand if a literal replaces the inline placeholder that masked it.
+	if (const Property* previous = inline_properties.GetProperty(id); previous && previous->unit == Unit::SHORTHAND_PLACEHOLDER)
+		dirty_var_shorthands.insert(static_cast<ShorthandId>(previous->value.Get<int>()));
+
 	inline_properties.SetProperty(id, new_property);
 	DirtyProperty(id);
 
@@ -690,11 +699,13 @@ void ElementStyle::SetVarShorthand(ShorthandId id, const Property& property)
 
 void ElementStyle::RemoveProperty(PropertyId id)
 {
-	int size_before = inline_properties.GetNumProperties();
-	inline_properties.RemoveProperty(id);
-
-	if (inline_properties.GetNumProperties() != size_before)
+	if (const Property* previous = inline_properties.GetProperty(id))
+	{
+		if (previous->unit == Unit::SHORTHAND_PLACEHOLDER)
+			dirty_var_shorthands.insert(static_cast<ShorthandId>(previous->value.Get<int>()));
+		inline_properties.RemoveProperty(id);
 		DirtyProperty(id);
+	}
 }
 
 void ElementStyle::RemoveCustomProperty(const String& name)

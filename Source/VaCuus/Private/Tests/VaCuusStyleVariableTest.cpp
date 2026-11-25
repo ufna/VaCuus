@@ -22,7 +22,7 @@
  * compute time. Every other property therefore works with var() precisely BECAUSE it is read
  * late — but ElementStyle::TransitionPropertyChanges reads `transition` EARLY and on purpose
  * ("to intercept property changes even before the computed values are ready",
- * ElementStyle.cpp:411), so it saw a String variant, failed its `!= Variant::TRANSITIONLIST`
+ * ElementStyle.cpp:416), so it saw a String variant, failed its `!= Variant::TRANSITIONLIST`
  * test and returned. Silently. That asymmetry is invisible from outside a debugger.
  *
  * `animation` IS NOT AFFECTED, which is why this test asserts it as loudly as the broken half.

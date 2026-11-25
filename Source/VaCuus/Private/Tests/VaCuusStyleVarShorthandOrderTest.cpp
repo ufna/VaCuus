@@ -62,6 +62,7 @@ div { display: block; width: 60px; height: 20px; }
 	<div id="same-mirror" class="same-mirror"/>
 	<div id="inline" style="border: var(--w) var(--line); border-color: var(--hover);"/>
 	<div id="inline-mirror" style="border-color: var(--hover); border: var(--w) var(--line);"/>
+	<div id="inline-over-rule" class="button" style="border-left: var(--w);"/>
 	<div id="literal" class="literal lit"/>
 </body>
 </rml>)";
@@ -100,6 +101,8 @@ bool FVaCuusStyleVarShorthandOrderTest::RunTest(const FString& Parameters)
 		Rml::RemoveContext(GContextName);
 	};
 
+	AddExpectedError(TEXT("Property 'border-left-color' could not be resolved: Pending substitution from a shorthand."),
+		EAutomationExpectedErrorFlags::Contains, 0);
 	Rml::ElementDocument* Document = Context->LoadDocumentFromMemory(GDocument, "vacuus://style_var_shorthand_order.rml");
 	if (!TestNotNull(TEXT("Document"), Document))
 	{
@@ -169,6 +172,29 @@ bool FVaCuusStyleVarShorthandOrderTest::RunTest(const FString& Parameters)
 
 	TestColour(TEXT("#inline, a style attribute: border-color after the border (#23)"), Inline->border_top_color(), Hover);
 	TestColour(TEXT("#inline-mirror, a style attribute: the border after border-color (#23)"), InlineMirror->border_top_color(), Line);
+
+	Rml::Element* InlineOverRule = Document->GetElementById("inline-over-rule");
+	if (!TestNotNull(TEXT("inline shorthand over a stylesheet rule"), InlineOverRule))
+	{
+		return false;
+	}
+	const Rml::Style::ComputedValues& Mixed = InlineOverRule->GetComputedValues();
+	const Rml::Style::ComputedValues Defaults(nullptr);
+	TestColour(TEXT("an omitted inline shorthand color resets to its initial value"), Mixed.border_left_color(), Defaults.border_left_color());
+	TestColour(TEXT("the stylesheet still supplies the other sides"), Mixed.border_right_color(), Line);
+
+	InlineOverRule->RemoveProperty("border-left-color");
+	Context->Update();
+	TestColour(TEXT("removing the inline placeholder reveals the stylesheet shorthand"), Mixed.border_left_color(), Line);
+
+	InlineOverRule->SetProperty("border-left", "var(--w)");
+	Context->Update();
+	InlineOverRule->SetProperty("border-left-color", "#a0b0c0");
+	Context->Update();
+	TestColour(TEXT("a literal can replace the inline shorthand placeholder"), Mixed.border_left_color(), Hover);
+	InlineOverRule->RemoveProperty("border-left-color");
+	Context->Update();
+	TestColour(TEXT("removing the inline color reveals the stylesheet shorthand"), Mixed.border_left_color(), Line);
 
 	return true;
 }

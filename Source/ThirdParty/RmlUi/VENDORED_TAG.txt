@@ -60,9 +60,9 @@ Variant (Include/RmlUi/Core/Property.h:41-45), which does not carry the unit -- 
 is a separate member (Property.h:50-51). So the property parsed out of "100px" reads
 back as "100" and never compares equal to the string that produced it. Every dirty of
 the bound variable therefore called Element::SetProperty with an unchanged value, and
-SetProperty does not compare either (ElementStyle.cpp:665-677 -> PropertyDictionary
+SetProperty does not compare either (ElementStyle.cpp:670-686 -> PropertyDictionary
 ::SetProperty + DirtyProperty, unconditional), nor does ComputeValues, which returns
-the DIRTY set rather than a changed-value set (ElementStyle.cpp:1083-1087). So the
+the DIRTY set rather than a changed-value set (ElementStyle.cpp:1094-1098). So the
 element restyles, and a layout property relayouts the whole document, every time.
 
 Whether that also costs a PUBLISHED frame depends on which property is bound, and the
@@ -757,7 +757,7 @@ This is the only place Source/Core turns a computed font-size into a face size; 
 GetFontFaceHandle in it is Element's accessor for the handle stored here.
 
 Line shifts: ElementStyle.cpp +2 from old :1037. Two in-repo citations moved, each compared with
-the line it named on master (equal): this file's (ElementStyle.cpp:1083-1087, top of the file) and
+the line it named on master (equal): this file's (ElementStyle.cpp:1094-1098, top of the file) and
 docs/buyer/gotchas.md (:1249). Dated design notes under docs/superpowers were left as records.
 
 Test: VaCuus.Font.FractionalSize (Source/VaCuus/Private/Tests/VaCuusFontSizeTest.cpp) -- divs at
@@ -1253,7 +1253,7 @@ Patch #23 -- two var() shorthands that overlap resolve in the hash's order, not 
 
 Written 2026-11-19 in a game's vendored copy, after it moved from c799708 to 1.4.0.
 
-Files: Source/Core/ElementStyle.cpp (ExpandVarShorthands), Source/Core/PropertySpecification.cpp
+Files: Source/Core/ElementStyle.cpp (ExpandVarShorthands, SetProperty, RemoveProperty), Source/Core/PropertySpecification.cpp
 (SetShorthandPropertiesToPendingSubstitution), Include/RmlUi/Core/Unit.h (the SHORTHAND_PLACEHOLDER
 comment). Each hunk carries "VaCuus patch #23".
 
@@ -1287,6 +1287,9 @@ style, and there a later declaration writes over the earlier one's placeholders.
   ones, as before) into a scratch dictionary of its own and carries over into the shared one only the
   longhands whose placeholder IN THE SAME DICTIONARY names that shorthand. The order of the walk no
   longer decides anything, so the UnorderedMap is walked as it lies.
+- An inline placeholder also masks the stylesheet's expansion for that longhand. If the inline
+  shorthand omits the value, resolution uses the property's default. Replacing or removing the
+  inline placeholder invalidates the expansion so the stylesheet value can become visible again.
 WHY NOT AN ORDER: sorting the shorthands by specificity settles different rules but has to guess
 between equals, since the var-shorthand map keeps no declaration order -- "the wider first" draws
 --a for `{ border-color: var(--a); border: var(--w) var(--c) }`, where the cascade says --c.
