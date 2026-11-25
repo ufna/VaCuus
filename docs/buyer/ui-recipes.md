@@ -1,8 +1,61 @@
 # Materials, focus and measured layout
 
-VaCuus 1.4 adds scalable material frames, script-controlled focus and bulk element
-measurements. It also lets fingers and a physical mouse operate independently. These
-recipes show where each feature fits in a game's interface.
+Use these recipes to build scalable material frames, move focus from script, measure
+elements and route independent touch and mouse gestures in a game's interface.
+
+## Measure and place a tooltip from JavaScript
+
+Give the trigger and tooltip a shared positioned container with zero padding and
+border. The tooltip uses absolute positioning, so revealing it leaves the trigger's
+layout in place.
+
+```html
+<div id="hud">
+    <button id="inventory">Inventory</button>
+    <div id="inventory-tip">Review equipment and supplies</div>
+</div>
+```
+
+```css
+body { display: block; width: 100%; height: 100%; }
+#hud { display: block; position: relative; width: 100%; height: 100%; padding: 0px; border-width: 0px; }
+#inventory-tip { display: none; position: absolute; pointer-events: none; width: 180px; }
+#inventory-tip.visible { display: block; }
+```
+
+```javascript
+const hud = document.getElementById('hud');
+const trigger = document.getElementById('inventory');
+const tip = document.getElementById('inventory-tip');
+const gap = 6;
+
+function clamp(value, upper) {
+    return Math.max(0, Math.min(value, upper));
+}
+
+trigger.addEventListener('mouseover', () => {
+    tip.classList.add('visible');
+
+    const area = hud.getBoundingClientRect();
+    const anchor = trigger.getBoundingClientRect();
+    const box = tip.getBoundingClientRect();
+
+    const below = anchor.bottom - area.top + gap;
+    const above = anchor.top - area.top - box.height - gap;
+    const top = below + box.height <= area.height ? below : above;
+
+    tip.style.setProperty('left', `${clamp(anchor.left - area.left, area.width - box.width)}px`);
+    tip.style.setProperty('top', `${clamp(top, area.height - box.height)}px`);
+});
+
+trigger.addEventListener('mouseout', () => tip.classList.remove('visible'));
+```
+
+The rectangles are border boxes in context pixels. Subtract the container's origin
+to get coordinates for the tooltip's `left` and `top`. CSS transforms are excluded
+from the measurement. The first read lays out the newly visible tooltip, and the
+adjacent reads can share the layout pass. Callbacks fired during a tree update use
+the last laid-out boxes. See [gotcha 27](gotchas.md) for details on refresh timing.
 
 ## Keep a material's corners at the same size
 

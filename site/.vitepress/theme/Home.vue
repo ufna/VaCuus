@@ -60,7 +60,7 @@ onUnmounted(() => {
              because it is the whole offer in nine words: a visitor who never scrolls still
              leaves knowing they may take this today. "Pre-release" used to lead this row and
              was wrong on both counts — VaCuus.uplugin has IsBetaVersion false and
-             VersionName 1.4.0, and the status block below already says released. -->
+             VersionName 1.5.0, and the status block below already says released. -->
         <div class="vc-hero-top vc-anim vc-anim-1">
           <span class="vc-eyebrow"
             >Unreal Engine 5.6 &ndash; 5.8, full source included</span
@@ -224,14 +224,14 @@ onUnmounted(() => {
         <div class="vc-status-hazard" aria-hidden="true" />
         <div class="vc-status-body">
           <div class="vc-status-head">
-            <strong>Status &mdash; released (1.4.0)</strong>
+            <strong>Status &mdash; released (1.5.0)</strong>
             <a class="vc-cite" href="https://github.com/ufna/VaCuus#readme">README.md</a>
           </div>
           <p>
             <strong>UE 5.6, 5.7 and 5.8</strong> are supported from this one source tree.
             The 5.6 and 5.8 packages are compiled on their respective engines; the 5.7
             package is derived from 5.6, as recorded in its manifest and release notes.
-            The <strong>349-test automation suite</strong> ships with the plugin and can
+            The <strong>356-test automation suite</strong> ships with the plugin and can
             be run locally. Take the download that matches your engine from
             <a href="https://github.com/ufna/VaCuus/releases" target="_blank" rel="noreferrer"
               >GitHub Releases</a
@@ -243,10 +243,9 @@ onUnmounted(() => {
             changes are reserved for major versions and carry release notes.
           </p>
           <p>
-            <strong>New in 1.4:</strong> scalable material frames with
-            <code>material-box</code>, script-controlled focus, measured label sizes,
-            and independent fingers and mouse gestures.
-            <a href="/docs/ui-recipes">See the recipes and examples</a>.
+            <strong>New in 1.5.</strong> Show, measure and place a tooltip from
+            JavaScript with <code>getBoundingClientRect()</code>.
+            <a href="/docs/ui-recipes#measure-and-place-a-tooltip-from-javascript">See the tooltip recipe</a>.
           </p>
         </div>
       </aside>

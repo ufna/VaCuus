@@ -49,9 +49,9 @@ Optional JavaScript (QuickJS) and a TypeScript/Preact workflow sit on top. Rende
 through the engine's RHI into a persistent render target that Slate composites, so a
 document can be a full-screen HUD or a panel on a quad in the world.
 
-> **Status: released, 1.4.0. Engines: UE 5.6, 5.7 and 5.8.** The 5.6 and 5.8
+> **Status: released, 1.5.0. Engines: UE 5.6, 5.7 and 5.8.** The 5.6 and 5.8
 > packages compile from this one source tree; the 5.7 package is derived from the 5.6
-> build with its provenance stated in the release notes. The 349-test automation suite
+> build with its provenance stated in the release notes. The 356-test automation suite
 > ships with the plugin and can be run locally (below). Supported platforms are Windows,
 > macOS, Linux, Android and iOS; consoles on request. Packages are published on
 > [GitHub Releases](https://github.com/ufna/VaCuus/releases), one archive per engine
@@ -62,10 +62,9 @@ document can be a full-screen HUD or a panel on a quad in the world.
 
 ## Features
 
-**New in 1.4:** keep material-frame corners at a fixed size with `material-box`,
-move the keyboard or gamepad highlight with `element.focus()`, and read wrapped label
-sizes from the game thread with `vacuus-measure`. Fingers and a connected mouse now
-operate independently, including simultaneous drag clones.
+**New in 1.5.** Measure RmlUi elements from JavaScript with `getBoundingClientRect()`,
+`offsetParent`, `offset*` and `client*`. Show a tooltip, measure it and place it
+within the HUD in one script turn. Consecutive geometry reads can share one layout pass.
 [Recipes and examples](docs/buyer/ui-recipes.md).
 
 SVG files, inline SVG, SVG decorators and Lottie animations are built in. See
